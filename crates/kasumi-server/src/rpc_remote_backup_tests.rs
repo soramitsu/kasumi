@@ -30,6 +30,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "rpc_data_catalog_tests.rs"]
+mod catalog;
+
 // Keep the original component-stage refusal in the native fixture receipt.
 // Production adapters continue to apply their public response redaction.
 struct SourceTrace(Arc<DataTransport>);
@@ -124,7 +127,7 @@ impl Identities {
         let ca = dir.join("ca.crt");
         private_files::create(&ca, params.self_signed(&key).unwrap().pem().as_bytes()).unwrap();
         let issuer = Issuer::new(params, key);
-        let files = (0..11)
+        let files = (0..12)
             .map(|i| {
                 let mut params = CertificateParams::new(vec!["localhost".into()]).unwrap();
                 params.extended_key_usages = vec![
@@ -301,7 +304,8 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         initial_limits: Limits::default(),
         voters: control_voters,
     };
-    let router = Arc::new(kasumi_raft::InProcessRouter::default());
+    let router = Arc::new(catalog::Groups::default());
+    let mut signers = Vec::new();
     let mut data = vec![];
     let mut controls = vec![];
     let mut stores = vec![];
@@ -409,11 +413,26 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         )
         .await
         .unwrap();
-        router.register(
-            format!("{name}/{}", bootstrap.incarnation),
-            id,
-            db.raft_group().raft().clone(),
-        );
+        let verifier = kasumi_serving::test_utils::fixture_verifier(id);
+        let signer_store = TenantStore::initialize_catalog(
+            node.clone(),
+            verifier.tenant(),
+            Arc::new(LocalKeyProvider::new([120 + id as u8; 32])),
+            StorageAccess::live_signer_trust(verifier.clone()).unwrap(),
+        )
+        .await
+        .unwrap();
+        db.install_member_signer_key_inventory(
+            &kasumi_engine::SignerCatalog::installed(
+                &signer_store,
+                &verifier,
+                BTreeSet::from([(manifest.authority_id, 0)]),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        signers.push(signer_store);
+        router.register(format!("{name}/{}", bootstrap.incarnation), id, &db);
         if id <= 3 {
             data.push(db);
         } else {
@@ -505,6 +524,7 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         callback_certificate_pins: BTreeSet::from([ids.pin(7)]),
     };
     let remote = crate::remote_control::RemoteControlConfig {
+        catalog_reader: None,
         root,
         backup: Some(access.clone()),
         endpoints: BTreeMap::from([(control_id, control_route.clone())]),
@@ -578,6 +598,8 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     registry.insert(source.clone()).unwrap();
     let auth = Authenticator::with_test_keys(acl.clone(), keys.clone()).await;
     auth.install_audit(audits[source_index].clone()).unwrap();
+    let acl_for_catalog = acl.clone();
+    let keys_for_catalog = keys.clone();
     let control_auth = Authenticator::with_test_keys(acl, keys).await;
     control_auth
         .install_audit(audits[control_index].clone())
@@ -623,7 +645,26 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
             })
             .collect::<Vec<_>>()
     };
+    let reader_token = make_token(
+        "catalog-reader",
+        crate::runtime::CONTROL_TENANT,
+        "control",
+        control_inc,
+        "kasumi:audit",
+    );
+    let reader_path = dir.path().join("catalog-reader.token");
+    write_token(&reader_path, &reader_token);
+    let listener = crate::data_member_catalog::DataCatalogListener {
+        control: control_inc,
+        grant: Arc::new(crate::data_member_catalog::CatalogReaderGrant {
+            principal: "catalog-reader".into(),
+            client_certificate_pins: BTreeSet::from([ids.pin(11)]),
+            groups: BTreeMap::from([(tenant.to_owned(), data_inc)]),
+        }),
+        admission: physicals[source_index].admission.clone(),
+    };
     let mut data_admin = NativeAdmin::new(registry, auth.clone(), data_failures.clone());
+    data_admin.catalog = Some(listener.clone());
     data_admin.backup = Some(Endpoint::Source(data_endpoint));
     let mut control_admin = NativeAdmin::new(
         DatabaseRegistry::default(),
@@ -665,6 +706,46 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         source_id as usize,
         native(data_admin, auth, source_index),
     );
+    let mut catalog_tasks = vec![];
+    let mut catalog_routes = BTreeMap::from([(source_id, data_route.clone())]);
+    for db in data
+        .iter()
+        .filter(|db| db.raft_group().node_id() != source_id)
+    {
+        let id = db.raft_group().node_id();
+        let i = id as usize - 1;
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        catalog_routes.insert(id, listen(&socket, ids.pin(id as usize)));
+        let registry = DatabaseRegistry::default();
+        registry.insert(db.clone()).unwrap();
+        let peer_auth =
+            Authenticator::with_test_keys(acl_for_catalog.clone(), keys_for_catalog.clone()).await;
+        peer_auth.install_audit(audits[i].clone()).unwrap();
+        let mut admin = NativeAdmin::new(registry, peer_auth.clone(), failed(i, tenant));
+        admin.catalog = Some(crate::data_member_catalog::DataCatalogListener {
+            admission: physicals[i].admission.clone(),
+            ..listener.clone()
+        });
+        catalog_tasks.push(serve(socket, id as usize, native(admin, peer_auth, i)));
+    }
+    catalog::assert_cross_group_reads(catalog::Installation {
+        ids: &ids,
+        routes: catalog_routes,
+        token_path: &reader_path,
+        reader_token: &reader_token,
+        denied_token: &writer,
+        control: &control,
+        operator: &control_operator,
+        topology: &topology,
+        root: control_inc,
+        admission: &physicals[control_index].admission,
+        tenant,
+        incarnation: data_inc,
+        source: source_id,
+        signers: &signers,
+        audits: &audits,
+    })
+    .await;
     let original = Arc::new(Mutex::new(None));
     let cut = Arc::new(AtomicBool::new(true));
     let fault = axum::middleware::from_fn({
@@ -1213,12 +1294,18 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     drop(control_client);
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
+    for task in catalog_tasks {
+        task.await.unwrap().unwrap();
+    }
     confirming.await.unwrap().unwrap();
     for node in data.iter().chain(&controls) {
         node.shutdown().await.unwrap();
     }
     for audit in audits {
         audit.shutdown().await.unwrap();
+    }
+    for signer in signers {
+        signer.shutdown().await.unwrap();
     }
     for node in stores {
         node.shutdown().await.unwrap();

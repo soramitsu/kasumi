@@ -680,6 +680,16 @@ async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_an
         callback_certificate_pins: BTreeSet::from(["ab".repeat(32)]),
     };
     let remote = RemoteControlConfig {
+        catalog_reader: Some(std::sync::Arc::new(
+            crate::data_member_catalog::CatalogReaderGrant {
+                principal: "inventory-reader".into(),
+                client_certificate_pins: BTreeSet::from(["ac".repeat(32)]),
+                groups: BTreeMap::from([(
+                    configuration.tenants[0].tenant.clone(),
+                    Uuid::parse_str(configuration.tenants[0].incarnation.as_deref().unwrap())?,
+                )]),
+            },
+        )),
         root: kasumi_types::ControlSigningRoot {
             control_incarnation: Uuid::new_v4(),
             public_key: "cc".repeat(32),
@@ -709,11 +719,21 @@ async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_an
     require_complete(&store, verified.database_id, Kind::Data)?;
     require_control_placement(&store, &verified)?;
     let original = records(&store)?;
-    for what in ["writer", "callback", "endpoint", "root"] {
+    for what in ["writer", "callback", "endpoint", "root", "reader", "grant"] {
         let mut changed = verified.clone();
         let remote = changed.remote_control.as_mut().unwrap();
         let backup = remote.backup.as_mut().unwrap();
         match what {
+            "reader" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap()).principal =
+                    "another-reader".into();
+            }
+            "grant" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap())
+                    .groups
+                    .clear();
+            }
+
             "writer" => backup.principal = "some-other-writer".into(),
             "callback" => backup.callback_certificate_pins = BTreeSet::from(["11".repeat(32)]),
             "endpoint" => {
@@ -731,5 +751,74 @@ async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_an
     assert_eq!(records(&store)?, original);
     store.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn dedicated_catalog_source_enrollment_binds_verifier_reader_and_listener() -> Result<()> {
+    use crate::data_member_catalog::{DataCatalogSource, DataCatalogSources};
+    use std::collections::{BTreeMap, BTreeSet};
+    let (_directory, node, store, mut input) = fixture().await?;
+    let Input::Data { configuration } = &mut input else {
+        unreachable!()
+    };
+    let source = DataCatalogSources {
+        tls: configuration.admin.tls.clone(),
+        server_ca: configuration.admin.client_ca.clone(),
+        principal: "catalog-reader".into(),
+        bearer_file: "/installed/catalog.reader".into(),
+        client_certificate_pins: BTreeSet::from(["cc".repeat(32)]),
+        groups: BTreeMap::from([(
+            "books".into(),
+            kasumi_types::DataCatalogGroup {
+                incarnation: Uuid::new_v4(),
+                members: BTreeSet::from([10]),
+            },
+        )]),
+        members: BTreeMap::from([(
+            10,
+            DataCatalogSource {
+                verifier: kasumi_types::TrustVerifierIdentity {
+                    node_id: 10,
+                    installation_id: Uuid::new_v4(),
+                },
+                admin: crate::serving_runtime::AuthorityEndpoint {
+                    endpoint: "https://data-10.example".into(),
+                    certificate_pins: BTreeSet::from(["bb".repeat(32)]),
+                },
+            },
+        )]),
+    };
+    configuration.control.as_mut().unwrap().catalog_sources = Some(source);
+    let original = configuration.clone();
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    require_control_placement(&store, &original)?;
+    for replacement in ["installation", "listener", "reader", "group", "drop"] {
+        let mut different = original.clone();
+        let installed = &mut different.control.as_mut().unwrap().catalog_sources;
+        let source = installed.as_mut().unwrap();
+        match replacement {
+            "installation" => {
+                source
+                    .members
+                    .get_mut(&10)
+                    .unwrap()
+                    .verifier
+                    .installation_id = Uuid::new_v4()
+            }
+            "listener" => {
+                source.members.get_mut(&10).unwrap().admin.certificate_pins =
+                    BTreeSet::from(["aa".repeat(32)])
+            }
+            "reader" => source.principal = "different-reader".into(),
+            "group" => source.groups.get_mut("books").unwrap().incarnation = Uuid::new_v4(),
+            _ => *installed = None,
+        }
+        assert!(require_control_placement(&store, &different).is_err());
+    }
+    store.shutdown().await?;
+    node.shutdown().await?;
     Ok(())
 }

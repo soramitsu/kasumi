@@ -782,6 +782,11 @@ impl Administration {
         let control_context = match (&control, &config.control) {
             (ControlAccess::Local(database), Some(hosted)) => {
                 let context = crate::runtime::configured_control_context(hosted)?;
+                if let Some(sources) = &hosted.catalog_sources {
+                    database.install_remote_data_catalog_reader(
+                        crate::data_member_catalog::InstalledReader::open(sources, &admission)?,
+                    )?;
+                }
                 if let Some(sources) = &hosted.backup_sources {
                     database.install_remote_backup_verifier(
                         crate::remote_backup::ControlVerifier::open(sources, &admission)?,

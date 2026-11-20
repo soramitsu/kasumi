@@ -13,9 +13,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 /// A distributed page merges at most four entries and one lookahead per peer.
-pub const MEMBER_CATALOG_LIMIT: u16 = 4;
+pub const MEMBER_CATALOG_LIMIT: u16 = kasumi_types::DATA_MEMBER_CATALOG_LIMIT;
 /// Five maximum wrapping identities, including worst-case JSON escapes, plus framing.
-pub const MEMBER_CATALOG_BYTES: usize = 320 << 10;
+pub const MEMBER_CATALOG_BYTES: usize = kasumi_types::DATA_MEMBER_CATALOG_BYTES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

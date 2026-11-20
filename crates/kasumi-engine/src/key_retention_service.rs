@@ -4,6 +4,11 @@
 use super::*;
 #[path = "backup_key_inventory.rs"]
 mod backup_keys;
+#[path = "key_retention_data_member.rs"]
+mod data_member;
+#[path = "key_retention_data_sources.rs"]
+mod data_sources;
+pub use data_member::RemoteDataCatalogReader;
 #[path = "key_retention_member.rs"]
 mod member;
 #[path = "key_retirement_service.rs"]
@@ -809,19 +814,24 @@ impl Database {
                 None
             };
             let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
-            let member_inventories =
-                if matches!(
-                    request.scope,
-                    KeyRetentionScope::Signer {} | KeyRetentionScope::SecurityAudit {}
-                ) && membership.membership().nodes().any(|(&id, _)| id != local)
-                {
-                    Some(
-                        self.observe_service_members(&metrics, request, &cancellation)
-                            .await?,
-                    )
-                } else {
-                    None
-                };
+            let member_inventories = if matches!(
+                request.scope,
+                KeyRetentionScope::Signer {} | KeyRetentionScope::SecurityAudit {}
+            ) && (membership
+                .membership()
+                .nodes()
+                .any(|(&id, _)| id != local)
+                || self.remote_data_catalog_reader.get().is_some())
+            {
+                let mut members = self
+                    .observe_service_members(&metrics, request, &cancellation)
+                    .await?;
+                self.observe_remote_data_sources(&generation, request, &cancellation, &mut members)
+                    .await?;
+                Some(members)
+            } else {
+                None
+            };
             let local_recovery = self.local_recovery_keys.get().cloned();
             let target_checkpoints = self.target_checkpoint_keys.get().cloned();
             let control_context = context.clone();
