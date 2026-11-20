@@ -369,6 +369,7 @@ impl TargetJournal {
         Ok(TargetWriterRead {
             journal: self.clone(),
             challenge: kasumi_types::TargetWriterChallenge {
+                protocol: kasumi_types::TARGET_WRITER_PROTOCOL,
                 root: self.installed.root.clone(),
                 verifier: self.installed.node.verifier.clone(),
                 catalog,

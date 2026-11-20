@@ -882,9 +882,14 @@ impl TargetWriterChallenge {
 }
 /// Refresh one enrolled target at the expected globally committed state. The
 /// target obtains and checks that state independently from its original Control.
+/// Every affirmative writer protects first prepare, initial dispatch and terminal
+/// records. Peers implementing an earlier read-only protocol cannot acknowledge it.
+pub const TARGET_WRITER_PROTOCOL: u16 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RefreshTargetWriter {
+    pub protocol: u16,
     pub root: crate::ControlSigningRoot,
     pub verifier: crate::TrustVerifierIdentity,
     pub state_sha256: String,
@@ -892,6 +897,9 @@ pub struct RefreshTargetWriter {
 }
 impl RefreshTargetWriter {
     pub fn validate(&self) -> Result<()> {
+        if self.protocol != TARGET_WRITER_PROTOCOL {
+            return Err(invalid("unsupported target writer protocol"));
+        }
         self.root.validate()?;
         self.verifier.validate()?;
         validate_sha256(&self.state_sha256)?;
@@ -927,6 +935,7 @@ impl TargetWriterReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetWriterChallenge {
+    pub protocol: u16,
     pub root: crate::ControlSigningRoot,
     pub verifier: crate::TrustVerifierIdentity,
     pub catalog: uuid::Uuid,
@@ -947,6 +956,9 @@ pub struct TargetWriterObservation {
 }
 impl TargetWriterObservation {
     pub fn validate(&self) -> Result<()> {
+        if self.challenge.protocol != TARGET_WRITER_PROTOCOL {
+            return Err(invalid("unsupported target writer protocol"));
+        }
         self.challenge.root.validate()?;
         self.challenge.verifier.validate()?;
         if self.challenge.catalog.is_nil()

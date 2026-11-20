@@ -2638,21 +2638,72 @@ impl Fixture {
             matches!(restored.1, KeyRetentionCoverage::Complete { .. })
                 && has_checkpoint(&restored.0)
         );
-        let KeyRetentionCoverage::Complete{coverage_sha256,..}=&restored.1 else {unreachable!()};
-        let retirement=kasumi_types::RetireKeyVersionsRequest{
-            retirement_id:"1".into(),scope:KeyRetentionScope::TargetJournal{},
-            identity:kasumi_types::KeyIdentityRef{provider:"unused-inventory-provider".into(),key_ref:"unused-inventory-key".into()},
-            retire_below_version:2,expected_coverage_sha256:coverage_sha256.clone(),
+        let KeyRetentionCoverage::Complete {
+            coverage_sha256, ..
+        } = &restored.1
+        else {
+            unreachable!()
         };
-        let completed=control.retire_key_versions(&operator,retirement.clone()).await.unwrap();
-        assert!(matches!(completed.as_ref(),kasumi_types::KeyRetirementStatus::Completed{record} if record.fence.request==retirement));
-        let generation=control.engine().generation().unwrap();
-        assert_eq!(generation.state.target_journal_writers.iter().map(|writer|(writer.verifier.node_id,writer.catalog)).collect::<BTreeMap<_,_>>(),catalogs);
+        let retirement = kasumi_types::RetireKeyVersionsRequest {
+            retirement_id: "1".into(),
+            scope: KeyRetentionScope::TargetJournal {},
+            identity: kasumi_types::KeyIdentityRef {
+                provider: "unused-inventory-provider".into(),
+                key_ref: "unused-inventory-key".into(),
+            },
+            retire_below_version: 2,
+            expected_coverage_sha256: coverage_sha256.clone(),
+        };
+        let writer_token = self.path("control.jwt");
+        let withheld = self.directory.join("withheld-writer-credential");
+        std::fs::rename(&writer_token, &withheld).unwrap();
+        let failed = control
+            .retire_key_versions(&operator, retirement.clone())
+            .await;
+        std::fs::rename(&withheld, &writer_token).unwrap();
+        assert!(
+            matches!(failed,Err(ref error) if error.code==kasumi_types::ErrorCode::Unavailable && error.has_physical_source())
+        );
+        let held = control
+            .key_retirement_status(
+                &operator,
+                kasumi_types::KeyRetirementStatusRequest {
+                    scope: request.scope.clone(),
+                    retirement_id: "1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(held.status.as_ref(),Some(kasumi_types::KeyRetirementStatus::Fenced{fence}) if fence.request==retirement)
+        );
+        let completed = control
+            .retire_key_versions(&operator, retirement.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(completed.as_ref(),kasumi_types::KeyRetirementStatus::Completed{record} if record.fence.request==retirement)
+        );
+        let generation = control.engine().generation().unwrap();
+        assert_eq!(
+            generation
+                .state
+                .target_journal_writers
+                .iter()
+                .map(|writer| (writer.verifier.node_id, writer.catalog))
+                .collect::<BTreeMap<_, _>>(),
+            catalogs
+        );
         drop(generation);
-        let replay=control.retire_key_versions(&operator,retirement).await.unwrap();
-        assert_eq!(replay.as_ref(),completed.as_ref());
-        assert!(matches!(pages(control,&operator,&request).await.unwrap().1,KeyRetentionCoverage::Complete{..}));
-
+        let replay = control
+            .retire_key_versions(&operator, retirement)
+            .await
+            .unwrap();
+        assert_eq!(replay.as_ref(), completed.as_ref());
+        assert!(matches!(
+            pages(control, &operator, &request).await.unwrap().1,
+            KeyRetentionCoverage::Complete { .. }
+        ));
     }
     pub async fn databases(&self) -> Vec<Arc<kasumi_engine::Database>> {
         let mut databases = Vec::new();

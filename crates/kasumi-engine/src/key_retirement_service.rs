@@ -172,22 +172,28 @@ impl Database {
                 Ok(KeyRetirementStatus::Completed { record })
             }
             Err(original) => {
-                // The fence protects nothing once its decision failed. Remove
-                // it unless that decision may itself have committed, and keep
-                // the failure that the caller has to act on.
                 let journal = matches!(request.scope, KeyRetentionScope::TargetJournal {});
-                // A registered writer may have durably fenced while its reply
-                // was lost. The same request resumes propagation after recovery.
+                // An unavailable journal can have persisted a fence before its
+                // reply was lost. Resuming the same request reconciles it.
                 if original.code != ErrorCode::UnknownOutcome
                     && (!journal || original.code == ErrorCode::Conflict)
-                    && let Err(error) = self
-                        .submit(context.clone(), abort_operation(request, request_sha256))
-                        .await
                 {
-                    tracing::warn!(
-                        code = ?error.code,
-                        "a failed key retirement kept its fence"
-                    );
+                    let abort = self
+                        .submit(context.clone(), abort_operation(request, request_sha256))
+                        .await;
+                    match abort {
+                        Err(error) => {
+                            tracing::warn!(code=?error.code,"a failed key retirement kept its fence")
+                        }
+                        Ok(_) if journal => {
+                            if let Err(error) =
+                                self.release_journal_decision(context, &request.scope).await
+                            {
+                                tracing::warn!(code=?error.code,"terminal journal fence release is unresolved");
+                            }
+                        }
+                        Ok(_) => {}
+                    }
                 }
                 Err(original)
             }
@@ -198,7 +204,11 @@ impl Database {
     /// acknowledges its own native persistence over the original protected route.
     async fn synchronize_journal_writers(&self, context: &RequestContext) -> Result<String> {
         let network = self.journal_writer_network()?;
+        let cancellation = QueryCancellation::default();
+        let _cancel = CancelOnDrop(cancellation.clone());
+        let _work = self.work.begin(cancellation.clone())?;
         self.barrier().await?;
+        cancellation.check()?;
         let workspace = self.admission().reserve_resident(24 << 20)?;
         let state_sha256 = {
             let generation = self.engine.generation()?;
@@ -216,16 +226,12 @@ impl Database {
                 .target_journal_retirements
                 .target_writer_digest()?
         };
-        let receipts = network
-            .synchronize(context, &state_sha256)
-            .await
-            .map_err(|cause| {
-                Error::new(
-                    ErrorCode::Unavailable,
-                    "original target writer did not acknowledge its fence",
-                )
-                .with_physical_source(cause)
-            })?;
+        let receipts = tokio::select! {
+            result=network.synchronize(context,&state_sha256)=>result.map_err(|cause|Error::new(ErrorCode::Unavailable,"original target writer did not acknowledge its fence").with_physical_source(cause))?,
+            _=cancelled(&cancellation)=>return Err(cancelled_error()),
+        };
+        cancellation.check()?;
+        context.authorization.check_live()?;
         let digest = staged_digest(&receipts)?.0;
         drop(workspace);
         Ok(digest)

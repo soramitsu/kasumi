@@ -2319,6 +2319,65 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         authority,
     };
     journal.validate_stop(&stop)?;
+
+    {
+        let before = journal.metadata()?;
+        let mut head = before.clone();
+        let mut terminal = GenerationBinding::from_intent(&stop.intent);
+        terminal.stop_before_prepare = true;
+        let bytes = serde_json::to_vec(&terminal)?;
+        head.generations = 1;
+        head.charged_bytes += bytes.len() as u64 + GENERATION_RESERVE + CLEANUP_RESERVE as u64;
+        let cleanup = TargetCleanup {
+            tenant: tenant.clone(),
+            target_incarnation: incarnation,
+            stage: TargetCleanupStage::Deleted,
+            binding: None,
+        };
+        f.store.write_batch(&[
+            WriteOp::put(NS, generation_key(&tenant, incarnation), bytes),
+            WriteOp::put(
+                NS,
+                stop_key(&tenant, incarnation),
+                serde_json::to_vec(&stop)?,
+            ),
+            WriteOp::put(
+                NS,
+                cleanup_key(&tenant, incarnation),
+                serde_json::to_vec(&cleanup)?,
+            ),
+            WriteOp::put(NS, b"metadata", serde_json::to_vec(&head)?),
+        ])?;
+        for physically_absent in [false, true] {
+            let mut unresolved = Vec::new();
+            journal.visit_scoped_key_dependencies(
+                &kasumi_query::QueryCancellation::default(),
+                |_| Ok(()),
+                |id, _, negative| {
+                    unresolved.push((id, negative));
+                    Ok(())
+                },
+                |name, id| {
+                    assert_eq!((name, id), (tenant.as_str(), incarnation));
+                    Ok(physically_absent)
+                },
+            )?;
+            assert_eq!(
+                unresolved,
+                if physically_absent {
+                    vec![]
+                } else {
+                    vec![(incarnation, true)]
+                }
+            );
+        }
+        f.store.write_batch(&[
+            WriteOp::delete(NS, generation_key(&tenant, incarnation)),
+            WriteOp::delete(NS, stop_key(&tenant, incarnation)),
+            WriteOp::delete(NS, cleanup_key(&tenant, incarnation)),
+            WriteOp::put(NS, b"metadata", serde_json::to_vec(&before)?),
+        ])?;
+    }
     let committed = &stop.intent.intent;
     let observation = kasumi_types::ControlIntentCommitment {
         intent: committed.clone(),
@@ -2686,8 +2745,8 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
     assert!(journal.prepare(&existing, &existing_digest).is_err());
     let read = journal.begin_writer_read()?;
     let initial = sign(read.challenge(), 2, &KeyRetirementState::default())?;
-    let existing_intent =
-        journal.prepare_observed(&existing, &existing_digest, &read.admit(&initial)?)?;
+    let prior_writer = read.admit(&initial)?;
+    let existing_intent = journal.prepare_observed(&existing, &existing_digest, &prior_writer)?;
     let before_signed = f
         .store
         .get(NS, b"metadata")?
@@ -2713,6 +2772,25 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
         .get(NS, b"metadata")?
         .context("fenced head missing")?;
     assert!(journal.prepare(&new, &new_digest).is_err());
+    assert!(
+        journal
+            .prepare_observed(&new, &new_digest, &prior_writer)
+            .is_err()
+    );
+    let read = journal.begin_writer_read()?;
+    let signed = sign(read.challenge(), 5, &state)?;
+    let fenced = read.admit(&signed)?;
+    let (lifecycle, phase, packet) = signed_initial_dispatch(&f, true)?;
+    let error = journal
+        .reserve_observed_initial_dispatch(&f.installed.root, &phase, &lifecycle, &packet, &fenced)
+        .err()
+        .context("first dispatch bypassed the durable checkpoint fence")?;
+    assert!(
+        error
+            .to_string()
+            .contains("original locally admitted materialization")
+    );
+
     let result = journal
         .prepare_runtime(
             &new,
