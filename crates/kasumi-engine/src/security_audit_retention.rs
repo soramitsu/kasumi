@@ -396,6 +396,114 @@ impl SecurityAudit {
         })
     }
 
+    /// Visit wrapping dependencies on a retained blocking worker. Pruning
+    /// keeps immutable roots permanently; only outstanding deletes, retained
+    /// archives and prepared ciphertext still need their wrapping keys.
+    pub(crate) fn visit_retained_archive_keys(
+        &self,
+        token: &QueryCancellation,
+        mut visit: impl FnMut(&AuditArchiveReference, bool) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        let _work = self.writer.work.begin(token.clone())?;
+        let runtime = tokio::runtime::Handle::try_current()?;
+        let _maintenance = runtime.block_on(async {
+            tokio::select! {
+                guard = self.writer.maintenance.lock() => Ok(guard),
+                _ = crate::service::cancelled(token) => Err(crate::service::cancelled_error()),
+            }
+        })?;
+        self.writer.store.check_access()?;
+        let (head, retired) = {
+            let state = self
+                .writer
+                .sequence
+                .lock()
+                .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+            ensure!(!state.failed, "service audit persistence requires recovery");
+            (
+                state.head.clone(),
+                state.retired.as_ref().map(Retirement::observed),
+            )
+        };
+        let first = retired
+            .as_ref()
+            .map_or(0, |r| r.deleting_from.unwrap_or(r.index));
+        let pending = self.pending_reference(&head)?;
+        let mut digest = sha2::Sha256::new();
+        serde_json::to_writer(
+            &mut digest,
+            &(
+                &head.destination,
+                head.position.stream_id,
+                head.position.archive_segments,
+                &head.position.archive_head,
+                &retired,
+                &pending,
+            ),
+        )?;
+        let _workspace = if first < head.position.archive_segments || pending.is_some() {
+            Some(
+                self.writer
+                    .admission
+                    .reserve_resident(4 * MAX_AUDIT_SEGMENT_BYTES as u64)?,
+            )
+        } else {
+            None
+        };
+        let mut previous = first
+            .checked_sub(1)
+            .map(|i| self.archive_reference(i))
+            .transpose()?
+            .map(|r| r.object);
+        for index in first..head.position.archive_segments {
+            token.check()?;
+            let reference = self.archive_reference(index)?;
+            ensure!(
+                reference.stream_id == head.position.stream_id
+                    && reference.previous == previous
+                    && (index + 1 < head.position.archive_segments
+                        || head.position.archive_head.as_ref() == Some(&reference)),
+                "retained service audit chain differs from its installed head"
+            );
+            let authentic = runtime.block_on(async {
+                tokio::select! {
+                    result = async {
+                        let bytes = self.writer.destination.read(&reference.object).await?;
+                        self.writer.store.decrypt_audit_segment(&bytes, &reference).await?;
+                        anyhow::Ok(())
+                    } => result.is_ok(),
+                    _ = crate::service::cancelled(token) => false,
+                }
+            });
+            token.check()?;
+            visit(&reference, authentic)?;
+            serde_json::to_writer(&mut digest, &(&reference, authentic))?;
+            previous = Some(reference.object);
+        }
+        if let Some(reference) = pending {
+            token.check()?;
+            let bytes = self.writer.store.get_bounded(
+                META,
+                b"pending-ciphertext",
+                MAX_AUDIT_SEGMENT_BYTES,
+            )?;
+            let authentic = bytes.is_some_and(|bytes| {
+                runtime
+                    .block_on(
+                        self.writer
+                            .store
+                            .decrypt_audit_segment(bytes.as_bytes(), &reference),
+                    )
+                    .is_ok()
+            });
+            visit(&reference, authentic)?;
+            digest.update([u8::from(authentic)]);
+        }
+        token.check()?;
+        self.writer.store.check_access()?;
+        Ok(digest.finalize().into())
+    }
+
     /// Status-derived capacity plus the exact locally persisted publication.
     /// Reads only local encrypted metadata, never the archive destination.
     pub fn capacity(&self) -> Result<AuditCapacity> {
@@ -3055,6 +3163,24 @@ mod tests {
         fixture.close(audit).await;
     }
 
+    async fn installed_key_references(audit: Arc<SecurityAudit>) -> Vec<(Uuid, bool)> {
+        tokio::task::spawn_blocking(move || {
+            let mut objects = Vec::new();
+            audit
+                .visit_retained_archive_keys(
+                    &QueryCancellation::default(),
+                    |reference, readable| {
+                        objects.push((reference.object.object_id, readable));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            objects
+        })
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn an_interrupted_deletion_resumes_after_restart() {
         let (fixture, audit) = Fixture::new(180, false).await;
@@ -3089,6 +3215,9 @@ mod tests {
             code(&audit.verify_archive(1).await.unwrap_err()),
             ErrorCode::NotFound
         );
+        let observed = installed_key_references(audit.clone()).await;
+        assert!(observed.contains(&(roots[0].object.object_id, false)));
+        assert!(observed.contains(&(roots[1].object.object_id, true)));
         let fixture = fixture.restart(Some(audit)).await;
         let audit = fixture.open().unwrap();
         assert_eq!(
@@ -3117,6 +3246,13 @@ mod tests {
         assert_eq!(
             fresh[..fresh.len() - 1],
             records[roots[through as usize].object.first_sequence as usize..]
+        );
+        assert_eq!(
+            installed_key_references(audit.clone()).await,
+            roots[through as usize..]
+                .iter()
+                .map(|r| (r.object.object_id, true))
+                .collect::<Vec<_>>()
         );
         // Reopening once more finds the completed retirement unchanged.
         let fixture = fixture.restart(Some(audit)).await;

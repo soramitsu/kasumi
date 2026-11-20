@@ -69,6 +69,26 @@ impl AdmittedDeploymentBinding {
 }
 
 impl TenantStore {
+    /// Read the physical catalog under its installed access lease. Callers
+    /// receive wrapping identifiers and a digest of the whole catalog.
+    pub fn visit_wrapping_identities(
+        &self,
+        mut visit: impl FnMut(Uuid, &str, &str, u64) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.check_access()?;
+        let fingerprint = {
+            let catalog = self.catalog.read();
+            let mut digest = sha2::Sha256::new();
+            serde_json::to_writer(&mut digest, &*catalog)?;
+            for key in catalog.keys.values() {
+                visit(catalog.catalog_id, &key.provider, &key.key_ref, key.version)?;
+            }
+            digest.finalize().into()
+        };
+        self.check_access()?;
+        Ok(fingerprint)
+    }
+
     fn deployment_at_registered(
         &self,
         reader: &RegisteredNodeRead,

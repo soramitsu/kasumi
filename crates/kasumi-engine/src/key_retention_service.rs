@@ -8,6 +8,8 @@ mod backup_keys;
 mod member;
 #[path = "key_retirement_service.rs"]
 mod retirement;
+#[path = "key_retention_security_audit.rs"]
+mod security_audit;
 
 /// One observation of a whole scope at one selected generation. The page
 /// holds the entries the request selected; the coverage, dependency position
@@ -39,6 +41,120 @@ impl KeyRetentionObservation {
             ));
         }
         Ok(())
+    }
+}
+
+struct InventoryWindow {
+    entries: BTreeSet<KeyRetentionEntry>,
+    missing: BTreeSet<MissingKeyDependency>,
+    truncated: bool,
+    inventory_sha256: String,
+    revision: u64,
+    membership_epoch: u64,
+}
+
+impl InventoryWindow {
+    fn page(
+        self,
+        request: &ReadKeyRetentionRequest,
+        page_limit: u16,
+        probe: bool,
+    ) -> Result<KeyRetentionPage> {
+        let Self {
+            entries,
+            missing,
+            truncated,
+            inventory_sha256,
+            revision,
+            membership_epoch,
+        } = self;
+        // Strict read auditing may advance the application revision between
+        // pages. Keep the original revision only if the observed inventory
+        // and membership still match, including catalog-only rotations.
+        let coverage_revision = if let Some(cursor) = request.cursor.as_ref().filter(|_| !probe) {
+            if cursor.inventory_sha256 != inventory_sha256
+                || cursor.membership_epoch != membership_epoch
+                || cursor.coverage_revision > revision
+            {
+                return Err(Error::new(
+                    ErrorCode::CursorExpired,
+                    "key retention inventory changed",
+                ));
+            }
+            cursor.coverage_revision
+        } else {
+            revision
+        };
+        // Every current member reported and every referenced record
+        // authenticated: the digest commits to the whole scope listing,
+        // not to the entries this request selected.
+        let coverage_sha256 =
+            staged_digest(&("kasumi.key-retention.coverage.v1", &inventory_sha256))?.0;
+        let mut page_entries = Vec::with_capacity(entries.len().min(usize::from(page_limit)));
+        let mut bytes = 0;
+        let mut more = false;
+        for entry in entries {
+            let encoded = crate::accounting::encoded_len(&entry)?;
+            // Leave room for the full cursor (which repeats the final
+            // entry), missing-dependency list and framing. Strings may
+            // expand sixfold under JSON escaping.
+            if page_entries.len() == usize::from(page_limit)
+                || bytes + encoded + 1 > MAX_KEY_RETENTION_PAGE_BYTES - (128 << 10)
+            {
+                more = true;
+                break;
+            }
+            bytes += encoded + 1;
+            page_entries.push(entry);
+        }
+        let next_cursor = if more && !probe {
+            Some(KeyRetentionCursor {
+                scope_sha256: request.scope.sha256()?,
+                inventory_sha256,
+                membership_epoch,
+                coverage_revision,
+                after: page_entries
+                    .last()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "key retention entry exceeds response bound",
+                        )
+                    })?
+                    .clone(),
+            })
+        } else {
+            None
+        };
+        let coverage = if missing.is_empty() {
+            KeyRetentionCoverage::Complete {
+                coverage_revision,
+                membership_epoch,
+                coverage_sha256,
+            }
+        } else {
+            KeyRetentionCoverage::Incomplete {
+                coverage_revision,
+                membership_epoch,
+                missing: missing.into_iter().collect(),
+                truncated,
+            }
+        };
+        let page = KeyRetentionPage {
+            entries: page_entries,
+            next_cursor,
+            coverage,
+        };
+        if crate::accounting::encoded_len(&page)? > MAX_KEY_RETENTION_PAGE_BYTES {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "key retention page exceeds response bound",
+            ));
+        }
+        if !probe {
+            page.validate(request)?;
+        }
+        Ok(page)
     }
 }
 
@@ -328,7 +444,20 @@ impl Database {
         request.scope.validate()?;
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
-        let control = self.key_retention_scope(context, &request.scope)?;
+        let service_audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
+        let control = if service_audit && !probe {
+            if context.tenant != crate::control::CONTROL_TENANT
+                || self.store.tenant() != context.tenant
+            {
+                return Err(Error::new(
+                    ErrorCode::Forbidden,
+                    "service audit key inventory requires Control administration",
+                ));
+            }
+            true
+        } else {
+            self.key_retention_scope(context, &request.scope)?
+        };
         let cancellation = QueryCancellation::default();
         let _cancel = CancelOnDrop(cancellation.clone());
         let registration = self.work.begin(cancellation.clone())?;
@@ -369,6 +498,39 @@ impl Database {
                 ErrorCode::Unavailable,
                 "local node lacks a current membership report",
             ));
+        }
+        if service_audit {
+            context.authorization.require_control(&state.incarnation)?;
+            let audit = self.security_audit.clone();
+            let request = request.clone();
+            let term = metrics.current_term;
+            let membership = *membership.log_id();
+            let (observation, reservation) = reservation
+                .retained_read(cancellation, move |reservation, token| {
+                    let _registration = registration;
+                    let state = &generation.state;
+                    let page = audit.key_inventory_page(&generation, &request, &metrics, token)?;
+                    let revision = state.revision;
+                    Ok((
+                        KeyRetentionObservation {
+                            page,
+                            dependency_sha256: state.key_dependency_sha256()?,
+                            retirements: state.key_retirements.clone(),
+                            term,
+                            membership,
+                            revision,
+                            strict: state.policy.strict_read_audit,
+                            epoch,
+                        },
+                        reservation,
+                    ))
+                })
+                .await?;
+            self.engine
+                .authorize_release(context, None, Action::Admin, epoch)?;
+            self.access()?;
+            observation.check_group(&self.group)?;
+            return Ok((observation, reservation));
         }
         let mut missing = BTreeSet::new();
         let mut truncated = false;
@@ -602,94 +764,15 @@ impl Database {
                     truncated,
                 ))?
                 .0;
-                // Strict read auditing may advance the application revision between
-                // pages. Keep the original revision only if the observed inventory
-                // and membership still match, including catalog-only rotations.
-                let coverage_revision =
-                    if let Some(cursor) = request.cursor.as_ref().filter(|_| !probe) {
-                        if cursor.inventory_sha256 != inventory_sha256
-                            || cursor.membership_epoch != membership_epoch
-                            || cursor.coverage_revision > revision
-                        {
-                            return Err(Error::new(
-                                ErrorCode::CursorExpired,
-                                "key retention inventory changed",
-                            ));
-                        }
-                        cursor.coverage_revision
-                    } else {
-                        revision
-                    };
-                // Every current member reported and every referenced record
-                // authenticated: the digest commits to the whole scope listing,
-                // not to the entries this request selected.
-                let coverage_sha256 =
-                    staged_digest(&("kasumi.key-retention.coverage.v1", &inventory_sha256))?.0;
-                let mut page_entries =
-                    Vec::with_capacity(entries.len().min(usize::from(page_limit)));
-                let mut bytes = 0;
-                let mut more = false;
-                for entry in entries {
-                    let encoded = crate::accounting::encoded_len(&entry)?;
-                    // Leave room for the full cursor (which repeats the final
-                    // entry), missing-dependency list and framing. Strings may
-                    // expand sixfold under JSON escaping.
-                    if page_entries.len() == usize::from(page_limit)
-                        || bytes + encoded + 1 > MAX_KEY_RETENTION_PAGE_BYTES - (128 << 10)
-                    {
-                        more = true;
-                        break;
-                    }
-                    bytes += encoded + 1;
-                    page_entries.push(entry);
+                let page = InventoryWindow {
+                    entries,
+                    missing,
+                    truncated,
+                    inventory_sha256,
+                    revision,
+                    membership_epoch,
                 }
-                let next_cursor = if more && !probe {
-                    Some(KeyRetentionCursor {
-                        scope_sha256: scope_hash,
-                        inventory_sha256,
-                        membership_epoch,
-                        coverage_revision,
-                        after: page_entries
-                            .last()
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorCode::ResourceExhausted,
-                                    "key retention entry exceeds response bound",
-                                )
-                            })?
-                            .clone(),
-                    })
-                } else {
-                    None
-                };
-                let coverage = if missing.is_empty() {
-                    KeyRetentionCoverage::Complete {
-                        coverage_revision,
-                        membership_epoch,
-                        coverage_sha256,
-                    }
-                } else {
-                    KeyRetentionCoverage::Incomplete {
-                        coverage_revision,
-                        membership_epoch,
-                        missing: missing.into_iter().collect(),
-                        truncated,
-                    }
-                };
-                let page = KeyRetentionPage {
-                    entries: page_entries,
-                    next_cursor,
-                    coverage,
-                };
-                if crate::accounting::encoded_len(&page)? > MAX_KEY_RETENTION_PAGE_BYTES {
-                    return Err(Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "key retention page exceeds response bound",
-                    ));
-                }
-                if !probe {
-                    page.validate(&request)?;
-                }
+                .page(&request, page_limit, probe)?;
                 let observation = KeyRetentionObservation {
                     page,
                     dependency_sha256: state.key_dependency_sha256()?,

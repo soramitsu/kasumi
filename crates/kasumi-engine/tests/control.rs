@@ -143,6 +143,27 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         )
         .await
         .unwrap();
+    let audit_keys = db
+        .read_key_retention(
+            &operator,
+            ReadKeyRetentionRequest {
+                scope: KeyRetentionScope::SecurityAudit {},
+                cursor: None,
+                limit: 8,
+            },
+        )
+        .await
+        .unwrap();
+    let node_id = db.raft_group().node_id();
+    assert!(audit_keys.entries.iter().any(|entry| matches!(entry.reference,
+        KeyReference::Catalog { node_id: owner, domain: KeyCatalogDomain::SecurityAudit, .. } if owner == node_id)));
+    let KeyRetentionCoverage::Incomplete { missing, .. } = &audit_keys.coverage else {
+        panic!("a single audit writer reported complete coverage of three installed nodes");
+    };
+    for &id in topology.nodes.keys().filter(|&&id| id != node_id) {
+        assert!(missing.contains(&MissingKeyDependency::MemberUnreported { node_id: id }));
+    }
+    drop(audit_keys);
     let captured = db.engine().generation().unwrap();
     let revision = captured.revision();
     let audits = captured.state.audits.len();

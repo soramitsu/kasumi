@@ -3651,14 +3651,14 @@ pub fn now_ms() -> Result<u64> {
         .map_err(|_| Error::new(ErrorCode::Unavailable, "trusted clock unavailable"))
 }
 
-async fn cancelled(token: &QueryCancellation) {
+pub(crate) async fn cancelled(token: &QueryCancellation) {
     // Polling avoids tying the standalone synchronous evaluator to an async
     // runtime. The worker observes cancellation directly at its loop checkpoints.
     while !token.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
-fn cancelled_error() -> Error {
+pub(crate) fn cancelled_error() -> Error {
     Error::new(ErrorCode::ResourceExhausted, "query work cancelled")
 }
 

@@ -71,7 +71,14 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             let result = match action.as_str() {
                 "read" => {
                     let request: ReadKeyRetentionRequest = serde_json::from_slice(&input)?;
-                    require_key_scope(&profile, &request.scope)?;
+                    if matches!(request.scope, KeyRetentionScope::SecurityAudit {}) {
+                        ensure!(
+                            matches!(profile.resource, CredentialResource::Control { .. }),
+                            "service audit key inventory requires a Control profile"
+                        );
+                    } else {
+                        require_key_scope(&profile, &request.scope)?;
+                    }
                     serde_json::to_string_pretty(
                         &client.read_key_retention(&bearer, &request).await?,
                     )?

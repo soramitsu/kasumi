@@ -60,6 +60,21 @@ impl std::io::Write for BoundedSize {
     }
 }
 
+pub(super) fn topology_workspace_bytes(body: &serde_json::Value) -> Result<u64> {
+    let mut size = BoundedSize(0);
+    serde_json::to_writer(&mut size, body).map_err(|_| {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "complete Control topology exceeds response bound",
+        )
+    })?;
+    u64::try_from(size.0)
+        .ok()
+        .and_then(|size| size.checked_mul(8))
+        .and_then(|size| size.checked_add(65_536))
+        .ok_or_else(|| changed("Control topology accounting overflow"))
+}
+
 impl Database {
     pub async fn observe_control_topology(
         self: &Arc<Self>,
@@ -110,18 +125,7 @@ impl Database {
                 .and_then(|collection| collection.documents.get("current"))
                 .ok_or_else(|| changed("installed Control topology unavailable"))?;
             let document = state.load_document(document).map_err(document_load_error)?;
-            let mut size = BoundedSize(0);
-            serde_json::to_writer(&mut size, &document.body).map_err(|_| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "complete Control topology exceeds response bound",
-                )
-            })?;
-            let bytes = u64::try_from(size.0)
-                .ok()
-                .and_then(|size| size.checked_mul(8))
-                .and_then(|size| size.checked_add(65_536))
-                .ok_or_else(|| changed("Control topology accounting overflow"))?;
+            let bytes = topology_workspace_bytes(&document.body)?;
             let reservation = self.admission().reserve(bytes, None)?;
             let observation = ControlTopologyObservation {
                 request,
