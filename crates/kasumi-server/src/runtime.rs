@@ -5719,6 +5719,28 @@ mod lifecycle_tests {
         })
     }
 
+    /// Capture each physical member once on a readiness deadline. Route
+    /// selection and the Control replica can lag independently of activation.
+    fn restored_route_diagnostics(
+        registries: &[DatabaseRegistry],
+        managers: &[Arc<crate::administration::Administration>],
+        controls: &[Arc<kasumi_engine::Database>],
+        context: &RequestContext,
+    ) -> Vec<String> {
+        registries.iter().zip(managers).zip(controls).map(|((registry,manager),control)| {
+            let metrics=control.raft_group().metrics();
+            let installed=registry.database(context).and_then(|database| {
+                database.engine().generation().map(|generation| (generation.incarnation().to_owned(),generation.revision()))
+            }).map_err(|error|(error.code,error.message));
+            let status=manager.prepare(context.clone(),crate::administration::ManagementCommand::Status{})
+                .map(|_|()).map_err(|error|(error.code,error.message));
+            let route=kasumi_engine::control::ControlPlane::local_topology(control).map(|selected|{
+                (selected.version,selected.topology.tenants.get(&context.tenant).map(|r|r.incarnation.clone()))
+            }).map_err(|error|error.to_string());
+            format!("member={} registry={installed:?} administrative_status={status:?} committed_route={route:?} Control={:?}",metrics.id,(metrics.state,metrics.current_term,metrics.current_leader,metrics.last_log_index,metrics.last_applied.map(|log|log.index)))
+        }).collect()
+    }
+
     async fn replicated_runtime_fixture_inner(
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
@@ -7115,13 +7137,19 @@ mod lifecycle_tests {
         .await
         .unwrap();
         let context = fixture_operation(|| recovery.context(true)).await;
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let readiness = tokio::time::timeout(Duration::from_secs(20), async {
             while !restored_routes_ready(&registries, &managers, &context, incarnation) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if let Err(elapsed) = readiness {
+            let nodes = restored_route_diagnostics(&registries, &managers, &controls, &context);
+            let stages = recovery.target_recovery_stages(&context.tenant);
+            panic!(
+                "initial restored route readiness elapsed={elapsed:?} expected={incarnation} members={nodes:?} target_stages={stages:?}"
+            );
+        }
         let restored_databases = fixture_operation(|| recovery.databases()).await;
         let activation_facts = restored_databases
             .iter()
@@ -7388,36 +7416,15 @@ mod lifecycle_tests {
         })
         .await;
         if let Err(elapsed) = readiness {
-            let registries = second_registries
-                .iter()
-                .map(|registry| {
-                    registry
-                        .database(&context)
-                        .and_then(|database| {
-                            database.engine().generation().map(|generation| {
-                                generation.incarnation() == incarnation.to_string()
-                            })
-                        })
-                        .map_err(|error| error.code)
-                })
-                .collect::<Vec<_>>();
-            let control_metrics = second_controls
-                .iter()
-                .map(|control| {
-                    let metrics = control.raft_group().metrics();
-                    (
-                        metrics.id,
-                        metrics.state,
-                        metrics.current_term,
-                        metrics.current_leader,
-                        metrics.last_log_index,
-                        metrics.last_applied.map(|log| log.index),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let nodes = restored_route_diagnostics(
+                &second_registries,
+                &second_managers,
+                &second_controls,
+                &context,
+            );
             let target_stages = recovery.target_recovery_stages(&context.tenant);
             panic!(
-                "restarted tenant registry readiness timed out: {elapsed:?}; registry results: {registries:?}; target recovery stages: {target_stages:?}; control metrics (node, state, term, leader, last log, last applied): {control_metrics:?}"
+                "restarted route readiness elapsed={elapsed:?} expected={incarnation} members={nodes:?} target_stages={target_stages:?}"
             );
         }
         fixture_stage!(
