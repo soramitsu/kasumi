@@ -1606,13 +1606,14 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             );
         }
     }
-    // A normal write cannot turn the empty foreign tree into a current
-    // directory. The next bounded replacement reconstructs the actual rows.
+    // Two ordinary metadata publications preserve the original change-feed
+    // fixture. The first rejects the foreign base, the next rebuilds it.
+    let limits = source_engine.generation()?.state.limits.clone();
     for current in [false, true] {
         source_db
-            .mutate(
+            .administer(
                 context.clone(),
-                kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
+                kasumi_types::Operation::SetLimits(limits.clone()),
             )
             .await?;
         let fields = kasumi_store::structured_manifest::StructuredManifest::load(
