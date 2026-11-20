@@ -295,6 +295,41 @@ fn assert_rejected<T, E: Into<crate::SnapshotFailure>>(result: std::result::Resu
     clippy::result_large_err,
     reason = "The fixture returns the original native failure custody."
 )]
+async fn bootstrap_load_admits_the_authenticated_extent_before_fetching_chunks()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let disk = fixture.node.scratch_disk();
+    let bytes = 1u64 << 50;
+    let manifest = ApplicationBootstrapManifest {
+        format: 2,
+        bytes,
+        chunks: bytes.div_ceil(CHUNK as u64),
+        digest: "0".repeat(64),
+    };
+    let failure = load_chunks(&manifest, disk, |_| {
+        panic!("bootstrap read preceded admission of its scratch extent")
+    })
+    .unwrap_err();
+    assert_eq!(
+        failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::StorageFull
+    );
+    fixture.seed_bootstrap()?;
+    let live = load(fixture.stores.application())?.unwrap();
+    let view = fixture.stores.read_view()?;
+    let pinned = load_at(&view, disk)?.unwrap();
+    assert_eq!(live, pinned);
+    view.close()?;
+    drop((live, pinned));
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns the original native failure custody."
+)]
 async fn target_digest_stops_before_reading_the_next_encrypted_chunk()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
