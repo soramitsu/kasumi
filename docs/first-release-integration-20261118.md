@@ -375,3 +375,24 @@ failure-domain attestations with the native evidence.
 The format owner acts only if retirement beyond the two pinned revisions is
 proposed. BOI's owner handles its live installation. The dependency update has been applied and the existing LRU disposition is recorded. Release owners
 can authorize publishing the qualified candidate after all gates pass.
+
+## November 20 native rechecks and successor repairs
+
+The common source archive for the new three-platform attempt is commit
+`37fcea5a398d45a2569cb11f9899e67bc6e59f9d`, tree
+`ffb5c35ed820763d723da1112bd0e0d5dedf2b62`. Its 2,345 paths occupy
+70,912,000 archive bytes, SHA-256
+`4f7e42574073b309522342fba7ff973d15635189a08f28875d66e7bf7cc28b04`.
+Subsequent fixes require a new common candidate before final qualification.
+
+| Gate | Original result and follow-up |
+| --- | --- |
+| G01, G03 | The repaired native deployed-format suite passed all five cases in 181.589 seconds, including writes and reopens against the committed 12140939 and cf9959f1 fixtures. The process receipt has SHA-256 `fb255e3c857b025e56465b48e5057199c386ddfe36f1f03766805332cb20f754`. |
+| G02 | `8171d7ef` budgets each change-feed slot during document GC, resumes inside a commit and retains memory for each discovered owner. `c5876ddd` exercises text reads across ordinary writes, encrypted snapshot transfer and reopen. The frozen Store ordered-page regression passed. |
+| G04–G06 | The mixed backup and lifecycle test retained an old store handle through retirement. After `06df0a38`, the repaired test passed in 8.506 seconds, authenticated all three intent rows and the backup and exercised the snapshot limit in the writer and decoder. The separate offline backup-inventory test exposed a fenced native owner and remains open. `336b396c` prevents rewrapping a catalog under a substituted key identity or a lower version. |
+| G07, G08 | The repaired cancelled target monitor passed in 3.577 seconds and management drain in 12.767 seconds. The single-execution-slot response release regression passed in 3.407 seconds. Its process receipt has SHA-256 `37971a348114c86d84fb842ed666fe61107b1bd94198bdbd29d69bf4f40d9267`. |
+| G05, G09, G10 | In a native three-voter run, the data leader attempted a leader-only backup-binding read on its local Control follower. `cf4246ca` reads at the authenticated Control leader's quorum index. The repaired run completed retirement, activation, all three confirmations, drain, physical reopen and target readiness in 396.804 seconds. Its process receipt has SHA-256 `9159dc72130c606cf566c9180fc192edbe09f05f6bff2afd08af693b422d4fec`. Dedicated nine-process qualification remains open. |
+| G11, G12 | On the archived source, native formatting and the locked workspace all-feature/all-target check passed. Strict Clippy failed on the unused Control watcher. `06df0a38` and `cf8d9c92` remove the unused publisher and fixture field. The 58 targeted HA and capacity adapter tests passed in 370.050 seconds. Full Python discovery ran 510 tests and failed one when a second status call lost the authenticated recovery observation. `7148adf4` counts and replays the receipt of the original successful poll. |
+| G12 | The archived lock's projected audit counted 483 dependencies and zero vulnerabilities. Its sole advisory was the reviewed LRU backport. Cargo-audit could not find the two patched OpenRaft crates in its local yank index. New crates.io responses for both 0.9.25 archives confirm their reviewed SHA-256 values and report both unyanked. |
+| G13 | On the 6-GiB snapshot-limit installation, 55,864 acknowledged documents were followed by a write deadline. Its retained original committed the next eight at revision 6,986. The process stopped cleanly after 2,473.388 seconds. A new process on that same installation returned the same revision, eight versions and original request SHA-256 `b05a59ff72b834e953ddb0dabc9f37878047c2b63ff210b37874170799b2e5f3`. Its readback took 7.769 seconds after startup. The required corpus has 98,400 documents. |
+| G14 | The prior macOS release binaries remain attributable to their original source. Successor binaries, native Linux runs, the independent build, delivery bundles and final release checks remain open. |
