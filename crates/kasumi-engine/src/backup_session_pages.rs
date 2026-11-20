@@ -220,7 +220,7 @@ impl Database {
             let reservation = self
                 .admission()
                 .reserve(PAGE_WORKSPACE_BYTES, Some(token.clone()))?;
-            self.barrier().await?;
+            self.control_binding_barrier().await?;
             let generation = self.engine.generation()?;
             let page = reservation
                 .retained_read(token, move |_workspace, token| {

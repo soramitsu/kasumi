@@ -100,7 +100,7 @@ impl Database {
         control.engine.authorize(&operator, None, Action::Admin)?;
         let control_fence = control.admitted_response_fence(&operator)?;
         let registration = Arc::new(control.work.begin(cancellation.clone())?);
-        control.barrier().await?;
+        control.control_binding_barrier().await?;
         let generation = control.engine.generation()?;
         let mut digest = Sha256::new();
         for ordinal in 1..=generation.state.backup_binding_head.count {

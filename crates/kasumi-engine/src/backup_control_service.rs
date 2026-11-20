@@ -63,6 +63,20 @@ impl Database {
         }
     }
 
+    /// A data leader may hold a follower of its installed Control group.
+    /// Read binding records only after that member applies the current leader's
+    /// authenticated quorum index. Mutations still pass through proposal admission.
+    pub(super) async fn control_binding_barrier(&self) -> Result<()> {
+        self.access()?;
+        self.group.observation_barrier().await.map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "Control backup binding quorum unavailable",
+            )
+        })?;
+        self.access()
+    }
+
     async fn control_binding_point(
         &self,
         operator: &RequestContext,
@@ -74,15 +88,7 @@ impl Database {
         let _cancel = CancelOnDrop(token.clone());
         let registration = self.work.begin(token.clone())?;
         let reservation = self.admission().reserve(8 << 20, Some(token.clone()))?;
-        // The application leader and its installed Control member may have
-        // different leaders. Read the selected binding only after this Control
-        // member has applied its current leader's authenticated quorum index.
-        self.group.observation_barrier().await.map_err(|_| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "Control backup binding quorum unavailable",
-            )
-        })?;
+        self.control_binding_barrier().await?;
         let generation = self.engine.generation()?;
         let value = reservation
             .retained_read(token, move |_workspace, token| {
