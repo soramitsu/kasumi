@@ -59,8 +59,6 @@ const COMPACTION_SLACK: u64 = 1024;
 /// Publications skipped after a failed rebuild before the next attempt.
 const REBUILD_BACKOFF: u64 = 128;
 const MAX_DESCRIPTOR_BYTES: usize = 64 << 10;
-/// Node-wide resident bytes of opened shards retained between searches.
-pub(crate) const DEFAULT_SHARD_CACHE_BYTES: u64 = 64 << 20;
 
 const SHARD: u8 = 1;
 const LEVEL: u8 = 2;
@@ -1226,22 +1224,10 @@ struct Cached {
     used: u64,
 }
 
+#[derive(Default)]
 pub(crate) struct ShardCache {
-    budget: u64,
-    bytes: u64,
     clock: u64,
     entries: BTreeMap<CacheKey, Cached>,
-}
-
-impl Default for ShardCache {
-    fn default() -> Self {
-        Self {
-            budget: DEFAULT_SHARD_CACHE_BYTES,
-            bytes: 0,
-            clock: 0,
-            entries: BTreeMap::new(),
-        }
-    }
 }
 
 impl ShardCache {
@@ -1253,37 +1239,34 @@ impl ShardCache {
             entry.shard.clone()
         })
     }
-    /// Evict least recently used shards until `incoming` more bytes fit.
-    fn evict(&mut self, incoming: u64) {
-        while self.bytes.saturating_add(incoming) > self.budget && !self.entries.is_empty() {
-            let oldest = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(key, _)| key.clone())
-                .expect("nonempty cache");
-            if let Some(entry) = self.entries.remove(&oldest) {
-                self.bytes -= entry.shard.charged_bytes;
-            }
-        }
+    /// A demand miss can reclaim an idle reader. Removing a pinned reader
+    /// would strand its charge and force the next search to open it again.
+    fn evict_oldest_idle(&mut self) -> Option<u64> {
+        let oldest = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| Arc::strong_count(&entry.shard) == 1)
+            .min_by_key(|(_, entry)| entry.used)
+            .map(|(key, _)| key.clone())?;
+        self.entries
+            .remove(&oldest)
+            .map(|entry| entry.shard.charged_bytes)
     }
-    fn insert(&mut self, key: CacheKey, shard: Arc<OpenShard>) {
-        let bytes = shard.charged_bytes;
-        if bytes > self.budget {
-            return;
+
+    /// Concurrent misses may open the same immutable reader. Only the winner
+    /// remains resident, and the later caller shares that reader's grant.
+    fn insert(&mut self, key: CacheKey, shard: Arc<OpenShard>) -> Arc<OpenShard> {
+        if let Some(existing) = self.get(&key) {
+            return existing;
         }
-        self.evict(bytes);
-        self.clock = self.clock.saturating_add(1);
-        if let Some(old) = self.entries.insert(
+        self.entries.insert(
             key,
             Cached {
-                shard,
+                shard: shard.clone(),
                 used: self.clock,
             },
-        ) {
-            self.bytes -= old.shard.charged_bytes;
-        }
-        self.bytes += bytes;
+        );
+        shard
     }
 }
 
@@ -1357,17 +1340,33 @@ impl DirectoryShards<'_, '_> {
             "text shard exceeds its byte bound"
         );
         let charged_bytes = file_bytes * 2 + MAX_DESCRIPTOR_BYTES as u64;
-        let lease = match self.admission.reserve_resident(charged_bytes) {
-            Ok(lease) => lease,
-            Err(first) => {
+        let optional = self.admission.try_reserve_text_shard(charged_bytes)?;
+        let retain = optional.is_some();
+        let lease = match optional {
+            Some(lease) => lease,
+            None => {
+                // A cold scan that fits the transient budget leaves the hot set
+                // alone. Required reads still respect installed audit protection.
                 let mut cache = self.admission.text_shards.lock().unwrap();
-                if cache.entries.is_empty() {
-                    return Err(first.into());
+                if let Some(existing) = cache.get(&key) {
+                    return Ok(existing);
                 }
-                cache.entries.clear();
-                cache.bytes = 0;
-                drop(cache);
-                self.admission.reserve_resident(charged_bytes)?
+                let mut reclaimed = 0;
+                loop {
+                    match self.admission.reserve_waiting(charged_bytes, None) {
+                        Ok(lease) => break lease,
+                        Err(error) => {
+                            if error.code == kasumi_types::ErrorCode::ResourceExhausted
+                                && reclaimed < charged_bytes
+                                && let Some(bytes) = cache.evict_oldest_idle()
+                            {
+                                reclaimed += bytes;
+                            } else {
+                                return Err(error.into());
+                            }
+                        }
+                    }
+                }
             }
         };
         let shard = Arc::new(OpenShard {
@@ -1375,12 +1374,17 @@ impl DirectoryShards<'_, '_> {
             charged_bytes,
             _lease: lease,
         });
-        self.admission
-            .text_shards
-            .lock()
-            .unwrap()
-            .insert(key, shard.clone());
-        Ok(shard)
+        self.source.check_access()?;
+        if retain {
+            Ok(self
+                .admission
+                .text_shards
+                .lock()
+                .unwrap()
+                .insert(key, shard))
+        } else {
+            Ok(shard)
+        }
     }
 }
 

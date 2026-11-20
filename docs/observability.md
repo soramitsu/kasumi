@@ -206,12 +206,13 @@ Available metrics include:
   that another independent source copy or any distributed source is fenced.
 
 Health and readiness JSON include
-`admission.resident_reserved_bytes_by_origin`, whose six fixed counters sum to
+`admission.resident_reserved_bytes_by_origin`, whose counters sum to
 `admission.resident_reserved_bytes` in the same locked ledger sample.
 `ordinary_operation` counts retained operation grants; `other_ordinary` counts
 other resident grants, including native installed work; `audit_maintenance`
 counts maintenance grants; `scoped_application_source` counts source grants
-acquired in maintenance scope; `native_cache` counts native cache grants; and
+acquired in maintenance scope. `native_cache` counts native cache grants.
+`text_shard_cache` counts retained Tantivy reader grants.
 `document_source` counts selected-source metadata and logical document backing.
 Active operations and bookkeeping are excluded. These values measure reserved
 capacity, including unused headroom, rather than RSS, decoded data size, or actual

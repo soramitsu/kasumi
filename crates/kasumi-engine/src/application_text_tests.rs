@@ -523,39 +523,69 @@ async fn retained_readers_keep_their_generation_and_the_cache_obeys_its_budget()
     let (following, changed) = next(&redefined, &[("z", "zulu")], &[]);
     fixture.publish(&redefined, &following, &changed).unwrap();
 
+    let admission = &fixture.storage.admission;
+    // The new generation retains a hot reader. Leave space for a bounded
+    // demand read but less than the three required-work reserves for retention.
+    admission.text_shards.lock().unwrap().entries.clear();
+    assert!(fixture.search(&following, "alpha").is_empty());
+    let (hot_entries, hot_bytes) = {
+        let cache = admission.text_shards.lock().unwrap();
+        (
+            cache.entries.len(),
+            admission
+                .snapshot()
+                .resident_reserved_bytes_by_origin
+                .text_shard_cache,
+        )
+    };
+    assert!(hot_entries > 0 && hot_bytes > 0);
+    let total = admission.policy().resolved_fixture_total_bytes().unwrap();
+    let (work, _) = admission.policy().cache_work_headroom(total);
+    let pressure = admission
+        .reserve_resident(total - admission.snapshot().reserved_bytes - 2 * work)
+        .unwrap();
+    assert!(admission.try_reserve_text_shard(1).unwrap().is_none());
+
+    // Reclaimed native pages for the older selection remain readable. A cold
+    // scan returns the correct rows without displacing or enlarging the hot set.
+    assert_eq!(search_at(admission, &pinned, &s1, "alpha"), ["a"]);
+    assert_eq!(search_at(admission, &pinned, &s1, "beta"), ["b"]);
+    assert_eq!(
+        admission.text_shards.lock().unwrap().entries.len(),
+        hot_entries
+    );
+    assert_eq!(
+        admission
+            .snapshot()
+            .resident_reserved_bytes_by_origin
+            .text_shard_cache,
+        hot_bytes
+    );
+    drop(pressure);
+    assert_eq!(search_at(admission, &pinned, &s1, "alpha"), ["a"]);
     {
-        let mut cache = fixture.storage.admission.text_shards.lock().unwrap();
-        cache.budget = 0;
-        cache.evict(0);
+        let mut cache = admission.text_shards.lock().unwrap();
+        assert!(cache.entries.len() > hot_entries);
+        // A reader borrowed by a concurrent query keeps the actual grant even
+        // while demand reclaims every idle reader.
+        let key = cache.entries.keys().next().unwrap().clone();
+        let reader = cache.get(&key).unwrap();
+        let shared = cache.insert(key.clone(), reader.clone());
+        assert!(Arc::ptr_eq(&shared, &reader));
+        while cache.evict_oldest_idle().is_some() {}
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.entries.contains_key(&key));
+        drop((reader, shared));
+        assert!(cache.evict_oldest_idle().is_some());
     }
-    // The pinned root still reads its own revision's shards.
     assert_eq!(
-        search_at(&fixture.storage.admission, &pinned, &s1, "alpha"),
-        ["a"]
-    );
-    assert_eq!(
-        search_at(&fixture.storage.admission, &pinned, &s1, "beta"),
-        ["b"]
-    );
-    assert!(
-        fixture
-            .storage
-            .admission
-            .text_shards
-            .lock()
-            .unwrap()
-            .entries
-            .is_empty()
+        admission
+            .snapshot()
+            .resident_reserved_bytes_by_origin
+            .text_shard_cache,
+        0
     );
     pinned.close().unwrap();
-
-    fixture.storage.admission.text_shards.lock().unwrap().budget = DEFAULT_SHARD_CACHE_BYTES;
-    assert!(fixture.search(&following, "alpha").is_empty());
-    let (entries, bytes) = {
-        let cache = fixture.storage.admission.text_shards.lock().unwrap();
-        (cache.entries.len(), cache.bytes)
-    };
-    assert!(entries > 0 && bytes <= DEFAULT_SHARD_CACHE_BYTES);
     fixture.close().await;
 }
 

@@ -303,6 +303,7 @@ pub struct ResidentReservationBytes {
     pub audit_maintenance: u64,
     pub scoped_application_source: u64,
     pub native_cache: u64,
+    pub text_shard_cache: u64,
     pub document_source: u64,
 }
 
@@ -316,7 +317,7 @@ pub struct AdmissionSnapshot {
     pub bookkeeping_bytes: u64,
     /// Non-operation reservations, excluding separately reported bookkeeping.
     pub resident_reserved_bytes: u64,
-    /// The six counters sum to `resident_reserved_bytes` in this same sample.
+    /// The counters sum to `resident_reserved_bytes` in this same sample.
     pub resident_reserved_bytes_by_origin: ResidentReservationBytes,
     pub live_reservations: usize,
     pub inflight_operations: usize,
@@ -336,13 +337,17 @@ enum ChargeOrigin {
     AuditMaintenance,
     ScopedApplicationSource,
     NativeCache,
+    TextShardCache,
     // Retained selected-source metadata and logical document backing preserve
     // the same mandatory work and installed maintenance floors.
     DocumentSource,
 }
 impl ChargeOrigin {
     fn preserves_cache_headroom(self) -> bool {
-        matches!(self, Self::NativeCache | Self::DocumentSource)
+        matches!(
+            self,
+            Self::NativeCache | Self::TextShardCache | Self::DocumentSource
+        )
     }
     /// Cache-work reserves a charge of this origin leaves free. A retained
     /// source keeps one for transient required work. Every proposal admits a
@@ -351,7 +356,10 @@ impl ChargeOrigin {
     /// credit therefore keeps two more, so a cache that grew while idle cannot
     /// refuse the next request's grant by itself.
     fn cache_work_reserves(self) -> u64 {
-        if self == Self::NativeCache { 3 } else { 1 }
+        match self {
+            Self::NativeCache | Self::TextShardCache => 3,
+            _ => 1,
+        }
     }
 }
 #[derive(Clone, Copy)]
@@ -896,6 +904,9 @@ impl MemoryState {
                         ChargeOrigin::NativeCache => {
                             &mut resident_reserved_bytes_by_origin.native_cache
                         }
+                        ChargeOrigin::TextShardCache => {
+                            &mut resident_reserved_bytes_by_origin.text_shard_cache
+                        }
                         ChargeOrigin::DocumentSource => {
                             &mut resident_reserved_bytes_by_origin.document_source
                         }
@@ -1272,6 +1283,26 @@ impl NodeAdmission {
     pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_resident(bytes)
     }
+    /// Optional retention leaves the same byte and reservation floors as the
+    /// native page cache. Only a capacity denial permits a demand-only read.
+    pub(crate) fn try_reserve_text_shard(&self, bytes: u64) -> Result<Option<Reservation>> {
+        match self.core.reserve_kind_raw(
+            bytes,
+            None,
+            ChargeKind::Resident,
+            ChargeOrigin::TextShardCache,
+        ) {
+            Ok(lease) => Ok(Some(lease)),
+            Err(ReserveKindError::Exhausted) => Ok(None),
+            Err(ReserveKindError::IdentifierExhausted | ReserveKindError::Missing) => {
+                Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "text shard admission owner unavailable",
+                ))
+            }
+        }
+    }
+
     pub(crate) fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_audit_escrow(bytes)
     }
@@ -2349,6 +2380,7 @@ mod tests {
             (ChargeOrigin::AuditMaintenance, 17),
             (ChargeOrigin::ScopedApplicationSource, 19),
             (ChargeOrigin::NativeCache, 23),
+            (ChargeOrigin::TextShardCache, 41),
             (ChargeOrigin::DocumentSource, 29),
         ]
         .into_iter()
@@ -2378,6 +2410,7 @@ mod tests {
                 audit_maintenance: 17,
                 scoped_application_source: 19,
                 native_cache: 23,
+                text_shard_cache: 41,
                 document_source: 29,
             }
         );
@@ -2385,7 +2418,7 @@ mod tests {
         let origins = encoded["resident_reserved_bytes_by_origin"]
             .as_object()
             .unwrap();
-        assert_eq!(origins.len(), 6);
+        assert_eq!(origins.len(), 7);
         assert_eq!(
             origins
                 .values()
@@ -2393,12 +2426,12 @@ mod tests {
                 .sum::<u64>(),
             held.resident_reserved_bytes
         );
-        assert_eq!(held.resident_reserved_bytes, 112);
+        assert_eq!(held.resident_reserved_bytes, 153);
         assert_eq!(held.bookkeeping_bytes, baseline.bookkeeping_bytes + 31);
-        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 180);
+        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 221);
         drop(residents.pop());
         let released = node.snapshot();
-        assert_eq!(released.resident_reserved_bytes, 83);
+        assert_eq!(released.resident_reserved_bytes, 124);
         assert_eq!(
             released.resident_reserved_bytes_by_origin.document_source,
             0
