@@ -65,6 +65,7 @@ struct OperationInventory {
     operation: Uuid,
     catalogs: Option<[u8; 32]>,
     external_checkpoint: Option<[u8; 32]>,
+    stopped_directory: Option<(u64, u64)>,
 }
 
 struct Coordinator {
@@ -153,13 +154,14 @@ impl Coordinator {
 
     fn operation(
         &self,
+        disk: &Arc<kasumi_store::NodeDisk>,
         view: &TenantReadView,
-        key: &[u8],
-        value: &[u8],
+        row: (&[u8], &[u8]),
         node_id: u64,
         read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<OperationInventory> {
+        let (key, value) = row;
         let token = read.cancellation();
         let journal: Journal = decode(value)?;
         let request = &journal.status.request;
@@ -192,15 +194,15 @@ impl Coordinator {
             phase.as_ref() == phase_binding(&journal)?,
             "substituted local recovery phase"
         );
-        ensure!(
-            view.get(
-                GENERATIONS,
-                request.target_incarnation.as_bytes(),
-                MAX_RECORD
-            )?
-            .is_some(),
-            "permanent local recovery generation missing"
-        );
+        let generation: GenerationRecord = decode(
+            &view
+                .get(
+                    GENERATIONS,
+                    request.target_incarnation.as_bytes(),
+                    MAX_RECORD,
+                )?
+                .context("permanent local recovery generation missing")?,
+        )?;
         if let Some(publication) = &journal.publication {
             ensure!(
                 !publication.id.is_nil()
@@ -231,14 +233,31 @@ impl Coordinator {
         }
         if journal.status.phase == LocalRecoveryPhase::Stopped {
             ensure!(
-                journal.status.cleanup_evidence.as_deref()
-                    == Some(cleanup_evidence(&journal)?.as_str()),
+                matches!(generation, GenerationRecord::Stopped { operation_id } if operation_id == operation)
+                    && journal.status.cleanup_evidence.as_deref()
+                        == Some(cleanup_evidence(&journal)?.as_str()),
                 "stopped local recovery lacks its installed cleanup evidence"
             );
+            let stopped_directory =
+                generation_directory(disk, &self.disk_settings, &journal, false)?
+                    .map(|directory| directory.verified_identity())
+                    .transpose()?;
+            if stopped_directory.is_some() {
+                visit(LocalRecoveryKeyFinding::Missing(
+                    MissingKeyDependency::RecordUnreadable {
+                        record_kind: KeyReferenceKind::LocalRecovery,
+                        id: request.target_incarnation.to_string(),
+                    },
+                ))?;
+            }
+            return Ok(OperationInventory {
+                operation,
+                catalogs: None,
+                external_checkpoint,
+                stopped_directory,
+            });
         }
-        if journal.target_preparation != TargetPreparation::Uncreated
-            && journal.status.phase != LocalRecoveryPhase::Stopped
-        {
+        if journal.target_preparation != TargetPreparation::Uncreated {
             if let Some(owner) = self.active.get(&operation) {
                 let stores = owner
                     .upgrade()
@@ -275,6 +294,7 @@ impl Coordinator {
                     operation,
                     catalogs: Some(catalogs),
                     external_checkpoint,
+                    stopped_directory: None,
                 });
             }
             visit(LocalRecoveryKeyFinding::Missing(
@@ -288,6 +308,7 @@ impl Coordinator {
             operation,
             catalogs: None,
             external_checkpoint,
+            stopped_directory: None,
         })
     }
 
@@ -527,10 +548,15 @@ impl Coordinator {
                 "stopped local archive lacks cleanup evidence"
             );
             // The journal's own envelope remains retained after physical deletion.
-            match std::fs::symlink_metadata(&journal.target_directory) {
-                Err(error) if error.kind() == ErrorKind::NotFound => return Ok((operation, None)),
-                Err(error) => return Err(error.into()),
-                Ok(_) => anyhow::bail!("stopped local archive generation is still present"),
+            if generation_directory(
+                store.persistent_disk(),
+                &self.disk_settings,
+                &journal,
+                false,
+            )?
+            .is_none()
+            {
+                return Ok((operation, None));
             }
         }
         visit(entry(
@@ -675,12 +701,22 @@ impl LocalRecoveryKeyInventory for Coordinator {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
                         let operation_id = if namespace == OPERATIONS {
-                            let observed =
-                                self.operation(&view, key, value, node_id, read, visit)?;
+                            let observed = self.operation(
+                                store.persistent_disk(),
+                                &view,
+                                (key, value),
+                                node_id,
+                                read,
+                                visit,
+                            )?;
                             active_reports += usize::from(observed.catalogs.is_some());
                             serde_json::to_writer(
                                 &mut digest,
-                                &(observed.catalogs, observed.external_checkpoint),
+                                &(
+                                    observed.catalogs,
+                                    observed.external_checkpoint,
+                                    observed.stopped_directory,
+                                ),
                             )?;
                             observed.operation
                         } else if namespace == archives::OBJECTS {

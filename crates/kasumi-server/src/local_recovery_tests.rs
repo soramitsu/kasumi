@@ -2101,6 +2101,7 @@ async fn local_recovery_inventory_case() {
     };
     let id = request.checkpoint.backup_id;
     let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+    let settings = config.persistent_disk.clone();
     let mut runtime = NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage)
         .await
         .unwrap();
@@ -2160,6 +2161,31 @@ async fn local_recovery_inventory_case() {
         ErrorCode::CursorExpired
     );
     std::fs::rename(&withheld, &manifest).unwrap();
+    // This operation stopped before dispatching a target and has no archive
+    // ownership rows. Its cleanup receipt alone cannot prove current absence.
+    let store = runtime.security_audit().store();
+    let journal = record(store, request.operation_id).unwrap();
+    let target = generation_directory(store.persistent_disk(), &settings, &journal, true)
+        .unwrap()
+        .unwrap();
+    let reappeared = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(matches!(&reappeared.coverage,
+    KeyRetentionCoverage::Incomplete {missing, truncated: false, ..}
+    if missing == &[MissingKeyDependency::RecordUnreadable {
+        record_kind: KeyReferenceKind::LocalRecovery, id: request.target_incarnation.to_string()
+    }]));
+    assert_eq!(
+        db.read_key_retention(&control, resume.clone())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    target.remove_if_empty().unwrap();
     db.read_key_retention(&control, resume).await.unwrap();
     assert_eq!(recovery_rows(runtime.security_audit().store()), before);
     let first = db

@@ -993,6 +993,48 @@ fn check_database_group(journal: &Journal) -> Result<()> {
     );
     Ok(())
 }
+fn directory_child(
+    disk: &kasumi_store::NodeDisk,
+    parent: &NodeDiskDirectory,
+    name: &CStr,
+    create: bool,
+) -> Result<Option<NodeDiskDirectory>> {
+    match parent.open_child(name) {
+        Ok(directory) => Ok(Some(directory)),
+        Err(error) => {
+            let snapshot = disk.snapshot();
+            if error.kind() != ErrorKind::NotFound
+                || snapshot.phase != kasumi_store::NodeDiskPhase::Open
+                || !snapshot.filesystem_admission_ready
+            {
+                return Err(error.into());
+            }
+            if create {
+                Ok(Some(parent.create_child(name, DiskWork::Foreground)?))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+fn generation_directory(
+    disk: &Arc<kasumi_store::NodeDisk>,
+    settings: &kasumi_store::NodeDiskConfig,
+    journal: &Journal,
+    create: bool,
+) -> Result<Option<NodeDiskDirectory>> {
+    let (root, database_relative) = settings.binding(&journal.database_path)?;
+    let data_relative = database_relative
+        .parent()
+        .context("local recovery database has no installed directory")?;
+    let data = disk.open_directory(root, data_relative)?;
+    let Some(generations) = directory_child(disk, &data, c"generations", create)? else {
+        return Ok(None);
+    };
+    let target = CString::new(journal.status.request.target_incarnation.to_string())?;
+    directory_child(disk, &generations, &target, create)
+}
+
 impl Operator {
     fn prepare_stage(&self, journal: &mut Journal, next: TargetPreparation) -> Result<()> {
         ensure!(
@@ -1097,49 +1139,17 @@ impl Operator {
         check_database_group(journal)?;
         Ok(created)
     }
-    fn directory_child(
-        &self,
-        parent: &NodeDiskDirectory,
-        name: &CStr,
-        create: bool,
-    ) -> Result<Option<NodeDiskDirectory>> {
-        match parent.open_child(name) {
-            Ok(directory) => Ok(Some(directory)),
-            Err(error) => {
-                let snapshot = self.store().persistent_disk().snapshot();
-                if error.kind() != ErrorKind::NotFound
-                    || snapshot.phase != kasumi_store::NodeDiskPhase::Open
-                    || !snapshot.filesystem_admission_ready
-                {
-                    return Err(error.into());
-                }
-                if create {
-                    Ok(Some(parent.create_child(name, DiskWork::Foreground)?))
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-    }
     fn open_target_directory(
         &self,
         journal: &Journal,
         create: bool,
     ) -> Result<Option<NodeDiskDirectory>> {
-        let disk = self.store().persistent_disk();
-        let (root, database_relative) = self
-            .config
-            .persistent_disk
-            .binding(&journal.database_path)?;
-        let data_relative = database_relative
-            .parent()
-            .context("local recovery database has no installed directory")?;
-        let data = disk.open_directory(root, data_relative)?;
-        let Some(generations) = self.directory_child(&data, c"generations", create)? else {
-            return Ok(None);
-        };
-        let target = CString::new(journal.status.request.target_incarnation.to_string())?;
-        self.directory_child(&generations, &target, create)
+        generation_directory(
+            self.store().persistent_disk(),
+            &self.config.persistent_disk,
+            journal,
+            create,
+        )
     }
     fn prepare_directory(&self, journal: &Journal) -> Result<()> {
         let _target = self

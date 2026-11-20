@@ -204,9 +204,13 @@ impl Operator {
         let target = self
             .open_target_directory(journal, false)?
             .context("archive target directory is missing")?;
-        let _archive = self
-            .directory_child(&target, c"tenant-audit-archives", true)?
-            .context("archive directory was not created")?;
+        let _archive = directory_child(
+            self.store().persistent_disk(),
+            &target,
+            c"tenant-audit-archives",
+            true,
+        )?
+        .context("archive directory was not created")?;
         if journal.archive_directory.is_none() {
             ensure!(
                 std::fs::read_dir(&directory)?.next().is_none(),
@@ -266,7 +270,13 @@ impl Operator {
         let target = self
             .open_target_directory(journal, false)?
             .context("archive target directory is missing")?;
-        let Some(archive) = self.directory_child(&target, c"tenant-audit-archives", false)? else {
+        let Some(archive) = directory_child(
+            self.store().persistent_disk(),
+            &target,
+            c"tenant-audit-archives",
+            false,
+        )?
+        else {
             return Ok(true);
         };
         let identity = private_files::directory_identity(&directory)?;
