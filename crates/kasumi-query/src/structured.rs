@@ -851,12 +851,114 @@ impl Structured {
             .collect())
     }
 
-    /// A complete single-field predicate can stream its exact ID set without
-    /// visiting documents or materializing the complement of a universe.
+    /// Evaluate supported boolean filters from the same selected generation.
+    /// Each conjunction streams its later postings through the surviving IDs.
+    /// A source without the complete layout returns control to the normal planner.
     pub(crate) fn stored_posting<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
         &self,
         source: &S,
         node: &Node<'_>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        self.stored_candidates(source, node, None, cap, cancellation, memory)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stored_candidates<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        restrict: Option<&IdSet>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        cancellation.check()?;
+        memory.scope(|memory| {
+            let baseline = memory.live_bytes();
+            let result = match node {
+                Node::And(children) if !children.is_empty() => {
+                    let mut survivors = None;
+                    let mut survivor_bytes = 0;
+                    for i in self.conjunct_order(children, restrict.unwrap_or(&self.ids).len())? {
+                        let before = memory.live_bytes();
+                        let input = survivors.as_ref().or(restrict);
+                        let Some(next) = self.stored_candidates(
+                            source,
+                            &children[i],
+                            input,
+                            cap,
+                            cancellation,
+                            memory,
+                        )?
+                        else {
+                            return Ok((None, 0));
+                        };
+                        let next_bytes = memory.live_bytes() - before;
+                        survivors = Some(next);
+                        memory.release(survivor_bytes)?;
+                        survivor_bytes = next_bytes;
+                        if survivors.as_ref().is_some_and(IdSet::is_empty) {
+                            break;
+                        }
+                    }
+                    survivors
+                }
+                Node::Or(children) if !children.is_empty() => {
+                    let mut union = IdSet::new();
+                    for child in children {
+                        let before = memory.live_bytes();
+                        let Some(posting) = self.stored_candidates(
+                            source,
+                            child,
+                            restrict,
+                            cap,
+                            cancellation,
+                            memory,
+                        )?
+                        else {
+                            return Ok((None, 0));
+                        };
+                        let posting_bytes = memory.live_bytes() - before;
+                        if union.is_empty() {
+                            union = posting;
+                            continue;
+                        }
+                        for id in &posting {
+                            cancellation.check()?;
+                            if !union.contains(id) {
+                                check_size(union.len() + 1, cap)?;
+                                reserve_posting_id(memory, id)?;
+                                union.insert(id.clone());
+                            }
+                        }
+                        drop(posting);
+                        memory.release(posting_bytes)?;
+                    }
+                    Some(union)
+                }
+                Node::Leaf { .. } => {
+                    self.stored_leaf(source, node, restrict, cap, cancellation, memory)?
+                }
+                _ => None,
+            };
+            let retained = if result.is_some() {
+                memory.live_bytes() - baseline
+            } else {
+                0
+            };
+            Ok((result, retained))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stored_leaf<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        restrict: Option<&IdSet>,
         cap: usize,
         cancellation: &QueryCancellation,
         memory: &mut crate::QueryMemory<W>,
@@ -893,15 +995,15 @@ impl Structured {
             crate::FieldPredicate::Range { .. } | crate::FieldPredicate::In { .. }
         );
         let mut ids = IdSet::new();
+        let mut visited = false;
         let available = source.visit_field_posting(field, predicate, cancellation, |id| {
             cancellation.check()?;
+            visited = true;
+            if restrict.is_some_and(|ids| !ids.contains(id)) {
+                return Ok(());
+            }
             check_size(ids.len() + 1, cap)?;
-            // The set is privately built. Charge a whole 16-slot imbl node
-            // plus its edges for each new ID, and the ID's own string backing.
-            memory.reserve(crate::allocation::add(
-                2048,
-                crate::allocation::string_clone_bytes(id)?,
-            )?)?;
+            reserve_posting_id(memory, id)?;
             // Range and membership visit one ID-ordered posting per distinct scalar. A
             // non-array field can contribute an ID to only one such posting.
             let invalid_order = if ordered_by_value {
@@ -919,7 +1021,7 @@ impl Structured {
             ids.insert(id.to_owned());
             Ok(())
         })?;
-        if !available && !ids.is_empty() {
+        if !available && visited {
             return Err(Error::new(ErrorCode::Corruption, "partial field postings").into());
         }
         Ok(available.then_some(ids))
@@ -1096,6 +1198,18 @@ impl Structured {
             }
         }
     }
+}
+
+// Each inserted ID may allocate a 16-slot persistent tree node and its edges,
+// as well as the string backing. Admit these before mutating the private set.
+fn reserve_posting_id<W: crate::QueryWorkspace>(
+    memory: &mut crate::QueryMemory<W>,
+    id: &str,
+) -> Result<()> {
+    memory.reserve(crate::allocation::add(
+        2048,
+        crate::allocation::string_clone_bytes(id)?,
+    )?)
 }
 
 /// `universe` without `excluded` (a subset of it). A small exclusion shares

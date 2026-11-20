@@ -1997,6 +1997,37 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 assert_eq!(ids, expected_ids);
             }
         }
+        // Combine overlapping native postings after the installing process
+        // has closed and this replica has reopened the encrypted store.
+        let present = kasumi_types::Filter::new().exists("/empty");
+        let zulu = kasumi_types::Filter::new().eq("/value", serde_json::json!("zulu"));
+        for (filter, expected) in [
+            (present.clone().and(zulu.clone()), Vec::new()),
+            (
+                kasumi_types::Filter::or([
+                    present,
+                    zulu,
+                    kasumi_types::Filter::new().exists("/nil"),
+                ]),
+                vec!["alpha", "point"],
+            ),
+        ] {
+            let mut query = kasumi_types::QueryRequest::new("docs");
+            query.filter = filter;
+            let mut memory =
+                kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+            let ids = reopened
+                .indexes
+                .indexed_candidate_ids(
+                    &docs,
+                    &query,
+                    &reopened.state.limits,
+                    &cancellation,
+                    &mut memory,
+                )
+                .map_err(crate::index_source::into_anyhow)?;
+            assert_eq!(ids, expected);
+        }
         // Value order is opposite to ID order across these two postings.
         // Both the disk visitor and the caller-facing ID-ordered result matter.
         use std::ops::Bound::{Excluded, Included, Unbounded};
