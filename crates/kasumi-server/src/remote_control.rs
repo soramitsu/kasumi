@@ -317,7 +317,6 @@ pub(crate) struct RemoteControl {
     fence: Fence,
     closed: watch::Sender<bool>,
     state: Mutex<State>,
-    verified: watch::Sender<u64>,
 }
 
 impl RemoteControl {
@@ -353,7 +352,6 @@ impl RemoteControl {
                 consecutive_failures: 0,
                 last_failure: None,
             }),
-            verified: watch::channel(0).0,
         }))
     }
 
@@ -518,10 +516,7 @@ impl RemoteControl {
                 return Err(Failure::Inconsistent);
             }
         }
-        let version = topology.version;
         state.current = Some((topology.clone(), Instant::now()));
-        drop(state);
-        self.verified.send_replace(version);
         Ok(topology)
     }
 
@@ -603,10 +598,5 @@ impl RemoteControl {
     #[cfg(test)]
     pub(crate) fn active_observations(&self) -> usize {
         self.fence.active()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn subscribe_verified(&self) -> watch::Receiver<u64> {
-        self.verified.subscribe()
     }
 }

@@ -932,7 +932,7 @@ async fn exercise_lifecycle_intent_history(count: u64, with_backup: bool) -> Res
         RequestAuthorization, RequestContext,
     };
     use std::io::{Seek, SeekFrom};
-    let (directory, node, store, mut state, installed) = durable().await;
+    let (directory, node, store, mut state, mut installed) = durable().await;
     state.revision = 1;
     state.policy_epoch = 1;
     if count == 3 {
@@ -941,16 +941,14 @@ async fn exercise_lifecycle_intent_history(count: u64, with_backup: bool) -> Res
     }
     let session_id = uuid::Uuid::from_u128(991);
     let selected_backup = b"selected backup beside permanent lifecycle history";
-    let installed = if with_backup {
+    if with_backup {
         let pending =
             Pending::prepare(&installed, &state, row(&state, selected_backup, session_id))?;
         state.backup_binding_head = pending.head().clone();
         let selected = pending.persist()?;
         store.write_batch(&selected.checkpoint_writes(&state, &"41".repeat(32))?)?;
-        selected
-    } else {
-        installed
-    };
+        installed = selected;
+    }
     let control = Arc::make_mut(state.lifecycle_control.as_mut().unwrap());
     control.installation_revision = 1;
     control.installation_policy_epoch = 1;
