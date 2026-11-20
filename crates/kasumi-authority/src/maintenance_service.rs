@@ -123,6 +123,11 @@ impl IndependentAuthority {
         })?;
         let permit = self.permit()?;
         let signer = self.request_signer()?;
+        if let AuthorityMaintenanceRequest::MemberCatalog { query } = request {
+            return self
+                .read_member_catalog(context, query, permit, signer)
+                .await;
+        }
         let term = self.barrier(&context).await?;
         let epoch = self.backend.authorize_admin(&context)?;
         match request {

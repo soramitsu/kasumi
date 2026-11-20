@@ -159,6 +159,14 @@ impl KasumiAuthorityClient {
             serde_json::from_slice(&response.response_json)?;
         let validate = || -> anyhow::Result<()> {
             match &response {
+                kasumi_serving::AuthorityMaintenanceResponse::MemberCatalog { page } => {
+                    let kasumi_serving::AuthorityMaintenanceRequest::MemberCatalog { query } =
+                        request
+                    else {
+                        anyhow::bail!("maintenance response kind differs");
+                    };
+                    page.validate(query)?;
+                }
                 kasumi_serving::AuthorityMaintenanceResponse::Configuration { configuration } => {
                     anyhow::ensure!(
                         matches!(

@@ -504,6 +504,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             body,
             kasumi_serving::AuthorityMaintenanceRequest::Status { .. }
                 | kasumi_serving::AuthorityMaintenanceRequest::Configuration
+                | kasumi_serving::AuthorityMaintenanceRequest::MemberCatalog { .. }
         );
         let (reply, fence) = self
             .auth

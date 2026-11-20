@@ -4,9 +4,11 @@
 use crate::{BasicNode, LogId, RaftGroup, RpcRequest, RpcResponse};
 use anyhow::{Context, Result, ensure};
 use kasumi_types::{
-    KeyCatalogDomain, KeyIdentityRef, KeyReference, KeyRetentionEntry, staged_digest,
+    KeyCatalogDomain, KeyIdentityRef, KeyReference, KeyRetentionEntry, KeyVersionRef,
+    MAX_KEY_PROVIDER_BYTES, MAX_KEY_REF_BYTES, staged_digest,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -157,6 +159,100 @@ impl MemberCatalogReport {
 }
 
 impl RaftGroup {
+    pub fn reserve_member_catalog_workspace(&self) -> Result<kasumi_store::DiskMemoryLease> {
+        Ok(self
+            .store
+            .application()
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_document_decode((6 * MEMBER_CATALOG_BYTES) as u64)?)
+    }
+
+    pub fn check_member_catalog_digest(&self, expected: &[u8; 32]) -> Result<()> {
+        let actual = self
+            .store
+            .visit_key_retention_catalogs(|_, _, _, _, _| Ok(()))?;
+        ensure!(
+            &actual == expected,
+            "installed catalog changed before release"
+        );
+        Ok(())
+    }
+
+    /// Visit the application and custody catalogs that were supplied to this
+    /// exact group at open. The caller owns admission and response release.
+    pub fn capture_member_catalog(
+        &self,
+        request: &MemberCatalogRequest,
+        application: KeyCatalogDomain,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<MemberCatalogReport> {
+        request.validate()?;
+        request.check_position(self)?;
+        let purpose = self.store.application().storage_access().purpose();
+        ensure!(
+            matches!(
+                application,
+                KeyCatalogDomain::Application
+                    | KeyCatalogDomain::NodeControl
+                    | KeyCatalogDomain::IndependentAuthority
+            ) && matches!(
+                purpose,
+                kasumi_store::StoragePurpose::IndependentAuthority { .. }
+            ) == (application == KeyCatalogDomain::IndependentAuthority),
+            "member catalog domain differs from installed storage"
+        );
+        check()?;
+        let binding = self.store.custody().binding();
+        let mut entries = BTreeSet::new();
+        let catalog_sha256 = self.store.visit_key_retention_catalogs(
+            |custody, catalog_id, provider, key_ref, version| {
+                check()?;
+                ensure!(
+                    provider.len() <= MAX_KEY_PROVIDER_BYTES && key_ref.len() <= MAX_KEY_REF_BYTES,
+                    "catalog identity exceeds member page bound"
+                );
+                let entry = KeyRetentionEntry {
+                    key: KeyVersionRef {
+                        provider: provider.into(),
+                        key_ref: key_ref.into(),
+                        version,
+                    },
+                    reference: KeyReference::Catalog {
+                        node_id: self.id,
+                        catalog_id,
+                        domain: if custody {
+                            KeyCatalogDomain::RetirementCustody
+                        } else {
+                            application
+                        },
+                    },
+                };
+                entry.validate()?;
+                if request.start.includes(&entry) {
+                    entries.insert(entry);
+                    if entries.len() > usize::from(request.limit) + 1 {
+                        entries.pop_last();
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        let report = MemberCatalogReport {
+            request_sha256: staged_digest(request)?.0,
+            node_id: self.id,
+            application_catalog: binding.application_catalog(),
+            custody_catalog: binding.custody_catalog(),
+            bound_from_creation: self.store.sessions_bound_from_creation()?,
+            catalog_sha256,
+            entries: entries.into_iter().collect(),
+        };
+        report.validate(request, self.id, application)?;
+        request.check_position(self)?;
+        check()?;
+        Ok(report)
+    }
+
     pub async fn read_member_catalog(
         &self,
         node_id: u64,

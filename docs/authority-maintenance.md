@@ -6,6 +6,37 @@ The native mTLS listener authenticates the exact authority resource and a curren
 administrator. Each attempt rereads the private token file, retains the same
 operation identity and uses one overall client deadline.
 
+## Read one member's wrapping-key catalogs
+
+Send a `member_catalog` request to inspect the two catalogs physically opened
+by a particular Authority voter. Set the Authority ID, partition and node ID
+to the enrolled values. Generate a fresh nonce for each page.
+
+```json
+{
+  "kind": "member_catalog",
+  "query": {
+    "authority_id": "56e28bf6-2791-48a6-9787-e308ffd2813b",
+    "partition": 0,
+    "node_id": 2,
+    "nonce": "2d5dac8f-642d-4baf-8b3e-0daaa6c428e0",
+    "limit": 4,
+    "cursor": null
+  }
+}
+```
+
+The installed client selects that member's pinned endpoint. Followers confirm
+the current quorum and apply its read position before checking the operator's
+grant. A page identifies the original request digest, Raft term and membership
+position, both physical catalog IDs and each referenced wrapping-key version.
+Copy `page.next` into the following request's `cursor` and stop when it is
+`null`. If the cursor expires, restart enumeration on the named member.
+Distributed retirement separately requires all current members and every other
+storage owner in scope.
+
+## Read or change membership
+
 Read the current configuration first:
 
 ```json

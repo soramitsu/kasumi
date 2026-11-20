@@ -161,6 +161,112 @@ struct Fixture {
     signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation_and_reopen() {
+    let mut fixture = Fixture::new().await;
+    let leader = fixture.leader().await.local_node_id;
+    let member = fixture
+        .services
+        .iter()
+        .find(|s| s.local_node_id != leader)
+        .unwrap()
+        .clone();
+    let id = member.local_node_id;
+    let original = AuthorityCatalogRequest {
+        nonce: Uuid::new_v4(),
+        authority_id: fixture.installation.manifest.authority_id,
+        partition: fixture.installation.partition,
+        node_id: id,
+        limit: 1,
+        cursor: None,
+    };
+    async fn read(
+        service: &Arc<IndependentAuthority>,
+        context: RequestContext,
+        query: &AuthorityCatalogRequest,
+    ) -> Result<(AuthorityCatalogPage, AuthorityResponseFence)> {
+        let (answer, fence) = service
+            .maintenance(
+                context,
+                AuthorityMaintenanceRequest::MemberCatalog {
+                    query: query.clone(),
+                },
+            )
+            .await?;
+        let AuthorityMaintenanceResponse::MemberCatalog { page } = answer else {
+            panic!("expected physical catalogs")
+        };
+        page.validate(query).unwrap();
+        fence.release().await?;
+        Ok((page, fence))
+    }
+    let (first, held) = read(&member, fixture.context("operator"), &original)
+        .await
+        .unwrap();
+    assert_eq!(first.entries.len(), 1);
+    let continuation = AuthorityCatalogRequest {
+        nonce: Uuid::new_v4(),
+        cursor: Some(first.next.clone().unwrap()),
+        ..original.clone()
+    };
+    let (second, second_fence) = read(&member, fixture.context("operator"), &continuation)
+        .await
+        .unwrap();
+    assert_eq!(second.entries.len(), 1);
+    assert!(second.next.is_none());
+    assert!(first.entries[0] < second.entries[0]);
+    drop(second_fence);
+    assert!(
+        read(&member, fixture.context("unentitled"), &original)
+            .await
+            .is_err()
+    );
+    assert!(
+        read(
+            &fixture.leader().await,
+            fixture.context("operator"),
+            &original
+        )
+        .await
+        .is_err()
+    );
+    fixture.stores[(id - 1) as usize]
+        .application()
+        .rotate_data_key()
+        .await
+        .unwrap();
+    assert!(held.check().is_err());
+    drop(held);
+    assert!(
+        matches!(read(&member, fixture.context("operator"), &continuation).await,
+                     Err(e) if e.code == ErrorCode::CursorExpired)
+    );
+    fixture.router.isolate("independent-control", id, true);
+    assert!(
+        read(&member, fixture.context("operator"), &original)
+            .await
+            .is_err()
+    );
+    fixture.router.isolate("independent-control", id, false);
+    drop(member);
+    fixture.reopen().await;
+    let member = fixture
+        .services
+        .iter()
+        .find(|s| s.local_node_id == id)
+        .unwrap();
+    let (cold, fence) = read(member, fixture.context("operator"), &original)
+        .await
+        .unwrap();
+    assert_eq!(
+        (cold.application_catalog, cold.custody_catalog),
+        (first.application_catalog, first.custody_catalog)
+    );
+    assert_ne!(cold.inventory_sha256, first.inventory_sha256);
+    drop(fence);
+    fixture.close().await;
+}
 impl Fixture {
     fn trust_for(&self, node_id: u64) -> AuthorityTrust {
         self.signing

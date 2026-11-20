@@ -60,7 +60,14 @@ impl KasumiAuthorityPool {
         request: &kasumi_serving::AuthorityMaintenanceRequest,
         timeout: Duration,
     ) -> Result<kasumi_serving::AuthorityMaintenanceResponse, ClientError> {
-        self.request(timeout, |client, token| {
+        request.validate()?;
+        let member = match request {
+            kasumi_serving::AuthorityMaintenanceRequest::MemberCatalog { query } => {
+                Some(query.node_id)
+            }
+            _ => None,
+        };
+        self.routed_request(member, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.maintenance(token, &request).await })
         })
@@ -114,7 +121,20 @@ impl KasumiAuthorityPool {
         self
     }
 
-    async fn request<T, F>(&mut self, timeout: Duration, mut dispatch: F) -> Result<T, ClientError>
+    async fn request<T, F>(&mut self, timeout: Duration, dispatch: F) -> Result<T, ClientError>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut KasumiAuthorityClient, &'a str) -> Reply<'a, T>,
+    {
+        self.routed_request(None, timeout, dispatch).await
+    }
+
+    async fn routed_request<T, F>(
+        &mut self,
+        exact_member: Option<u64>,
+        timeout: Duration,
+        mut dispatch: F,
+    ) -> Result<T, ClientError>
     where
         T: Send,
         F: for<'a> FnMut(&'a mut KasumiAuthorityClient, &'a str) -> Reply<'a, T>,
@@ -126,9 +146,20 @@ impl KasumiAuthorityPool {
         // One atomic credential snapshot belongs to this entire finite operation.
         // Renewal is observed by the next invocation, never by an endpoint retry.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
-        let mut members = self.connections.members();
-        let index = members.iter().position(|id| *id == self.preferred).unwrap();
-        members.rotate_left(index);
+        let members = if let Some(member) = exact_member {
+            if !self.connections.contains(member) {
+                return Err(tonic::Status::invalid_argument(
+                    "Authority catalog member is not enrolled",
+                )
+                .into());
+            }
+            vec![member]
+        } else {
+            let mut members = self.connections.members();
+            let index = members.iter().position(|id| *id == self.preferred).unwrap();
+            members.rotate_left(index);
+            members
+        };
         loop {
             for (tried, member) in members.iter().enumerate() {
                 let remaining = deadline_at.saturating_duration_since(Instant::now());
@@ -144,7 +175,9 @@ impl KasumiAuthorityPool {
                 client.set_deadline(deadline_at);
                 match tokio::time::timeout_at(attempt_end, dispatch(client, &bearer)).await {
                     Ok(Ok(reply)) => {
-                        self.preferred = *member;
+                        if exact_member.is_none() {
+                            self.preferred = *member;
+                        }
                         return Ok(reply);
                     }
                     // The member answered, so its connection stays.

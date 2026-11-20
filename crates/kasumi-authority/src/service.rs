@@ -20,6 +20,8 @@ use uuid::Uuid;
 mod lifecycle_service;
 #[path = "maintenance_service.rs"]
 mod maintenance_service;
+#[path = "member_catalog_service.rs"]
+mod member_catalog_service;
 #[path = "request_jobs.rs"]
 mod request_jobs;
 use request_jobs::RequestJobs;
@@ -114,11 +116,18 @@ pub struct AuthorityResponseFence {
     lease: Option<LeaseRequest>,
     lifecycle_lease: Option<LifecycleLeaseRequest>,
     term: u64,
+    member_catalog: Option<member_catalog_service::CatalogObservation>,
     _permit: RequestPermit,
 }
 impl AuthorityResponseFence {
     pub async fn release(&self) -> Result<()> {
-        if self.authority.barrier(&self.context).await? != self.term {
+        if self.member_catalog.is_some() {
+            self.authority
+                .group
+                .observation_barrier()
+                .await
+                .map_err(unavailable)?;
+        } else if self.authority.barrier(&self.context).await? != self.term {
             return Err(unavailable("authority term changed before release"));
         }
         self.check()
@@ -136,6 +145,9 @@ impl AuthorityResponseFence {
             .map_err(unavailable)?;
         if self.authority.term() != self.term {
             return Err(unavailable("authority term changed"));
+        }
+        if let Some(catalog) = &self.member_catalog {
+            catalog.check(&self.authority)?;
         }
         if let Some(epoch) = self.policy_epoch
             && self.authority.backend.authorize_admin(&self.context)? != epoch
@@ -534,6 +546,7 @@ impl IndependentAuthority {
             lease,
             lifecycle_lease: None,
             term,
+            member_catalog: None,
             _permit: permit,
         }
     }

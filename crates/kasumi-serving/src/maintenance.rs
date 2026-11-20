@@ -270,11 +270,14 @@ pub enum AuthorityMaintenanceRequest {
     Stop {
         operation_id: Uuid,
     },
+    MemberCatalog {
+        query: crate::AuthorityCatalogRequest,
+    },
 }
 impl AuthorityMaintenanceRequest {
     pub fn operation_id(&self) -> Option<Uuid> {
         match self {
-            Self::Configuration => None,
+            Self::Configuration | Self::MemberCatalog { .. } => None,
             Self::Start { command } => Some(command.operation_id),
             Self::Resume { operation_id }
             | Self::Status { operation_id }
@@ -288,6 +291,9 @@ impl AuthorityMaintenanceRequest {
         );
         if let Self::Start { command } = self {
             command.validate()?;
+        }
+        if let Self::MemberCatalog { query } = self {
+            query.validate()?;
         }
         Ok(())
     }
@@ -359,5 +365,8 @@ pub enum AuthorityMaintenanceResponse {
     },
     Operation {
         status: AuthorityMaintenanceStatus,
+    },
+    MemberCatalog {
+        page: crate::AuthorityCatalogPage,
     },
 }

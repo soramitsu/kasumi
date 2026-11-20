@@ -1,8 +1,7 @@
 //! Physical member contribution to a distributed wrapping-key inventory.
 use super::*;
 use kasumi_raft::member_catalog::{
-    CatalogStart, MEMBER_CATALOG_BYTES, MEMBER_CATALOG_LIMIT, MemberCatalogReport,
-    MemberCatalogRequest,
+    CatalogStart, MEMBER_CATALOG_BYTES, MEMBER_CATALOG_LIMIT, MemberCatalogRequest,
 };
 
 fn unavailable(error: impl std::fmt::Display) -> Error {
@@ -28,9 +27,7 @@ impl Database {
             result = request.wait_position(&self.group) => result.map_err(unavailable)?,
             _ = cancelled(&token) => return Err(cancelled_error()),
         }
-        let stores = self.stores.clone();
         let group = self.group.clone();
-        let node_id = group.node_id();
         let control = self.store.tenant() == crate::control::CONTROL_TENANT;
         charge
             .retained_read(token, move |mut charge, token| {
@@ -40,60 +37,9 @@ impl Database {
                 } else {
                     KeyCatalogDomain::Application
                 };
-                let binding = stores.custody().binding();
-                let mut entries = BTreeSet::new();
-                let catalog_sha256 = stores
-                    .visit_key_retention_catalogs(
-                        |custody, catalog_id, provider, key_ref, version| {
-                            token.check()?;
-                            anyhow::ensure!(
-                                provider.len() <= MAX_KEY_PROVIDER_BYTES
-                                    && key_ref.len() <= MAX_KEY_REF_BYTES,
-                                "catalog identity exceeds member page bound"
-                            );
-                            let key = KeyVersionRef {
-                                provider: provider.to_owned(),
-                                key_ref: key_ref.to_owned(),
-                                version,
-                            };
-                            let entry = KeyRetentionEntry {
-                                key,
-                                reference: KeyReference::Catalog {
-                                    node_id,
-                                    catalog_id,
-                                    domain: if custody {
-                                        KeyCatalogDomain::RetirementCustody
-                                    } else {
-                                        domain
-                                    },
-                                },
-                            };
-                            entry.validate()?;
-                            if request.start.includes(&entry) {
-                                entries.insert(entry);
-                                if entries.len() > usize::from(request.limit) + 1 {
-                                    entries.pop_last();
-                                }
-                            }
-                            Ok(())
-                        },
-                    )
+                let report = group
+                    .capture_member_catalog(&request, domain, || Ok(token.check()?))
                     .map_err(unavailable)?;
-                let report = MemberCatalogReport {
-                    request_sha256: staged_digest(&request)?.0,
-                    node_id,
-                    application_catalog: binding.application_catalog(),
-                    custody_catalog: binding.custody_catalog(),
-                    bound_from_creation: stores
-                        .sessions_bound_from_creation()
-                        .map_err(unavailable)?,
-                    catalog_sha256,
-                    entries: entries.into_iter().collect(),
-                };
-                report
-                    .validate(&request, node_id, domain)
-                    .map_err(unavailable)?;
-                request.check_position(&group).map_err(unavailable)?;
                 token.check()?;
                 charge.retain_workspace();
                 Ok(AdmittedOutput::new(
