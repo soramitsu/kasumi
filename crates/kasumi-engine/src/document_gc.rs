@@ -34,7 +34,7 @@ use crate::{
     document_store::{self, BLOBS, BODIES, Scope},
 };
 use anyhow::{Context, Result};
-use kasumi_store::{TenantStore, WriteOp};
+use kasumi_store::{PreparedTenantReadPoints, TenantStore, WriteOp};
 use kasumi_types::{ChangeCommit, DocumentSlot, TenantState};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -49,6 +49,7 @@ use std::{
 /// `[COUNT] ‖ scope ‖ chunk digest` holds a big-endian `u64` of at least one;
 /// `[MARKER] ‖ scope ‖ manifest digest` holds one byte.
 pub(crate) const LINKS: &str = "engine.document.blob-links";
+const LINK_KEY_BYTES: usize = 65;
 const COUNT: u8 = 0;
 const MARKER: u8 = 1;
 const MARKED: &[u8] = &[1];
@@ -64,8 +65,8 @@ type Digest = [u8; 32];
 type Documents = imbl::OrdMap<String, Arc<DocumentSlot>>;
 type Feed = imbl::OrdMap<u64, Arc<ChangeCommit>>;
 
-fn link_key(kind: u8, scope: Scope, digest: Digest) -> [u8; 65] {
-    let mut key = [0; 65];
+fn link_key(kind: u8, scope: Scope, digest: Digest) -> [u8; LINK_KEY_BYTES] {
+    let mut key = [0; LINK_KEY_BYTES];
     key[0] = kind;
     key[1..].copy_from_slice(&scope.key(digest));
     key
@@ -829,7 +830,30 @@ impl State {
 
     /// Count each queued manifest that has no marker yet, in one transaction.
     fn register(&mut self, step: &Step<'_>) -> Result<()> {
-        step.store.check_access()?;
+        let mut points = step
+            .store
+            .read_view()?
+            .prepare_point_reads(LINKS.len(), LINK_KEY_BYTES, 8)?;
+        let batch = self.registration_batch(step.scope, &mut points);
+        let (operations, taken, registered) = points.finish(batch)?;
+        if !operations.is_empty() {
+            step.store.write_batch(&operations)?;
+            self.stats.transactions += 1;
+            self.stats.registered += registered;
+        }
+        for registration in self.registrations.drain(..taken) {
+            self.registration_slots -= registration.blobs.capacity();
+        }
+        Ok(())
+    }
+
+    /// The tenant apply lock excludes another link writer. Plan all counts
+    /// against one authenticated root and close it before committing the batch.
+    fn registration_batch(
+        &self,
+        scope: Scope,
+        points: &mut PreparedTenantReadPoints,
+    ) -> Result<(Vec<WriteOp>, usize, u64)> {
         let mut operations = Vec::new();
         let mut counts = BTreeMap::<Digest, u64>::new();
         let mut marked = BTreeSet::new();
@@ -837,12 +861,9 @@ impl State {
         let mut taken = 0;
         for registration in self.registrations.iter().take(self.budgets.register_bodies) {
             taken += 1;
-            let marker = link_key(MARKER, step.scope, registration.body);
+            let marker = link_key(MARKER, scope, registration.body);
             if !marked.insert(registration.body)
-                || step
-                    .store
-                    .get_bounded(LINKS, &marker, MARKED.len())?
-                    .is_some()
+                || points.get(LINKS, &marker, MARKED.len())?.is_some()
             {
                 continue;
             }
@@ -851,7 +872,11 @@ impl State {
             for blob in &registration.blobs {
                 let count = match counts.get(blob) {
                     Some(count) => *count,
-                    None => read_count(step, *blob)?.unwrap_or(0),
+                    None => points
+                        .get(LINKS, &link_key(COUNT, scope, *blob), 8)?
+                        .map(decode_count)
+                        .transpose()?
+                        .unwrap_or(0),
                 };
                 counts.insert(
                     *blob,
@@ -862,19 +887,11 @@ impl State {
         for (blob, count) in &counts {
             operations.push(WriteOp::put(
                 LINKS,
-                link_key(COUNT, step.scope, *blob),
+                link_key(COUNT, scope, *blob),
                 count.to_be_bytes(),
             ));
         }
-        if !operations.is_empty() {
-            step.store.write_batch(&operations)?;
-            self.stats.transactions += 1;
-            self.stats.registered += registered;
-        }
-        for registration in self.registrations.drain(..taken) {
-            self.registration_slots -= registration.blobs.capacity();
-        }
-        Ok(())
+        Ok((operations, taken, registered))
     }
 
     /// Delete a bounded batch of verified manifests, their markers, and each
@@ -978,16 +995,14 @@ fn read_count(step: &Step<'_>, blob: Digest) -> Result<Option<u64>> {
     let key = link_key(COUNT, step.scope, blob);
     step.store
         .get_bounded(LINKS, &key, 8)?
-        .map(|value| {
-            Ok(u64::from_be_bytes(
-                value
-                    .as_bytes()
-                    .try_into()
-                    .ok()
-                    .context("chunk owner count is malformed")?,
-            ))
-        })
+        .map(|value| decode_count(value.as_bytes()))
         .transpose()
+}
+
+fn decode_count(value: &[u8]) -> Result<u64> {
+    Ok(u64::from_be_bytes(
+        value.try_into().context("chunk owner count is malformed")?,
+    ))
 }
 
 /// The distinct chunks the published manifest `body` names, or `None` when the
