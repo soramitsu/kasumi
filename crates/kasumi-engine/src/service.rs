@@ -2912,14 +2912,8 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        work.generation = tokio::select! {
-            result = tokio::time::timeout_at(deadline, self.hydrate_history(
-                work.generation.clone(),
-                &work.request.documents,
-                &work.request.queries,
-                &cancellation,
-                &mut work.memory,
-            )) => result.map_err(|_| query_admission::deadline_error())??,
+        work = tokio::select! {
+            result = tokio::time::timeout_at(deadline, self.hydrate_history(work, &cancellation, SnapshotWork::history_inputs)) => result.map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let worker = self.admission().memory().read_child(
@@ -3573,14 +3567,8 @@ impl Database {
             };
             // Seek pages read resident rows straight from their index.
             if !seek {
-                work.generation = tokio::select! {
-                    result = tokio::time::timeout_at(deadline, self.hydrate_history(
-                        work.generation.clone(),
-                        &[],
-                        std::slice::from_ref(&work.request),
-                        &cancellation,
-                        &mut work.memory,
-                    )) => result.map_err(|_| query_admission::deadline_error())??,
+                work = tokio::select! {
+                    result = tokio::time::timeout_at(deadline, self.hydrate_history(work, &cancellation, QueryWork::history_inputs)) => result.map_err(|_| query_admission::deadline_error())??,
                     _ = cancelled(&cancellation) => return Err(cancelled_error()),
                 };
             }

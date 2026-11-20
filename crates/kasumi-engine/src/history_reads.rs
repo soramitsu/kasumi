@@ -70,44 +70,6 @@ impl Database {
             })
     }
 
-    pub(super) async fn history_document(
-        &self,
-        generation: &crate::Generation,
-        collection_name: &str,
-        id: &str,
-        cancellation: &QueryCancellation,
-        cache: &mut HistoryReadCache,
-    ) -> Result<Option<ReadDocument>> {
-        cancellation.check()?;
-        self.access()?;
-        let collection = generation
-            .state
-            .collections
-            .get(collection_name)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "history collection missing"))?;
-        if let Some(document) = collection.documents.get(id) {
-            let document = document
-                .load_owned(generation.document_resolver())
-                .map_err(document_load_error)?;
-            cancellation.check()?;
-            self.access()?;
-            return Ok(Some(document));
-        }
-        let Some(reference) = collection.archived_documents.get(id) else {
-            return Ok(None);
-        };
-        self.archived_document(
-            generation,
-            collection_name,
-            id,
-            reference,
-            cancellation,
-            cache,
-        )
-        .await
-        .map(Some)
-    }
-
     pub(super) async fn archived_document(
         &self,
         generation: &crate::Generation,
@@ -322,134 +284,275 @@ impl Database {
         Ok((object_id, bytes))
     }
 
-    pub(super) async fn hydrate_history(
+    /// The blocking selection owns the same admission, concurrency permit and
+    /// registration as the enclosing operation, including after cancellation.
+    pub(super) async fn hydrate_history<W: Send + 'static>(
         &self,
-        generation: Arc<crate::Generation>,
-        keys: &[DocumentKey],
-        queries: &[QueryRequest],
+        mut work: W,
         cancellation: &QueryCancellation,
-        memory: &mut QueryMemory<Reservation>,
-    ) -> Result<Arc<crate::Generation>> {
-        let baseline = memory.live_bytes();
-        // This async phase cannot borrow a synchronous query scope. Its
-        // temporary target/candidate collections die before restoring the
-        // logical baseline; the physical reservation keeps its admitted peak.
-        let result = async {
-            let mut targets: BTreeSet<(String, String)> = BTreeSet::new();
-            for key in keys {
-                cancellation.check()?;
-                memory.reserve(history_target_workspace(&key.collection, &key.id)?)?;
-                targets.insert((key.collection.clone(), key.id.clone()));
-            }
-            for query in queries {
-                let collection = generation
-                    .state
-                    .collections
-                    .get(&query.collection)
-                    .ok_or_else(|| Error::new(ErrorCode::NotFound, "query collection missing"))?;
-                if collection.archived_documents.is_empty() {
-                    continue;
-                }
-                let source = generation.document_source(&query.collection)?;
-                let candidate_baseline = memory.live_bytes();
-                match generation
-                    .indexes
-                    .indexed_candidate_ids(
-                        &source,
-                        query,
-                        &generation.state.limits,
-                        cancellation,
-                        memory,
-                    )
-                    .map_err(source_read_error)
-                {
-                    Ok(ids) => {
-                        let candidate_bytes = memory.live_bytes() - candidate_baseline;
-                        for id in ids {
-                            cancellation.check()?;
-                            memory.reserve(history_target_workspace(&query.collection, &id)?)?;
-                            targets.insert((query.collection.clone(), id));
-                        }
-                        // IDs now belong to the separately admitted target set;
-                        // the candidate Vec and its iterator have been destroyed.
-                        memory.release(candidate_bytes)?;
-                    }
-                    Err(error)
-                        if error.code == ErrorCode::IndexRequired
-                            && query.allow_scan
-                            && query.search.is_none() =>
-                    {
-                        if collection
-                            .documents
-                            .len()
-                            .saturating_add(collection.archived_documents.len())
-                            > generation.state.limits.max_query_candidates
-                        {
-                            return Err(Error::new(
-                                ErrorCode::ResourceExhausted,
-                                "historical scan candidate budget exceeded",
-                            ));
-                        }
-                        for id in collection.archived_documents.keys() {
-                            cancellation.check()?;
-                            memory.reserve(history_target_workspace(&query.collection, id)?)?;
-                            targets.insert((query.collection.clone(), id.clone()));
-                        }
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            if !targets.iter().any(|(name, id)| {
-                generation
-                    .state
-                    .collections
-                    .get(name)
-                    .is_some_and(|collection| collection.archived_documents.contains_key(id))
-            }) {
-                return Ok((generation, 0));
-            }
-            memory.reserve(history_view_workspace(&generation.state)?)?;
-            let mut collections = generation.state.collections.clone();
-            let mut cache = HistoryReadCache::new();
-            for (name, id) in targets {
-                if generation
-                    .state
-                    .collections
-                    .get(&name)
-                    .is_some_and(|collection| {
-                        collection.archived_documents.contains_key(&id)
-                            && !collection.documents.contains_key(&id)
-                    })
-                    && let Some(document) = self
-                        .history_document(&generation, &name, &id, cancellation, &mut cache)
-                        .await?
-                {
-                    let ReadDocument::Pending(document) = document else {
-                        return Err(Error::new(
-                            ErrorCode::Corruption,
-                            "archive-only read selected a live body",
-                        ));
-                    };
-                    collections
-                        .get_mut(&name)
-                        .expect("validated collection")
-                        .documents
-                        .insert(id, Arc::new(DocumentSlot::Pending(document)));
-                }
-            }
-            // Target IDs moved into the overlay and its cloned metadata live
-            // with the returned view. Keep their provisional allowance across
-            // the later query; archive bodies retain independent reservations.
-            let retained = memory.live_bytes() - baseline;
-            Ok((
-                Arc::new(generation.read_view(collections, cache.reservations)),
-                retained,
-            ))
+        inputs: fn(&mut W) -> HistoryInputs<'_>,
+    ) -> Result<W> {
+        cancellation.check()?;
+        if !inputs(&mut work).needs_history()? {
+            return Ok(work);
         }
-        .await;
-        let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
-        memory.release(memory.live_bytes() - baseline - retained)?;
-        result.map(|(generation, _)| generation)
+        let mut selected = self
+            .admission()
+            .memory()
+            .read_child(
+                cancellation.clone(),
+                Some(DocumentReads::deadline_error),
+                move |token| {
+                    let targets = inputs(&mut work).read_targets(token)?;
+                    Ok(HistorySelection { targets, work })
+                },
+            )
+            .await?;
+        if selected.targets.rows.is_empty() {
+            return Ok(selected.work);
+        }
+        let input = inputs(&mut selected.work);
+        input
+            .memory
+            .reserve(history_view_workspace(&input.generation.state)?)?;
+        let mut collections = input.generation.state.collections.clone();
+        let mut cache = HistoryReadCache::new();
+        for (name, id, reference) in selected.targets.rows.drain(..) {
+            let document = self
+                .archived_document(
+                    input.generation,
+                    &name,
+                    &id,
+                    &reference,
+                    cancellation,
+                    &mut cache,
+                )
+                .await?;
+            let ReadDocument::Pending(document) = document else {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "archive-only read selected a live body",
+                ));
+            };
+            collections
+                .get_mut(&name)
+                .expect("validated collection")
+                .documents
+                .insert(id, Arc::new(DocumentSlot::Pending(document)));
+        }
+        let temporary_bytes = selected.targets.temporary_bytes;
+        drop(selected.targets);
+        input.memory.release(temporary_bytes)?;
+        *input.generation = Arc::new(input.generation.read_view(collections, cache.reservations));
+        Ok(selected.work)
+    }
+}
+
+pub(super) enum HistoryKeys<'a> {
+    Points(&'a [DocumentKey]),
+    Scan(&'a str, &'a [String]),
+}
+
+impl HistoryKeys<'_> {
+    fn visit(&self, mut visit: impl FnMut(&str, &str) -> Result<()>) -> Result<()> {
+        match self {
+            Self::Points(keys) => keys
+                .iter()
+                .try_for_each(|key| visit(&key.collection, &key.id)),
+            Self::Scan(collection, ids) => ids.iter().try_for_each(|id| visit(collection, id)),
+        }
+    }
+}
+
+pub(super) struct HistoryInputs<'a> {
+    pub(super) generation: &'a mut Arc<crate::Generation>,
+    pub(super) keys: HistoryKeys<'a>,
+    pub(super) queries: &'a [QueryRequest],
+    pub(super) memory: &'a mut QueryMemory<Reservation>,
+    pub(super) deadline: std::time::Instant,
+    pub(super) scan_reader: Option<&'a mut Option<Box<dyn crate::document_store::SharedRead>>>,
+}
+
+// Drop decoded references before the workspace and registration funding them.
+struct HistorySelection<W> {
+    targets: HistoryTargets,
+    work: W,
+}
+
+struct HistoryTargets {
+    rows: Vec<(String, String, Arc<ArchivedDocument>)>,
+    temporary_bytes: u64,
+}
+
+impl HistoryInputs<'_> {
+    fn needs_history(&self) -> Result<bool> {
+        let mut needed = false;
+        let mut inspect =
+            |name: &str| {
+                let collection =
+                    self.generation.state.collections.get(name).ok_or_else(|| {
+                        Error::new(ErrorCode::NotFound, "history collection missing")
+                    })?;
+                // The restored collection header verifies this against the sum of
+                // the encoded archive entries. Every such entry has nonzero size.
+                needed |= collection.archived_document_bytes != 0;
+                Ok(())
+            };
+        self.keys.visit(|name, _| inspect(name))?;
+        for query in self.queries {
+            inspect(&query.collection)?;
+        }
+        Ok(needed)
+    }
+
+    fn read_targets(&mut self, cancellation: &QueryCancellation) -> Result<HistoryTargets> {
+        let shared = self.scan_reader.as_deref_mut().and_then(Option::take);
+        if let Some(shared) = shared {
+            // The lease selected its IDs under this registered reader. Keep
+            // that same reader for the later page evaluation after hydration.
+            let reads = DocumentReads::from_shared(self.generation, self.deadline, Some(shared));
+            let targets = self.select(&reads, cancellation);
+            if targets.is_ok() {
+                *self
+                    .scan_reader
+                    .as_deref_mut()
+                    .expect("supplied scan reader") = reads.into_shared();
+                return targets;
+            }
+            return finish_document_read(reads, |_| targets);
+        }
+        with_document_reads(&self.generation.clone(), self.deadline, |reads| {
+            self.select(reads, cancellation)
+        })
+    }
+
+    fn select(
+        &mut self,
+        reads: &DocumentReads,
+        cancellation: &QueryCancellation,
+    ) -> Result<HistoryTargets> {
+        reads.check_deadline()?;
+        let baseline = self.memory.live_bytes();
+        let mut ids = BTreeSet::new();
+        let collection_has_history =
+            |name: &str| self.generation.state.collections[name].archived_document_bytes != 0;
+        self.keys.visit(|name, id| {
+            cancellation.check()?;
+            if collection_has_history(name) {
+                self.memory.reserve(history_target_workspace(name, id)?)?;
+                ids.insert((name.to_owned(), id.to_owned()));
+            }
+            Ok(())
+        })?;
+        for query in self.queries {
+            if !collection_has_history(&query.collection) {
+                continue;
+            }
+            let source = reads.source(&query.collection)?;
+            let limits = &self.generation.state.limits;
+            let candidate_baseline = self.memory.live_bytes();
+            let candidates = self
+                .generation
+                .indexes
+                .indexed_candidate_ids(&source, query, limits, cancellation, self.memory)
+                .map_err(source_read_error);
+            match candidates {
+                Ok(candidates) => {
+                    let candidate_bytes = self.memory.live_bytes() - candidate_baseline;
+                    for id in candidates {
+                        cancellation.check()?;
+                        self.memory
+                            .reserve(history_target_workspace(&query.collection, &id)?)?;
+                        ids.insert((query.collection.clone(), id));
+                    }
+                    self.memory.release(candidate_bytes)?;
+                }
+                Err(error)
+                    if error.code == ErrorCode::IndexRequired
+                        && query.allow_scan
+                        && query.search.is_none() =>
+                {
+                    let mut count = 0usize;
+                    source
+                        .visit_history_scan(cancellation, |id, archived| {
+                            if count == limits.max_query_candidates {
+                                return Err(Error::new(
+                                    ErrorCode::ResourceExhausted,
+                                    "historical scan candidate budget exceeded",
+                                ));
+                            }
+                            count += 1;
+                            if archived {
+                                self.memory
+                                    .reserve(history_target_workspace(&query.collection, id)?)?;
+                                ids.insert((query.collection.clone(), id.to_owned()));
+                            }
+                            Ok(())
+                        })
+                        .map_err(source_read_error)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let id_bytes = self.memory.live_bytes() - baseline;
+        let mut retained_keys = 0;
+        let mut rows = Vec::new();
+        let before_rows = self.memory.live_bytes();
+        for (name, id) in ids {
+            let source = reads.source(&name)?;
+            if let Some(reference) = source
+                .history_reference(&id, cancellation, |bytes| {
+                    // Account for the decoded reference and geometric Vec growth
+                    // while the selected reader still funds its decode.
+                    self.memory.reserve(
+                        bytes
+                            .checked_add(
+                                2 * std::mem::size_of::<(String, String, Arc<ArchivedDocument>)>()
+                                    as u64,
+                            )
+                            .ok_or_else(query_workspace_overflow)?,
+                    )
+                })
+                .map_err(source_read_error)?
+            {
+                retained_keys += history_target_workspace(&name, &id)?;
+                rows.push((name, id, reference));
+            }
+        }
+        let temporary_bytes = self.memory.live_bytes() - before_rows;
+        self.memory.release(id_bytes - retained_keys)?;
+        reads.check_deadline()?;
+        cancellation.check()?;
+        Ok(HistoryTargets {
+            rows,
+            temporary_bytes,
+        })
+    }
+}
+
+impl QueryWork {
+    pub(super) fn history_inputs(&mut self) -> HistoryInputs<'_> {
+        HistoryInputs {
+            generation: &mut self.generation,
+            keys: HistoryKeys::Points(&[]),
+            queries: std::slice::from_ref(&self.request),
+            memory: &mut self.memory,
+            deadline: self.deadline,
+            scan_reader: None,
+        }
+    }
+}
+
+impl SnapshotWork {
+    pub(super) fn history_inputs(&mut self) -> HistoryInputs<'_> {
+        HistoryInputs {
+            generation: &mut self.generation,
+            keys: HistoryKeys::Points(&self.request.documents),
+            queries: &self.request.queries,
+            memory: &mut self.memory,
+            deadline: self.deadline,
+            scan_reader: None,
+        }
     }
 }
 

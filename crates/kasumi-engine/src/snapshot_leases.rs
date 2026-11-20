@@ -270,18 +270,9 @@ impl Database {
             queries: vec![],
             time_bounds: None,
         };
-        let generation = self
-            .hydrate_history(
-                input.generation,
-                &snapshot.documents,
-                &[],
-                &cancellation,
-                &mut input.memory,
-            )
-            .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = SnapshotWork {
-            generation,
+            generation: input.generation,
             request: snapshot,
             cancellation: cancellation.clone(),
             deadline: deadline.into_std(),
@@ -289,6 +280,11 @@ impl Database {
             memory: input.memory,
             registration,
         };
+        let mut work = self
+            .hydrate_history(work, &cancellation, SnapshotWork::history_inputs)
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        work.deadline = deadline.into_std();
         let worker = self.admission().memory().read_child(
             cancellation.clone(),
             Some(DocumentReads::deadline_error),
@@ -378,19 +374,7 @@ impl Database {
             .await?,
         );
         input.memory.reserve(input.selected_input_bytes)?;
-        // Admit the page worker's keys and request clone before creating them.
-        let key_bytes = input.scan_ids.iter().try_fold(1024u64, |bytes, id| {
-            bytes
-                .checked_add(request.collection.len() as u64)
-                .and_then(|bytes| bytes.checked_add(id.len() as u64))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DocumentKey>() as u64))
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "snapshot scan workspace overflow",
-                    )
-                })
-        })?;
+        // The history selector borrows the already admitted scan IDs.
         let request_bytes = crate::accounting::encoded_len(&request)?
             .checked_mul(3)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ScanSnapshotPage>()))
@@ -400,39 +384,15 @@ impl Database {
                     "snapshot scan workspace overflow",
                 )
             })?;
-        input
-            .memory
-            .reserve(key_bytes.checked_add(request_bytes as u64).ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "snapshot scan workspace overflow",
-                )
-            })?)?;
-        let keys = input
-            .scan_ids
-            .iter()
-            .map(|id| DocumentKey {
-                collection: request.collection.clone(),
-                id: id.clone(),
-            })
-            .collect::<Vec<_>>();
+        input.memory.reserve(request_bytes as u64)?;
         let strict = input.generation.state.policy.strict_read_audit
             || input.generation.state.collections[&request.collection]
                 .definition
                 .strict_read_audit;
-        let generation = self
-            .hydrate_history(
-                input.generation,
-                &keys,
-                &[],
-                &cancellation,
-                &mut input.memory,
-            )
-            .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = ScanWork {
             lease: input.handle.clone(),
-            generation,
+            generation: input.generation,
             deadline: deadline.into_std(),
             scan_reader: input.scan_reader,
             ids: input.scan_ids,
@@ -443,6 +403,11 @@ impl Database {
             memory: input.memory,
             registration,
         };
+        let mut work = self
+            .hydrate_history(work, &cancellation, ScanWork::history_inputs)
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        work.deadline = deadline.into_std();
         let worker = self.admission().memory().read_child(
             cancellation.clone(),
             Some(DocumentReads::deadline_error),
@@ -496,6 +461,17 @@ impl ScanOutput {
     }
 }
 impl ScanWork {
+    fn history_inputs(&mut self) -> history_reads::HistoryInputs<'_> {
+        history_reads::HistoryInputs {
+            generation: &mut self.generation,
+            keys: history_reads::HistoryKeys::Scan(&self.request.collection, &self.ids),
+            queries: &[],
+            memory: &mut self.memory,
+            deadline: self.deadline,
+            scan_reader: Some(&mut self.scan_reader),
+        }
+    }
+
     fn run(mut self) -> Result<ScanOutput> {
         let reads = match self.scan_reader.take() {
             Some(shared) => {

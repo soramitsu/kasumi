@@ -93,6 +93,10 @@ impl DocumentReads {
         }
     }
 
+    pub(crate) fn into_shared(self) -> Option<Box<dyn SharedRead>> {
+        self.shared
+    }
+
     pub(crate) fn shared(&self) -> Option<&dyn SharedRead> {
         self.shared.as_deref()
     }
@@ -156,7 +160,7 @@ impl GenerationDocumentSource<'_> {
         &self,
         id: &str,
         cancellation: &QueryCancellation,
-        lend: impl FnOnce(PrimaryPoint) -> ReadResult<T, DocumentSourceFailure>,
+        lend: impl FnOnce(PrimaryPoint, u64) -> ReadResult<T, DocumentSourceFailure>,
     ) -> ReadResult<T, DocumentSourceFailure> {
         self.check_deadline()?;
         let state = &self.generation.state;
@@ -164,6 +168,7 @@ impl GenerationDocumentSource<'_> {
             let selected = selection
                 .with_serving_primary(self.directory_reader(), state, |tree, memory, _| {
                     let mut leases = Vec::new();
+                    let mut retained = 0u64;
                     let point = crate::application_records::snapshot_point(
                         tree,
                         &self.collection,
@@ -182,16 +187,19 @@ impl GenerationDocumentSource<'_> {
                                 work.checked_add(2 * bytes.len() as u64 + 512).ok_or_else(
                                     || anyhow::anyhow!("primary record workspace overflow"),
                                 )?;
+                            retained = retained.checked_add(required).ok_or_else(|| {
+                                anyhow::anyhow!("primary record workspace overflow")
+                            })?;
                             leases.push(crate::document_restore::ReadAdmissionFailure::reserve(
                                 memory, required,
                             )?);
                             Ok(())
                         },
                     )?;
-                    Ok((point, leases))
+                    Ok((point, leases, retained))
                 })
                 .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
-            if let Some((mut point, _leases)) = selected {
+            if let Some((mut point, _leases, retained)) = selected {
                 if let PrimaryPoint::Archived(reference) = &point
                     && let Some(hydrated) = self.collection().documents.get(id)
                 {
@@ -202,14 +210,79 @@ impl GenerationDocumentSource<'_> {
                     }
                     point = PrimaryPoint::Live(hydrated.clone());
                 }
-                return lend(point);
+                return lend(point, retained);
             }
         }
-        lend(PrimaryPoint::resident(
-            self.collection(),
-            id,
-            state.revision,
-        )?)
+        lend(
+            PrimaryPoint::resident(self.collection(), id, state.revision)?,
+            0,
+        )
+    }
+
+    /// Transfer an archive reference to the query ledger while its decode
+    /// workspace is still held. Live and missing points need no history I/O.
+    pub(crate) fn history_reference(
+        &self,
+        id: &str,
+        cancellation: &QueryCancellation,
+        reserve: impl FnOnce(u64) -> Result<()>,
+    ) -> ReadResult<Option<Arc<kasumi_types::ArchivedDocument>>, DocumentSourceFailure> {
+        cancellation.check()?;
+        self.with_primary_point(id, cancellation, |point, retained| {
+            cancellation.check()?;
+            self.check_deadline()?;
+            if let PrimaryPoint::Archived(reference) = point {
+                reserve(retained)?;
+                Ok(Some(reference))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub(crate) fn visit_history_scan(
+        &self,
+        cancellation: &QueryCancellation,
+        mut visit: impl FnMut(&str, bool) -> Result<()>,
+    ) -> ReadResult<(), DocumentSourceFailure> {
+        let mut checked = |id: &str, archived| {
+            cancellation.check()?;
+            self.check_deadline()?;
+            visit(id, archived)
+        };
+        if let Some(selection) = self.generation.application_selection.get() {
+            let mut failure = None;
+            let selected = selection.with_serving_primary(
+                self.directory_reader(),
+                &self.generation.state,
+                |tree, _, _| {
+                    crate::application_records::visit_history_scan(
+                        tree,
+                        &self.collection,
+                        |id, archived| {
+                            failure = checked(id, archived).err();
+                            Ok(failure.is_none())
+                        },
+                    )
+                },
+            );
+            let selected = selected
+                .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+            if let Some(error) = failure {
+                return Err(error.into());
+            }
+            if selected.is_some() {
+                return Ok(());
+            }
+        }
+        let collection = self.collection();
+        for id in collection.documents.keys() {
+            checked(id, false)?;
+        }
+        for id in collection.archived_documents.keys() {
+            checked(id, true)?;
+        }
+        Ok(())
     }
 }
 
@@ -394,7 +467,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         lend: impl for<'a> FnOnce(Option<Record<'a>>) -> Result<T>,
     ) -> ReadResult<T, Self::Failure> {
         cancellation.check()?;
-        self.with_primary_point(id, cancellation, |point| {
+        self.with_primary_point(id, cancellation, |point, _| {
             cancellation.check()?;
             self.check_deadline()?;
             let version = match &point {

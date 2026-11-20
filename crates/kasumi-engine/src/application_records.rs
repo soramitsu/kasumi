@@ -175,26 +175,10 @@ pub(crate) fn snapshot_ids_after(
     limit: usize,
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<Vec<String>> {
-    use kasumi_store::ordered_pages::Direction;
-    use std::ops::Bound;
-
     let mut page = |kind| -> Result<Vec<String>> {
-        let prefix = KeyBuilder::new(kind).text(collection).finish();
-        let start = after.map(|id| KeyBuilder::new(kind).text(collection).text(id).finish());
-        let bound = start
-            .as_deref()
-            .map_or(Bound::Included(prefix.as_slice()), Bound::Excluded);
         let mut ids = Vec::with_capacity(limit);
-        reader.scan(bound, Direction::Forward, &mut |key, _| {
+        visit_primary_ids(reader, collection, kind, after, |id| {
             check()?;
-            let Some(suffix) = key.strip_prefix(prefix.as_slice()) else {
-                return Ok(false);
-            };
-            let encoded = suffix
-                .strip_suffix(&[0, 1])
-                .context("invalid primary ID terminator")?;
-            let id = std::str::from_utf8(encoded)?;
-            validate_name(id)?;
             ids.push(id.to_owned());
             Ok(ids.len() < limit)
         })?;
@@ -207,6 +191,55 @@ pub(crate) fn snapshot_ids_after(
             .take(limit)
             .collect(),
     )
+}
+
+/// Walk just the keys of one primary namespace, including on older layouts
+/// without the separate header directory. Overflow values are never loaded.
+fn visit_primary_ids(
+    reader: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    kind: u8,
+    after: Option<&str>,
+    mut visit: impl FnMut(&str) -> Result<bool>,
+) -> Result<()> {
+    use kasumi_store::ordered_pages::Direction;
+    use std::ops::Bound;
+    let prefix = KeyBuilder::new(kind).text(collection).finish();
+    let start = after.map(|id| KeyBuilder::new(kind).text(collection).text(id).finish());
+    let bound = start
+        .as_deref()
+        .map_or(Bound::Included(prefix.as_slice()), Bound::Excluded);
+    reader.scan(bound, Direction::Forward, &mut |key, _| {
+        let Some(suffix) = key.strip_prefix(prefix.as_slice()) else {
+            return Ok(false);
+        };
+        let encoded = suffix
+            .strip_suffix(&[0, 1])
+            .context("invalid primary ID terminator")?;
+        let id = std::str::from_utf8(encoded)?;
+        validate_name(id)?;
+        visit(id)
+    })
+}
+
+/// Count active and archived candidates against the same scan limit. Only
+/// archived IDs need an external body before evaluating the query.
+pub(crate) fn visit_history_scan(
+    reader: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    mut visit: impl FnMut(&str, bool) -> Result<bool>,
+) -> Result<()> {
+    for (kind, archived) in [(3, false), (4, true)] {
+        let mut more = true;
+        visit_primary_ids(reader, collection, kind, None, |id| {
+            more = visit(id, archived)?;
+            Ok(more)
+        })?;
+        if !more {
+            break;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) enum PrimaryPoint {
