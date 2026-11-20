@@ -158,12 +158,54 @@ struct CellState {
     inflight: usize,
     view: Option<ViewRef>,
 }
+/// The producer's exact application boundary during covered startup replay.
+/// It can validate the previous directory for the next write. Only an exact
+/// selected physical position can authorize a reader.
+struct ReplayPredecessor {
+    log: Option<kasumi_raft::LogId<u64>>,
+    command: Option<[u8; 32]>,
+}
+
+impl ReplayPredecessor {
+    fn capture(boundary: ApplicationBoundaryRef<'_>) -> Option<Self> {
+        match boundary {
+            ApplicationBoundaryRef::Bootstrap(_) => Some(Self {
+                log: None,
+                command: None,
+            }),
+            ApplicationBoundaryRef::Snapshot(snapshot) => Some(Self {
+                log: snapshot.meta.last_log_id,
+                command: None,
+            }),
+            ApplicationBoundaryRef::Entry(entry) => {
+                let mut command = [0; 32];
+                hex::decode_to_slice(&entry.command_sha256, &mut command).ok()?;
+                Some(Self {
+                    log: Some(entry.log_id),
+                    command: Some(command),
+                })
+            }
+        }
+    }
+
+    fn applied<T>(
+        &self,
+        build: impl FnOnce(&kasumi_raft::LogId<u64>, Option<[u8; 32]>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.log
+            .as_ref()
+            .map(|log| build(log, self.command))
+            .transpose()
+    }
+}
+
 struct Cell {
     id: u64,
     roots: SourceRootsWeak,
     handles: AtomicUsize,
     state: Mutex<CellState>,
     position: OnceLock<Position>,
+    replay_predecessor: OnceLock<ReplayPredecessor>,
     // Node evacuations finished before this cell's view selected its root.
     evacuations: OnceLock<u64>,
     _metadata_parent: OnceLock<CellRef>,
@@ -261,6 +303,47 @@ impl SelectedApplication {
         };
         Ok(manifest.matches_applied(applied.as_ref()))
     }
+    fn replay_predecessor(&self) -> Option<&ReplayPredecessor> {
+        (self.cell.frozen.get() == Some(&false))
+            .then(|| self.cell.replay_predecessor.get())
+            .flatten()
+    }
+
+    pub(crate) fn text_predecessor(
+        &self,
+    ) -> Result<Option<kasumi_store::text_manifest::TextBoundary>> {
+        if let Some(replayed) = self.replay_predecessor() {
+            return Ok(Some(
+                replayed
+                    .applied(crate::application_text::applied_boundary)?
+                    .unwrap_or(kasumi_store::text_manifest::TextBoundary::Bootstrap),
+            ));
+        }
+        self.text_boundary()
+    }
+
+    pub(crate) fn matches_primary_predecessor(
+        &self,
+        manifest: &kasumi_store::primary_manifest::PrimaryManifest,
+    ) -> Result<bool> {
+        if let Some(replayed) = self.replay_predecessor() {
+            let applied = replayed.applied(crate::application_primary::log_applied)?;
+            return Ok(manifest.matches_applied(applied.as_ref()));
+        }
+        self.matches_primary_boundary(manifest)
+    }
+
+    pub(crate) fn matches_structured_predecessor(
+        &self,
+        manifest: &kasumi_store::structured_manifest::StructuredManifest,
+    ) -> Result<bool> {
+        if let Some(replayed) = self.replay_predecessor() {
+            let applied = replayed.applied(crate::application_structured::log_applied)?;
+            return Ok(manifest.matches_applied(applied.as_ref()));
+        }
+        self.matches_structured_boundary(manifest)
+    }
+
     pub(crate) fn text_boundary(
         &self,
     ) -> Result<Option<kasumi_store::text_manifest::TextBoundary>> {
@@ -1099,6 +1182,7 @@ impl SourceRootsRef {
                     view: None,
                 }),
                 position: OnceLock::new(),
+                replay_predecessor: OnceLock::new(),
                 evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),
                 frozen: OnceLock::new(),
@@ -1342,6 +1426,11 @@ impl RootPreparation {
                     };
                     match result {
                         Ok(position) => {
+                            if position.is_covered_reconstruction()
+                                && let Some(predecessor) = ReplayPredecessor::capture(boundary)
+                            {
+                                let _ = self.cell.replay_predecessor.set(predecessor);
+                            }
                             let _ = self.cell.position.set(position);
                         }
                         Err(error) => {

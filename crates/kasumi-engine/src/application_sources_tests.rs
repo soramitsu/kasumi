@@ -2335,6 +2335,14 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
         .roots
         .prepare()?
         .capture(ApplicationBoundaryRef::Bootstrap(&fixture.image), false)?;
+    // The next replay writer knows which authenticated bootstrap it follows.
+    // Its physical selection already includes a later committed entry, so a
+    // text query or warmup at that earlier generation still has no directory.
+    assert_eq!(
+        covered_selected.text_predecessor()?,
+        Some(kasumi_store::text_manifest::TextBoundary::Bootstrap)
+    );
+    assert!(covered_selected.text_boundary()?.is_none());
     let mut covered_reader = covered_selected.open_document_reader(&fixture.roots)?;
     let mut reader_workspace = fixture.storage.admission.reserve_document_source(4096)?;
     let mut exact = fixture.roots.prepare()?;

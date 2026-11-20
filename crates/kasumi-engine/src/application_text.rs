@@ -551,7 +551,7 @@ impl TextPublication {
     }
 }
 
-fn applied_boundary(
+pub(crate) fn applied_boundary(
     log: &kasumi_raft::LogId<u64>,
     command_sha256: Option<[u8; 32]>,
 ) -> Result<TextBoundary> {
