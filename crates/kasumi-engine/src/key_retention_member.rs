@@ -524,6 +524,10 @@ impl Database {
                     continue;
                 }
                 if observed.get(&node_id) != Some(&identity) {
+                    tracing::debug!(
+                        node_id,
+                        "Control member inventory changed between physical observations"
+                    );
                     continue;
                 }
                 if let ServiceIdentity::Audit { stream, .. } = &identity

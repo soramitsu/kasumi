@@ -2573,6 +2573,14 @@ impl Fixture {
             initial: &ReadKeyRetentionRequest,
             phase: &str,
         ) -> kasumi_types::Result<(BTreeSet<KeyRetentionEntry>, KeyRetentionCoverage, Option<kasumi_types::KeyRetentionCursor>)> {
+            use tracing::instrument::WithSubscriber;
+            use tracing_subscriber::layer::SubscriberExt;
+            // Scope peer read diagnostics to this enumeration, including
+            // partial observations that legitimately expire a cursor.
+            let diagnostics = tracing::Dispatch::new(tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::Targets::new().with_target(
+                    "kasumi_engine::service::key_retention::member", tracing::Level::DEBUG))
+                .with(tracing_subscriber::fmt::layer().with_test_writer()));
             // All pages must belong to one physical inventory. This live
             // cluster may finish recovery or catch up a peer between pages.
             // Discard every row of an expired cursor and retain its evidence.
@@ -2582,7 +2590,7 @@ impl Fixture {
                 let mut entries = BTreeSet::new();
                 let mut first_continuation = None;
                 loop {
-                    let page = match control.read_key_retention(operator, next.clone()).await {
+                    let page = match control.read_key_retention(operator, next.clone()).with_subscriber(diagnostics.clone()).await {
                         Ok(page) => page,
                         Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired
                             && next.cursor.is_some() => {
@@ -2610,6 +2618,10 @@ impl Fixture {
                 }
             }
             unreachable!("fourth expired enumeration returned its original error")
+        }
+        for db in controls {
+            let runtime = self.targets.iter().find(|target| target.node_id() == db.raft_group().node_id()).unwrap();
+            runtime.check_checkpoint_route_under_generation_lock(db, self.target, checkpoint).await.unwrap();
         }
         let (entries, coverage, held_cursor) = pages(control, &operator, &request, "installed").await.unwrap();
         let held_cursor = held_cursor.expect("three installed journals need a second two-row page");
