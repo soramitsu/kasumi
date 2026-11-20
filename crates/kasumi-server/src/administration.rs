@@ -337,12 +337,6 @@ pub(crate) enum CommittedRoutes {
     Remote(Arc<crate::remote_control::RemoteTopology>),
 }
 impl CommittedRoutes {
-    pub(crate) fn version(&self) -> u64 {
-        match self {
-            Self::Local(topology) => topology.version,
-            Self::Remote(topology) => topology.version,
-        }
-    }
     pub(crate) fn topology(&self) -> &ControlTopology {
         match self {
             Self::Local(topology) => &topology.topology,

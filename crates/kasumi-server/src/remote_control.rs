@@ -111,10 +111,16 @@ pub(crate) fn validate_data_only(
     ensure!(
         config.mode == DeploymentMode::Replicated
             && config.control.is_none()
-            && !config.tenants.is_empty()
-            && config.target_recovery.is_none(),
+            && !config.tenants.is_empty(),
         "remote Control access requires a replicated data-only node with local tenants"
     );
+    if let Some(target) = &config.target_recovery {
+        ensure!(
+            target.control_root == remote.root
+                && target.control_endpoints.keys().eq(remote.endpoints.keys()),
+            "target recovery and data routing must use the same dedicated Control root and voters"
+        );
+    }
     let replication = config
         .replication
         .as_ref()
@@ -349,10 +355,6 @@ impl RemoteControl {
             }),
             verified: watch::channel(0).0,
         }))
-    }
-
-    pub(crate) fn control_incarnation(&self) -> uuid::Uuid {
-        self.root.control_incarnation
     }
 
     /// The newest verified topology, retained across a Control outage.
