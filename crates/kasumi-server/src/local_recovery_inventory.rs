@@ -3,7 +3,7 @@
 use super::*;
 use kasumi_engine::{Database, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, SecurityAudit};
 use kasumi_query::QueryCancellation;
-use kasumi_store::{EncryptedTable, TenantReadView};
+use kasumi_store::TenantReadView;
 use kasumi_types::{
     KeyCatalogDomain, KeyReference, KeyReferenceKind, KeyRetentionEntry, KeyVersionRef,
     MAX_KEY_PROVIDER_BYTES, MAX_KEY_REF_BYTES, MissingKeyDependency,
@@ -139,7 +139,6 @@ impl Coordinator {
         view: &TenantReadView,
         key: &[u8],
         value: &[u8],
-        publications: &mut Option<EncryptedTable>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<Uuid> {
         let journal: Journal = decode(value)?;
@@ -198,20 +197,9 @@ impl Coordinator {
                         == Some(encoded(publication)?.as_slice()),
                 "missing or substituted local recovery publication"
             );
-            // The deployed publication ID is independent of its operation ID.
-            // Index each authenticated forward link once for the physical reverse pass.
-            let table = match publications {
-                Some(table) => table,
-                None => {
-                    let disk = view.scratch_disk();
-                    publications.insert(EncryptedTable::new(
-                        disk,
-                        disk.snapshot().max_bytes,
-                        disk.native_cache_config(),
-                    )?)
-                }
-            };
-            table.insert(publication.id.as_bytes(), operation.as_bytes())?;
+            if let Some(owner) = view.get(PUBLICATION_OWNERS, publication.id.as_bytes(), 16)? {
+                ensure!(uuid(&owner)? == operation, "conflicting publication owner");
+            }
         }
         // The authenticated checkpoint binds its external graph by digest. Its
         // wrapping versions require an independent read by the backup owner.
@@ -246,7 +234,6 @@ impl Coordinator {
         token: &QueryCancellation,
         key: &[u8],
         value: &[u8],
-        publications: Option<&EncryptedTable>,
     ) -> Result<Uuid> {
         if key.len() == 16 && value.first() == Some(&b'{') {
             let publication: Publication = decode(value)?;
@@ -254,11 +241,28 @@ impl Coordinator {
                 uuid(key)? == publication.id,
                 "substituted local publication ID"
             );
-            let owner = publications
-                .context("orphan local recovery publication")?
-                .get(key)?
-                .context("orphan local recovery publication")?;
-            return uuid(&owner);
+            if let Some(owner) = view.get(PUBLICATION_OWNERS, key, 16)? {
+                return self.indexed_publication_owner(view, token, publication.id, &owner);
+            }
+            // Deployed journals can predate the reverse link. Read their original
+            // authenticated operation records under a single pinned view.
+            let mut owner = None;
+            view.visit(OPERATIONS, MAX_RECORD, |operation, bytes| {
+                token.check()?;
+                let _charge = self.decoding_workspace(bytes.len(), token)?;
+                let journal: Journal = decode(bytes)?;
+                if let Some(link) = journal.publication.filter(|p| p.id == publication.id) {
+                    let operation = uuid(operation)?;
+                    ensure!(
+                        journal.status.request.operation_id == operation
+                            && encoded(&link)? == value
+                            && owner.replace(operation).is_none(),
+                        "conflicting historical publication owner"
+                    );
+                }
+                Ok(())
+            })?;
+            return owner.context("orphan local recovery publication");
         }
         if key.len() == 16 {
             let id = uuid(key)?;
@@ -309,6 +313,22 @@ impl Coordinator {
             "substituted local materialization record"
         );
         Ok(request.operation_id)
+    }
+
+    fn indexed_publication_owner(
+        &self,
+        view: &TenantReadView,
+        token: &QueryCancellation,
+        publication: Uuid,
+        owner: &[u8],
+    ) -> Result<Uuid> {
+        let operation = uuid(owner)?;
+        let (journal, _charge) = self.journal_at(view, operation, token)?;
+        ensure!(
+            journal.publication.is_some_and(|p| p.id == publication),
+            "substituted local recovery publication owner"
+        );
+        Ok(operation)
     }
 
     fn materialization_records(
@@ -384,13 +404,13 @@ impl Coordinator {
         token: &QueryCancellation,
         namespace: &str,
         row: (&[u8], &[u8]),
-        publications: &mut Option<EncryptedTable>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<Uuid> {
         let (key, value) = row;
         match namespace {
-            OPERATIONS => self.operation(view, key, value, publications, visit),
-            PHASES => self.phase_owner(view, token, key, value, publications.as_ref()),
+            OPERATIONS => self.operation(view, key, value, visit),
+            PHASES => self.phase_owner(view, token, key, value),
+            PUBLICATION_OWNERS => self.indexed_publication_owner(view, token, uuid(key)?, value),
             GENERATIONS => {
                 let incarnation = uuid(key)?;
                 let outcome: GenerationRecord = decode(value)?;
@@ -460,7 +480,6 @@ impl LocalRecoveryKeyInventory for Coordinator {
             "standalone coordinator member differs"
         );
         let view = store.read_view()?;
-        let mut publications = None;
         let result = (|| {
             let physical = view.wrapping_inventory()?;
             let mut digest = Sha256::new();
@@ -483,6 +502,7 @@ impl LocalRecoveryKeyInventory for Coordinator {
             for namespace in [
                 OPERATIONS,
                 PHASES,
+                PUBLICATION_OWNERS,
                 GENERATIONS,
                 ACTIVE,
                 INSTALLATION,
@@ -501,14 +521,7 @@ impl LocalRecoveryKeyInventory for Coordinator {
                             serde_json::to_writer(&mut digest, &observed)?;
                             operation
                         } else {
-                            self.row_owner(
-                                &view,
-                                token,
-                                namespace,
-                                (key, value),
-                                &mut publications,
-                                visit,
-                            )?
+                            self.row_owner(&view, token, namespace, (key, value), visit)?
                         };
                         visit(entry(
                             KeyReference::LocalRecovery { operation_id },
@@ -533,10 +546,6 @@ impl LocalRecoveryKeyInventory for Coordinator {
             );
             Ok(digest.finalize().into())
         })();
-        let result = match publications {
-            Some(table) => finish(result, table.close().map_err(Into::into)),
-            None => result,
-        };
         finish(result, view.close())
     }
 }

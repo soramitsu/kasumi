@@ -328,17 +328,14 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     .unwrap();
     let control =
         crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
-    let inventory = runtime
-        .control_database()
-        .unwrap()
-        .read_key_retention(
-            &control,
-            ReadKeyRetentionRequest {
-                scope: KeyRetentionScope::LocalRecovery {},
-                cursor: None,
-                limit: 32,
-            },
-        )
+    let query = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::LocalRecovery {},
+        cursor: None,
+        limit: 32,
+    };
+    let database = runtime.control_database().unwrap();
+    let inventory = database
+        .read_key_retention(&control, query.clone())
         .await
         .unwrap();
     assert!(inventory.entries.iter().any(|row| matches!(
@@ -348,6 +345,42 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         matches!(&inventory.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
         if missing.contains(&MissingKeyDependency::ArchiveUnavailable { id: request.checkpoint.backup_id.to_string() }))
     );
+    let store = runtime.security_audit().store();
+    let publication = record(store, request.operation_id)
+        .unwrap()
+        .publication
+        .unwrap()
+        .id;
+    let key = publication.as_bytes();
+    assert_eq!(
+        store.get(PUBLICATION_OWNERS, key).unwrap().as_deref(),
+        Some(request.operation_id.as_bytes().as_slice())
+    );
+    store
+        .write_batch(&[WriteOp::delete(PUBLICATION_OWNERS, key)])
+        .unwrap();
+    let historical = database
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(inventory.entries, historical.entries);
+    drop(historical);
+    let unrelated = Uuid::new_v4();
+    store
+        .write_batch(&[WriteOp::put(
+            PUBLICATION_OWNERS,
+            key,
+            unrelated.as_bytes().as_slice(),
+        )])
+        .unwrap();
+    assert!(database.read_key_retention(&control, query).await.is_err());
+    store
+        .write_batch(&[WriteOp::put(
+            PUBLICATION_OWNERS,
+            key,
+            request.operation_id.as_bytes().as_slice(),
+        )])
+        .unwrap();
     drop(inventory);
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
@@ -1577,8 +1610,16 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
 }
 
 type Rows = Vec<(Vec<u8>, Vec<u8>)>;
-fn recovery_rows(store: &TenantStore) -> [Rows; 5] {
-    [PHASES, OPERATIONS, GENERATIONS, ACTIVE, INSTALLATION].map(|namespace| {
+fn recovery_rows(store: &TenantStore) -> [Rows; 6] {
+    [
+        PHASES,
+        OPERATIONS,
+        GENERATIONS,
+        ACTIVE,
+        INSTALLATION,
+        PUBLICATION_OWNERS,
+    ]
+    .map(|namespace| {
         let mut rows = Vec::new();
         store
             .visit(namespace, MAX_RECORD, |key, value| {

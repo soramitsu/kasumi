@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 const PHASES: &str = "standalone-recovery-phases";
 const OPERATIONS: &str = "standalone-recovery-operations";
+const PUBLICATION_OWNERS: &str = "standalone-recovery-publication-owners";
 const GENERATIONS: &str = "standalone-recovery-generations";
 const ACTIVE: &str = "standalone-recovery-active";
 const INSTALLATION: &str = "standalone-recovery-installation";
@@ -1629,6 +1630,11 @@ impl Operator {
                         encoded(journal)?,
                     ),
                     WriteOp::put(PHASES, publication.id.as_bytes(), encoded(publication)?),
+                    WriteOp::put(
+                        PUBLICATION_OWNERS,
+                        publication.id.as_bytes(),
+                        journal.status.request.operation_id.as_bytes().as_slice(),
+                    ),
                 ])?;
             }
             let publication = journal
