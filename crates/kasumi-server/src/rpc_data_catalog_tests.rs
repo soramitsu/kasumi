@@ -58,7 +58,7 @@ pub(super) struct Installation<'a> {
     pub token_path: &'a Path,
     pub reader_token: &'a str,
     pub denied_token: &'a str,
-    pub control: &'a Database,
+    pub control: &'a Arc<Database>,
     pub operator: &'a RequestContext,
     pub topology: &'a kasumi_engine::control::ControlTopology,
     pub root: Uuid,
@@ -138,6 +138,118 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         .unwrap();
     assert_eq!(first.membership.members, BTreeSet::from([1, 2, 3]));
     assert_eq!(first.membership.leader, f.source);
+    let voters = BTreeSet::from([1, 2, 3]);
+    let confirmed = f
+        .control
+        .confirm_data_membership(f.operator, f.tenant, f.incarnation, &voters)
+        .await
+        .unwrap();
+    assert_eq!(hex::encode(confirmed), first.membership.membership_sha256);
+    assert!(
+        f.control
+            .confirm_data_membership(f.operator, f.tenant, Uuid::new_v4(), &voters)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.control
+            .confirm_data_membership(
+                f.operator,
+                f.tenant,
+                f.incarnation,
+                &BTreeSet::from([1, 2, 12])
+            )
+            .await
+            .is_err()
+    );
+    // The Control route can still name a prior voter set after Data has
+    // completed its Raft transition. Exercise the actual versioned write.
+    let plane = kasumi_engine::control::ControlPlane::new(f.control.clone()).unwrap();
+    let original = plane.topology(f.operator).await.unwrap().unwrap();
+    let mut previous_topology = original.topology.clone();
+    previous_topology
+        .nodes
+        .insert(12, expanded.nodes[&12].clone());
+    let previous = BTreeSet::from([1, 2, 12]);
+    previous_topology.tenants.get_mut(f.tenant).unwrap().voters = previous.clone();
+    plane
+        .replace_topology(
+            f.operator.clone(),
+            previous_topology,
+            Precondition::Version(original.version),
+            "catalog-fixture-previous-route".into(),
+        )
+        .await
+        .unwrap();
+    let before = plane.topology(f.operator).await.unwrap().unwrap().version;
+    let publish = crate::administration::publish_data_voters;
+    assert!(
+        publish(
+            f.control,
+            f.operator,
+            f.tenant,
+            f.incarnation,
+            &BTreeSet::from([1, 3, 12]),
+            &voters
+        )
+        .await
+        .is_err()
+    );
+    // A Control administrator still needs the independent Data observations.
+    write_token(f.token_path, f.denied_token);
+    assert!(
+        publish(
+            f.control,
+            f.operator,
+            f.tenant,
+            f.incarnation,
+            &previous,
+            &voters
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        plane.topology(f.operator).await.unwrap().unwrap().version,
+        before
+    );
+    write_token(f.token_path, f.reader_token);
+    publish(
+        f.control,
+        f.operator,
+        f.tenant,
+        f.incarnation,
+        &previous,
+        &voters,
+    )
+    .await
+    .unwrap();
+    let published = plane.topology(f.operator).await.unwrap().unwrap();
+    assert!(published.version > before);
+    assert_eq!(published.topology.tenants[f.tenant].voters, voters);
+    publish(
+        f.control,
+        f.operator,
+        f.tenant,
+        f.incarnation,
+        &previous,
+        &voters,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        plane.topology(f.operator).await.unwrap().unwrap().version,
+        published.version
+    );
+    plane
+        .replace_topology(
+            f.operator.clone(),
+            original.topology,
+            Precondition::Version(published.version),
+            "catalog-fixture-original-topology".into(),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         client
             .read_data_member_catalog(f.denied_token, &read)

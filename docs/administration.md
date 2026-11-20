@@ -252,9 +252,23 @@ never rewrites an already-created replicated bootstrap in place.
 
 `replication.peers` is an operator-approved pinned peer pool (3–64 nodes). Every replicated configuration must set `initial_voters` to the immutable original three IDs, including a pool of exactly three peers. Missing or empty voter configuration is rejected. New learners use that same original bootstrap and distinct node identity. Never edit initial voters to shrink an existing group or recover quorum. The final placement must have exactly three voters across independent failure domains recorded by the control database.
 
-Start the spare with its configured identity and original bootstrap. On the control leader, using a control-tenant administrator token, run `{"operation":"add_learner","node_id":4}`; it waits for catch-up. Once the spare has the committed topology, add it to the tenant group on that tenant's leader using the same command with the tenant token. The peer must exist in both configured pinned transport and approved control metadata.
+For colocated voters, start the spare with its configured identity and original bootstrap. Add it as a learner on the Control leader with a Control administrator token. After it has applied the topology, issue the same `{"operation":"add_learner","node_id":4}` command on the tenant leader with the tenant administrator token. Run `{"operation":"change_membership","voters":[1,2,4]}` on the affected group leader. On a colocated Control leader that has applied the final tenant membership, use `publish_membership` for the tenant to publish its route. Change Control's own membership separately.
 
-On the relevant group leader run, for example, `{"operation":"change_membership","voters":[1,2,4]}`. Every proposed voter must already be a known learner/member. OpenRaft performs the membership transition without a one-voter fallback. Then issue `{"operation":"publish_membership","voters":[1,2,4]}` on the control leader only after that node has applied the final non-joint tenant membership. The runtime verifies applied membership and CAS-updates routing. Perform the control group's own replacement independently with its control-tenant token.
+For dedicated Data and Control groups, enroll the spare in the Data transport pool, the Control topology and the protected Data catalog reader. Start the Data spare with the original Data bootstrap. A tenant administrator sends `add_learner` and then `change_membership` to the Data leader. The Data leader confirms the previous route and the proposed voters' identities with its dedicated Control quorum before changing membership.
+
+After the Data change commits, a Control administrator sends the following request to the dedicated Control leader. Substitute the installed tenant, incarnation UUID and voter IDs.
+
+```json
+{
+  "operation": "publish_data_membership",
+  "tenant": "example",
+  "incarnation": "3dbb6f32-5e51-4d99-aa54-c0991a13422c",
+  "previous_voters": [1, 2, 3],
+  "voters": [1, 2, 4]
+}
+```
+
+Control confirms the stable Data membership through its enrolled readers and updates the tenant route with a version precondition. On a lost response, retry the same request. Repeating a successful publication leaves the route version unchanged. Complete publication before the next Data membership transition.
 
 Tenant RBAC stays in the tenant group. Control metadata, certificate identities, membership and CLI descriptions do not grant document access. Required audit-storage failure blocks the associated successful operation; access denials remain enforced.
 

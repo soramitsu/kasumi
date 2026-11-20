@@ -194,6 +194,12 @@ pub enum ManagementCommand {
     PublishMembership {
         voters: BTreeSet<u64>,
     },
+    PublishDataMembership {
+        tenant: String,
+        incarnation: Uuid,
+        previous_voters: BTreeSet<u64>,
+        voters: BTreeSet<u64>,
+    },
     /// The verified context must name the reserved control tenant.
     ApprovePeerPool {
         expected_topology_version: u64,
@@ -223,8 +229,11 @@ pub(crate) struct ManagedTenant {
 mod command_jobs;
 #[path = "configured_tenant_enrollment.rs"]
 mod configured_tenant_enrollment;
+#[path = "administration_membership.rs"]
+mod membership;
 #[path = "administration_observability.rs"]
 mod observability;
+pub(crate) use membership::publish_data_voters;
 #[path = "administration_topology.rs"]
 mod topology;
 use command_jobs::CommandJobs;
@@ -1046,6 +1055,44 @@ impl Administration {
     ) -> Result<serde_json::Value> {
         self.authorized(source, context, false).await?;
         match command {
+            ManagementCommand::PublishDataMembership {
+                tenant,
+                incarnation,
+                previous_voters,
+                voters,
+            } => {
+                require_control(context)?;
+                ensure!(
+                    self.config
+                        .control
+                        .as_ref()
+                        .is_some_and(|control| control.remote_data.is_some()),
+                    "remote Data membership publication requires a dedicated Control voter"
+                );
+                let database = self.control.local()?;
+                self.event(
+                    context,
+                    SecurityEventKind::Membership,
+                    SecurityOutcome::Started,
+                )
+                .await?;
+                publish_data_voters(
+                    database,
+                    context,
+                    &tenant,
+                    incarnation,
+                    &previous_voters,
+                    &voters,
+                )
+                .await?;
+                self.event(
+                    context,
+                    SecurityEventKind::Membership,
+                    SecurityOutcome::Succeeded,
+                )
+                .await?;
+                Ok(serde_json::json!({"published":true}))
+            }
             ManagementCommand::ApprovePeerPool {
                 expected_topology_version,
             } => {
@@ -1333,9 +1380,12 @@ impl Administration {
                         "Raft membership requires replicated mode"
                     )
                 );
-                let topology = self.committed_topology()?;
-                validate_voters(&topology, &voters)?;
-                topology.validate_voter_override(&context.tenant, &voters)?;
+                let routes = self.control.routes()?;
+                validate_voters(routes.topology(), &voters)?;
+                routes
+                    .topology()
+                    .validate_voter_override(&context.tenant, &voters)?;
+                drop(routes);
                 let metrics = source.database.raft_group().metrics();
                 ensure!(
                     voters.iter().all(|id| metrics
@@ -1361,10 +1411,43 @@ impl Administration {
                     .await?;
                 let selected = source.clone();
                 let original_context = context.clone();
+                let remote_peers = self
+                    .control
+                    .remote()
+                    .map(|remote| {
+                        let replication = self
+                            .config
+                            .replication
+                            .as_ref()
+                            .context("Data replication missing")?;
+                        let peers = voters
+                            .iter()
+                            .map(|id| {
+                                replication
+                                    .peers
+                                    .iter()
+                                    .find(|peer| peer.node_id == *id)
+                                    .cloned()
+                                    .context("voter requires configured pinned transport")
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok::<_, anyhow::Error>((remote.clone(), peers))
+                    })
+                    .transpose()?;
                 self.command_jobs
                     .execute(
                         tokio::time::Instant::now() + std::time::Duration::from_secs(30),
                         async move {
+                            if let Some((remote, peers)) = remote_peers {
+                                membership::confirm_original_route(
+                                    &remote,
+                                    &selected.database,
+                                    &original_context.tenant,
+                                    &voters,
+                                    &peers,
+                                )
+                                .await?;
+                            }
                             selected.store.check_access()?;
                             selected.database.engine().authorize(
                                 &original_context,

@@ -604,6 +604,8 @@ and creates only the local Control and service-security stores. It needs no
 tenant key providers. Data-only operation through a remote Control quorum still
 requires qualification before deployment.
 
+For Data voter replacement, also enroll each prospective voter in the Data transport pool and the Control catalog sources described below. The Data administrator changes the Raft membership. The Control administrator then publishes the tenant route using the installed incarnation and both voter sets. [Membership replacement](administration.md#membership-replacement)
+
 #### Backup bindings on dedicated data and Control members
 
 Before provisioning a new data-only member that will publish backups, configure

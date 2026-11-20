@@ -222,9 +222,12 @@ if args[:1] == ["--profile"]:
                     fail("voters were not added as learners")
                 cluster["voters"] = sorted(request["voters"])
                 output = {"changed": True, "publish_control_route_required": True}
-            elif operation == "publish_membership":
-                if sorted(request["voters"]) != cluster["voters"]:
-                    fail("local committed membership must match final voters")
+            elif operation == "publish_data_membership":
+                if (node != cluster["control_leader"] or request["tenant"] != "unit"
+                        or request["incarnation"] != registry["data_incarnation"]
+                        or request["previous_voters"] != registry["voters"]
+                        or sorted(request["voters"]) != cluster["voters"]):
+                    fail("dedicated Control did not observe the expected Data membership")
                 output = {"published": True}
             else:
                 fail("unknown operation")
@@ -465,7 +468,7 @@ class FaultFixture(test_domain_runs.DomainFixture):
         self.topology.write_text(json.dumps(plan))
         (release / "state/registry.json").write_text(json.dumps({
             "voters": [1, 2, 3], "controls": [4, 5, 6], "authorities": [7, 8, 9],
-            "lease_ms": LEASE_MS, "roles": roles}))
+            "lease_ms": LEASE_MS, "roles": roles, "data_incarnation": INCARNATION}))
         resource = {"kind": "database", "incarnation": INCARNATION}
         profiles = installed / "profiles"
         profiles.mkdir()

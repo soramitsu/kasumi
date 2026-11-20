@@ -58,6 +58,8 @@ mod backup_sessions;
 mod change_feed;
 #[path = "custody_service.rs"]
 mod custody_service;
+#[path = "data_membership_observation.rs"]
+mod data_membership_observation;
 #[path = "full_backup.rs"]
 mod full_backup;
 #[path = "history_export.rs"]

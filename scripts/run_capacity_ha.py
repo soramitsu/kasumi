@@ -338,11 +338,14 @@ def procedure(io, plan_path, attempt):
         ctl, "--profile", operator, "manage", io.input("ops/" + operation + "/membership.json",
                                                        {"operation": "change_membership", "voters": new_voters})]),
         "membership change")
-    require(changed.get("changed") is True, "membership change did not commit the replacement voter set")
-    if changed.get("publish_control_route_required") is True:
-        io.command("replacement-publish", [ctl, "--profile", operator, "manage",
-                                           io.input("ops/" + operation + "/publish.json",
-                                                    {"operation": "publish_membership", "voters": new_voters})])
+    require(changed == {"changed": True, "publish_control_route_required": True},
+            "membership change did not commit the replacement voter set")
+    publish = io.input("ops/" + operation + "/publish.json",
+                       {"operation": "publish_data_membership", "tenant": tenant, "incarnation": incarnation,
+                        "previous_voters": voters, "voters": new_voters})
+    published = cap.parse_json(io.command("replacement-publish", [ctl, "--profile", control, "manage", publish]),
+                               "Data membership publication")
+    require(published == {"published": True}, "dedicated Control did not confirm the Data replacement")
     io.stop(replaced["id"])
     io.poll("replacement-settled", status_argv, settled_leader(new_voters, incarnation), cap.SETTLE_POLLS)
     replaced_status = cap.parse_json(io.command("replacement-status", [

@@ -477,11 +477,13 @@ def learner(d, ctx):
 def replacement(d, ctx, load):
     """Replace one original follower with the caught-up learner under load."""
     scenario = ["voter-replacement-under-load"]
-    leader = view(d, ctx, "replace-leader", ctx.voters[0], ctx.voters)["leader"]
+    original = view(d, ctx, "replace-leader", ctx.voters[0], ctx.voters)
+    leader = original["leader"]
     removed = next(node for node in ctx.voters if node != leader)
     voters = sorted([*[node for node in ctx.voters if node != removed], ctx.spare["node_id"]])
     change = d.request("replace-voter", {"operation": "change_membership", "voters": voters})
-    publish = d.request("publish-voters", {"operation": "publish_membership", "voters": voters})
+    publish = d.request("publish-voters", {"operation": "publish_data_membership", "tenant": ctx.tenant,
+                        "incarnation": ctx.incarnation, "previous_voters": ctx.voters, "voters": voters})
     client = d.spawn_client("load", ctx.ctl(ctx.plan["data_profile"], "session"))
     load.start(client)
     d.pause(ctx.load_seconds)
@@ -489,8 +491,10 @@ def replacement(d, ctx, load):
     changed = d.json("replace-change", ctx.ctl(ctx.member(leader), "manage", change), scenario)
     require(changed == {"changed": True, "publish_control_route_required": True},
             "membership change was not committed")
-    published = d.json("replace-publish", ctx.ctl(ctx.member(leader), "manage", publish), scenario)
-    require(isinstance(published, dict), "membership publication returned no document")
+    control = original["control_leader"]
+    require(control in ctx.controls, "a dedicated Control leader is required to publish Data membership")
+    published = d.json("replace-publish", ctx.ctl(ctx.control_member(control), "manage", publish), scenario)
+    require(published == {"published": True}, "dedicated Control did not confirm Data membership")
     window.append(d.clock())
     d.pause(ctx.load_seconds)
     load.stop()

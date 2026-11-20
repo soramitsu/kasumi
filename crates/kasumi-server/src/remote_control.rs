@@ -508,6 +508,16 @@ impl RemoteControl {
         local_voter: u64,
         peer: &crate::runtime::ReplicaConfig,
     ) -> Result<kasumi_raft::BasicNode> {
+        self.released_routes(|topology| {
+            approved_learner(topology, tenant, incarnation, local_voter, peer)
+        })
+        .await
+    }
+
+    pub(crate) async fn released_routes<T>(
+        &self,
+        select: impl FnOnce(&ControlTopology) -> Result<T>,
+    ) -> Result<T> {
         let _registration = self.fence.begin().ok_or(Failure::Closed)?;
         let mut closed = self.closed.subscribe();
         ensure!(!*closed.borrow_and_update(), Failure::Closed);
@@ -533,10 +543,9 @@ impl RemoteControl {
         };
         let observation = confirmed.observation()?;
         ensure!(observation.root == self.root, Failure::InvalidResponse);
-        let topology = &observation.topology.topology;
-        let learner = approved_learner(topology, tenant, incarnation, local_voter, peer)?;
+        let result = select(&observation.topology.topology)?;
         confirmed.check()?;
-        Ok(learner)
+        Ok(result)
     }
 
     async fn observe(&self) -> Result<Arc<RemoteTopology>, Failure> {
@@ -703,7 +712,7 @@ impl RemoteControl {
     }
 }
 
-fn approved_learner(
+pub(crate) fn approved_learner(
     topology: &ControlTopology,
     tenant: &str,
     incarnation: &str,
