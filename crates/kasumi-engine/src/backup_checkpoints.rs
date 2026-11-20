@@ -210,7 +210,7 @@ impl Database {
     pub(super) async fn recovery_checkpoint_keys(
         &self,
         control: &ResponseFence<'_>,
-        selected: &LocalRecoveryCheckpoint<'_>,
+        selected: &super::key_retention::RecoveryGraph<'_>,
         cancellation: &QueryCancellation,
         observe: &KeyObserver<'_>,
     ) -> std::result::Result<[u8; 32], crate::SnapshotFailure> {
@@ -219,9 +219,6 @@ impl Database {
         cancellation.check()?;
         let expected = selected.checkpoint;
         expected.validate()?;
-        selected
-            .source_purpose
-            .validate_application_identity(&expected.tenant, &expected.source_incarnation)?;
         if self.store.tenant() != expected.tenant {
             return Err(Error::new(
                 ErrorCode::Forbidden,
@@ -238,7 +235,7 @@ impl Database {
         })?;
         let registration = VerificationWork::new(registration, slot);
         let deadline = VerificationDeadline::new(BACKUP_OPERATION_TIMEOUT_MS)?;
-        let destination = self.archive_destination(selected.destination)?;
+        let destination = &selected.destination;
         let read = async {
             let session = kasumi_store::verify_backup_session(
                 destination.as_ref(),
@@ -250,7 +247,16 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("retained recovery backup session missing"))?;
             control.check()?;
             cancellation.check()?;
-            if session.source_purpose() != selected.source_purpose
+            let purpose = session.source_purpose();
+            purpose
+                .validate_application_identity(&expected.tenant, &expected.source_incarnation)?;
+            let matches_purpose = match selected.purpose {
+                super::key_retention::CheckpointPurpose::Exact(original) => purpose == original,
+                super::key_retention::CheckpointPurpose::Digest(original) => {
+                    staged_digest(purpose)?.0 == original
+                }
+            };
+            if !matches_purpose
                 || !matches!(session.outcome(), Some(BackupSessionOutcome::Complete {checkpoint, ..}) if checkpoint == expected)
             {
                 return Err(Error::new(ErrorCode::Corruption, "retained recovery checkpoint or source purpose differs from the authenticated session").into());
@@ -279,8 +285,7 @@ impl Database {
                 None,
             ))
             .await?;
-            let matches = &verified.checkpoint == expected
-                && &verified.source_purpose == selected.source_purpose;
+            let matches = &verified.checkpoint == expected && &verified.source_purpose == purpose;
             deadline
                 .blocking(
                     verified._reservation.clone(),

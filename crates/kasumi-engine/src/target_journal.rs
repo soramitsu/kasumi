@@ -381,8 +381,7 @@ impl TargetJournal {
                                 == row.source_incarnation.to_string(),
                         "target journal generation differs from its checkpoint"
                     );
-                    row.checkpoint.validate()?;
-                    checkpoint(row.target_incarnation, &row.checkpoint)
+                    row.checkpoint.validate().map_err(Into::into)
                 })?;
                 if let Some(incarnation) = owner {
                     entry(
@@ -408,6 +407,19 @@ impl TargetJournal {
                 Ok(())
             })?;
             accounting.verify(&head)?;
+            // Keep the authenticated root pinned, but release the writer before
+            // the visitor contacts a backup destination or a historical provider.
+            drop(_guard);
+            if head.generations != 0 {
+                view.visit(NS, MAX_RECORD, |key, value| {
+                    token.check()?;
+                    if key.starts_with(b"generation/") {
+                        let row: GenerationBinding = decode_current(value)?;
+                        checkpoint(row.target_incarnation, &row.checkpoint)?;
+                    }
+                    Ok(())
+                })?;
+            }
             token.check()?;
             physical.check_current()?;
             Ok(digest.finalize().into())
@@ -744,6 +756,37 @@ impl TargetJournal {
             "target file creation generation differs"
         );
         Ok(intent)
+    }
+
+    /// Match the target database's genesis to the permanent command that
+    /// created this physical directory. No writer or generation is opened.
+    pub(crate) fn require_checkpoint_origin(
+        &self,
+        origin: &kasumi_types::TargetOrigin,
+        target: &Arc<TenantStore>,
+    ) -> Result<()> {
+        origin.validate()?;
+        let request = &origin.materialization.request;
+        let key = file_key(&request.tenant, request.target_incarnation);
+        let file = decode_current::<FileCreation>(
+            &self
+                .store
+                .get_bounded(NS, &key, MAX_RECORD)?
+                .context("target creation record missing")?,
+        )?;
+        let accepted = self.validate_file_creation(&key, &file)?;
+        let binding = self
+            .materialization_file_binding(&request.tenant, request.target_incarnation)?
+            .context("target physical binding missing")?;
+        ensure!(
+            accepted.intent == origin.materialization
+                && self.installed.source_key_bindings_sha256.is_some()
+                && matches!(target.storage_access().purpose(), kasumi_store::StoragePurpose::Serving {identity, ..} if identity.tenant == request.tenant && identity.incarnation == request.target_incarnation && identity.node == self.installed.node)
+                && Arc::ptr_eq(target.persistent_disk(), self.store.persistent_disk())
+                && target.node_store().physical_identity()?.directory == binding.directory,
+            "target genesis or physical owner differs from its journal"
+        );
+        target.check_access()
     }
 
     /// Require the permanent causal creation intent before opening an existing

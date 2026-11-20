@@ -95,7 +95,8 @@ pub use service::{
     AuthoritySignerKeyInventory, AuthoritySignerKeys, BackupSourceCapability, CustodyResponseFence,
     Database, LocalRecoveryCheckpoint, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
     LocalRecoveryKeyRead, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
-    ResponseFence, RetiredCustody, RetirementResponseFence, SignerCatalog, VerifiedBackupSource,
+    ResponseFence, RetiredCustody, RetirementResponseFence, SignerCatalog,
+    TargetCheckpointInventory, TargetCheckpointSource, VerifiedBackupSource,
 };
 pub use state::{
     Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,

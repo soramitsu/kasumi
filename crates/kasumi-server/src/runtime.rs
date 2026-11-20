@@ -7102,6 +7102,20 @@ mod lifecycle_tests {
                 execution
             })
             .collect::<Vec<_>>();
+        if restart_initial_inspection.is_none() {
+            fixture_operation(|| {
+                recovery.assert_target_checkpoint_inventory(
+                    &controls,
+                    &configurations,
+                    &activation_facts[0]
+                        .origin
+                        .materialization
+                        .request
+                        .checkpoint,
+                )
+            })
+            .await;
+        }
         for manager in &managers {
             let status = manager
                 .execute_for_test(context.clone(), M::Status {})

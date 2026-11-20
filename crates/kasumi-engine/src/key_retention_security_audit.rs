@@ -89,6 +89,17 @@ impl Database {
         Ok(())
     }
 
+    pub fn install_target_checkpoint_inventory(
+        &self,
+        journal: &Arc<crate::TargetJournal>,
+        source: Arc<dyn TargetCheckpointInventory>,
+    ) -> anyhow::Result<()> {
+        self.install_target_key_inventory(journal)?;
+        self.target_checkpoint_keys
+            .set(source)
+            .map_err(|_| anyhow::anyhow!("target checkpoint inventory already installed"))
+    }
+
     /// Attach the catalog opened by this node's enrolled signer verifier. Its runtime
     /// retains shutdown custody. Replicated authority manifests supply the independent
     /// partition identities that still owe reports from their own installations.
@@ -153,6 +164,7 @@ pub(in crate::service) struct InstalledInventories<'a> {
     pub(super) issuers: Option<IssuerCoverage>,
     pub(super) member_inventories: Option<member::MemberInventories>,
     pub(super) journal: Option<&'a crate::TargetJournal>,
+    pub(super) target_checkpoints: Option<&'a dyn TargetCheckpointInventory>,
     pub(super) local_recovery: Option<&'a dyn LocalRecoveryKeyInventory>,
 }
 
@@ -251,6 +263,7 @@ impl SecurityAudit {
             issuers,
             mut member_inventories,
             journal,
+            target_checkpoints,
             local_recovery,
         } = owners;
         let state = &generation.state;
@@ -502,11 +515,31 @@ impl SecurityAudit {
             None
         };
         let journal_digest = if let Some(journal) = journal {
+            let rows = std::cell::RefCell::new(&mut entries);
+            let mut external = Sha256::new();
+            let read = LocalRecoveryKeyRead {
+                context,
+                request,
+                security: self,
+                token,
+            };
             let digest = journal
                 .visit_key_dependencies(
                     token,
-                    |row| Ok(consider_entry(request, &mut entries, row)?),
-                    |id, _checkpoint| {
+                    |row| Ok(consider_entry(request, &mut rows.borrow_mut(), row)?),
+                    |id, checkpoint| {
+                        let graph = match target_checkpoints {
+                            Some(inventory) => {
+                                read.target_checkpoint(journal, inventory, id, checkpoint, |row| {
+                                    Ok(consider_entry(request, &mut rows.borrow_mut(), row)?)
+                                })?
+                            }
+                            None => None,
+                        };
+                        serde_json::to_writer(&mut external, &(id, graph))?;
+                        if graph.is_some() {
+                            return Ok(());
+                        }
                         add_missing(
                             &mut missing,
                             &mut truncated,
@@ -524,7 +557,8 @@ impl SecurityAudit {
                         .cloned()
                         .unwrap_or_else(|| Error::from_physical_source(error))
                 })?;
-            Some(digest)
+            external.update(digest);
+            Some(<[u8; 32]>::from(external.finalize()))
         } else {
             None
         };

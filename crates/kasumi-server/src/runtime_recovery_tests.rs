@@ -2518,6 +2518,69 @@ impl Fixture {
             (resumed_initial_inspection || observed_one_materialization) && isolated && restored
         );
     }
+    pub async fn assert_target_checkpoint_inventory(
+        &self,
+        controls: &[Arc<kasumi_engine::Database>],
+        configurations: &[RuntimeConfig],
+        checkpoint: &FullBackupCheckpoint,
+    ) {
+        let leader = quorum_ready_leader(controls, "target checkpoint inventory").await;
+        let control = &controls[leader];
+        let member = self
+            .targets
+            .iter()
+            .find(|target| target.node_id() == control.raft_group().node_id())
+            .unwrap();
+        member.install_key_inventory(control).unwrap();
+        let auth = self.authenticator(self.issuer_audits[0].clone()).await;
+        let operator = auth
+            .authenticate(&format!("Bearer {}", self.control_token))
+            .await
+            .unwrap();
+        let request = ReadKeyRetentionRequest {
+            scope: KeyRetentionScope::TargetJournal {},
+            cursor: None,
+            limit: 64,
+        };
+        let page = control
+            .read_key_retention(&operator, request.clone())
+            .await
+            .unwrap();
+        let has_checkpoint = |page: &KeyRetentionPage| {
+            page.entries.iter().any(|entry| matches!(entry.reference, KeyReference::CompletedBackup {backup_id, ..} if backup_id == checkpoint.backup_id))
+        };
+        assert!(
+            has_checkpoint(&page),
+            "target backup graph absent: {:?}",
+            page.coverage
+        );
+        drop(page);
+        let source = self.source_observer.upgrade().unwrap();
+        let source_index = usize::try_from(source.raft_group().node_id() - 1).unwrap();
+        let crate::administration::DestinationConfig::Filesystem { directory, .. } =
+            &configurations[source_index].backup_destinations["primary"]
+        else {
+            panic!("expected filesystem target recovery fixture")
+        };
+        let id = checkpoint.backup_id;
+        let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+        let withheld = self.directory.join("withheld-target-checkpoint");
+        std::fs::rename(&manifest, &withheld).unwrap();
+        let unavailable = control.read_key_retention(&operator, request.clone()).await;
+        std::fs::rename(&withheld, &manifest).unwrap();
+        let unavailable = unavailable.unwrap();
+        assert!(!has_checkpoint(&unavailable));
+        assert!(
+            matches!(&unavailable.coverage, KeyRetentionCoverage::Incomplete {missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable {record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
+        );
+        drop(unavailable);
+        assert!(has_checkpoint(
+            &control
+                .read_key_retention(&operator, request)
+                .await
+                .unwrap()
+        ));
+    }
     pub async fn databases(&self) -> Vec<Arc<kasumi_engine::Database>> {
         let mut databases = Vec::new();
         for target in &self.targets {

@@ -20,6 +20,8 @@ use kasumi_store::{
     BackupDestination, NodeDiskDirectory, NodeStore, StorageAccess, TenantStorageSet, TenantStore,
 };
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
+#[path = "target_checkpoint_inventory.rs"]
+mod checkpoint_inventory;
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 #[cfg(test)]
@@ -627,8 +629,17 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
-    pub(crate) fn install_key_inventory(&self, control: &kasumi_engine::Database) -> Result<()> {
-        control.install_target_key_inventory(&self.journal)
+    pub(crate) fn install_key_inventory(
+        self: &Arc<Self>,
+        control: &Arc<kasumi_engine::Database>,
+    ) -> Result<()> {
+        control.install_target_checkpoint_inventory(
+            &self.journal,
+            Arc::new(checkpoint_inventory::Installed {
+                runtime: Arc::downgrade(self),
+                control: Arc::downgrade(control),
+            }),
+        )
     }
 
     #[cfg(test)]

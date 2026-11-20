@@ -27,6 +27,36 @@ pub struct LocalRecoveryCheckpoint<'a> {
     pub destination: &'a str,
 }
 
+/// The installed source of one serving target's historical backup. The journal
+/// and the serving database must independently identify the original operation.
+pub struct TargetCheckpointSource {
+    pub control: Arc<Database>,
+    pub target: Arc<Database>,
+    pub destination_alias: String,
+    pub destination: Arc<dyn BackupDestination>,
+    pub keys: Arc<dyn kasumi_store::KeyProvider>,
+}
+
+pub trait TargetCheckpointInventory: Send + Sync {
+    fn source(
+        &self,
+        target: uuid::Uuid,
+        checkpoint: &FullBackupCheckpoint,
+    ) -> anyhow::Result<Option<TargetCheckpointSource>>;
+}
+
+pub(super) enum CheckpointPurpose<'a> {
+    Exact(&'a kasumi_store::StoragePurpose),
+    Digest(&'a str),
+}
+
+pub(super) struct RecoveryGraph<'a> {
+    pub(super) checkpoint: &'a FullBackupCheckpoint,
+    pub(super) purpose: CheckpointPurpose<'a>,
+    pub(super) keys: Arc<dyn kasumi_store::KeyProvider>,
+    pub(super) destination: Arc<dyn BackupDestination>,
+}
+
 pub struct LocalRecoveryKeyRead<'a> {
     context: &'a RequestContext,
     request: &'a ReadKeyRetentionRequest,
@@ -46,12 +76,105 @@ impl LocalRecoveryKeyRead<'_> {
         control: &Database,
         tenant: &Database,
         selected: LocalRecoveryCheckpoint<'_>,
+        visit: impl FnMut(KeyRetentionEntry) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<[u8; 32]>> {
+        self.token.check()?;
+        anyhow::ensure!(
+            matches!(self.request.scope, KeyRetentionScope::LocalRecovery {}),
+            "standalone journal scope required"
+        );
+        selected.source_purpose.validate_application_identity(
+            &selected.checkpoint.tenant,
+            &selected.checkpoint.source_incarnation,
+        )?;
+        let destination = match tenant.archive_destination(selected.destination) {
+            Ok(destination) => destination,
+            Err(original) => {
+                tracing::warn!(backup_id = %selected.checkpoint.backup_id, %original, "original recovery backup destination unavailable");
+                return Ok(None);
+            }
+        };
+        self.visit_graph(
+            control,
+            tenant,
+            RecoveryGraph {
+                checkpoint: selected.checkpoint,
+                purpose: CheckpointPurpose::Exact(selected.source_purpose),
+                keys: selected.keys,
+                destination,
+            },
+            visit,
+        )
+    }
+
+    fn target_checkpoint(
+        &self,
+        journal: &crate::TargetJournal,
+        inventory: &dyn TargetCheckpointInventory,
+        target: uuid::Uuid,
+        checkpoint: &FullBackupCheckpoint,
+        visit: impl FnMut(KeyRetentionEntry) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<[u8; 32]>> {
+        self.token.check()?;
+        anyhow::ensure!(
+            matches!(self.request.scope, KeyRetentionScope::TargetJournal {}),
+            "target journal scope required"
+        );
+        let Some(source) = inventory.source(target, checkpoint)? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            source
+                .control
+                .target_keys
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .is_some_and(|installed| std::ptr::eq(installed.as_ref(), journal)),
+            "target source belongs to another Control journal"
+        );
+        let generation = source.target.engine.generation()?;
+        let state = &generation.state;
+        let id = target.to_string();
+        let origin = &state
+            .target_lifecycle
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("target database has no enrolled genesis"))?
+            .origin;
+        anyhow::ensure!(
+            state.tenant == checkpoint.tenant
+                && state.incarnation == id
+                && state.restored_from.as_ref() == Some(checkpoint)
+                && origin.materialization.request.checkpoint == *checkpoint
+                && origin.input.destination_alias == source.destination_alias,
+            "target checkpoint differs from the serving genesis or installed backup alias"
+        );
+        journal.require_checkpoint_origin(origin, &source.target.store)?;
+        let digest = self.visit_graph(
+            &source.control,
+            &source.target,
+            RecoveryGraph {
+                checkpoint,
+                purpose: CheckpointPurpose::Digest(&origin.input.source_purpose_sha256),
+                keys: source.keys,
+                destination: source.destination,
+            },
+            visit,
+        )?;
+        journal.require_checkpoint_origin(origin, &source.target.store)?;
+        self.token.check()?;
+        Ok(digest)
+    }
+
+    fn visit_graph(
+        &self,
+        control: &Database,
+        tenant: &Database,
+        selected: RecoveryGraph<'_>,
         mut visit: impl FnMut(KeyRetentionEntry) -> anyhow::Result<()>,
     ) -> anyhow::Result<Option<[u8; 32]>> {
         self.token.check()?;
         anyhow::ensure!(
-            matches!(self.request.scope, KeyRetentionScope::LocalRecovery {})
-                && control.store.tenant() == crate::control::CONTROL_TENANT
+            control.store.tenant() == crate::control::CONTROL_TENANT
                 && self.context.tenant == control.store.tenant()
                 && Arc::ptr_eq(self.security.store(), control.security_audit.store())
                 && Arc::ptr_eq(self.security.store(), tenant.security_audit.store())
@@ -700,6 +823,7 @@ impl Database {
                     None
                 };
             let local_recovery = self.local_recovery_keys.get().cloned();
+            let target_checkpoints = self.target_checkpoint_keys.get().cloned();
             let control_context = context.clone();
             let request = request.clone();
             let term = metrics.current_term;
@@ -718,6 +842,7 @@ impl Database {
                             issuers: issuer_keys,
                             member_inventories,
                             journal: journal.as_deref(),
+                            target_checkpoints: target_checkpoints.as_deref(),
                             local_recovery: local_recovery.as_deref(),
                         },
                         token,

@@ -69,6 +69,7 @@ mod key_retention;
 pub use key_retention::{
     AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryCheckpoint,
     LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, LocalRecoveryKeyRead, SignerCatalog,
+    TargetCheckpointInventory, TargetCheckpointSource,
 };
 
 #[path = "point_read.rs"]
@@ -1196,6 +1197,7 @@ pub struct Database {
     local_recovery_keys: std::sync::OnceLock<Arc<dyn LocalRecoveryKeyInventory>>,
     authority_signer_keys: std::sync::OnceLock<std::sync::Weak<dyn AuthoritySignerKeyInventory>>,
     signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
+    target_checkpoint_keys: std::sync::OnceLock<Arc<dyn TargetCheckpointInventory>>,
     target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
@@ -1612,6 +1614,7 @@ impl Database {
             authority_signer_keys: Default::default(),
             signer_keys: Default::default(),
             target_keys: Default::default(),
+            target_checkpoint_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
