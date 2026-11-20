@@ -227,7 +227,7 @@ impl Database {
                     let index = position.remaining.checked_sub(1).ok_or_else(expired)?;
                     let state = &generation.state;
                     let (cache, destination, reference) =
-                        Self::check_tenant_audit_copies(state, &store, &link, &token)?;
+                        Self::check_tenant_audit_copies(state, &store, &link, token)?;
                     if let Some(r) = &reference {
                         if r.previous.is_some() != (index > 0)
                             || (index + 1 == state.audit_retention.archive_segments

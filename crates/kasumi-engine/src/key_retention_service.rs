@@ -480,7 +480,7 @@ impl Database {
                             state,
                             stores.application(),
                             &reference.object,
-                            &token,
+                            token,
                         )?;
                         if authenticated
                             .as_ref()

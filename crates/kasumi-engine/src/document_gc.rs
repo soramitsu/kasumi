@@ -778,7 +778,11 @@ impl State {
             };
             self.census = Census::Walking(walk);
         }
-        if self.registration_slots >= self.budgets.register_flush_digests {
+        // A zero threshold flushes every queued owner. An empty queue must
+        // still walk the next descriptor, including after the last flush.
+        if !self.registrations.is_empty()
+            && self.registration_slots >= self.budgets.register_flush_digests
+        {
             return Ok(());
         }
         let Census::Walking(mut walk) = std::mem::replace(&mut self.census, Census::Idle) else {
