@@ -135,3 +135,37 @@ async fn text_directory_rows_move_only_forward_on_their_selected_tree() -> Resul
     assert_eq!(leftover, 0);
     Ok(())
 }
+
+#[test]
+fn positional_text_rows_preserve_the_legacy_wire_encoding() -> Result<()> {
+    let old = manifest(
+        12,
+        TextStatus::Current,
+        "kasumi.app.text@legacy",
+        TreeRoot::new_tree(),
+    );
+    let bytes = serde_json::to_vec(&old)?;
+    assert!(!std::str::from_utf8(&bytes)?.contains("boundary"));
+    assert_eq!(TextManifest::decode(&bytes)?, old);
+    let entry = TextBoundary::Applied {
+        index: 2,
+        log_sha256: [7; 32],
+        command_sha256: Some([8; 32]),
+    };
+    assert!(!old.matches(&entry));
+    let bound = old.clone().bound_to(entry.clone());
+    assert_eq!(TextManifest::decode(&serde_json::to_vec(&bound)?)?, bound);
+    assert!(bound.matches(&TextBoundary::Applied {
+        index: 2,
+        log_sha256: [7; 32],
+        command_sha256: None
+    }));
+    assert!(!bound.matches(&TextBoundary::Applied {
+        index: 2,
+        log_sha256: [7; 32],
+        command_sha256: Some([0; 32])
+    }));
+    assert!(old.stale_at(12).check_successor(&bound).is_err());
+    assert!(old.bound_to(TextBoundary::Bootstrap).write().is_err());
+    Ok(())
+}

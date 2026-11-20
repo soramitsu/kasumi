@@ -894,6 +894,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                     store,
                     &generation.state,
                     generation.document_resolver(),
+                    &crate::application_text::snapshot_boundary(&context.meta)?,
                     context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
                     &mut writes,
                 )?;
@@ -1181,6 +1182,47 @@ impl TenantEngine {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn substitute_text_history_for_test(
+        &self,
+        boundary: Option<kasumi_store::text_manifest::TextBoundary>,
+    ) -> anyhow::Result<()> {
+        use kasumi_store::{
+            NamespaceStage, SelectedGeneration, ordered_pages::TreeRoot, text_manifest::*,
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let selection = current
+            .application_selection
+            .get()
+            .expect("installed sources");
+        let sources = self.application_sources.get().expect("installed store");
+        let store = sources.primary_installation().0.application();
+        let family = SelectedGeneration::adopt(store, FAMILY, &INITIAL_SPACE)?;
+        let stage = NamespaceStage::begin_generation(store, FAMILY)?;
+        stage.seal_empty()?;
+        let mut manifest = TextManifest::new(
+            &current.state.tenant,
+            &current.state.incarnation,
+            current.state.revision_base,
+            current.state.revision,
+            TextStatus::Current,
+            stage.namespace(),
+            TreeRoot::new_tree(),
+            0,
+            0,
+            0,
+        );
+        manifest.boundary = boundary;
+        let mut writes = family.switch_writes(store, &[&stage])?;
+        writes.push(manifest.write()?);
+        store.write_batch(&writes)?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selection, None)?,
+            "substituted text root not selected"
+        );
+        Ok(())
+    }
     #[cfg(test)]
     pub(crate) fn select_wrong_primary_history_for_test(&self) -> anyhow::Result<()> {
         use kasumi_store::primary_manifest::PrimaryManifest;

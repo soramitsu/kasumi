@@ -51,6 +51,18 @@ impl Fixture {
         }
     }
 
+    fn boundary(state: &TenantState) -> TextBoundary {
+        let index = state.revision - state.revision_base;
+        applied_boundary(
+            &kasumi_raft::LogId {
+                index,
+                ..Default::default()
+            },
+            Some([index as u8; 32]),
+        )
+        .unwrap()
+    }
+
     /// Prepare `candidate` after `previous` and publish it as the paired
     /// application transaction would; `None` when nothing was written.
     fn publish(
@@ -66,6 +78,10 @@ impl Fixture {
             candidate,
             changed,
             &ResolverBodies(None),
+            &TextPosition {
+                previous: Some(Self::boundary(previous)),
+                current: Self::boundary(candidate),
+            },
         )
         .unwrap()?;
         let manifest = publication.manifest().clone();
@@ -632,7 +648,16 @@ async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
     // Reopening at the older snapshot keeps the directory: later entries
     // replay as covered publications.
     let mut writes = Vec::new();
-    prepare_restore(&fixture.owner, &fixture.store, &s1, None, true, &mut writes).unwrap();
+    prepare_restore(
+        &fixture.owner,
+        &fixture.store,
+        &s1,
+        None,
+        &Fixture::boundary(&s1),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     assert!(fixture.publish(&s1, &s2, &changed).is_none());
 
@@ -642,6 +667,7 @@ async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
         &fixture.store,
         &s1,
         None,
+        &Fixture::boundary(&s1),
         false,
         &mut writes,
     )
@@ -653,6 +679,44 @@ async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
     assert_ne!(installed.page_space, ahead.page_space);
     assert_eq!(fixture.search(&s1, "alpha"), ["a"]);
     assert!(fixture.search(&s1, "beta").is_empty());
+
+    // At an equal revision, an old row without a boundary and one bound to
+    // another log both require rebuilding from the authenticated snapshot.
+    let mut wrong_log = Fixture::boundary(&s1);
+    if let TextBoundary::Applied { log_sha256, .. } = &mut wrong_log {
+        log_sha256[0] ^= 1;
+    }
+    for boundary in [None, Some(wrong_log)] {
+        let family = SelectedGeneration::adopt(&fixture.store, FAMILY, &INITIAL_SPACE).unwrap();
+        let stage = NamespaceStage::begin_generation(&fixture.store, FAMILY).unwrap();
+        stage.seal_empty().unwrap();
+        let mut foreign = installed.clone();
+        foreign.page_space = stage.namespace().into();
+        foreign.records = TreeRoot::new_tree();
+        foreign.collections = 0;
+        foreign.shards = 0;
+        foreign.shard_bytes = 0;
+        foreign.boundary = boundary;
+        let mut writes = family.switch_writes(&fixture.store, &[&stage]).unwrap();
+        writes.push(foreign.write().unwrap());
+        fixture.store.write_batch(&writes).unwrap();
+        writes.clear();
+        prepare_restore(
+            &fixture.owner,
+            &fixture.store,
+            &s1,
+            None,
+            &Fixture::boundary(&s1),
+            true,
+            &mut writes,
+        )
+        .unwrap();
+        fixture.store.write_batch(&writes).unwrap();
+        let current = fixture.current();
+        assert!(current.matches(&Fixture::boundary(&s1)));
+        assert_ne!(current.page_space, foreign.page_space);
+        assert_eq!(fixture.search(&s1, "alpha"), ["a"]);
+    }
 
     // A rebuild that cannot read its bodies selects a stale empty generation
     // rather than keeping another history's directory.
@@ -669,6 +733,7 @@ async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
         &fixture.store,
         &unreadable,
         None,
+        &Fixture::boundary(&unreadable),
         false,
         &mut writes,
     )

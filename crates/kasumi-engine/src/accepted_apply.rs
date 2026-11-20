@@ -357,7 +357,7 @@ impl AcceptedGeneration<'_> {
     ) -> anyhow::Result<PreparedApplicationWrites> {
         // Index pending after-images before they are staged: their bodies are
         // still resident, and staged bodies are unreadable until committed.
-        let mut text = self.prepare_text()?;
+        let mut text = self.prepare_text(position)?;
         let mut documents = self.prepare_documents_since(roots, first_revision)?;
         let mut receipts = std::mem::take(&mut self.receipt_publications);
         if !receipts.is_empty()
@@ -426,7 +426,10 @@ impl AcceptedGeneration<'_> {
 
     /// The text directory's edit and manifest for this candidate, published
     /// with the rest of its writes. Nothing without an installed store.
-    fn prepare_text(&self) -> anyhow::Result<Option<crate::application_text::TextPublication>> {
+    fn prepare_text(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<Option<crate::application_text::TextPublication>> {
         let engine = self.owner.engine;
         let Some(store) = engine.snapshot_store.get() else {
             return Ok(None);
@@ -439,6 +442,16 @@ impl AcceptedGeneration<'_> {
             &self.candidate.state,
             &self.delta.changed,
             &crate::application_text::ResolverBodies(previous.document_resolver()),
+            &crate::application_text::TextPosition {
+                previous: match previous.application_selection.get() {
+                    Some(selected) => selected.text_boundary()?,
+                    None => None,
+                },
+                current: crate::application_text::entry_boundary(
+                    &position.log_id,
+                    &position.command_sha256,
+                )?,
+            },
         )
     }
 

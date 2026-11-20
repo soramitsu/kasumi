@@ -36,7 +36,7 @@ use kasumi_store::{
     ordered_pages::{
         self, Direction, Edit, EditWorkspace, PageSource, TreeReader, TreeRoot, ValueRef,
     },
-    text_manifest::{FAMILY, INITIAL_SPACE, TextManifest, TextStatus},
+    text_manifest::{FAMILY, INITIAL_SPACE, TextBoundary, TextManifest, TextStatus},
 };
 use kasumi_types::{CollectionState, Document, DocumentResolver, DocumentSlot, TenantState};
 use serde::{Deserialize, Serialize};
@@ -551,14 +551,55 @@ impl TextPublication {
     }
 }
 
+fn applied_boundary(
+    log: &kasumi_raft::LogId<u64>,
+    command_sha256: Option<[u8; 32]>,
+) -> Result<TextBoundary> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    serde_json::to_writer(&mut hash, &("kasumi.text.log.v1", log))?;
+    Ok(TextBoundary::Applied {
+        index: log.index,
+        log_sha256: hash.finalize().into(),
+        command_sha256,
+    })
+}
+
+pub(crate) fn entry_boundary(log: &kasumi_raft::LogId<u64>, digest: &str) -> Result<TextBoundary> {
+    let mut command = [0; 32];
+    hex::decode_to_slice(digest, &mut command)
+        .context("applied text command digest is not SHA-256")?;
+    applied_boundary(log, Some(command))
+}
+
+pub(crate) fn snapshot_boundary(
+    meta: &kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
+) -> Result<TextBoundary> {
+    match &meta.last_log_id {
+        Some(log) => applied_boundary(log, None),
+        None => Ok(TextBoundary::Bootstrap),
+    }
+}
+
+pub(crate) struct TextPosition {
+    pub(crate) previous: Option<TextBoundary>,
+    pub(crate) current: TextBoundary,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Plan {
     Nothing,
     Edit,
     Rebuild,
+    Stale,
 }
 
-fn plan(manifest: Option<&TextManifest>, previous: &TenantState, candidate: &TenantState) -> Plan {
+fn plan(
+    manifest: Option<&TextManifest>,
+    previous: &TenantState,
+    candidate: &TenantState,
+    position: &TextPosition,
+) -> Plan {
     let Some(manifest) = manifest else {
         return if has_text(candidate) {
             Plan::Rebuild
@@ -568,18 +609,35 @@ fn plan(manifest: Option<&TextManifest>, previous: &TenantState, candidate: &Ten
     };
     if manifest.incarnation != candidate.incarnation
         || manifest.revision_base != candidate.revision_base
-        || !manifest.is_current()
     {
         return Plan::Rebuild;
     }
-    if manifest.revision >= candidate.revision {
-        // Covered replay after reopen: the directory already indexes it.
-        Plan::Nothing
-    } else if manifest.revision == previous.revision {
-        Plan::Edit
-    } else {
-        Plan::Rebuild
+    if manifest.revision > candidate.revision {
+        // Covered replay cannot replace a later physical directory.
+        return Plan::Nothing;
     }
+    if !manifest.is_current() {
+        return Plan::Rebuild;
+    }
+    if manifest.revision == candidate.revision {
+        return if manifest.matches(&position.current) {
+            Plan::Nothing
+        } else {
+            Plan::Stale
+        };
+    }
+    if manifest.revision == previous.revision {
+        return if position
+            .previous
+            .as_ref()
+            .is_some_and(|prior| manifest.matches(prior))
+        {
+            Plan::Edit
+        } else {
+            Plan::Stale
+        };
+    }
+    Plan::Rebuild
 }
 
 /// The directory step of one candidate publication: `None` when nothing is
@@ -593,30 +651,44 @@ pub(crate) fn prepare_publication(
     candidate: &TenantState,
     changed: &BTreeMap<String, BTreeSet<String>>,
     bodies: &dyn TextBodies,
+    position: &TextPosition,
 ) -> Result<Option<TextPublication>> {
     owner.settle(store)?;
     let manifest = TextManifest::load(store)?;
-    let step = plan(manifest.as_ref(), previous, candidate);
+    let step = plan(manifest.as_ref(), previous, candidate, position);
     let rebuild_allowed = candidate.revision >= owner.rebuild_after.load(Ordering::Acquire);
     let outcome = match step {
         Plan::Nothing => return Ok(None),
+        Plan::Stale => return Ok(stale(manifest.as_ref(), candidate, &position.current)),
         Plan::Edit => {
             let manifest = manifest.as_ref().expect("edit has a current manifest");
-            match edit(store, manifest, previous, candidate, changed, bodies) {
+            match edit(
+                store,
+                manifest,
+                previous,
+                candidate,
+                changed,
+                bodies,
+                &position.current,
+            ) {
                 Ok(Some(publication)) => {
                     if publication.writes.iter().any(journal_write) {
                         owner.dirty.store(true, Ordering::Release);
                     }
                     return Ok(Some(publication));
                 }
-                Ok(None) if rebuild_allowed => rebuild_publication(owner, store, candidate, bodies),
+                Ok(None) if rebuild_allowed => {
+                    rebuild_publication(owner, store, candidate, bodies, &position.current)
+                }
                 // A failed rebuild backs off: the directory stays stale quietly.
-                Ok(None) => return Ok(stale(Some(manifest), candidate)),
+                Ok(None) => return Ok(stale(Some(manifest), candidate, &position.current)),
                 Err(error) => Err(error),
             }
         }
-        Plan::Rebuild if rebuild_allowed => rebuild_publication(owner, store, candidate, bodies),
-        Plan::Rebuild => return Ok(stale(manifest.as_ref(), candidate)),
+        Plan::Rebuild if rebuild_allowed => {
+            rebuild_publication(owner, store, candidate, bodies, &position.current)
+        }
+        Plan::Rebuild => return Ok(stale(manifest.as_ref(), candidate, &position.current)),
     };
     match outcome {
         Ok(publication) => Ok(publication),
@@ -627,7 +699,7 @@ pub(crate) fn prepare_publication(
                 io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "text directory could not follow a publication"
             );
-            Ok(stale(manifest.as_ref(), candidate))
+            Ok(stale(manifest.as_ref(), candidate, &position.current))
         }
     }
 }
@@ -637,14 +709,20 @@ fn journal_write(write: &WriteOp) -> bool {
 }
 
 /// Mark a current directory stale at `candidate`'s revision, if it can be.
-fn stale(manifest: Option<&TextManifest>, candidate: &TenantState) -> Option<TextPublication> {
+fn stale(
+    manifest: Option<&TextManifest>,
+    candidate: &TenantState,
+    boundary: &TextBoundary,
+) -> Option<TextPublication> {
     let manifest = manifest.filter(|manifest| {
         manifest.is_current()
-            && manifest.revision < candidate.revision
+            && manifest.revision <= candidate.revision
             && manifest.incarnation == candidate.incarnation
             && manifest.revision_base == candidate.revision_base
     })?;
-    let stale = manifest.stale_at(candidate.revision);
+    let stale = manifest
+        .stale_at(candidate.revision)
+        .bound_to(boundary.clone());
     let write = stale.write().ok()?;
     Some(TextPublication {
         writes: vec![write],
@@ -658,8 +736,15 @@ fn rebuild_publication(
     store: &Arc<TenantStore>,
     candidate: &TenantState,
     bodies: &dyn TextBodies,
+    boundary: &TextBoundary,
 ) -> Result<Option<TextPublication>> {
-    let rebuilt = rebuild(store, candidate, bodies);
+    let rebuilt = stage_generation(
+        store,
+        candidate,
+        Some(bodies),
+        TextStatus::Current,
+        boundary,
+    );
     // Either way an unselected or soon replaced generation may remain.
     owner.dirty.store(true, Ordering::Release);
     if rebuilt.is_err() {
@@ -673,19 +758,12 @@ fn rebuild_publication(
 
 /// Stage a complete directory of `state` in a fresh generation: one shard
 /// build and one tree path at a time. The returned writes select it.
-pub(crate) fn rebuild(
-    store: &Arc<TenantStore>,
-    state: &TenantState,
-    bodies: &dyn TextBodies,
-) -> Result<TextPublication> {
-    stage_generation(store, state, Some(bodies), TextStatus::Current)
-}
-
 fn stage_generation(
     store: &Arc<TenantStore>,
     state: &TenantState,
     bodies: Option<&dyn TextBodies>,
     status: TextStatus,
+    boundary: &TextBoundary,
 ) -> Result<TextPublication> {
     NamespaceStage::reclaim_family(store, FAMILY)?;
     let family = SelectedGeneration::adopt(store, FAMILY, &INITIAL_SPACE)?;
@@ -758,7 +836,8 @@ fn stage_generation(
         totals.0,
         totals.1,
         totals.2,
-    );
+    )
+    .bound_to(boundary.clone());
     writes.push(manifest.write()?);
     Ok(TextPublication {
         writes,
@@ -785,6 +864,7 @@ fn edit(
     candidate: &TenantState,
     changed: &BTreeMap<String, BTreeSet<String>>,
     bodies: &dyn TextBodies,
+    boundary: &TextBoundary,
 ) -> Result<Option<TextPublication>> {
     let tree = TreeReader::new(&**store, &manifest.page_space, manifest.records, None)?;
     let mut names: BTreeSet<&str> = changed.keys().map(String::as_str).collect();
@@ -890,7 +970,8 @@ fn edit(
         totals.collections,
         totals.shards,
         totals.bytes,
-    );
+    )
+    .bound_to(boundary.clone());
     writes.push(next.write()?);
     Ok(Some(TextPublication {
         writes,
@@ -1186,6 +1267,7 @@ pub(crate) fn prepare_restore(
     store: &Arc<TenantStore>,
     state: &TenantState,
     resolver: Option<&dyn DocumentResolver>,
+    boundary: &TextBoundary,
     reopen: bool,
     writes: &mut Vec<WriteOp>,
 ) -> Result<()> {
@@ -1198,14 +1280,22 @@ pub(crate) fn prepare_restore(
         && manifest.is_current()
         && manifest.incarnation == state.incarnation
         && manifest.revision_base == state.revision_base
-        && manifest.revision >= state.revision
+        && manifest.boundary.is_some()
+        && (manifest.revision > state.revision
+            || (manifest.revision == state.revision && manifest.matches(boundary)))
     {
         return Ok(());
     }
     if manifest.is_none() && !has_text(state) {
         return Ok(());
     }
-    let publication = match rebuild(store, state, &ResolverBodies(resolver)) {
+    let publication = match stage_generation(
+        store,
+        state,
+        Some(&ResolverBodies(resolver)),
+        TextStatus::Current,
+        boundary,
+    ) {
         Ok(publication) => publication,
         Err(error) => {
             tracing::warn!(
@@ -1214,7 +1304,7 @@ pub(crate) fn prepare_restore(
                 io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "text directory could not be rebuilt at restore"
             );
-            stage_generation(store, state, None, TextStatus::Stale)?
+            stage_generation(store, state, None, TextStatus::Stale, boundary)?
         }
     };
     owner.dirty.store(true, Ordering::Release);

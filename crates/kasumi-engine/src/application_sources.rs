@@ -261,6 +261,30 @@ impl SelectedApplication {
         };
         Ok(manifest.matches_applied(applied.as_ref()))
     }
+    pub(crate) fn text_boundary(
+        &self,
+    ) -> Result<Option<kasumi_store::text_manifest::TextBoundary>> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let boundary = match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => crate::application_text::entry_boundary(&log_id, command_sha256)?,
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
+                crate::application_text::snapshot_boundary(meta)?
+            }
+            None => kasumi_store::text_manifest::TextBoundary::Bootstrap,
+        };
+        Ok(Some(boundary))
+    }
+
     pub(crate) fn matches_primary_boundary(
         &self,
         manifest: &kasumi_store::primary_manifest::PrimaryManifest,

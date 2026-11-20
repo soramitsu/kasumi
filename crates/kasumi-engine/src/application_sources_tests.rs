@@ -3316,6 +3316,73 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
     assert!(manifest.is_current());
     assert_eq!(manifest.revision, latest.state.revision);
     assert_eq!(manifest.page_space, before.page_space);
+    // The installed selector stays at this entry while the secondary alone
+    // receives an empty current directory from another log, command, or a
+    // legacy manifest without history. Cached shards cannot supply that view.
+    let boundary = manifest.boundary.expect("ordinary text directory history");
+    let mut wrong_log = boundary.clone();
+    let mut wrong_command = boundary;
+    let kasumi_store::text_manifest::TextBoundary::Applied { log_sha256, .. } = &mut wrong_log
+    else {
+        panic!("expected text entry position");
+    };
+    log_sha256[0] ^= 1;
+    let kasumi_store::text_manifest::TextBoundary::Applied {
+        command_sha256: Some(command),
+        ..
+    } = &mut wrong_command
+    else {
+        panic!("expected text command digest");
+    };
+    command[0] ^= 1;
+    for foreign in [Some(wrong_log), Some(wrong_command), None] {
+        engine.substitute_text_history_for_test(foreign)?;
+        let denied = db
+            .query(
+                &context,
+                kasumi_types::QueryRequest::new("docs")
+                    .search(kasumi_types::TextSearch::new("text", "shared")),
+            )
+            .await
+            .err()
+            .expect("foreign text directory refused");
+        assert_eq!(denied.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(
+            search_generation(&latest, &source.storage.admission, "shared")?,
+            ["a", "c", "d"]
+        );
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            let progress = db.text_warmup_status();
+            if progress.revision == Some(latest.revision())
+                && progress.state == crate::TextWarmupState::DirectoryUnavailable
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("text warmup accepted the unbound selection")?;
+    for current in [false, true] {
+        db.administer(
+            context.clone(),
+            kasumi_types::Operation::SetLimits(latest.state.limits.clone()),
+        )
+        .await?;
+        let stored = TextManifest::load(source.stores.application())?.unwrap();
+        assert_eq!(stored.is_current(), current);
+        let selection = engine.generation()?;
+        let expected = selection
+            .application_selection
+            .get()
+            .unwrap()
+            .text_boundary()?
+            .unwrap();
+        assert!(stored.matches(&expected));
+    }
+    assert_eq!(search(&db, &context, "shared").await?, ["a", "c", "d"]);
     drop(latest);
 
     db.shutdown().await?;
