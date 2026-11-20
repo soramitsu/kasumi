@@ -222,10 +222,13 @@ impl Database {
         selected
             .source_purpose
             .validate_application_identity(&expected.tenant, &expected.source_incarnation)?;
-        anyhow::ensure!(
-            self.store.tenant() == expected.tenant,
-            "recovery key reader belongs to another tenant"
-        );
+        if self.store.tenant() != expected.tenant {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "recovery key reader belongs to another tenant",
+            )
+            .into());
+        }
         let registration = self.work.begin(cancellation.clone())?;
         let slot = self.query_slots.clone().try_acquire_owned().map_err(|_| {
             Error::new(
@@ -247,11 +250,11 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("retained recovery backup session missing"))?;
             control.check()?;
             cancellation.check()?;
-            anyhow::ensure!(
-                session.source_purpose() == selected.source_purpose
-                    && matches!(session.outcome(), Some(BackupSessionOutcome::Complete {checkpoint, ..}) if checkpoint == expected),
-                "retained recovery checkpoint or source purpose differs from the authenticated session"
-            );
+            if session.source_purpose() != selected.source_purpose
+                || !matches!(session.outcome(), Some(BackupSessionOutcome::Complete {checkpoint, ..}) if checkpoint == expected)
+            {
+                return Err(Error::new(ErrorCode::Corruption, "retained recovery checkpoint or source purpose differs from the authenticated session").into());
+            }
             session.visit_wrapping_keys(observe)?;
             let objects =
                 kasumi_store::BackupSessionObjects::new(destination.as_ref(), expected.backup_id)?;
@@ -288,10 +291,13 @@ impl Database {
                     },
                 )
                 .await?;
-            anyhow::ensure!(
-                matches,
-                "retained recovery graph differs from the permanent checkpoint"
-            );
+            if !matches {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "retained recovery graph differs from the permanent checkpoint",
+                )
+                .into());
+            }
             reader.check_access().await?;
             Ok::<_, crate::SnapshotFailure>(())
         };
