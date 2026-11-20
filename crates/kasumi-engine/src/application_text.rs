@@ -382,21 +382,21 @@ fn build_shards<'a>(
     bodies: &dyn TextBodies,
     mut emit: impl FnMut(BuiltTextShard) -> Result<()>,
 ) -> Result<()> {
-    let mut writer = TextShardWriter::new(layout)?;
-    for (id, slot) in rows {
-        bodies.with_body(slot, &mut |document| {
-            ensure!(document.id == id, "text body identity differs");
-            Ok(writer.add(id, document.version, &document.body)?)
-        })?;
-        if writer.documents() >= MAX_SHARD_DOCUMENTS || writer.text_bytes() >= CUT_TEXT_BYTES {
-            let full = std::mem::replace(&mut writer, TextShardWriter::new(layout)?);
-            if let Some(built) = full.finish()? {
-                emit(built)?;
+    let mut rows = rows.peekable();
+    while rows.peek().is_some() {
+        let mut writer = TextShardWriter::new(layout)?;
+        for (id, slot) in rows.by_ref() {
+            bodies.with_body(slot, &mut |document| {
+                ensure!(document.id == id, "text body identity differs");
+                Ok(writer.add(id, document.version, &document.body)?)
+            })?;
+            if writer.documents() >= MAX_SHARD_DOCUMENTS || writer.text_bytes() >= CUT_TEXT_BYTES {
+                break;
             }
         }
-    }
-    if let Some(built) = writer.finish()? {
-        emit(built)?;
+        if let Some(built) = writer.finish()? {
+            emit(built)?;
+        }
     }
     Ok(())
 }
@@ -885,17 +885,13 @@ impl CollectionEdit<'_, '_> {
                 live_version(self.collection, id)?;
                 Some((id.as_str(), self.collection.documents.get(id)?.as_ref()))
             });
-            let mut built = Vec::new();
             build_shards(self.layout, rows, bodies, |shard| {
-                built.push(shard);
-                Ok(())
-            })?;
-            for shard in built {
                 let seq = descriptor.next_shard;
                 descriptor.next_shard += 1;
                 descriptor.add(shard.documents, shard.bytes(), &shard.tokens)?;
                 members.insert(seq, (level(shard.documents), Member::Pending(shard)));
-            }
+                Ok(())
+            })?;
         }
         let keep = |id: &str, version: u64| -> kasumi_types::Result<bool> {
             Ok(live_version(self.collection, id) == Some(version))
@@ -997,14 +993,13 @@ impl CollectionEdit<'_, '_> {
             let Member::Pending(built) = member else {
                 unreachable!("only new shards are members")
             };
-            for (file, bytes) in built.files.iter() {
+            let descriptor = encode(&ShardDescriptor::of(self.layout, &built))?;
+            for (file, bytes) in built.files {
                 self.edits
-                    .insert(file_key(self.name, seq, file), Some(bytes.clone()));
+                    .insert(file_key(self.name, seq, &file), Some(bytes));
             }
-            self.edits.insert(
-                shard_key(self.name, seq),
-                Some(encode(&ShardDescriptor::of(self.layout, &built))?),
-            );
+            self.edits
+                .insert(shard_key(self.name, seq), Some(descriptor));
             self.edits
                 .insert(level_key(self.name, level, seq), Some(Vec::new()));
         }

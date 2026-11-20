@@ -95,6 +95,7 @@ impl BuiltTextShard {
 pub struct TextShardWriter {
     layout: TextShardLayout,
     index: Index,
+    directory: RamDirectory,
     writer: tantivy::IndexWriter<TantivyDocument>,
     documents: u32,
     text_bytes: u64,
@@ -102,7 +103,13 @@ pub struct TextShardWriter {
 
 impl TextShardWriter {
     pub fn new(layout: &TextShardLayout) -> Result<Self> {
-        let index = Index::create_in_ram(layout.0.schema.clone());
+        let directory = RamDirectory::create();
+        let index = Index::create(
+            directory.clone(),
+            layout.0.schema.clone(),
+            IndexSettings::default(),
+        )
+        .map_err(search_error)?;
         layout.0.register(&index)?;
         let writer = index
             .writer_with_num_threads::<TantivyDocument>(1, WRITER_ARENA)
@@ -111,6 +118,7 @@ impl TextShardWriter {
         Ok(Self {
             layout: layout.clone(),
             index,
+            directory,
             writer,
             documents: 0,
             text_bytes: 0,
@@ -148,12 +156,16 @@ impl TextShardWriter {
             self.writer.merge(&segments).wait().map_err(search_error)?;
         }
         self.writer.wait_merging_threads().map_err(search_error)?;
-        extract(&self.layout, &self.index).map(Some)
+        extract(&self.layout, &self.index, &self.directory).map(Some)
     }
 }
 
 /// Read every file of a single-segment RAM index, with its statistics.
-fn extract(layout: &TextShardLayout, index: &Index) -> Result<BuiltTextShard> {
+fn extract(
+    layout: &TextShardLayout,
+    index: &Index,
+    directory: &RamDirectory,
+) -> Result<BuiltTextShard> {
     let metas = index.searchable_segment_metas().map_err(search_error)?;
     let [meta] = metas.as_slice() else {
         return Err(search_error("text shard is not one segment"));
@@ -164,23 +176,28 @@ fn extract(layout: &TextShardLayout, index: &Index) -> Result<BuiltTextShard> {
     let mut names: Vec<PathBuf> = meta.list_files().into_iter().collect();
     names.push(PathBuf::from(META));
     names.sort();
-    let directory = index.directory();
-    let mut files = Vec::with_capacity(names.len());
+    let mut files = Vec::with_capacity(names.len().min(MAX_SHARD_FILES));
     let mut total = 0u64;
     for name in names {
         if !directory.exists(&name).map_err(search_error)? {
             continue;
         }
-        let bytes = directory.atomic_read(&name).map_err(search_error)?;
-        total = total.saturating_add(bytes.len() as u64);
+        // The underlying immutable file includes Tantivy's footer. Reading
+        // through ManagedDirectory would strip it from exported segment files.
+        let handle = directory.get_file_handle(&name).map_err(search_error)?;
+        total = total.saturating_add(handle.len() as u64);
+        if files.len() == MAX_SHARD_FILES || total > MAX_SHARD_BYTES {
+            return Err(exhausted("text shard exceeds its file bound"));
+        }
+        let bytes = handle
+            .read_bytes(0..handle.len())
+            .map_err(search_error)?
+            .to_vec();
         let name = name
             .to_str()
             .ok_or_else(|| search_error("non-UTF-8 shard file name"))?
             .to_owned();
         files.push((name, bytes));
-    }
-    if files.len() > MAX_SHARD_FILES || total > MAX_SHARD_BYTES {
-        return Err(exhausted("text shard exceeds its file bound"));
     }
     let searcher = capture(index)?;
     let mut tokens = vec![0u64; layout.field_count()];
@@ -337,15 +354,16 @@ pub fn merge_text_shards(
     if survivors > u64::from(MAX_SHARD_DOCUMENTS) {
         return Err(exhausted("merged text shard exceeds its row bound"));
     }
+    let directory = RamDirectory::create();
     let merged = tantivy::indexer::merge_filtered_segments(
         &segments,
         IndexSettings::default(),
         filters,
-        RamDirectory::create(),
+        directory.clone(),
     )
     .map_err(search_error)?;
     layout.0.register(&merged)?;
-    let built = extract(layout, &merged)?;
+    let built = extract(layout, &merged, &directory)?;
     if u64::from(built.documents) != survivors {
         return Err(search_error("merged text shard row count differs"));
     }
