@@ -1480,11 +1480,6 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
         )
         .await?;
-    let expected = source_db
-        .raft_group()
-        .linearizable_barrier()
-        .await?
-        .expect("initialized source log");
     // Ordinary writes alone keep the structured directory current. Before any
     // snapshot exists, the leader's generation reads its postings from the
     // directory its own publication committed with the applied cursor.
@@ -1558,7 +1553,82 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 .collect::<Vec<_>>(),
             ["alpha"]
         );
+        let applied = kasumi_store::structured_manifest::StructuredManifest::load(
+            source.stores.application(),
+        )?
+        .expect("published field directory")
+        .applied
+        .expect("exact applied entry");
+        for wrong_log in [true, false] {
+            let mut substituted = applied.clone();
+            if wrong_log {
+                substituted.log_sha256[0] ^= 1;
+            } else {
+                substituted
+                    .command_sha256
+                    .as_mut()
+                    .expect("command identity")[0] ^= 1;
+            }
+            source_engine.select_wrong_structured_history_for_test(substituted)?;
+            let changed = source_engine.generation()?;
+            assert!(
+                changed
+                    .application_selection
+                    .get()
+                    .unwrap()
+                    .with_structured_records(
+                        None,
+                        &changed.state,
+                        || changed.indexes.structured_layout_sha256(),
+                        |_| Ok(())
+                    )?
+                    .is_none()
+            );
+            let mut memory =
+                kasumi_query::QueryMemory::empty(source.storage.admission.reserve(0, None)?);
+            let fallback = crate::test_utils::fixture_query(&changed, &query, &mut memory)?;
+            assert_eq!(
+                fallback
+                    .rows
+                    .iter()
+                    .map(|r| r.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["alpha"]
+            );
+            assert_eq!(
+                selection.with_structured_records(
+                    None,
+                    &ordinary.state,
+                    || ordinary.indexes.structured_layout_sha256(),
+                    |tree| Ok(tree.root().count())
+                )?,
+                Some(11)
+            );
+        }
     }
+    // A normal write cannot turn the empty foreign tree into a current
+    // directory. The next bounded replacement reconstructs the actual rows.
+    for current in [false, true] {
+        source_db
+            .mutate(
+                context.clone(),
+                kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
+            )
+            .await?;
+        let fields = kasumi_store::structured_manifest::StructuredManifest::load(
+            source.stores.application(),
+        )?
+        .unwrap();
+        assert_eq!(fields.is_current(), current);
+        if current {
+            assert_eq!(fields.records.count(), 11);
+        }
+    }
+    let expected = source_db
+        .raft_group()
+        .linearizable_barrier()
+        .await?
+        .expect("initialized source log");
     source_db.raft_group().snapshot().await?;
     // The trigger only enqueues work. Wait for actual snapshot publication at
     // this stable local applied position before obtaining the transfer image.

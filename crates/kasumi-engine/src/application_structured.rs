@@ -116,13 +116,20 @@ fn log_sha256(log_id: &kasumi_raft::LogId<u64>) -> Result<[u8; 32]> {
 pub(crate) fn entry_applied(
     position: &kasumi_raft::AppliedEntryContext,
 ) -> Result<StructuredApplied> {
+    entry_identity(&position.log_id, &position.command_sha256)
+}
+
+pub(crate) fn entry_identity(
+    log: &kasumi_raft::LogId<u64>,
+    digest: &str,
+) -> Result<StructuredApplied> {
     let mut command = [0u8; 32];
-    if hex::decode_to_slice(&position.command_sha256, &mut command).is_err() {
-        command = Sha256::digest(position.command_sha256.as_bytes()).into();
+    if hex::decode_to_slice(digest, &mut command).is_err() {
+        command = Sha256::digest(digest.as_bytes()).into();
     }
     Ok(StructuredApplied {
-        index: position.log_id.index,
-        log_sha256: log_sha256(&position.log_id)?,
+        index: log.index,
+        log_sha256: log_sha256(log)?,
         command_sha256: Some(command),
     })
 }
@@ -610,23 +617,21 @@ fn step(
 /// when access to the store itself is lost, which fails the apply's own
 /// writes as well. Any other failure publishes nothing, and the next
 /// candidate finds the directory behind its predecessor.
-pub(crate) fn prepare_publication(
+pub(crate) fn prepare_publication_at(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: &TenantState,
-    previous_indexes: &QueryIndexes,
-    candidate: &TenantState,
-    candidate_indexes: &QueryIndexes,
+    previous: (&TenantState, &QueryIndexes),
+    candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
+    matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
 ) -> Result<Option<StructuredPublication>> {
     match follow(
         owner,
         store,
         previous,
-        previous_indexes,
         candidate,
-        candidate_indexes,
         applied,
+        matches_predecessor,
     ) {
         Ok(publication) => Ok(publication),
         Err(error) => {
@@ -635,7 +640,7 @@ pub(crate) fn prepare_publication(
             }
             tracing::error!(
 
-                revision = candidate.revision,
+                revision = candidate.0.revision,
                 io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "structured directory publication is skipped"
             );
@@ -647,12 +652,13 @@ pub(crate) fn prepare_publication(
 fn follow(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: &TenantState,
-    previous_indexes: &QueryIndexes,
-    candidate: &TenantState,
-    candidate_indexes: &QueryIndexes,
+    previous: (&TenantState, &QueryIndexes),
+    candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
+    matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
 ) -> Result<Option<StructuredPublication>> {
+    let (previous, previous_indexes) = previous;
+    let (candidate, candidate_indexes) = candidate;
     let Some(manifest) = load_or_skip(store)? else {
         return Ok(None);
     };
@@ -663,14 +669,12 @@ fn follow(
         }
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
-            // A directory selected without a log position (bootstrap) is
-            // identified by its rows alone: genesis membership replays that
-            // same revision as an entry.
-            let same = match (&manifest.applied, &applied) {
-                (Some(selected), Some(replayed)) => selected.same_position(replayed),
-                (None, _) => true,
-                (Some(_), None) => false,
-            };
+            let binds_genesis = manifest.applied.is_none()
+                && manifest.revision == manifest.revision_base
+                && applied
+                    .as_ref()
+                    .is_some_and(|p| p.index == 0 && p.command_sha256.is_some());
+            let same = binds_genesis || manifest.matches_applied(applied.as_ref());
             let verified = if same {
                 verify_rows(&**store, &manifest, candidate, candidate_indexes)
             } else {
@@ -679,6 +683,11 @@ fn follow(
                 ))
             };
             return match verified {
+                Ok(()) if binds_genesis => {
+                    let mut bound = manifest;
+                    bound.applied = applied;
+                    Ok(Some(StructuredPublication::only(vec![bound.write()?])))
+                }
                 Ok(()) => Ok(None),
                 Err(error) => {
                     store.check_access()?;
@@ -696,6 +705,14 @@ fn follow(
             return stale(&manifest, candidate, applied, anyhow::anyhow!(reason));
         }
         Step::Edit => match manifest {
+            Some(manifest) if !matches_predecessor(&manifest)? => {
+                return stale(
+                    &manifest,
+                    candidate,
+                    applied,
+                    anyhow::anyhow!("structured predecessor differs from selected Raft boundary"),
+                );
+            }
             Some(manifest) => manifest,
             None => {
                 let selected = SelectedGeneration::load(

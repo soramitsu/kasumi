@@ -502,7 +502,10 @@ impl SelectedApplication {
             let Some(manifest) = StructuredManifest::load_from_pair(view)? else {
                 return Ok(None);
             };
-            if !manifest.is_current() || manifest.revision != state.revision {
+            if !manifest.is_current()
+                || manifest.revision != state.revision
+                || !self.matches_structured_boundary(&manifest)?
+            {
                 return Ok(None);
             }
             ensure!(
