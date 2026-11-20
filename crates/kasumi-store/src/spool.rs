@@ -437,9 +437,9 @@ impl EncryptedSpool {
         Ok(())
     }
 
-    /// Native segments append complete records while the group owns its one
+    /// Native directory pages and segment records append while the group owns its one
     /// serialized I/O workspace. Small or in-place writes use the block cache.
-    pub(crate) fn write_native_segment(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub(crate) fn write_native(&mut self, bytes: &[u8]) -> io::Result<()> {
         if self.position != self.length || bytes.len() < 3 * NATIVE_BLOCK {
             return self.write_all(bytes);
         }

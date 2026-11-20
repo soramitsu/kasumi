@@ -30,7 +30,7 @@ fn native_segment_appends_share_writes_and_authenticate_each_original_slot() {
         spool.write_all(&data[..27]).unwrap();
     }
     regular.write_all(&data[27..]).unwrap();
-    grouped.write_native_segment(&data[27..]).unwrap();
+    grouped.write_native(&data[27..]).unwrap();
     regular.flush_extent().unwrap();
     grouped.flush_extent().unwrap();
     assert_eq!(regular.ciphertext_writes, 20);
@@ -61,6 +61,30 @@ fn native_segment_appends_share_writes_and_authenticate_each_original_slot() {
         grouped.read_exact(&mut actual[..1]).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
+}
+
+#[test]
+fn native_directory_appends_group_four_slots_and_header_overwrites_preserve_pages() {
+    let (_directory, disk) = fixture();
+    let mut spool = EncryptedSpool::new_native(&disk, 9 * NATIVE_BLOCK as u64).unwrap();
+    let header = vec![17; NATIVE_BLOCK];
+    let first = vec![31; 4 * NATIVE_BLOCK];
+    let second = vec![73; 4 * NATIVE_BLOCK];
+    spool.write_native(&header).unwrap();
+    spool.write_native(&first).unwrap();
+    spool.write_native(&second).unwrap();
+    spool.flush_extent().unwrap();
+    // One header and one grouped ciphertext write per 16-KiB directory page.
+    assert_eq!(spool.ciphertext_writes, 3);
+    let replacement = vec![91; NATIVE_BLOCK];
+    spool.rewind().unwrap();
+    spool.write_native(&replacement).unwrap();
+    spool.flush_extent().unwrap();
+    spool.rewind().unwrap();
+    let mut actual = Vec::new();
+    spool.read_to_end(&mut actual).unwrap();
+    assert_eq!(actual, [replacement, first, second].concat());
+    dispose(spool);
 }
 
 #[test]
