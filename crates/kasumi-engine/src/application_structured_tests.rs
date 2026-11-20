@@ -637,6 +637,55 @@ async fn ordinary_writes_keep_every_posting_current_for_each_predicate() {
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structured_edits_borrow_overflow_values_until_the_producer_fits() {
+    let fixture = Fixture::new().await;
+    let owner = StructuredOwner::default();
+    let genesis = genesis();
+    let first = genesis.next(vec![("original".into(), small(1))], &[], None);
+    assert!(fixture.publish(&owner, &genesis, &first, 1));
+    let selected = fixture.manifest();
+
+    let scalar = "x".repeat(MAX_EDIT_BYTES + 1);
+    let value = FieldValue {
+        tag: 5,
+        bytes: std::borrow::Cow::Borrowed(scalar.as_bytes()),
+    };
+    let (_, borrowed) = encode_row(
+        "docs",
+        StructuredRow::Value {
+            field: 0,
+            value: &value,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(borrowed.as_ptr(), scalar.as_ptr());
+
+    let next = first.next(vec![("large".into(), json!({"status":scalar}))], &[], None);
+    let before = crate::test_utils::reserved_payload_bytes(&fixture._storage.admission);
+    assert!(
+        edit(
+            &owner,
+            &fixture.store,
+            &selected,
+            &first.indexes,
+            &next.state,
+            &next.indexes,
+            Some(applied(&next.state, 1)),
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&fixture._storage.admission),
+        before
+    );
+    assert_eq!(fixture.manifest(), selected);
+    fixture.verify(&first);
+    fixture.close().await;
+}
+
 fn small(n: usize) -> Value {
     json!({"status": format!("s{:04}", n % 97), "n": n})
 }
