@@ -74,10 +74,10 @@ def index_originals(db, root, plan, summary, minimum_failed=257):
         kind = row["kind"]
         require(kind in ("complete", "aborted") and row["stage"] in ("populate", "resolve"),
                 "original result is not terminal")
-        if (profile := plan.get("profile")) and (interval := profile["complete_interval"]) is not None:
-            reserve = total - plan["kill_reserve"]
-            complete = ordinal % interval == 0 if ordinal < reserve else ordinal < reserve + plan["kill_reserve"] // 2
-            require(kind == ("complete" if complete else "aborted"), "original differs from the prospective workload")
+        if (ordinal < total - plan["kill_reserve"] and (profile := plan.get("profile"))
+                and (interval := profile["complete_interval"]) is not None):
+            expected = "complete" if ordinal % interval == 0 else "aborted"
+            require(kind == expected and row["stage"] == "populate", "original differs from the prospective workload")
         result = row["checkpoint"] if kind == "complete" else row["outcome"]
         require(isinstance(result, dict) and
                 (row["outcome"] is None if kind == "complete" else row["checkpoint"] is None),
@@ -324,8 +324,9 @@ def check_boundaries(db, witness, failed):
     require(deleted == staged and cleanup["repeat"] == verified["cleanup_after_restart"] == empty,
             "cleanup did not exhaust the original objects")
     replayed = verified["replayed"]
-    require(uint(replayed["aborted"], "replayed aborts") == failed and
-            uint(replayed["complete"], "replayed completions") + failed == witness["observed_distinct_sessions"] and
+    require(isinstance(replayed, dict) and {"aborted"} <= set(replayed) <= {"aborted", "complete"} and
+            uint(replayed["aborted"], "replayed aborts") == failed and
+            uint(replayed.get("complete", 0), "replayed completions") + failed == witness["observed_distinct_sessions"] and
             sum(uint(v, "retained refusal count") for v in verified["aborted_backup_refusals"].values()) == failed
             and all(k.startswith("Conflict:") for k in verified["aborted_backup_refusals"]),
             "replay did not return every original terminal result")
@@ -396,7 +397,11 @@ def check_kills(root, witness, resolved, db):
         original = document(root, f"inflight-{ordinal:06d}.json")
         resolution = resolved[ordinal]
         ident = session_id(witness["plan"]["nonce"], ordinal)
+        # The process is killed before it receives a result. Its durable
+        # resolution may abort the checkpoint that the original caller began.
         kind = original["kind"]
+        planned = "complete" if ordinal < total - reserve + reserve // 2 else "aborted"
+        require(kind == planned, "interrupted operation differs from the prospective workload")
         write, method = {"complete": ("claim", "backup_checkpoint_named"),
                          "aborted": ("terminal", "abort_backup_session")}[kind]
         request = f"floor-{ordinal:06d}"

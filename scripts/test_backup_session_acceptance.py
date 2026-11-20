@@ -39,6 +39,21 @@ class SessionEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prospective workload"):
             sessions.index_originals(self.db, self.root, plan, {"original_journal_sha256": digest})
 
+    def test_killed_checkpoint_can_resolve_to_a_durable_abort(self):
+        plan = {"sessions": 4, "nonce": self.nonce, "kill_reserve": 2, "profile": {"complete_interval": 2}}
+        rows = []
+        for ordinal in range(4):
+            resolved = ordinal >= 2
+            rows.append({"ordinal": ordinal, "session_id": sessions.session_id(self.nonce, ordinal),
+                         "request_id": f"floor-{ordinal:06d}", "kind": "complete" if ordinal == 0 else "aborted",
+                         "stage": "resolve" if resolved else "populate", "seconds": 0.25,
+                         "checkpoint": {} if ordinal == 0 else None, "outcome": None if ordinal == 0 else {},
+                         "resolution": {"ordinal": ordinal} if resolved else None})
+        digest = self.journal("original.jsonl", rows)
+        report = {"original_journal_sha256": digest, "originals": 4, "original_failed": 3}
+        self.assertEqual(sessions.index_originals(self.db, self.root, plan, report, minimum_failed=1),
+                         (3, {2: {"ordinal": 2}, 3: {"ordinal": 3}}))
+
     def test_originals_require_distinct_planned_requests_and_permanent_failure_cohort(self):
         rows = []
         for ordinal in range(258):
