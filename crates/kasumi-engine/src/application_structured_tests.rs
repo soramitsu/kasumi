@@ -847,6 +847,59 @@ async fn a_partial_structured_array_resumes_by_row_key_across_reordering_and_del
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_partial_binds_its_original_genesis_and_promotes_only_its_exhausted_root() {
+    let fixture = Fixture::new().await;
+    let owner = StructuredOwner::default();
+    let mut model = genesis().next(vec![("row".into(), small(7))], &[], None);
+    model.state.revision_base = model.state.revision;
+    let mut seed =
+        incremental::seed(&owner, &fixture.store, &model.state, &model.indexes, None).unwrap();
+    fixture.store.write_batch(&seed.take_writes()).unwrap();
+    assert!(fixture.publish(&owner, &model, &model, 1));
+    let bound = fixture.manifest();
+    assert_eq!(bound.applied, Some(applied(&model.state, 1)));
+    assert!(bound.rebuild().unwrap().captured.is_none());
+    while !fixture.manifest().rebuild().unwrap().finished() {
+        assert!(
+            !maintain(
+                &owner,
+                &fixture.store,
+                &model.state,
+                &model.indexes,
+                None,
+                bound.applied.as_ref()
+            )
+            .unwrap()
+        );
+    }
+    let exhausted = fixture.manifest();
+    let mut forged = exhausted.clone();
+    forged.status = structured::StructuredStatus::Current;
+    forged.revision += 1;
+    forged.applied.as_mut().unwrap().index += 1;
+    assert!(
+        fixture
+            .store
+            .write_batch(&[forged.write().unwrap()])
+            .is_err()
+    );
+    assert_eq!(fixture.manifest(), exhausted);
+    assert!(
+        maintain(
+            &owner,
+            &fixture.store,
+            &model.state,
+            &model.indexes,
+            None,
+            bound.applied.as_ref()
+        )
+        .unwrap()
+    );
+    fixture.verify(&model);
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopen_keeps_a_current_directory_and_replay_must_reproduce_its_boundary() {
     let fixture = Fixture::new().await;
     let owner = StructuredOwner::default();

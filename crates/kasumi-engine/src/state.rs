@@ -1156,6 +1156,7 @@ impl TenantEngine {
             .get()
             .expect("selected Raft boundary");
         let store = sources.primary_installation().0.application();
+        while !sources.structured.finish_replacement_for_test(store)? {}
         let family =
             SelectedGeneration::adopt(store, structured::FAMILY, &structured::INITIAL_SPACE)?;
         let stage = NamespaceStage::begin_generation(store, structured::FAMILY)?;
@@ -1179,6 +1180,10 @@ impl TenantEngine {
             self.rebase_selected(sources, current, selected, None)?,
             "field fixture could not reselect actual Raft position"
         );
+        sources
+            .structured
+            .maintenance_due
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -1208,6 +1213,18 @@ impl TenantEngine {
         anyhow::ensure!(
             self.rebase_selected(sources, current, selected, None)?,
             "partial field directory was not selected"
+        );
+        let partial = self.current_generation()?;
+        let new = partial.application_selection.get().expect("partial source");
+        anyhow::ensure!(
+            new.with_structured_records(
+                None,
+                &partial.state,
+                || partial.indexes.structured_layout_sha256(),
+                |_| Ok(())
+            )?
+            .is_none(),
+            "partially built structured directory served before recovery"
         );
         sources
             .structured

@@ -21,7 +21,9 @@
 //! Store enforces the monotonic contract inside every native transaction that
 //! writes this row: without a selection switch the successor must keep the
 //! tree, page space and scope, follow a current predecessor and increase the
-//! revision. Covered replay therefore cannot move the directory backward.
+//! revision. A partial generation can advance its bounded cursor at the same
+//! producer position. Its final promotion keeps the same exhausted root.
+//! Covered replay cannot move the directory backward.
 //!
 //! Deployed revisions predate this row. Their stores open without it and the
 //! first snapshot restore with installed application sources builds it.
@@ -340,16 +342,30 @@ impl StructuredManifest {
             }
             if self.is_current() {
                 ensure!(
-                    prior.finished() && self.layout_sha256 == previous.layout_sha256,
+                    prior.finished()
+                        && self.layout_sha256 == previous.layout_sha256
+                        && self.revision == previous.revision
+                        && self.applied == previous.applied
+                        && self.records == previous.records,
                     "partial structured directory cannot become current"
                 );
             }
             let advanced = next.is_some_and(|next| next.cursor > prior.cursor) || next.is_none();
+            let binds_genesis = previous.applied.is_none()
+                && self.revision == self.revision_base
+                && self
+                    .applied
+                    .as_ref()
+                    .is_some_and(|p| p.index == 0 && p.command_sha256.is_some())
+                && self.status == previous.status
+                && self.records == previous.records;
             ensure!(
                 self.revision > previous.revision
                     || (self.revision == previous.revision
-                        && self.applied == previous.applied
-                        && advanced),
+                        && (binds_genesis
+                            || (advanced
+                                && (self.applied == previous.applied
+                                    || self.status == StructuredStatus::Stale)))),
                 "structured rebuild repeated a position without progress"
             );
             if self.status == StructuredStatus::Stale {

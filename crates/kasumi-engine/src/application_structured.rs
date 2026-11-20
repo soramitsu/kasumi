@@ -27,12 +27,13 @@
 //! current directory rebuilds one from the restored indexes in a fresh
 //! generation that the restore publication selects.
 //!
-//! Ordinary edits are bounded. A candidate whose change set exceeds the bound,
-//! or whose edit cannot be prepared, replaces the directory when the whole
-//! index is small enough to rebuild inside one publication and otherwise
-//! publishes a stale manifest instead of fencing the replica. Readers ignore a
-//! stale directory, and serve from it again once a publication or restore has
-//! selected a replacement generation.
+//! Small replacements use a bounded bulk build. An oversized replacement
+//! selects an empty non-serving space and persists its captured producer and
+//! document high key. The idle worker advances the native field-row cursor
+//! under the apply gate. Ordinary accepted deltas immediately update the
+//! partial tree, including keys behind the cursor. Readers use their selected
+//! fallback until every captured field has been visited and the final native
+//! promotion has committed. Superseded read views keep their original roots.
 #[path = "application_structured_rebuild.rs"]
 mod incremental;
 pub(crate) use incremental::maintain;
@@ -743,7 +744,17 @@ fn follow(
         }
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
+            let binds_genesis = manifest.applied.is_none()
+                && manifest.revision == manifest.revision_base
+                && applied
+                    .as_ref()
+                    .is_some_and(|p| p.index == 0 && p.command_sha256.is_some());
             if manifest.rebuild().is_some() {
+                if binds_genesis {
+                    let mut bound = manifest;
+                    bound.applied = applied;
+                    return Ok(Some(StructuredPublication::only(vec![bound.write()?])));
+                }
                 if manifest.matches_applied(applied.as_ref()) {
                     return Ok(None);
                 }
@@ -755,11 +766,6 @@ fn follow(
                     anyhow::anyhow!("covered structured rebuild differs from its producer"),
                 );
             }
-            let binds_genesis = manifest.applied.is_none()
-                && manifest.revision == manifest.revision_base
-                && applied
-                    .as_ref()
-                    .is_some_and(|p| p.index == 0 && p.command_sha256.is_some());
             let same = binds_genesis || manifest.matches_applied(applied.as_ref());
             let verified = if same {
                 verify_rows(&**store, &manifest, candidate, candidate_indexes)
@@ -878,7 +884,7 @@ fn replace(
         return match incremental::seed(owner, store, candidate, indexes, applied) {
             Ok(publication) => Some(publication),
             Err(error) => {
-                tracing::warn!(revision=candidate.revision, reason=%error, "structured rebuild seed deferred");
+                tracing::warn!(revision=candidate.revision, io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind), "structured rebuild seed deferred");
                 None
             }
         };
