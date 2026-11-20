@@ -99,6 +99,8 @@ pub struct EncryptedSpool {
     layout: SpoolLayout,
     #[cfg(test)]
     authenticated_bytes_read: u64,
+    #[cfg(test)]
+    ciphertext_writes: u64,
     cached_index: Option<u64>,
     cached: Zeroizing<Vec<u8>>,
     ciphertext: Zeroizing<Vec<u8>>,
@@ -156,6 +158,8 @@ impl EncryptedSpool {
             layout,
             #[cfg(test)]
             authenticated_bytes_read: 0,
+            #[cfg(test)]
+            ciphertext_writes: 0,
             cached_index: None,
             cached: Zeroizing::new(vec![0; layout.block_bytes()]),
             ciphertext: Zeroizing::new(vec![0; layout.slot_bytes() as usize]),
@@ -362,62 +366,135 @@ impl EncryptedSpool {
         aad[16..].copy_from_slice(&index.to_be_bytes());
         aad
     }
+    fn extend_ciphertext(&mut self, end: u64) -> io::Result<()> {
+        if self.physical_len < end {
+            // Writing across EOF can trigger speculative filesystem allocation
+            // beyond the admitted ciphertext extent. Extend EOF first, validate
+            // its allocation, then write entirely within it. EOF grows by a
+            // step, but never past the ciphertext extent already reserved, so
+            // a stream reserved ahead (`reserve`) extends rarely and any other
+            // grows one slot at a time. Reservation alone must not change EOF:
+            // unused growth can settle back to the prior authenticated extent
+            // without a physical resize.
+            let slot = self.layout.slot_bytes();
+            let step = self
+                .physical_len
+                .checked_add(EXTENT_STEP)
+                .map(|bytes| bytes / slot * slot)
+                .unwrap_or(end);
+            let target = end.max(step.min(self.charge.reserved_len()));
+            self.file
+                .set_len(target)
+                .inspect_err(|_| self.owner_failed())?;
+            self.physical_len = target;
+            self.charge.observe(&self.file)?;
+        }
+        Ok(())
+    }
+    fn seal_slot(
+        cipher: &XChaCha20Poly1305,
+        aad: &[u8; 24],
+        plaintext: &[u8],
+        slot: &mut [u8],
+    ) -> io::Result<()> {
+        let (nonce, rest) = slot.split_at_mut(24);
+        getrandom::fill(nonce).map_err(|_| io::ErrorKind::Other)?;
+        let (payload, tag) = rest.split_at_mut(plaintext.len());
+        payload.copy_from_slice(plaintext);
+        let mac = cipher
+            .encrypt_in_place_detached(XNonce::from_slice(nonce), aad, payload)
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        tag.copy_from_slice(&mac);
+        Ok(())
+    }
     fn flush_block(&mut self) -> io::Result<()> {
         self.check_owner()?;
-        let block_bytes = self.layout.block_bytes();
         if self.dirty {
             let index = self.cached_index.expect("dirty spool has a cached block");
-            let mut nonce = [0; 24];
-            getrandom::fill(&mut nonce).map_err(|_| {
-                self.owner_failed();
-                io::Error::from(io::ErrorKind::Other)
-            })?;
-            let aad = self.aad(index);
-            self.ciphertext[..24].copy_from_slice(&nonce);
-            self.ciphertext[24..24 + block_bytes].copy_from_slice(&self.cached);
             let cipher = XChaCha20Poly1305::new(self.key.as_bytes().into());
-            let tag = cipher
-                .encrypt_in_place_detached(
-                    XNonce::from_slice(&nonce),
-                    &aad,
-                    &mut self.ciphertext[24..24 + block_bytes],
-                )
-                .map_err(|_| {
-                    self.owner_failed();
-                    io::Error::from(io::ErrorKind::InvalidData)
-                })?;
-            self.ciphertext[24 + block_bytes..].copy_from_slice(&tag);
+            Self::seal_slot(
+                &cipher,
+                &self.aad(index),
+                &self.cached,
+                &mut self.ciphertext,
+            )
+            .inspect_err(|_| self.owner_failed())?;
             let offset = self.layout.offset(index)?;
             let end = offset
                 .checked_add(self.layout.slot_bytes())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-            if self.physical_len < end {
-                // Writing across EOF can trigger speculative filesystem allocation
-                // beyond the admitted ciphertext extent. Extend EOF first, validate
-                // its allocation, then write entirely within it. EOF grows by a
-                // step, but never past the ciphertext extent already reserved, so
-                // a stream reserved ahead (`reserve`) extends rarely and any other
-                // grows one slot at a time. Reservation alone must not change EOF:
-                // unused growth can settle back to the prior authenticated extent
-                // without a physical resize.
-                let slot = self.layout.slot_bytes();
-                let step = self
-                    .physical_len
-                    .checked_add(EXTENT_STEP)
-                    .map(|bytes| bytes / slot * slot)
-                    .unwrap_or(end);
-                let target = end.max(step.min(self.charge.reserved_len()));
-                self.file
-                    .set_len(target)
-                    .inspect_err(|_| self.owner_failed())?;
-                self.physical_len = target;
-                self.charge.observe(&self.file)?;
-            }
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            self.extend_ciphertext(end)?;
             self.file
                 .write_all_at(&self.ciphertext, offset)
                 .inspect_err(|_| self.owner_failed())?;
             self.charge.observe(&self.file)?;
+            #[cfg(test)]
+            {
+                self.ciphertext_writes += 1;
+            }
             self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Native segments append complete records while the group owns its one
+    /// serialized I/O workspace. Small or in-place writes use the block cache.
+    pub(crate) fn write_native_segment(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if self.position != self.length || bytes.len() < 3 * NATIVE_BLOCK {
+            return self.write_all(bytes);
+        }
+        self.check_owner()?;
+        let end = self
+            .length
+            .checked_add(bytes.len() as u64)
+            .ok_or(io::ErrorKind::StorageFull)?;
+        self.reserve_length(end)?;
+        let offset = (self.position % NATIVE_BLOCK as u64) as usize;
+        let prefix = (NATIVE_BLOCK - offset) % NATIVE_BLOCK;
+        self.write_all(&bytes[..prefix])?;
+        self.flush_block()?;
+        let rest = &bytes[prefix..];
+        let full = rest.len() / NATIVE_BLOCK * NATIVE_BLOCK;
+        self.append_native_blocks(&rest[..full])?;
+        self.write_all(&rest[full..])
+    }
+
+    #[inline(never)]
+    fn append_native_blocks(&mut self, bytes: &[u8]) -> io::Result<()> {
+        debug_assert!(matches!(self.layout, SpoolLayout::Native));
+        debug_assert!(
+            self.position == self.length && self.length.is_multiple_of(NATIVE_BLOCK as u64)
+        );
+        const BLOCKS: usize = 4;
+        let mut slots = Zeroizing::new([0u8; BLOCKS * NATIVE_SLOT as usize]);
+        let cipher = XChaCha20Poly1305::new(self.key.as_bytes().into());
+        for chunk in bytes.chunks(BLOCKS * NATIVE_BLOCK) {
+            self.check_owner()?;
+            let first = self.length / NATIVE_BLOCK as u64;
+            let count = chunk.len() / NATIVE_BLOCK;
+            let ciphertext = &mut slots[..count * NATIVE_SLOT as usize];
+            for (i, (plain, slot)) in chunk
+                .chunks_exact(NATIVE_BLOCK)
+                .zip(ciphertext.chunks_exact_mut(NATIVE_SLOT as usize))
+                .enumerate()
+            {
+                Self::seal_slot(&cipher, &self.aad(first + i as u64), plain, slot)
+                    .inspect_err(|_| self.owner_failed())?;
+            }
+            self.extend_ciphertext(self.layout.offset(first + count as u64)?)?;
+            self.file
+                .write_all_at(ciphertext, self.layout.offset(first)?)
+                .inspect_err(|_| self.owner_failed())?;
+            self.charge.observe(&self.file)?;
+            #[cfg(test)]
+            {
+                self.ciphertext_writes += 1;
+            }
+            if let Some(digest) = &mut self.append_digest {
+                digest.update(chunk);
+            }
+            self.length += chunk.len() as u64;
+            self.position = self.length;
         }
         Ok(())
     }

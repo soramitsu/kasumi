@@ -318,7 +318,7 @@ impl Owner {
             provider.clone(),
             crate::disk_memory::add(
                 crate::disk_memory::add(
-                    64 << 10, // serialized spool resize zero-fill workspace
+                    64 << 10, // shared stack bound for resize zero-fill or encrypted segment append
                     crate::disk_memory::size::<claim::GroupTransaction>()?,
                 )?,
                 crate::disk_memory::add(
@@ -875,7 +875,10 @@ impl SegmentGroupBackend for Backend {
             let spool = state.spool(file)?;
             spool.reserve_growth(old, end)?;
             spool.seek(SeekFrom::Start(at))?;
-            spool.write_all(bytes)
+            match file.kind {
+                FileKind::Segment => spool.write_native_segment(bytes),
+                FileKind::Directory => spool.write_all(bytes),
+            }
         })
     }
     fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
