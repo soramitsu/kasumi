@@ -124,7 +124,7 @@ mod serving_access;
 mod spool;
 pub use read_view::{
     PointRetirementFailure, PreparedTenantReadPoints, PreparedTenantReadWorkspace, TenantReadView,
-    plaintext_get_workspace_bytes,
+    ViewWrappingInventory, plaintext_get_workspace_bytes,
 };
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{

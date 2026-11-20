@@ -1697,6 +1697,9 @@ impl NodeRuntime {
                 )
             }
         };
+        if let (Some(owner), Some(control)) = (&pending.standalone_owner, &control) {
+            crate::local_recovery::inventory::install(&config, owner, &audit, &control.database)?;
+        }
         if let (Some(control), Some(verifier)) = (&control, &signer_verifier) {
             verifier.install_key_inventory(&control.database, &authority_trusts)?;
         }

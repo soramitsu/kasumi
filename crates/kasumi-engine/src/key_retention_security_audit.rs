@@ -8,6 +8,26 @@ pub(in crate::service) struct SignerCatalog {
 }
 
 impl Database {
+    pub fn install_local_recovery_key_inventory(
+        &self,
+        store: &Arc<TenantStore>,
+        inventory: Arc<dyn LocalRecoveryKeyInventory>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.store.tenant() == crate::control::CONTROL_TENANT
+                && Arc::ptr_eq(self.security_audit.store(), store)
+                && matches!(
+                    store.storage_access().purpose(),
+                    kasumi_store::StoragePurpose::SecurityAudit
+                ),
+            "local recovery inventory differs from the installed Control security store"
+        );
+        store.check_access()?;
+        self.local_recovery_keys
+            .set(inventory)
+            .map_err(|_| anyhow::anyhow!("local recovery inventory is already installed"))
+    }
+
     /// Attach the independently opened journal without taking custody of its workers.
     pub fn install_target_key_inventory(
         &self,
@@ -68,16 +88,26 @@ impl Database {
     }
 }
 
+pub(in crate::service) struct InstalledInventories<'a> {
+    pub(super) signer: Option<&'a SignerCatalog>,
+    pub(super) journal: Option<&'a crate::TargetJournal>,
+    pub(super) local_recovery: Option<&'a dyn LocalRecoveryKeyInventory>,
+}
+
 impl SecurityAudit {
     pub(super) fn key_inventory_page(
         &self,
         generation: &crate::Generation,
         request: &ReadKeyRetentionRequest,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
-        signer: Option<&SignerCatalog>,
-        journal: Option<&crate::TargetJournal>,
+        owners: InstalledInventories<'_>,
         token: &QueryCancellation,
     ) -> Result<KeyRetentionPage> {
+        let InstalledInventories {
+            signer,
+            journal,
+            local_recovery,
+        } = owners;
         let state = &generation.state;
         let epoch = state.policy_epoch;
         let local = metrics.id;
@@ -105,8 +135,10 @@ impl SecurityAudit {
         let _topology = self.admission().reserve_resident(size)?;
         let roster =
             crate::control::ControlPlane::applied_topology(state, generation.document_resolver())?;
-        if !matches!(request.scope, KeyRetentionScope::TargetJournal {})
-            && let Some(signer) = signer
+        if matches!(
+            request.scope,
+            KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+        ) && let Some(signer) = signer
         {
             for &(authority_id, partition) in &signer.partitions {
                 add_missing(
@@ -156,6 +188,8 @@ impl SecurityAudit {
                 journal.map(|owner| owner.key_inventory_owner().1.clone()),
                 KeyCatalogDomain::TargetJournal,
             ),
+            // This scope visits its physical catalog and rows together at one native root.
+            KeyRetentionScope::LocalRecovery {} => (None, KeyCatalogDomain::SecurityAudit),
             _ => {
                 return Err(Error::new(
                     ErrorCode::InvalidArgument,
@@ -193,6 +227,10 @@ impl SecurityAudit {
                     })
                     .map_err(Error::from_physical_source)?,
             )
+        } else if matches!(request.scope, KeyRetentionScope::LocalRecovery {})
+            && local_recovery.is_some()
+        {
+            None
         } else {
             add_missing(
                 &mut missing,
@@ -263,6 +301,34 @@ impl SecurityAudit {
         } else {
             None
         };
+        let local_digest = if matches!(request.scope, KeyRetentionScope::LocalRecovery {})
+            && let Some(owner) = local_recovery
+        {
+            Some(
+                owner
+                    .visit_keys(self.store(), local, token, &mut |finding| {
+                        token.check()?;
+                        match finding {
+                            LocalRecoveryKeyFinding::Entry(entry) => {
+                                consider_entry(request, &mut entries, entry)?
+                            }
+                            LocalRecoveryKeyFinding::Missing(dependency) => {
+                                dependency.validate()?;
+                                add_missing(&mut missing, &mut truncated, dependency);
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        error
+                            .downcast_ref::<Error>()
+                            .cloned()
+                            .unwrap_or_else(|| Error::from_physical_source(error))
+                    })?,
+            )
+        } else {
+            None
+        };
         let inventory_sha256 = staged_digest(&(
             "kasumi.installed-key-inventory.v1",
             &request.scope,
@@ -274,7 +340,7 @@ impl SecurityAudit {
             &roster,
             catalog_digest,
             archive_digest,
-            journal_digest,
+            journal_digest.or(local_digest),
             &missing,
             truncated,
         ))?

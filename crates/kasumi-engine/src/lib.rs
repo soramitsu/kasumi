@@ -92,7 +92,8 @@ pub use security_audit::{
     SecurityOutcome, TransportAuditMetadata,
 };
 pub use service::{
-    CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
+    CustodyResponseFence, Database, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
+    ResponseFence, RetiredCustody, RetirementResponseFence,
 };
 pub use state::{
     Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,

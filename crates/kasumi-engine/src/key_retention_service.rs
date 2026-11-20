@@ -12,6 +12,23 @@ mod retirement;
 mod security_audit;
 pub(super) use security_audit::SignerCatalog;
 
+/// Installed standalone journal interpretation. Only references from the
+/// already-opened security store enter this administrative read.
+pub enum LocalRecoveryKeyFinding {
+    Entry(KeyRetentionEntry),
+    Missing(MissingKeyDependency),
+}
+
+pub trait LocalRecoveryKeyInventory: Send + Sync {
+    fn visit_keys(
+        &self,
+        store: &Arc<TenantStore>,
+        node_id: u64,
+        token: &QueryCancellation,
+        visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> anyhow::Result<()>,
+    ) -> anyhow::Result<[u8; 32]>;
+}
+
 /// One observation of a whole scope at one selected generation. The page
 /// holds the entries the request selected; the coverage, dependency position
 /// and retirement state describe the entire scope, whatever the page shows.
@@ -450,6 +467,7 @@ impl Database {
             KeyRetentionScope::SecurityAudit {}
                 | KeyRetentionScope::Signer {}
                 | KeyRetentionScope::TargetJournal {}
+                | KeyRetentionScope::LocalRecovery {}
         );
         let control = if independent && !probe {
             if context.tenant != crate::control::CONTROL_TENANT
@@ -510,6 +528,7 @@ impl Database {
             let audit = self.security_audit.clone();
             let signer = self.signer_keys.get().cloned();
             let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
+            let local_recovery = self.local_recovery_keys.get().cloned();
             let request = request.clone();
             let term = metrics.current_term;
             let membership = *membership.log_id();
@@ -521,8 +540,11 @@ impl Database {
                         &generation,
                         &request,
                         &metrics,
-                        signer.as_deref(),
-                        journal.as_deref(),
+                        security_audit::InstalledInventories {
+                            signer: signer.as_deref(),
+                            journal: journal.as_deref(),
+                            local_recovery: local_recovery.as_deref(),
+                        },
                         token,
                     )?;
                     let revision = state.revision;

@@ -76,6 +76,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                         KeyRetentionScope::SecurityAudit {}
                             | KeyRetentionScope::Signer {}
                             | KeyRetentionScope::TargetJournal {}
+                            | KeyRetentionScope::LocalRecovery {}
                     ) {
                         ensure!(
                             matches!(profile.resource, CredentialResource::Control { .. }),

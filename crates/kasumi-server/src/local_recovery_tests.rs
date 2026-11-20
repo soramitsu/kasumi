@@ -1864,3 +1864,146 @@ async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouch
     );
     drain_operations().await.unwrap();
 }
+
+#[test]
+fn local_recovery_inventory_tracks_real_versions_and_independent_sources() {
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(local_recovery_inventory_case()))
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_recovery_inventory_case() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (configuration, request, _, storage) = backup(root.path()).await;
+    let config = RuntimeConfig::load(&configuration).unwrap();
+    let control =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let query = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::LocalRecovery {},
+        cursor: None,
+        limit: 16,
+    };
+    let mut runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let db = runtime.control_database().unwrap();
+    let empty = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        empty.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
+    assert!(!empty.entries.is_empty());
+    assert!(empty.entries.iter().all(|entry| matches!(
+        entry.reference,
+        KeyReference::Catalog {
+            domain: KeyCatalogDomain::SecurityAudit,
+            ..
+        }
+    )));
+    drop(empty);
+    assert!(
+        db.read_key_retention(&context(), query.clone())
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await.unwrap();
+    drop(runtime);
+    start_with_storage(&configuration, request.clone(), storage.clone())
+        .await
+        .unwrap();
+
+    // Leave the permanent initial phase just as it was written under version 1.
+    let mut owner = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let KeyProviderSettings::File { path } = &config.security_audit.keys else {
+        panic!("expected fixture file keys")
+    };
+    let provider = kasumi_store::FileKeyProvider::open(path).unwrap();
+    assert_eq!(provider.rotate().unwrap(), 2);
+    owner.store().rotate_data_key().await.unwrap();
+    crate::startup_owner::finish(&mut owner).await.unwrap();
+    drop(owner);
+    stop_with_storage(&configuration, request.operation_id, storage.clone())
+        .await
+        .unwrap();
+    let mut runtime = NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage)
+        .await
+        .unwrap();
+    let before = recovery_rows(runtime.security_audit().store());
+    let db = runtime.control_database().unwrap();
+    let page = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    let retained = |page: &KeyRetentionPage| {
+        page.entries.iter().filter_map(|entry|
+        matches!(entry.reference,KeyReference::LocalRecovery { operation_id } if operation_id == request.operation_id)
+        .then_some(entry.key.version)).collect::<BTreeSet<_>>()
+    };
+    assert_eq!(retained(&page), BTreeSet::from([1, 2]));
+    assert!(
+        matches!(&page.coverage, KeyRetentionCoverage::Incomplete {missing, truncated: false,..}
+        if missing == &[MissingKeyDependency::ArchiveUnavailable {id:request.checkpoint.backup_id.to_string()}])
+    );
+    drop(page);
+    assert_eq!(recovery_rows(runtime.security_audit().store()), before);
+    let first = db
+        .read_key_retention(
+            &control,
+            ReadKeyRetentionRequest {
+                limit: 1,
+                ..query.clone()
+            },
+        )
+        .await
+        .unwrap();
+    let cursor = first.next_cursor.clone().unwrap();
+    drop(first);
+    runtime
+        .security_audit()
+        .store()
+        .rewrap_keys()
+        .await
+        .unwrap();
+    let stale = ReadKeyRetentionRequest {
+        cursor: Some(cursor),
+        limit: 1,
+        ..query.clone()
+    };
+    assert!(db.read_key_retention(&control, stale).await.is_err());
+    let rewrapped = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(retained(&rewrapped), BTreeSet::from([2]));
+    drop(rewrapped);
+    let physical = runtime.security_audit().store();
+    // An orphaned immutable phase cannot become an empty, complete report.
+    let (key, value) = &before[0][0];
+    physical
+        .write_batch(&[
+            WriteOp::delete(PHASES, key.as_slice()),
+            WriteOp::put(PHASES, b"invalid", value.clone()),
+        ])
+        .unwrap();
+    assert!(db.read_key_retention(&control, query).await.is_err());
+    assert!(physical.get(PHASES, b"invalid").unwrap().is_some());
+    runtime.shutdown().await.unwrap();
+}

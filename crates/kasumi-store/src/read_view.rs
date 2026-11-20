@@ -7,6 +7,69 @@ pub(crate) use point_retirement::retire_point_backing;
 mod ordinary_visit_tests;
 mod prepared_points;
 pub use prepared_points::{PreparedTenantReadPoints, PreparedTenantReadWorkspace};
+/// Wrapping identities and authenticated rows from one pinned physical root.
+/// The read-only projection never transfers a provider or wrapped key material.
+pub struct ViewWrappingInventory<'a> {
+    view: &'a TenantReadView,
+    catalog: AdmittedKeyCatalog,
+}
+impl ViewWrappingInventory<'_> {
+    pub fn check_current(&self) -> Result<()> {
+        self.view.store.check_access()?;
+        ensure!(
+            *self.catalog == *self.view.store.catalog.read(),
+            "observed wrapping catalog differs from the installed open catalog"
+        );
+        Ok(())
+    }
+
+    pub fn visit_catalog(
+        &self,
+        mut visit: impl FnMut(Uuid, &str, &str, u64) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.check_current()?;
+        let mut digest = sha2::Sha256::new();
+        serde_json::to_writer(&mut digest, &*self.catalog)?;
+        for key in self.catalog.keys.values() {
+            visit(
+                self.catalog.catalog_id,
+                &key.provider,
+                &key.key_ref,
+                key.version,
+            )?;
+        }
+        self.check_current()?;
+        Ok(digest.finalize().into())
+    }
+
+    /// Resolve the DEK that actually authenticated this row against its catalog
+    /// from the same native transaction, including rows written before rotation.
+    pub fn visit_records(
+        &self,
+        namespace: &str,
+        max_value_bytes: usize,
+        mut visit: impl FnMut(&[u8], &[u8], &str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        self.check_current()?;
+        self.view
+            .visit_authenticated(namespace, max_value_bytes, |record, mut envelope| {
+                let id = std::str::from_utf8(take_bytes(&mut envelope)?)?;
+                let key = self
+                    .catalog
+                    .keys
+                    .get(id)
+                    .context("authenticated record key missing from its physical catalog")?;
+                visit(
+                    record.key(),
+                    record.value(),
+                    &key.provider,
+                    &key.key_ref,
+                    key.version,
+                )
+            })?;
+        self.check_current()
+    }
+}
 /// A stable database root with access rechecked for every decrypted record.
 pub struct TenantReadView {
     store: Arc<TenantStore>,
@@ -135,6 +198,18 @@ impl TenantStore {
     }
 }
 impl TenantReadView {
+    pub fn wrapping_inventory(&self) -> Result<ViewWrappingInventory<'_>> {
+        self.store.check_access()?;
+        let inventory = ViewWrappingInventory {
+            catalog: self
+                .catalog(self.store.tenant())?
+                .context("physical key catalog missing")?,
+            view: self,
+        };
+        inventory.check_current()?;
+        Ok(inventory)
+    }
+
     pub(super) fn catalog(&self, tenant: &str) -> Result<Option<AdmittedKeyCatalog>> {
         let transaction = self.transaction.as_ref().expect("live view transaction");
         match transaction {
@@ -224,6 +299,17 @@ impl TenantReadView {
         max_value_bytes: usize,
         mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>,
     ) -> Result<()> {
+        self.visit_authenticated(namespace, max_value_bytes, |record, _| {
+            visitor(record.key(), record.value())
+        })
+    }
+
+    fn visit_authenticated(
+        &self,
+        namespace: &str,
+        max_value_bytes: usize,
+        mut visitor: impl FnMut(&PlaintextRecord, &[u8]) -> Result<()>,
+    ) -> Result<()> {
         let transaction = self.transaction.as_ref().expect("live view transaction");
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             visit_encrypted_at(
@@ -248,7 +334,7 @@ impl TenantReadView {
                         );
                         record
                     };
-                    visitor(record.key(), record.value())
+                    visitor(&record, envelope)
                 },
             )
         })) {

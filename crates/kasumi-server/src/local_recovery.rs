@@ -24,6 +24,8 @@ const INSTALLATION: &str = "standalone-recovery-installation";
 const MAX_RECORD: usize = 2 << 20;
 #[path = "local_recovery_archives.rs"]
 mod archives;
+#[path = "local_recovery_inventory.rs"]
+pub(crate) mod inventory;
 #[path = "local_recovery_keys.rs"]
 pub(crate) mod keys;
 
@@ -257,8 +259,11 @@ fn phase_binding(journal: &Journal) -> Result<Vec<u8>> {
         LocalRecoveryPhase::Stopped => LocalRecoveryPhase::Stopping,
         phase => phase,
     };
+    binding_for_phase(journal, dispatched_phase)
+}
+fn binding_for_phase(journal: &Journal, phase: LocalRecoveryPhase) -> Result<Vec<u8>> {
     encoded(&(
-        dispatched_phase,
+        phase,
         &journal.status.request,
         journal.installation_id,
         &journal.database_path,
@@ -924,6 +929,16 @@ fn binding(journal: &Journal) -> PhysicalBinding {
         audit_placement_binding: journal.audit_placement_binding.clone(),
     }
 }
+fn cleanup_evidence(journal: &Journal) -> Result<String> {
+    Ok(kasumi_types::staged_digest(&(
+        "kasumi.local-cleanup.v2",
+        &binding(journal),
+        &journal.target_directory,
+        &journal.database_group,
+        &journal.archive_directory,
+    ))?
+    .0)
+}
 fn check_binding(
     config: &RuntimeConfig,
     disk: &Arc<kasumi_store::NodeDisk>,
@@ -1530,16 +1545,7 @@ impl Operator {
             // Resolve that directory's absence at the installed data directory.
             private_files::sync_parent(parent)?;
         }
-        journal.status.cleanup_evidence = Some(
-            kasumi_types::staged_digest(&(
-                "kasumi.local-cleanup.v2",
-                &binding(journal),
-                &journal.target_directory,
-                &journal.database_group,
-                &journal.archive_directory,
-            ))?
-            .0,
-        );
+        journal.status.cleanup_evidence = Some(cleanup_evidence(journal)?);
         journal.status.phase = LocalRecoveryPhase::Stopped;
         journal.status.last_failure = None;
         self.event(journal, kasumi_engine::SecurityOutcome::Succeeded)
