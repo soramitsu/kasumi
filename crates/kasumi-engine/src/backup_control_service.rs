@@ -19,6 +19,72 @@ fn wrong_owner() -> Error {
     )
 }
 
+/// Position at which the data group confirmed this source's authority. This
+/// is independent of the original application's snapshot revision and of the
+/// subsequent Control log entry. A caller cannot deserialize this evidence.
+struct SourceQuorum {
+    group: RaftGroup,
+    term: u64,
+    leader: u64,
+    membership: kasumi_raft::LogId<u64>,
+    observed: kasumi_raft::LogId<u64>,
+}
+
+impl SourceQuorum {
+    fn changed() -> Error {
+        Error::new(
+            ErrorCode::Unavailable,
+            "backup source quorum or membership changed",
+        )
+    }
+
+    async fn observe(group: &RaftGroup) -> Result<Option<Self>> {
+        if group.is_local() {
+            return Ok(None);
+        }
+        let first = group.metrics();
+        let observed = group
+            .observation_barrier()
+            .await
+            .map_err(|cause| Self::changed().with_physical_source(cause))?
+            .ok_or_else(Self::changed)?;
+        let position = Self {
+            group: group.clone(),
+            term: first.current_term,
+            leader: first.current_leader.ok_or_else(Self::changed)?,
+            membership: (*first.membership_config.log_id()).ok_or_else(Self::changed)?,
+            observed,
+        };
+        position.check()?;
+        Ok(Some(position))
+    }
+
+    fn check(&self) -> Result<()> {
+        let current = self.group.metrics();
+        if current.current_term != self.term
+            || current.current_leader != Some(self.leader)
+            || self.observed.index < self.membership.index
+            || current.membership_config.log_id() != &Some(self.membership)
+            || current
+                .membership_config
+                .membership()
+                .get_node(&current.id)
+                .is_none()
+            || !current
+                .membership_config
+                .membership()
+                .voter_ids()
+                .any(|id| id == self.leader)
+            || current
+                .last_applied
+                .is_none_or(|id| id < self.observed || id < self.membership)
+        {
+            return Err(Self::changed());
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct SelectedBackup {
     pub record: BackupBindingRecord,
     pub terminal: Option<BackupBindingTerminal>,
@@ -68,11 +134,12 @@ impl Database {
     /// authenticated quorum index. Mutations still pass through proposal admission.
     pub(super) async fn control_binding_barrier(&self) -> Result<()> {
         self.access()?;
-        self.group.observation_barrier().await.map_err(|_| {
+        self.group.observation_barrier().await.map_err(|original| {
             Error::new(
                 ErrorCode::Unavailable,
                 "Control backup binding quorum unavailable",
             )
+            .with_physical_source(original)
         })?;
         self.access()
     }
@@ -102,8 +169,9 @@ impl Database {
                         terminal: terminal.and_then(|t| t.terminal),
                     }))
                 };
-                read().map_err(|_| {
+                read().map_err(|original| {
                     Error::new(ErrorCode::Corruption, "Control backup binding read failed")
+                        .with_physical_source(original)
                 })
             })
             .await?;
@@ -139,7 +207,7 @@ impl Database {
         if destination
             .verified_namespace_binding()
             .await
-            .map_err(|_| unavailable())?
+            .map_err(|original| unavailable().with_physical_source(original))?
             != record.claim.namespace_binding
         {
             return Err(wrong_owner());
@@ -160,12 +228,40 @@ impl Database {
             .map(|selected| selected.record))
     }
 
+    /// A committed Control row can survive a failed source dispatch. Replaying
+    /// its original ciphertext still requires a live source quorum before the
+    /// first external create, including when invoked through Abort.
+    pub(super) async fn original_backup_intent_for_effect(
+        &self,
+        context: &RequestContext,
+        row: &BackupBindingRecord,
+    ) -> Result<AdmittedBackupBundle> {
+        let fence = self.response_fence(context)?;
+        self.engine.authorize(context, None, Action::Admin)?;
+        if row.claim.tenant != context.tenant
+            || row.claim.source_incarnation != self.engine.generation()?.incarnation()
+        {
+            return Err(wrong_owner());
+        }
+        let source = SourceQuorum::observe(&self.group).await?;
+        let bytes = self
+            .store
+            .bound_backup_intent(row)
+            .map_err(|original| unavailable().with_physical_source(original))?;
+        if let Some(source) = source {
+            source.check()?;
+        }
+        fence.check()?;
+        Ok(bytes)
+    }
+
     pub(super) async fn require_backup_effect(
         &self,
         context: &RequestContext,
         destination: &dyn BackupDestination,
         session: &VerifiedBackupSession,
     ) -> Result<()> {
+        let fence = self.response_fence(context)?;
         if let Some(row) = self
             .backup_owner(context, destination, session.intent().session_id)
             .await?
@@ -173,7 +269,8 @@ impl Database {
             if row.claim.intent_ciphertext_sha256 == session.intent_ciphertext_sha256()
                 && row.claim.source_incarnation == self.engine.generation()?.incarnation()
             {
-                return Ok(());
+                let _source = SourceQuorum::observe(&self.group).await?;
+                return fence.check();
             }
         } else if self.store.storage_access().purpose().is_local_fixture()
             && self.backup_control.get().is_none()
@@ -211,7 +308,10 @@ impl Database {
         let encrypt = || {
             self.store
                 .encrypt_session_record(intent.revision, intent)
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "backup intent encryption failed"))
+                .map_err(|original| {
+                    Error::new(ErrorCode::Unavailable, "backup intent encryption failed")
+                        .with_physical_source(original)
+                })
         };
         let Some((control, operator)) = self.backup_authority()? else {
             return encrypt();
@@ -225,7 +325,7 @@ impl Database {
             let namespace_binding = destination
                 .verified_namespace_binding()
                 .await
-                .map_err(|_| unavailable())?;
+                .map_err(|original| unavailable().with_physical_source(original))?;
             let bytes = encrypt()?;
             let claim = BackupBindingClaim {
                 session_id: intent.session_id,
@@ -258,9 +358,7 @@ impl Database {
         {
             return Err(wrong_owner());
         }
-        self.store
-            .bound_backup_intent(&row)
-            .map_err(|_| unavailable())
+        self.original_backup_intent_for_effect(context, &row).await
     }
     async fn propose_backup_binding(
         &self,
@@ -279,6 +377,7 @@ impl Database {
         let cancellation = QueryCancellation::default();
         let source_work = self.work.begin(cancellation.clone())?;
         let control_work = control.work.begin(cancellation.clone())?;
+        let source_quorum = SourceQuorum::observe(&self.group).await?;
         let reservation = control
             .admission()
             .reserve(16 << 20, Some(cancellation.clone()))?;
@@ -293,7 +392,12 @@ impl Database {
             let _gate = db.proposal_gate.lock().await;
             let preflight = || -> Result<()> {
                 cancellation.check()?;
-                store.check_access().map_err(|_| unavailable())?;
+                if let Some(source) = &source_quorum {
+                    source.check()?;
+                }
+                store
+                    .check_access()
+                    .map_err(|original| unavailable().with_physical_source(original))?;
                 engine.authorize_release(&actor, None, Action::Admin, epoch)?;
                 db.access()?;
                 db.engine

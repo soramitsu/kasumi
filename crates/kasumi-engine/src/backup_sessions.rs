@@ -9,6 +9,7 @@ pub(super) fn storage_error(error: anyhow::Error) -> Error {
             ErrorCode::Unavailable,
             "backup session storage unavailable or invalid",
         )
+        .with_physical_source(error)
     })
 }
 fn status(session: &VerifiedBackupSession) -> Result<BackupSessionStatus> {
@@ -325,9 +326,8 @@ impl Database {
                             .into());
                         }
                         let bytes = self
-                            .store
-                            .bound_backup_intent(&row)
-                            .map_err(storage_error)?;
+                            .original_backup_intent_for_effect(&context, &row)
+                            .await?;
                         self.response_fence(&context)?.check()?;
                         let _publication = destination
                             .session_put(

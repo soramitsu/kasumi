@@ -945,3 +945,228 @@ async fn expire_paused_backup<T: std::fmt::Debug, E: std::fmt::Debug>(
         .map(|result| (true, result))
         .map_err(|_| "operation did not exit after serving expiry".into())
 }
+
+#[tokio::test]
+async fn replicated_source_without_control_refuses_before_backup_effects_and_retries_original() {
+    // Compare every file, including the enrolled namespace marker, on the
+    // actual installed disk before and after each public backup operation.
+    fn files(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, [u8; 32]> {
+        fn visit(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            rows: &mut BTreeMap<std::path::PathBuf, [u8; 32]>,
+        ) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    visit(root, &entry.path(), rows);
+                } else {
+                    assert!(entry.file_type().unwrap().is_file());
+                    rows.insert(
+                        entry.path().strip_prefix(root).unwrap().to_owned(),
+                        Sha256::digest(std::fs::read(entry.path()).unwrap()).into(),
+                    );
+                }
+            }
+        }
+        let mut rows = BTreeMap::new();
+        visit(root, root, &mut rows);
+        rows
+    }
+
+    let mut fixture = ServingFixture::new().await;
+    let db = fixture.leader("data-only backup source").await;
+    assert!(matches!(
+        db.store.storage_access().purpose(),
+        kasumi_store::StoragePurpose::Serving { .. }
+    ));
+    let observed = db
+        .group
+        .linearizable_barrier()
+        .await
+        .unwrap()
+        .expect("applied quorum index");
+    let metrics = db.group.metrics();
+    assert!(observed.index > 0 && metrics.last_applied >= Some(observed));
+    assert_eq!(
+        metrics
+            .membership_config
+            .membership()
+            .voter_ids()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([1, 2, 3])
+    );
+    let path = db
+        .store
+        .durable_directory()
+        .unwrap()
+        .join("original-backups");
+    let destination = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new(
+            &path,
+            32 << 20,
+            db.store.persistent_disk().clone(),
+        )
+        .unwrap(),
+    );
+    let alias = "dedicated-binding";
+    db.install_archive_destination(alias.into(), destination.clone())
+        .unwrap();
+    let original_files = files(&path);
+    assert!(!original_files.is_empty());
+    let id = uuid::Uuid::new_v4();
+    let actor = &fixture.context;
+    let read = BackupSessionRequest {
+        destination: alias.into(),
+        session_id: id,
+    };
+    let creation = db
+        .backup_checkpoint_named(actor.clone(), alias, id)
+        .await
+        .unwrap_err();
+    let error = creation.operation_error().unwrap();
+    assert_eq!(error.code, ErrorCode::Unavailable);
+    assert_eq!(error.message, "backup Control owner unavailable");
+    let status = db
+        .backup_session_status(actor.clone(), read.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(status.code, ErrorCode::Unavailable);
+    let abort = db
+        .abort_backup_session(
+            actor.clone(),
+            AbortBackupSession {
+                destination: alias.into(),
+                session_id: id,
+                reason: "test original without owner".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        abort.operation_error().unwrap().code,
+        ErrorCode::Unavailable
+    );
+    let cleanup = db
+        .cleanup_backup_session(
+            actor.clone(),
+            CleanupBackupSession {
+                destination: alias.into(),
+                session_id: id,
+                max_objects: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(cleanup.code, ErrorCode::Unavailable);
+    assert_eq!(files(&path), original_files);
+
+    let (control, operator) = backup_test_control(&db, actor, true).await.unwrap();
+    db.install_backup_control(&control, &operator).unwrap();
+    // A lost reply leaves the original Control claim intact before the first object.
+    let pending_id = uuid::Uuid::new_v4();
+    let generation = db.engine.generation().unwrap();
+    let intent = BackupSessionIntent {
+        session_id: pending_id,
+        tenant: actor.tenant.clone(),
+        source_incarnation: generation.incarnation().into(),
+        revision: generation.state.revision,
+        principal: actor.principal.clone(),
+        request_id: actor.request_id.clone(),
+    };
+    let encrypted = db
+        .claim_backup_intent(
+            actor,
+            destination.as_ref(),
+            &intent,
+            &generation,
+            Some(alias),
+        )
+        .await
+        .unwrap();
+    let pending = db
+        .backup_owner(actor, destination.as_ref(), pending_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.claim.intent_ciphertext, encrypted.as_bytes());
+    drop(encrypted);
+    drop(generation);
+    assert_eq!(files(&path), original_files);
+    fixture.disable_automatic_elections();
+    let group = format!("{}/{}", actor.tenant, fixture.bootstrap.incarnation);
+    fixture.router.isolate(&group, db.group.node_id(), true);
+    let abort_request = AbortBackupSession {
+        destination: alias.into(),
+        session_id: pending_id,
+        reason: "original".into(),
+    };
+    let denied = db
+        .abort_backup_session(actor.clone(), abort_request.clone())
+        .await
+        .unwrap_err();
+    let error = denied.operation_error().unwrap();
+    assert_eq!(error.code, ErrorCode::Unavailable);
+    assert!(
+        error.has_physical_source(),
+        "original Raft failure was discarded: {error:?}"
+    );
+    assert_eq!(files(&path), original_files);
+    fixture.router.isolate(&group, db.group.node_id(), false);
+    let aborted = db
+        .abort_backup_session(actor.clone(), abort_request)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&aborted.outcome, Some(BackupSessionOutcome::Aborted {reason,..}) if reason == "original")
+    );
+    assert_eq!(
+        db.backup_owner(actor, destination.as_ref(), pending_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        pending
+    );
+    assert_eq!(
+        destination
+            .session_get(pending_id, kasumi_store::BackupSessionSlot::Intent, 1 << 20)
+            .await
+            .unwrap()
+            .unwrap(),
+        pending.claim.intent_ciphertext
+    );
+    let proof = db
+        .backup_checkpoint_named(actor.clone(), alias, id)
+        .await
+        .unwrap();
+    let row = db
+        .backup_owner(actor, destination.as_ref(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = db
+        .backup_session_status(actor.clone(), read.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&outcome.outcome,Some(BackupSessionOutcome::Complete {checkpoint,..}) if checkpoint == proof.checkpoint())
+    );
+    let original = files(&path);
+    assert_ne!(original, original_files);
+    let again = db
+        .backup_checkpoint_named(actor.clone(), alias, id)
+        .await
+        .unwrap();
+    let after = db
+        .backup_owner(actor, destination.as_ref(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.checkpoint(), proof.checkpoint());
+    assert_eq!(after, row);
+    assert_eq!(files(&path), original);
+    control.shutdown().await.unwrap();
+    drop(control);
+    drop(db);
+    fixture.drain().await;
+}
