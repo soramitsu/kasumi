@@ -51,7 +51,11 @@ impl BackupReader for LiveBackupReader<'_> {
     async fn authorize_state<'a>(&'a self, _: &'a TenantState) -> anyhow::Result<()> {
         self.check_access().await
     }
-    fn audit_target(&self) -> Option<Arc<TenantStore>> {
+    type AuditSegment = AuditArchiveReference;
+    fn audit_publication(
+        &self,
+        _: Self::AuditSegment,
+    ) -> Option<(Arc<TenantStore>, kasumi_store::PreparedAuditSegment)> {
         None
     }
     async fn audit_dependency<'a>(
@@ -59,7 +63,7 @@ impl BackupReader for LiveBackupReader<'_> {
         state: &'a crate::backup_verify::VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
-    ) -> anyhow::Result<kasumi_store::PreparedAuditSegment> {
+    ) -> anyhow::Result<Self::AuditSegment> {
         self.check_access().await?;
         let ciphertext = tokio::select! {
             result = self.destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result?,
@@ -78,9 +82,7 @@ impl BackupReader for LiveBackupReader<'_> {
                 reference.key.version,
             )?;
         }
-        self.database
-            .store
-            .copy_audit_segment(reference, &ciphertext)
+        Ok(reference)
     }
     async fn object<'a>(
         &'a self,
@@ -525,6 +527,9 @@ impl Database {
         };
         let objects = kasumi_store::BackupSessionObjects::new(destination, backup_id)
             .map_err(|error| verification_error(error, deadline))?;
+        if let Some(observe) = observe_keys {
+            session.visit_wrapping_keys(observe)?;
+        }
         let reader = LiveBackupReader {
             database: self,
             destination: &objects,

@@ -239,8 +239,12 @@ impl BackupReader for RestoreReader<'_> {
             .authorize_state(self.target, self.audit, state)
             .await
     }
-    fn audit_target(&self) -> Option<Arc<TenantStore>> {
-        Some(self.target.clone())
+    type AuditSegment = kasumi_store::PreparedAuditSegment;
+    fn audit_publication(
+        &self,
+        segment: Self::AuditSegment,
+    ) -> Option<(Arc<TenantStore>, kasumi_store::PreparedAuditSegment)> {
+        Some((self.target.clone(), segment))
     }
     async fn audit_dependency<'a>(
         &'a self,

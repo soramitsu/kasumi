@@ -150,9 +150,7 @@ impl TenantStore {
         let (encrypted, contents) = self
             .authenticate_object(bytes, expected_id, max_plaintext_bytes)
             .await?;
-        for key in encrypted.manifest.catalog.keys.values() {
-            visit(&key.provider, &key.key_ref, key.version)?;
-        }
+        encrypted.visit_catalog_keys(&mut visit)?;
         self.check_access()?;
         Ok(contents)
     }
@@ -421,6 +419,16 @@ impl TenantStore {
 }
 
 impl EncryptedBackup {
+    pub(crate) fn visit_catalog_keys(
+        &self,
+        mut visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        for key in self.manifest.catalog.keys.values() {
+            visit(&key.provider, &key.key_ref, key.version)?;
+        }
+        Ok(())
+    }
+
     /// Reuse authenticated historical wrapping dependencies and source purpose
     /// for a session outcome written by another currently authorized replica.
     pub(crate) async fn encrypt_related(

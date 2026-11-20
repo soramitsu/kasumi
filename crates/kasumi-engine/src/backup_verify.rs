@@ -7,6 +7,7 @@ use crate::{
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Borrow,
     future::Future,
     io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
@@ -76,13 +77,20 @@ pub(crate) trait BackupReader: Sync {
         &'a self,
         state: &'a TenantState,
     ) -> impl Future<Output = anyhow::Result<()>> + Send + 'a;
-    fn audit_target(&self) -> Option<Arc<kasumi_store::TenantStore>>;
+    type AuditSegment: Borrow<AuditArchiveReference> + Send;
+    fn audit_publication(
+        &self,
+        segment: Self::AuditSegment,
+    ) -> Option<(
+        Arc<kasumi_store::TenantStore>,
+        kasumi_store::PreparedAuditSegment,
+    )>;
     fn audit_dependency<'a>(
         &'a self,
         state: &'a VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
-    ) -> impl Future<Output = anyhow::Result<kasumi_store::PreparedAuditSegment>> + Send + 'a;
+    ) -> impl Future<Output = anyhow::Result<Self::AuditSegment>> + Send + 'a;
     fn object<'a>(
         &'a self,
         id: uuid::Uuid,
@@ -954,15 +962,16 @@ pub(crate) async fn verify(
             let segment = reader
                 .audit_dependency(&state, &source_purpose, &link)
                 .await?;
+            let reference = segment.borrow();
             if archive_records == 0 {
                 anyhow::ensure!(
-                    retention.archive_head.as_ref() == Some(&segment.reference),
+                    retention.archive_head.as_ref() == Some(reference),
                     "backup audit head differs"
                 );
             }
-            expected = segment.reference.previous.clone();
+            expected = reference.previous.clone();
             archive_bytes = archive_bytes
-                .checked_add(segment.ciphertext.len() as u64)
+                .checked_add(reference.ciphertext_bytes)
                 .ok_or_else(|| anyhow::anyhow!("backup audit byte count overflow"))?;
             archive_records = archive_records
                 .checked_add(1)
@@ -972,8 +981,8 @@ pub(crate) async fn verify(
                     && archive_records <= retention.archive_segments,
                 "backup audit accounting exceeded"
             );
-            key_catalogs.add_audit(&segment.reference.key)?;
-            if let Some(target) = reader.audit_target() {
+            key_catalogs.add_audit(&reference.key)?;
+            if let Some((target, segment)) = reader.audit_publication(segment) {
                 let placement = target.tenant_audit_archive()?;
                 deadline
                     .blocking(

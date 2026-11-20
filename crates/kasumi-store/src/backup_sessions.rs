@@ -206,6 +206,19 @@ impl VerifiedBackupSession {
             .await?
             .to_bytes()
     }
+    /// The immutable intent bytes were authenticated when this proof was issued.
+    /// A completed outcome must carry the same catalog as that intent.
+    pub fn visit_wrapping_keys(
+        &self,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        self.access.check()?;
+        let envelope =
+            EncryptedBackup::from_bytes(&self.intent_bytes, MAX_SESSION_RECORD_BYTES, &self.owner)?;
+        envelope.visit_catalog_keys(visit)?;
+        self.access.check()
+    }
+
     pub fn key_catalog_sha256(&self) -> &str {
         &self.key_catalog_sha256
     }
