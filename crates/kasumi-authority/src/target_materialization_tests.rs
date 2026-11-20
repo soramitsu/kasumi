@@ -2571,7 +2571,7 @@ impl MaterialFixture {
         id: u64,
     ) -> Arc<TargetOperationScope> {
         let issuer = self.issuer.leader().await;
-        let trust = self.issuer.trust.clone();
+        let trust = self.issuer.trust_for(id);
         let identity = nodes().into_iter().find(|node| node.node_id == id).unwrap();
         let verified = ControlTrust::install(self.control.root.clone())
             .unwrap()
