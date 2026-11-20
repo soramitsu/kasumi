@@ -309,9 +309,17 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
             .any(|entry| entry.reference == reference)
     );
     drop(page);
-    let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+    // Move the actual selected inode through the disk that enrolled it. An
+    // external rename fences that entire disk, including the Control database.
+    let manifest = std::path::PathBuf::from(format!("key-graph/sessions/{id}/objects/{id}.kasumi"));
     let offline = manifest.with_extension("offline");
-    std::fs::rename(&manifest, &offline)?;
+    let move_object = |from: &std::path::Path, to: &std::path::Path| -> std::io::Result<()> {
+        let disk = &fixture.storage.persistent;
+        let original = disk.open_file("fixture", from)?;
+        drop(disk.publish_file(original, "fixture", to)?);
+        Ok(())
+    };
+    move_object(&manifest, &offline)?;
     let partial = read().await?;
     assert!(
         partial
@@ -342,7 +350,7 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
     assert_eq!(status.last_ordinal, 0);
     assert!(status.status.is_none());
     drop(status);
-    std::fs::rename(offline, manifest)?;
+    move_object(&offline, &manifest)?;
     let repaired = read().await?;
     assert!(
         repaired
