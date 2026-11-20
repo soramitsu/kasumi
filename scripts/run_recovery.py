@@ -382,7 +382,8 @@ def crash(d, ctx, operation, cell, counted, start):
 # A selected durable stage denotes only its own unfinished next action.
 # After an exact unlink, the parent sync is pending; after that sync, durable
 # finalization is pending. The observational terminal row has no fault window.
-PENDING_DELETION = {"deleting": "exact-deletion", "unlinked": "parent-sync",
+PENDING_DELETION = {"closing_gates": "gate-closure", "draining_workers": "worker-drain",
+                    "draining_storage": "storage-drain", "deleting": "exact-deletion", "unlinked": "parent-sync",
                     "parent_synced": "durable-evidence"}
 
 
@@ -401,11 +402,11 @@ def deletion_view(d, ctx, query, target, label):
             for k in ("intent_id", "attempt_id"))
             and isinstance(status["stop_receipt_sha256"], str)
             and re.fullmatch(r"[a-f0-9]{64}", status["stop_receipt_sha256"])
-            and status["progress"] in {"stop_recorded", "deleted", *PENDING_DELETION},
+            and status["progress"] in {"stop_recorded", "gates_closed", "workers_drained", "storage_drained", "deleted", *PENDING_DELETION},
             "target returned a foreign or malformed deletion observation")
     binding = status["binding_sha256"]
     require((isinstance(binding, str) and re.fullmatch(r"[a-f0-9]{64}", binding))
-            or (binding is None and status["progress"] in {"stop_recorded", "deleted"}),
+            or (binding is None and status["progress"] not in {"deleting", "unlinked", "parent_synced"}),
             "target deletion lacks its bound generation")
     return status, raw
 

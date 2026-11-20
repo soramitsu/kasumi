@@ -31,6 +31,12 @@ impl TargetDeletionQuery {
 #[serde(rename_all = "snake_case")]
 pub enum TargetDeletionProgress {
     StopRecorded,
+    ClosingGates,
+    GatesClosed,
+    DrainingWorkers,
+    WorkersDrained,
+    DrainingStorage,
+    StorageDrained,
     Deleting,
     Unlinked,
     ParentSynced,
@@ -63,7 +69,14 @@ impl TargetDeletionStatus {
             ensure!(
                 matches!(
                     self.progress,
-                    TargetDeletionProgress::StopRecorded | TargetDeletionProgress::Deleted
+                    TargetDeletionProgress::StopRecorded
+                        | TargetDeletionProgress::ClosingGates
+                        | TargetDeletionProgress::GatesClosed
+                        | TargetDeletionProgress::DrainingWorkers
+                        | TargetDeletionProgress::WorkersDrained
+                        | TargetDeletionProgress::DrainingStorage
+                        | TargetDeletionProgress::StorageDrained
+                        | TargetDeletionProgress::Deleted
                 ),
                 "physical deletion progress lacks its original storage binding"
             );

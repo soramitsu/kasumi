@@ -962,6 +962,18 @@ class DeletionObservationTests(unittest.TestCase):
             self.assertFalse(facts["cells"])
             driver.mark.assert_not_called()
 
+    def test_only_begun_owner_drain_marks_can_attribute_a_fault(self):
+        for stage, label in [("closing_gates", "gate-closure"), ("draining_workers", "worker-drain"),
+                             ("draining_storage", "storage-drain")]:
+            observed = {**self.observed(12, stage), "binding_sha256": None}
+            d, facts = self.run_fault(12, [observed])
+            self.assertTrue(facts["cells"][label + "-crash"]["landed"])
+            d.mark.assert_called_once_with(label + "-crash", "target", -9)
+        for stage in ("stop_recorded", "gates_closed", "workers_drained", "storage_drained", "deleted"):
+            d, facts = self.run_fault(12, [self.observed(12, stage)])
+            self.assertFalse(facts["cells"])
+            d.mark.assert_not_called()
+
     def test_substituted_target_and_missing_physical_binding_are_refused(self):
         for observation in (self.observed(11), {**self.observed(12), "binding_sha256": None}):
             with self.assertRaises(ValueError):

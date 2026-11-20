@@ -2183,6 +2183,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     })?;
     let stop = TargetJournalStop {
         intent: stop_intent,
+        owner_drain: None,
         stopped,
         authority,
     };
@@ -2326,6 +2327,10 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
             TargetCleanupStage::ParentSynced,
             kasumi_types::TargetDeletionProgress::ParentSynced,
         ),
+        (
+            TargetCleanupStage::Deleted,
+            kasumi_types::TargetDeletionProgress::Deleted,
+        ),
     ] {
         terminal.stage = stage;
         store.write_batch(&[WriteOp::put(
@@ -2338,12 +2343,6 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         assert_eq!(next.binding_sha256, observed.binding_sha256);
         assert_eq!(next.attempt_id, observed.attempt_id);
     }
-    terminal.stage = TargetCleanupStage::Deleted;
-    store.write_batch(&[WriteOp::put(
-        NS,
-        key.clone(),
-        serde_json::to_vec(&terminal)?,
-    )])?;
     assert_eq!(
         reopen()?.target_cleanup(&tenant, incarnation)?,
         Some(terminal.clone())

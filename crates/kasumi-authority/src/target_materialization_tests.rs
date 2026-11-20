@@ -2790,13 +2790,41 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let stop_scope = f.journal_scope(&stop_intent).await;
     let stop_op = stop_scope.begin_operation(60_000).unwrap();
     journal.stop(&stop_op, &proof).unwrap();
+    use kasumi_engine::TargetOwnerDrain::*;
+    assert!(
+        journal
+            .record_owner_drain(&op, &proof, ClosingGates)
+            .is_err()
+    );
+    let stop_key = format!("stop/city/{}", f.target.incarnation);
+    for stage in [
+        ClosingGates,
+        GatesClosed,
+        DrainingWorkers,
+        WorkersDrained,
+        DrainingStorage,
+        StorageDrained,
+    ] {
+        journal.record_owner_drain(&stop_op, &proof, stage).unwrap();
+        journal
+            .record_owner_drain(&stop_op, &proof, ClosingGates)
+            .unwrap();
+        journal.stop(&stop_op, &proof).unwrap();
+        let row: serde_json::Value = serde_json::from_slice(
+            &store
+                .get("target.journal", stop_key.as_bytes())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(row["owner_drain"], serde_json::to_value(stage).unwrap());
+    }
     assert!(journal.prepare(&op, &f.input.digest().unwrap()).is_err());
     assert!(journal.reserve_materialization_file(&op).is_err());
     let metadata_after: serde_json::Value =
         serde_json::from_slice(&store.get("target.journal", b"metadata").unwrap().unwrap())
             .unwrap();
     assert_eq!(metadata_after, metadata); // reserved stop uses no new capacity
-    let stop_key = format!("stop/city/{}", f.target.incarnation);
     let terminal = store
         .get("target.journal", stop_key.as_bytes())
         .unwrap()

@@ -137,12 +137,50 @@ impl RestoreDrainObservation {
             .context("no actual committed marker captured at target drain")
     }
 }
+struct StopDrainWitness<'a> {
+    journal: &'a TargetJournal,
+    operation: &'a TargetOperation,
+    proof: &'a VerifiedTargetStop,
+}
+
 impl Generation {
     async fn close(
         &mut self,
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
     ) -> DrainResult {
+        self.close_with_witness(cluster, registry, None).await
+    }
+
+    async fn close_with_witness(
+        &mut self,
+        cluster: &ClusterNetwork,
+        registry: &crate::api::DatabaseRegistry,
+        witness: Option<StopDrainWitness<'_>>,
+    ) -> DrainResult {
+        use kasumi_engine::TargetOwnerDrain::*;
+        let observe = |stage, report: &mut DrainReport| -> DrainResult {
+            if let Some(witness) = &witness {
+                witness
+                    .journal
+                    .record_owner_drain(witness.operation, witness.proof, stage)
+                    .map_err(|error| {
+                        DrainFailure::retained(report.record("target drain progress", 0, error))
+                    })?;
+            }
+            Ok(())
+        };
+        let gate_owner =
+            self.phase.is_some() || self.registered_data.is_some() || self.replica.is_some();
+        let worker_owner = self.phase.is_some()
+            || self.lease.is_some()
+            || self.replica.is_some()
+            || self.serving.is_some()
+            || self.custody.is_some()
+            || self.custody_probe.is_some();
+        if gate_owner {
+            observe(ClosingGates, &mut self.report)?;
+        }
         let mut retained = None;
         let mut custody_route_closed = true;
         if let Some(phase) = &self.phase {
@@ -153,6 +191,12 @@ impl Generation {
         }
         if let Some(replica) = &self.replica {
             replica.database().seal_admission();
+        }
+        if gate_owner {
+            observe(GatesClosed, &mut self.report)?;
+        }
+        if worker_owner {
+            observe(DrainingWorkers, &mut self.report)?;
         }
         // StopLocal's active operation belongs to its fresh request phase;
         // self.phase is the prior generation phase. Join its detached work
@@ -315,6 +359,19 @@ impl Generation {
                 }
             }
         }
+        let workers_joined = retained.is_none() && self.report.issues().is_empty();
+        if worker_owner && workers_joined {
+            observe(WorkersDrained, &mut self.report)?;
+        }
+        let storage_owner = self.stores.is_some()
+            || self.node.is_some()
+            || self
+                .node_retirement
+                .as_ref()
+                .is_some_and(|owner| !owner.is_retired());
+        if storage_owner && workers_joined {
+            observe(DrainingStorage, &mut self.report)?;
+        }
         if let Some(stores) = &self.stores {
             match stores.shutdown().await {
                 Ok(()) => {
@@ -360,7 +417,11 @@ impl Generation {
             // Keep the actual positive receipt in this generation. An earlier
             // independent locator cannot recover it from a now-vacant cell.
         }
-        self.report.outcome(retained)
+        let result = self.report.outcome(retained);
+        if result.is_ok() && storage_owner && workers_joined {
+            observe(StorageDrained, &mut self.report)?;
+        }
+        result
     }
 }
 enum ResponseEvidence {
@@ -1183,7 +1244,15 @@ impl TargetRecoveryRuntime {
             operation
                 .run::<_, SnapshotFailure>(async {
                     generation
-                        .close(&self.cluster, &self.registry)
+                        .close_with_witness(
+                            &self.cluster,
+                            &self.registry,
+                            Some(StopDrainWitness {
+                                journal: &self.journal,
+                                operation: &operation,
+                                proof: &proof,
+                            }),
+                        )
                         .await
                         .map_err(Into::into)
                 })

@@ -115,6 +115,33 @@ struct TargetJournalStop {
     intent: TargetJournalIntent,
     stopped: kasumi_serving::SignedTargetStop,
     authority: kasumi_serving::AuthorityManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_drain: Option<TargetOwnerDrain>,
+}
+
+/// Bounded progress of the original target owners. A missing owner supplies
+/// no start or completion observation. Higher marks never imply missed marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetOwnerDrain {
+    ClosingGates,
+    GatesClosed,
+    DrainingWorkers,
+    WorkersDrained,
+    DrainingStorage,
+    StorageDrained,
+}
+impl From<TargetOwnerDrain> for kasumi_types::TargetDeletionProgress {
+    fn from(value: TargetOwnerDrain) -> Self {
+        match value {
+            TargetOwnerDrain::ClosingGates => Self::ClosingGates,
+            TargetOwnerDrain::GatesClosed => Self::GatesClosed,
+            TargetOwnerDrain::DrainingWorkers => Self::DrainingWorkers,
+            TargetOwnerDrain::WorkersDrained => Self::WorkersDrained,
+            TargetOwnerDrain::DrainingStorage => Self::DrainingStorage,
+            TargetOwnerDrain::StorageDrained => Self::StorageDrained,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1029,7 +1056,10 @@ impl TargetJournal {
             .target_cleanup(&request.tenant, query.target_incarnation)?
             .map(|record| record.stage)
         {
-            None => TargetDeletionProgress::StopRecorded,
+            None => stop
+                .owner_drain
+                .map(Into::into)
+                .unwrap_or(TargetDeletionProgress::StopRecorded),
             Some(TargetCleanupStage::Deleting) => TargetDeletionProgress::Deleting,
             Some(TargetCleanupStage::Unlinked) => TargetDeletionProgress::Unlinked,
             Some(TargetCleanupStage::ParentSynced) => TargetDeletionProgress::ParentSynced,
@@ -1045,6 +1075,68 @@ impl TargetJournal {
         };
         result.validate_for(query)?;
         Ok(result)
+    }
+
+    /// The StopLocal operation must present the same verified Authority stop.
+    /// A retried drain never regresses the durable point or fills historical
+    /// gaps from the mere absence of a previous process.
+    pub fn record_owner_drain(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        stage: TargetOwnerDrain,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let installed = self.intent(op)?;
+        let requested = &installed.intent.request;
+        ensure!(
+            requested.phase == LifecyclePhase::StopLocal,
+            "target drain requires StopLocal"
+        );
+        let key = stop_key(&requested.tenant, requested.target_incarnation);
+        let bytes = self
+            .store
+            .get_bounded(NS, &key, MAX_RECORD)?
+            .context("target drain precedes permanent stop")?;
+        let mut stop: TargetJournalStop = decode_current(&bytes)?;
+        self.validate_stop(&stop)?;
+        ensure!(
+            GenerationBinding::from_intent(&stop.intent)
+                == GenerationBinding::from_intent(&installed)
+                && stop.stopped.observation.stop.digest()? == proof.observation().stop.digest()?,
+            "target drain differs from the original permanent stop"
+        );
+        op.check()?;
+        // Another correctly authorized StopLocal can retire this same generation,
+        // but its resource drain never supplies evidence for the first command.
+        if installed != stop.intent
+            || stop.owner_drain.is_some_and(|old| old >= stage)
+            || self
+                .store
+                .get_bounded(
+                    NS,
+                    &cleanup_key(&requested.tenant, requested.target_incarnation),
+                    MAX_RECORD,
+                )?
+                .is_some()
+        {
+            return Ok(());
+        }
+        stop.owner_drain = Some(stage);
+        let next = serde_json::to_vec(&stop)?;
+        ensure!(
+            next.len() <= MAX_RECORD,
+            "drain progress exceeds original stop reserve"
+        );
+        op.check()?;
+        self.store
+            .write_batch(&[WriteOp::put(NS, key, next)])
+            .map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
     }
 
     /// Advance the local cleanup of a permanently stopped target. Only a first
@@ -1174,6 +1266,7 @@ impl TargetJournal {
         let lease = op.invocation().gate().current()?;
         let requested = TargetJournalStop {
             intent,
+            owner_drain: None,
             stopped: proof.signed().clone(),
             authority: lease.authority().manifest().clone(),
         };
