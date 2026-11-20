@@ -247,7 +247,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             loop {
                 if destination
                     .client
-                    .get(format!("{endpoint}/minio/health/live"))
+                    .get(format!("{endpoint}/minio/health/cluster"))
                     .send()
                     .await
                     .is_ok_and(|r| r.status().is_success())
@@ -258,7 +258,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             }
         })
         .await
-        .context("MinIO TLS readiness failed")
+        .context("MinIO did not report write quorum over TLS")
     };
     wait_ready().await?;
     let bucket_url = destination.endpoint.join(&bucket)?;
