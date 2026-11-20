@@ -285,6 +285,26 @@ struct MaterialFixture {
     target_start_timeout_ms: u64,
 }
 impl MaterialFixture {
+    fn reserve_dispatch(
+        &self,
+        journal: &Arc<kasumi_engine::TargetJournal>,
+        root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        intent: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+    ) -> anyhow::Result<kasumi_engine::InitialDispatchReservation> {
+        match journal.reserve_initial_dispatch(root, phase, intent, request) {
+            Err(error) if error.is::<kasumi_engine::MissingDispatchWriter>() => journal
+                .reserve_observed_initial_dispatch(
+                    root,
+                    phase,
+                    intent,
+                    request,
+                    &self.writer(journal),
+                ),
+            result => result,
+        }
+    }
     fn writer(
         &self,
         journal: &Arc<kasumi_engine::TargetJournal>,
@@ -957,6 +977,7 @@ impl RunningTarget {
         &self,
         control: &SignedControlIntent,
         signer: &TargetSigner,
+        f: &MaterialFixture,
     ) -> FixtureResult<(
         kasumi_types::RecoveryPhaseRecord,
         kasumi_types::TargetRuntimeRequest,
@@ -991,8 +1012,9 @@ impl RunningTarget {
         let lease = self.operation.invocation().gate().current()?;
         let control =
             ControlTrust::install(lease.commitment().root.clone())?.verify_intent(control)?;
-        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) =
-            start.journal.reserve_initial_dispatch(
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = f
+            .reserve_dispatch(
+                &start.journal,
                 &lease.commitment().root,
                 &phase,
                 &lease.commitment().intent,
@@ -1115,8 +1137,8 @@ impl MaterialFixture {
             attempt_id,
             input_sha256: digest,
         };
-        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = journal
-            .reserve_initial_dispatch(&self.control.root, &phase, lifecycle, &request)
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = self
+            .reserve_dispatch(&journal, &self.control.root, &phase, lifecycle, &request)
             .unwrap()
         else {
             panic!("new fixture Start did not issue candidate")
@@ -1530,15 +1552,14 @@ async fn retained_initial_start_requires_the_same_live_prebound_child() {
         .check()
         .unwrap();
     assert!(matches!(
-        start
-            .journal
-            .reserve_initial_dispatch(
-                &f.control.root,
-                &start.phase,
-                &signed.observation.intent,
-                &start.request,
-            )
-            .unwrap(),
+        f.reserve_dispatch(
+            &start.journal,
+            &f.control.root,
+            &start.phase,
+            &signed.observation.intent,
+            &start.request,
+        )
+        .unwrap(),
         kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
     ));
 
@@ -1606,9 +1627,9 @@ async fn retained_initial_start_requires_the_same_live_prebound_child() {
     marker.attempt_id = Uuid::new_v4();
     marker.input_sha256 = initialize_phase.input_sha256.clone();
     marker.begun_revision = initialize_phase.prepared_revision + 1;
-    let kasumi_engine::InitialDispatchReservation::NewlyAccepted(initialize_candidate) = start
-        .journal
-        .reserve_initial_dispatch(
+    let kasumi_engine::InitialDispatchReservation::NewlyAccepted(initialize_candidate) = f
+        .reserve_dispatch(
+            &start.journal,
             &f.control.root,
             &initialize_phase,
             &signed.observation.intent,
@@ -1695,7 +1716,7 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
     let router = Arc::new(InProcessRouter::default());
     let mut targets = f.open_targets(&signed, &input, &router).await;
     let (phase, request) = targets[0]
-        .initialize(&signed, &f.signers[&targets[0].id])
+        .initialize(&signed, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     let identity = TargetInitialDispatchIdentity {
@@ -1713,15 +1734,14 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         .require_owner(&target.owner)
         .unwrap();
     assert!(matches!(
-        start
-            .journal
-            .reserve_initial_dispatch(
-                &f.control.root,
-                &phase,
-                &signed.observation.intent,
-                &request
-            )
-            .unwrap(),
+        f.reserve_dispatch(
+            &start.journal,
+            &f.control.root,
+            &phase,
+            &signed.observation.intent,
+            &request
+        )
+        .unwrap(),
         kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
     ));
     let association_key = format!(
@@ -1891,7 +1911,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -1998,7 +2018,7 @@ async fn exercise_target_activation(maintenance: bool) {
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -2403,7 +2423,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -2474,7 +2494,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let db = selected.owner.database();
     assert!(
         selected
-            .initialize(&inspection, &f.signers[&selected.id])
+            .initialize(&inspection, &f.signers[&selected.id], &f)
             .await
             .is_err()
     );

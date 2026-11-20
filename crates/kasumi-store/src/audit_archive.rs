@@ -320,6 +320,14 @@ impl<'a> HistoricalAuditVerifier<'a> {
         current_access: &'a crate::StorageAccess,
     ) -> Result<Self> {
         current_access.validate_tenant(tenant)?;
+        Self::for_checked_source(tenant, source_purpose, provider, current_access)
+    }
+    pub(crate) fn for_checked_source(
+        tenant: &'a str,
+        source_purpose: &'a StoragePurpose,
+        provider: &'a dyn crate::KeyProvider,
+        current_access: &'a crate::StorageAccess,
+    ) -> Result<Self> {
         current_access.check()?;
         match source_purpose {
             StoragePurpose::Standalone {

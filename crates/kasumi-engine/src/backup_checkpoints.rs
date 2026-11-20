@@ -17,6 +17,7 @@ enum BackupReadAuthority<'a> {
         policy_epoch: u64,
     },
     Recovery {
+        session: &'a kasumi_store::BackupSessionKeyRead,
         check: &'a (dyn Fn() -> anyhow::Result<()> + Sync),
         keys: Arc<dyn kasumi_store::KeyProvider>,
     },
@@ -90,15 +91,10 @@ impl BackupReader for LiveBackupReader<'_> {
         };
         self.check_access().await?;
         let verify = async {
-            if let BackupReadAuthority::Recovery { keys, .. } = &self.authority {
+            if let BackupReadAuthority::Recovery { keys, session, .. } = &self.authority {
                 let inspected =
                     crate::backup_verify::indexed_audit_dependency(state, root, &ciphertext, link)?;
-                let verifier = kasumi_store::HistoricalAuditVerifier::new(
-                    self.tenant(),
-                    inspected.source_purpose(),
-                    keys.as_ref(),
-                    self.store.storage_access(),
-                )?;
+                let verifier = session.audit_verifier(inspected.source_purpose(), keys.as_ref())?;
                 return Ok(inspected.verify(&verifier).await?.reference().clone());
             }
             crate::backup_verify::verify_indexed_audit_dependency(
@@ -149,23 +145,9 @@ impl BackupReader for LiveBackupReader<'_> {
         }
         let decrypt = async {
             if let Some(observe) = self.observe_keys {
-                if let BackupReadAuthority::Recovery { keys, .. } = &self.authority {
-                    let envelope = kasumi_store::EncryptedBackup::from_bytes(
-                        &encrypted,
-                        max_plaintext,
-                        self.store,
-                    )?;
-                    anyhow::ensure!(
-                        envelope.id() == id,
-                        "recovery backup object identity differs"
-                    );
-                    return envelope
-                        .decrypt_and_visit_source_keys(
-                            self.tenant,
-                            keys.clone(),
-                            self.store,
-                            observe,
-                        )
+                if let BackupReadAuthority::Recovery { keys, session, .. } = &self.authority {
+                    return session
+                        .graph_object(&encrypted, id, max_plaintext, keys.clone(), observe)
                         .await;
                 }
                 return self
@@ -279,6 +261,7 @@ impl RetainedCheckpointReader<'_> {
                 tenant: &expected.tenant,
                 destination: &objects,
                 authority: BackupReadAuthority::Recovery {
+                    session: &session,
                     check,
                     keys: selected.keys.clone(),
                 },

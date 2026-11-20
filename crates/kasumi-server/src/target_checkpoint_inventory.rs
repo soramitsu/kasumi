@@ -10,6 +10,34 @@ pub(super) struct Installed {
 }
 
 impl TargetCheckpointInventory for Installed {
+    fn stopped_absent(&self, tenant: &str, target: Uuid) -> Result<bool> {
+        let Some(runtime) = self.runtime.upgrade() else {
+            return Ok(false);
+        };
+        if runtime.closing.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let key = (tenant.to_owned(), target);
+        let no_local_owner = || {
+            runtime
+                .generations
+                .try_lock()
+                .is_ok_and(|owners| !owners.contains_key(&key))
+        };
+        if !no_local_owner() {
+            return Ok(false);
+        }
+        let path = runtime.path(&key)?;
+        if target_file_exists(&path)? {
+            return Ok(false);
+        }
+        target_absence_from_installed_disk(
+            &runtime.config.persistent_disk,
+            runtime.audit.store().persistent_disk(),
+            &path,
+        )?;
+        Ok(no_local_owner() && !runtime.closing.load(Ordering::Acquire))
+    }
     fn source(
         &self,
         target: Uuid,

@@ -46,7 +46,20 @@ impl WriterRetirements {
                     | KeyRetirementStatus::Aborted { fence, .. },
                 ) => fence == *original,
                 Some(KeyRetirementStatus::Completed { record }) => record.fence == *original,
-                None => false,
+                None => {
+                    // Control retains one permanent floor per identity and its
+                    // eight newest aborts. A signed newer state can outlive
+                    // this exact record only through one of those compactions.
+                    next.state.completed.iter().any(|record| {
+                        record.fence.request.identity == original.request.identity
+                            && record.fence.request.retire_below_version
+                                >= original.request.retire_below_version
+                            && record.completed_revision > original.fence_revision
+                    }) || (next.state.aborted.len() == kasumi_types::MAX_KEY_RETIREMENT_ABORTS
+                        && next.state.aborted.first().is_some_and(|oldest| {
+                            oldest.fence.fence_revision > original.fence_revision
+                        }))
+                }
             };
             ensure!(
                 held,
@@ -95,6 +108,21 @@ impl TargetJournal {
             state: state.clone(),
         };
         head.retirements.require_successor(&next)?;
+        if !state.completed.is_empty() {
+            self.store
+                .visit_wrapping_identities(|_, provider, key_ref, version| {
+                    let identity = kasumi_types::KeyIdentityRef {
+                        provider: provider.to_owned(),
+                        key_ref: key_ref.to_owned(),
+                    };
+                    ensure!(
+                        version >= state.floor(&identity),
+                        "physical journal catalog still depends on a retired wrapping version"
+                    );
+                    Ok(())
+                })?;
+        }
+
         let digest = kasumi_types::staged_digest(&(
             &self.installed.root,
             &self.installed.node.verifier,
@@ -307,6 +335,24 @@ impl TargetJournal {
         self.writer_read(Some(original.intent.request.command_id))
     }
 
+    pub fn begin_dispatch_writer_read(
+        self: &Arc<Self>,
+        original: &kasumi_serving::VerifiedControlIntent,
+    ) -> Result<TargetWriterRead> {
+        ensure!(
+            original.observation().root == self.installed.root
+                && original
+                    .observation()
+                    .intent
+                    .request
+                    .target_nodes
+                    .get(&self.installed.node.node_id)
+                    .is_some_and(|node| node.verifier == self.installed.node.verifier),
+            "dispatch writer differs from the enrolled Control intent"
+        );
+        self.writer_read(Some(original.observation().intent.request.command_id))
+    }
+
     fn writer_read(self: &Arc<Self>, lifecycle_command: Option<Uuid>) -> Result<TargetWriterRead> {
         let observation = kasumi_clock::EpochClock::system()?.observe()?;
         let deadline = observation.until(
@@ -336,6 +382,7 @@ impl TargetJournal {
         Ok(TargetWriterRead {
             journal: self.clone(),
             challenge: kasumi_types::TargetWriterChallenge {
+                protocol: kasumi_types::TARGET_WRITER_PROTOCOL,
                 root: self.installed.root.clone(),
                 verifier: self.installed.node.verifier.clone(),
                 catalog,
@@ -352,6 +399,7 @@ pub struct CurrentTargetJournalWriter {
     journal: Arc<TargetJournal>,
     position: WriterRetirements,
     deadline: kasumi_clock::ElapsedDeadline,
+    _workspace: crate::admission::Reservation,
 }
 impl CurrentTargetJournalWriter {
     pub(super) fn require(
@@ -403,6 +451,7 @@ impl TargetWriterRead {
                     state: signed.observation.retirements.clone(),
                 },
                 deadline: self.deadline,
+                _workspace: self._workspace,
             },
         ))
     }

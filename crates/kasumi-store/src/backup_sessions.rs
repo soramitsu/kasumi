@@ -213,8 +213,12 @@ impl VerifiedBackupSession {
         visit: impl FnMut(&str, &str, u64) -> Result<()>,
     ) -> Result<()> {
         self.access.check()?;
-        let envelope =
-            EncryptedBackup::from_bytes(&self.intent_bytes, MAX_SESSION_RECORD_BYTES, &self.owner)?;
+        let envelope = EncryptedBackup::from_source_bytes(
+            &self.intent_bytes,
+            MAX_SESSION_RECORD_BYTES,
+            &self.intent.tenant,
+            &self.owner,
+        )?;
         envelope.visit_catalog_keys(visit)?;
         self.access.check()
     }
@@ -260,8 +264,11 @@ async fn decode<T: serde::de::DeserializeOwned>(
     owner: &TenantStore,
     provider: Arc<dyn KeyProvider>,
 ) -> Result<(T, crate::StoragePurpose, u64, String)> {
-    let envelope = EncryptedBackup::from_bytes(bytes, MAX_SESSION_RECORD_BYTES, owner)?;
-    let contents = envelope.decrypt(tenant, provider, owner).await?;
+    let envelope =
+        EncryptedBackup::from_source_bytes(bytes, MAX_SESSION_RECORD_BYTES, tenant, owner)?;
+    let contents = envelope
+        .decrypt_session_source(tenant, provider, owner)
+        .await?;
     Ok((
         serde_json::from_slice(&contents.snapshot)?,
         envelope.source_purpose().clone(),
@@ -287,6 +294,45 @@ impl From<VerifiedBackupSession> for BackupSessionKeyRead {
     }
 }
 impl BackupSessionKeyRead {
+    /// Open one graph object using the authenticated session's source tenant
+    /// and the original physical owner's access and memory reservation.
+    pub async fn graph_object(
+        &self,
+        bytes: &[u8],
+        expected: Uuid,
+        limit: usize,
+        keys: Arc<dyn KeyProvider>,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<crate::BackupContents> {
+        let owner = &self.0.owner;
+        let tenant = &self.0.intent.tenant;
+        self.0.access.check()?;
+        let encrypted = EncryptedBackup::from_source_bytes(bytes, limit, tenant, owner)?;
+        ensure!(
+            encrypted.id() == expected,
+            "recovery backup object identity differs"
+        );
+        let contents = encrypted
+            .decrypt_session_source(tenant, keys, owner)
+            .await?;
+        encrypted.visit_catalog_keys(visit)?;
+        self.0.access.check()?;
+        Ok(contents)
+    }
+    pub fn audit_verifier<'a>(
+        &'a self,
+        purpose: &'a crate::StoragePurpose,
+        provider: &'a dyn KeyProvider,
+    ) -> Result<crate::HistoricalAuditVerifier<'a>> {
+        self.0.owner.check_access()?;
+        crate::HistoricalAuditVerifier::for_checked_source(
+            &self.0.intent.tenant,
+            purpose,
+            provider,
+            &self.0.access,
+        )
+    }
+
     pub fn source_purpose(&self) -> &crate::StoragePurpose {
         self.0.source_purpose()
     }
@@ -1304,13 +1350,52 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(read.source_purpose(), access.purpose());
-        let mut versions = Vec::new();
-        read.visit_wrapping_keys(|_, _, v| {
-            versions.push(v);
+        let graph_bytes = &completed.intent_bytes;
+        let object = EncryptedBackup::from_bytes(graph_bytes, MAX_SESSION_RECORD_BYTES, &store)
+            .unwrap()
+            .id();
+        assert!(
+            EncryptedBackup::from_bytes(graph_bytes, MAX_SESSION_RECORD_BYTES, &journal).is_err()
+        );
+        let verified = read
+            .graph_object(
+                graph_bytes,
+                object,
+                MAX_SESSION_RECORD_BYTES,
+                keys.clone(),
+                |_, _, _| Ok(()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verified.revision, completed.intent().revision);
+        assert!(
+            read.graph_object(
+                graph_bytes,
+                Uuid::new_v4(),
+                MAX_SESSION_RECORD_BYTES,
+                keys.clone(),
+                |_, _, _| Ok(())
+            )
+            .await
+            .is_err()
+        );
+        read.audit_verifier(access.purpose(), keys.as_ref())
+            .unwrap();
+        let mut original_keys = Vec::new();
+        store
+            .visit_wrapping_identities(|_, provider, key_ref, version| {
+                original_keys.push((provider.to_owned(), key_ref.to_owned(), version));
+                Ok(())
+            })
+            .unwrap();
+        let mut observed = Vec::new();
+        read.visit_wrapping_keys(|provider, key_ref, version| {
+            observed.push((provider.to_owned(), key_ref.to_owned(), version));
             Ok(())
         })
         .unwrap();
-        assert_eq!(versions, vec![1]);
+        assert!(!original_keys.is_empty());
+        assert_eq!(observed, original_keys);
         assert!(
             verify_target_journal_backup_session(&destination, &checkpoint, &store, keys.clone())
                 .await

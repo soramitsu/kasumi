@@ -210,7 +210,7 @@ impl LocalRecoveryKeyRead<'_> {
         let mut truncated = false;
         let mut catalog = None;
         let digest = journal
-            .visit_key_dependencies(
+            .visit_scoped_key_dependencies(
                 self.token,
                 |row| {
                     if let KeyReference::Catalog {
@@ -228,8 +228,8 @@ impl LocalRecoveryKeyRead<'_> {
                     }
                     Ok(self.selection.consider(&mut entries.borrow_mut(), row)?)
                 },
-                |target, checkpoint| {
-                    let graph = match inventory {
+                |target, checkpoint, unresolved_stop| {
+                    let graph = match inventory.filter(|_| !unresolved_stop) {
                         Some(inventory) => {
                             self.target_checkpoint(journal, inventory, target, checkpoint, |row| {
                                 Ok(self.selection.consider(&mut entries.borrow_mut(), row)?)
@@ -246,6 +246,13 @@ impl LocalRecoveryKeyRead<'_> {
                         }
                     }
                     Ok(())
+                },
+                |tenant, target| {
+                    self.token.check()?;
+                    match inventory {
+                        Some(owner) => owner.stopped_absent(tenant, target),
+                        None => Ok(false),
+                    }
                 },
             )
             .map_err(|error| {
@@ -507,6 +514,16 @@ pub trait TargetWriterNetwork: Send + Sync {
     ) -> anyhow::Result<BTreeSet<TargetWriterParticipant>>;
 }
 impl Database {
+    pub(in crate::service) fn journal_writer_network(
+        &self,
+    ) -> Result<Arc<dyn TargetWriterNetwork>> {
+        self.target_writer_network
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                unavailable("original writable target journal recovery routes unavailable")
+            })
+    }
     pub fn install_target_writer_network(
         &self,
         network: std::sync::Weak<dyn TargetWriterNetwork>,

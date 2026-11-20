@@ -58,6 +58,10 @@ pub type TargetJournalExclusion = dyn Fn(
     + Sync;
 
 pub trait TargetCheckpointInventory: Send + Sync {
+    /// Reopen the target's original installed parent and verify physical absence.
+    fn stopped_absent(&self, _tenant: &str, _target: uuid::Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
     fn source(
         &self,
         target: uuid::Uuid,
@@ -302,6 +306,7 @@ pub(super) struct KeyRetentionObservation {
     pub(super) page: KeyRetentionPage,
     /// Replicated dependency position of the observed generation.
     pub(super) dependency_sha256: String,
+    writer_enrollment_sha256: Option<String>,
     pub(super) retirements: KeyRetirementState,
     term: u64,
     membership: Option<kasumi_raft::LogId<u64>>,
@@ -486,6 +491,13 @@ impl Database {
                 Ok(false)
             }
             KeyRetentionScope::Control {} if context.tenant == crate::control::CONTROL_TENANT => {
+                Ok(true)
+            }
+            KeyRetentionScope::TargetJournal {}
+                if context.tenant == crate::control::CONTROL_TENANT
+                    && self.store.tenant() == context.tenant =>
+            {
+                self.journal_writer_network()?;
                 Ok(true)
             }
             KeyRetentionScope::Tenant { .. } | KeyRetentionScope::Control {} => Err(Error::new(
@@ -880,8 +892,28 @@ impl Database {
                     Ok((
                         KeyRetentionObservation {
                             page,
-                            dependency_sha256: state.key_dependency_sha256()?,
-                            retirements: state.key_retirements.clone(),
+                            dependency_sha256: if probe
+                                && matches!(request.scope, KeyRetentionScope::TargetJournal {})
+                            {
+                                state.journal_writer_dependency_sha256()?
+                            } else {
+                                state.key_dependency_sha256()?
+                            },
+                            writer_enrollment_sha256: if probe
+                                && matches!(request.scope, KeyRetentionScope::TargetJournal {})
+                            {
+                                Some(staged_digest(&state.target_journal_writers)?.0)
+                            } else {
+                                None
+                            },
+                            retirements: if matches!(
+                                request.scope,
+                                KeyRetentionScope::TargetJournal {}
+                            ) {
+                                state.target_journal_retirements.clone()
+                            } else {
+                                state.key_retirements.clone()
+                            },
                             term,
                             membership,
                             revision,
@@ -1142,6 +1174,7 @@ impl Database {
                 let observation = KeyRetentionObservation {
                     page,
                     dependency_sha256: state.key_dependency_sha256()?,
+                    writer_enrollment_sha256: None,
                     retirements: state.key_retirements.clone(),
                     term,
                     membership: membership_position,

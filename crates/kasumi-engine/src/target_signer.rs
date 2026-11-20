@@ -18,7 +18,8 @@ impl TargetSigner {
         challenge.root.validate()?;
         node.validate()?;
         anyhow::ensure!(
-            input.signature.len() == 128
+            input.challenge.protocol == TARGET_WRITER_PROTOCOL
+                && input.signature.len() == 128
                 && node.verifier == challenge.verifier
                 && !challenge.catalog.is_nil()
                 && !challenge.nonce.is_nil(),

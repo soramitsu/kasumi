@@ -431,6 +431,7 @@ impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
                 }
                 context.authorization.check_live()?;
                 let query = RefreshTargetWriter {
+                    protocol: kasumi_types::TARGET_WRITER_PROTOCOL,
                     root: self.signer.root().clone(),
                     verifier: member.node.verifier.clone(),
                     state_sha256: state_sha256.into(),

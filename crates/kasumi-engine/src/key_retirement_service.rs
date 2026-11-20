@@ -74,6 +74,18 @@ fn retired_reference(
     ))
 }
 
+fn abort_operation(request: &RetireKeyVersionsRequest, request_sha256: String) -> Operation {
+    let abort = AbortKeyRetirement {
+        retirement_id: request.retirement_id.clone(),
+        request_sha256,
+    };
+    if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+        Operation::AbortTargetJournalRetirement(abort)
+    } else {
+        Operation::AbortKeyRetirement(abort)
+    }
+}
+
 fn spent() -> Error {
     Error::new(
         ErrorCode::Conflict,
@@ -124,6 +136,8 @@ impl Database {
             Some(KeyRetirementStatus::Completed { record })
                 if record.fence.request_sha256 == request_sha256 =>
             {
+                self.release_journal_decision(context, &request.scope)
+                    .await?;
                 return Ok(KeyRetirementStatus::Completed { record });
             }
             // An interrupted retirement or a lost reply left its fence: the
@@ -152,30 +166,86 @@ impl Database {
             .decide_key_retirement(context, request, &request_sha256)
             .await
         {
-            Ok(record) => Ok(KeyRetirementStatus::Completed { record }),
+            Ok(record) => {
+                self.release_journal_decision(context, &request.scope)
+                    .await?;
+                Ok(KeyRetirementStatus::Completed { record })
+            }
             Err(original) => {
-                // The fence protects nothing once its decision failed. Remove
-                // it unless that decision may itself have committed, and keep
-                // the failure that the caller has to act on.
+                let journal = matches!(request.scope, KeyRetentionScope::TargetJournal {});
+                // An unavailable journal can have persisted a fence before its
+                // reply was lost. Resuming the same request reconciles it.
                 if original.code != ErrorCode::UnknownOutcome
-                    && let Err(error) = self
-                        .submit(
-                            context.clone(),
-                            Operation::AbortKeyRetirement(AbortKeyRetirement {
-                                retirement_id: request.retirement_id.clone(),
-                                request_sha256,
-                            }),
-                        )
-                        .await
+                    && (!journal || original.code == ErrorCode::Conflict)
                 {
-                    tracing::warn!(
-                        code = ?error.code,
-                        "a failed key retirement kept its fence"
-                    );
+                    let abort = self
+                        .submit(context.clone(), abort_operation(request, request_sha256))
+                        .await;
+                    match abort {
+                        Err(error) => {
+                            tracing::warn!(code=?error.code,"a failed key retirement kept its fence")
+                        }
+                        Ok(_) if journal => {
+                            if let Err(error) =
+                                self.release_journal_decision(context, &request.scope).await
+                            {
+                                tracing::warn!(code=?error.code,"terminal journal fence release is unresolved");
+                            }
+                        }
+                        Ok(_) => {}
+                    }
                 }
                 Err(original)
             }
         }
+    }
+
+    /// Every routed target authenticates the same current Control position, then
+    /// acknowledges its own native persistence over the original protected route.
+    async fn synchronize_journal_writers(&self, context: &RequestContext) -> Result<String> {
+        let network = self.journal_writer_network()?;
+        let cancellation = QueryCancellation::default();
+        let _cancel = CancelOnDrop(cancellation.clone());
+        let _work = self.work.begin(cancellation.clone())?;
+        self.barrier().await?;
+        cancellation.check()?;
+        let workspace = self.admission().reserve_resident(24 << 20)?;
+        let state_sha256 = {
+            let generation = self.engine.generation()?;
+            context
+                .authorization
+                .require_control(&generation.state.incarnation)?;
+            self.engine.authorize_release(
+                context,
+                None,
+                Action::Admin,
+                generation.state.policy_epoch,
+            )?;
+            generation
+                .state
+                .target_journal_retirements
+                .target_writer_digest()?
+        };
+        let receipts = tokio::select! {
+            result=network.synchronize(context,&state_sha256)=>result.map_err(|cause|Error::new(ErrorCode::Unavailable,"original target writer did not acknowledge its fence").with_physical_source(cause))?,
+            _=cancelled(&cancellation)=>return Err(cancelled_error()),
+        };
+        cancellation.check()?;
+        context.authorization.check_live()?;
+        let digest = staged_digest(&receipts)?.0;
+        drop(workspace);
+        Ok(digest)
+    }
+
+    async fn release_journal_decision(
+        &self,
+        context: &RequestContext,
+        scope: &KeyRetentionScope,
+    ) -> Result<()> {
+        if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+            self.synchronize_journal_writers(context).await.map_err(|error|Error::new(ErrorCode::UnknownOutcome,"original key retirement decision committed; physical writer release is unresolved").with_physical_source(error.into()))?;
+        }
+        Ok(())
     }
 
     /// Observe the scope after the fence and commit the decision against that
@@ -189,7 +259,12 @@ impl Database {
         let probe = probe(request)?;
         let mut moved = None;
         for _ in 0..DECISION_ATTEMPTS {
-            self.settle_backup_claims().await?;
+            let confirmed = if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+                Some(self.synchronize_journal_writers(context).await?)
+            } else {
+                self.settle_backup_claims().await?;
+                None
+            };
             let (after, _workspace) = self.observe_key_retention(context, &probe, true).await?;
             let fence = match after.retirements.status(&request.retirement_id) {
                 Some(KeyRetirementStatus::Completed { record })
@@ -228,16 +303,28 @@ impl Database {
                     "membership changed after the key retirement fence",
                 ));
             }
+            if confirmed != after.writer_enrollment_sha256 {
+                moved = Some(Error::new(
+                    ErrorCode::Unavailable,
+                    "registered journal writers differ from the original physical acknowledgments",
+                ));
+                continue;
+            }
             retired_reference(request, &after)?;
+            let completion = CompleteKeyRetirement {
+                retirement_id: request.retirement_id.clone(),
+                request_sha256: request_sha256.to_owned(),
+                completed_coverage_sha256: coverage_sha256.clone(),
+                expected_dependency_sha256: after.dependency_sha256,
+            };
             let decision = self
                 .submit(
                     context.clone(),
-                    Operation::CompleteKeyRetirement(CompleteKeyRetirement {
-                        retirement_id: request.retirement_id.clone(),
-                        request_sha256: request_sha256.to_owned(),
-                        completed_coverage_sha256: coverage_sha256.clone(),
-                        expected_dependency_sha256: after.dependency_sha256,
-                    }),
+                    if confirmed.is_some() {
+                        Operation::CompleteTargetJournalRetirement(completion)
+                    } else {
+                        Operation::CompleteKeyRetirement(completion)
+                    },
                 )
                 .await;
             match decision {
@@ -310,10 +397,14 @@ impl Database {
         }
         self.engine
             .authorize_release(context, None, Action::Admin, state.policy_epoch)?;
+        let retirements = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+            &state.target_journal_retirements
+        } else {
+            &state.key_retirements
+        };
         Ok(KeyRetirementStatusResponse {
-            last_ordinal: state.key_retirements.last_ordinal()?,
-            status: state
-                .key_retirements
+            last_ordinal: retirements.last_ordinal()?,
+            status: retirements
                 .status(retirement_id)
                 .filter(|status| status.request().scope == *scope),
         })
@@ -344,14 +435,10 @@ impl Database {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
         self.key_retention_scope(context, &request.scope)?;
-        self.submit(
-            context.clone(),
-            Operation::AbortKeyRetirement(AbortKeyRetirement {
-                retirement_id: request.retirement_id.clone(),
-                request_sha256,
-            }),
-        )
-        .await?;
+        self.submit(context.clone(), abort_operation(request, request_sha256))
+            .await?;
+        self.release_journal_decision(context, &request.scope)
+            .await?;
         self.retained_key_retirement(context, &request.scope, &request.retirement_id)
             .await?
             .status
