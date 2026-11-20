@@ -101,7 +101,13 @@ impl CatalogPass<'_> {
                 digest
                     .update(staged_digest(&(tenant, &route.incarnation, &route.voters, false))?.0);
                 if let Some(capture) = output.as_deref_mut() {
-                    for &id in &route.voters {
+                    for &id in route.voters.iter().chain(
+                        self.reader
+                            .groups()
+                            .get(tenant)
+                            .into_iter()
+                            .flat_map(|registered| &registered.members),
+                    ) {
                         capture.absent(id);
                     }
                 }
@@ -136,14 +142,6 @@ impl CatalogPass<'_> {
                         .await
                         .map_err(Error::from_physical_source)?;
                     page.validate(&read)?;
-                    if page.membership.voters != route.voters
-                        || page.membership.members != group.members
-                        || !self.roster.nodes.contains_key(&id)
-                    {
-                        return Err(unavailable(
-                            "Data catalog reports another enrolled membership",
-                        ));
-                    }
                     if let DataCatalogContents::Signer { partitions_sha256 } = &page.contents
                         && self.partitions.as_ref() != Some(partitions_sha256)
                     {
@@ -165,6 +163,21 @@ impl CatalogPass<'_> {
                         digest.update([0]);
                         if let Some(capture) = output.as_deref_mut() {
                             capture.absent(id);
+                        }
+                    }
+                    Ok(page)
+                        if page.membership.voters != route.voters
+                            || page.membership.members != group.members
+                            || !self.roster.nodes.contains_key(&id) =>
+                    {
+                        // The authenticated leader can identify an uncovered learner.
+                        // No address or authority is taken from its response.
+                        digest.update([2]);
+                        digest.update(staged_digest(&page.membership)?.0);
+                        if let Some(capture) = output.as_deref_mut() {
+                            for &unreported in group.members.union(&page.membership.members) {
+                                capture.absent(unreported);
+                            }
                         }
                     }
                     Ok(page) => {
@@ -270,14 +283,60 @@ impl Database {
             service,
             partitions,
         };
-        let first = pass.observe(None).await?;
-        let second = pass.observe(Some(result)).await?;
-        if first != second {
-            return Err(unavailable(
-                "Data catalog coverage changed across Control observations",
-            ));
+        // Hold this contribution apart from the independently observed Control
+        // catalogs until both Data passes agree. A moving or conflicting
+        // Data source leaves its scope explicitly incomplete.
+        let mut data = MemberInventories::default();
+        let capture = async {
+            let first = pass.observe(None).await?;
+            let second = pass.observe(Some(&mut data)).await?;
+            if first != second
+                || !result.catalogs.is_disjoint(&data.catalogs)
+                || !result.streams.is_disjoint(&data.streams)
+                || data
+                    .reported
+                    .keys()
+                    .any(|id| result.reported.contains_key(id) || *id == self.group.node_id())
+            {
+                return Err(unavailable(
+                    "Data catalog coverage changed or overlaps Control",
+                ));
+            }
+            Ok(second.0)
         }
-        result.data_groups_digest = Some(second.0);
+        .await;
+        token.check()?;
+        match capture {
+            Ok(stable) => {
+                result.data_groups_digest = Some(stable);
+                result.reported.append(&mut data.reported);
+                result.catalogs.append(&mut data.catalogs);
+                result.streams.append(&mut data.streams);
+                result.truncated |= data.truncated;
+                for item in data.missing {
+                    add_missing(&mut result.missing, &mut result.truncated, item);
+                }
+                for entry in data.entries {
+                    consider_entry(request, &mut result.entries, entry)?;
+                }
+            }
+            Err(error) if error.code == ErrorCode::Unavailable => {
+                tracing::warn!(%error,"could not establish a stable Data inventory");
+                for group in reader.groups().values() {
+                    for &id in &group.members {
+                        result.absent(id);
+                    }
+                }
+                for group in roster.topology.tenants.values() {
+                    for &id in &group.voters {
+                        result.absent(id);
+                    }
+                }
+                result.data_groups_digest =
+                    Some(Sha256::digest(b"kasumi.unconfirmed-data-inventories.v1").into());
+            }
+            Err(error) => return Err(error),
+        }
         result.data_charge = Some(retained);
         Ok(())
     }

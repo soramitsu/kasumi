@@ -285,10 +285,8 @@ impl RemoteDataCatalogReader for InstalledReader {
                 match tokio::time::timeout(std::time::Duration::from_secs(3), call).await {
                     Ok(Ok(page)) => {
                         ensure!(
-                            page.membership.leader == *id
-                                && page.membership.members == group.members
-                                && page.membership.voters == *voters,
-                            "catalog reader observed another Data membership"
+                            page.membership.leader == *id,
+                            "catalog reader contacted a different Data leader"
                         );
                         return Ok(page);
                     }
