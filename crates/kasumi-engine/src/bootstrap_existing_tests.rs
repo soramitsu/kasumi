@@ -1445,6 +1445,7 @@ fn spawn_form_child(
 ) -> anyhow::Result<std::process::Child> {
     Ok(std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .current_dir(root)
         .env(FORM_STAGE, stage)
         .env(FORM_ROOT, root)
         .stdout(std::process::Stdio::null())
@@ -1577,7 +1578,10 @@ async fn a_writer_that_dies_inside_its_next_snapshot_task_reopens_from_the_previ
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
     // Aborted by its own snapshot task, after the ready marker.
-    assert!(!status.success());
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGABRT)
+    );
     assert!(
         root.join("ready").exists(),
         "child failed before its crash point: {}",
@@ -1691,6 +1695,7 @@ async fn segment_child(
 fn run_segment_child(root: &std::path::Path, test: &str, stage: &str) -> anyhow::Result<()> {
     let output = std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .current_dir(root)
         .env(FORM_STAGE, stage)
         .env(FORM_ROOT, root)
         .output()?;
