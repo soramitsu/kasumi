@@ -17,9 +17,29 @@ pub(super) struct KeyRetentionObservation {
     /// Replicated dependency position of the observed generation.
     pub(super) dependency_sha256: String,
     pub(super) retirements: KeyRetirementState,
+    term: u64,
+    membership: Option<kasumi_raft::LogId<u64>>,
     revision: u64,
     strict: bool,
     epoch: u64,
+}
+
+impl KeyRetentionObservation {
+    /// The members that supplied the page must still be the applied group
+    /// when the leader releases it, including after mandatory read auditing.
+    fn check_group(&self, group: &RaftGroup) -> Result<()> {
+        let current = group.metrics();
+        if current.current_leader != Some(current.id)
+            || current.current_term != self.term
+            || current.membership_config.log_id() != &self.membership
+        {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "key retention leadership or membership changed during observation",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn consider_entry(
@@ -292,6 +312,7 @@ impl Database {
         self.engine
             .authorize_release(context, None, Action::Admin, observation.epoch)?;
         self.access()?;
+        observation.check_group(&self.group)?;
         Ok(AdmittedOutput::new(observation.page, Arc::new(reservation)))
     }
 
@@ -413,6 +434,8 @@ impl Database {
             }
             digest
         };
+        let term = metrics.current_term;
+        let membership_position = *membership.log_id();
         let scope_hash = request.scope.sha256()?;
         let request = request.clone();
         let stores = self.stores.clone();
@@ -671,6 +694,8 @@ impl Database {
                     page,
                     dependency_sha256: state.key_dependency_sha256()?,
                     retirements: state.key_retirements.clone(),
+                    term,
+                    membership: membership_position,
                     revision,
                     strict,
                     epoch,
@@ -681,6 +706,7 @@ impl Database {
         self.engine
             .authorize_release(context, None, Action::Admin, epoch)?;
         self.access()?;
+        observation.check_group(&self.group)?;
         Ok((observation, reservation))
     }
 }
