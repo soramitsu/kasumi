@@ -1296,9 +1296,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     let hold = gate(&telemetry).await;
     let pending = request(&client, &metrics, &operator);
     entered(&hold).await;
-    database
+    let original = configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let changed = database
         .administer(
-            configured_control_context(config.hosted_control().unwrap()).unwrap(),
+            original.clone(),
             Operation::SetPolicy(Policy {
                 grants: vec![Grant {
                     principal: "replacement-administrator".into(),
@@ -1308,8 +1309,34 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
                 strict_read_audit: false,
             }),
         )
+        .await;
+    if let Err(error) = changed {
+        assert_eq!(error.code, ErrorCode::UnknownOutcome, "{error:?}");
+        eprintln!("observability policy revocation returned {error:?}");
+        // This write revokes its own caller. Resolve the original effect on the
+        // Control leader before releasing the already-authorized metrics request.
+        let mut replacement = original.clone();
+        replacement.principal = "replacement-administrator".into();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                database.raft_group().linearizable_barrier().await.unwrap();
+                if database
+                    .engine()
+                    .authorize(&replacement, None, Action::Admin)
+                    .is_ok()
+                    && database
+                        .engine()
+                        .authorize(&original, None, Action::Admin)
+                        .is_err_and(|denied| denied.code == ErrorCode::Forbidden)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| panic!("unresolved original policy revocation: {error:?}"));
+    }
     hold.release.notify_one();
     withheld(pending, 403, Some("forbidden")).await;
     let last_epoch = management.readiness_epoch().unwrap();

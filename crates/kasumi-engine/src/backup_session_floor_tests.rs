@@ -734,18 +734,53 @@ async fn abort(
     plan: &Plan,
     ordinal: u64,
 ) -> anyhow::Result<BackupSessionStatus> {
-    let status = inst
+    let context = inst.context(ordinal);
+    let request = AbortBackupSession {
+        destination: ALIAS.into(),
+        session_id: plan.session_id(ordinal),
+        reason: abort_reason(ordinal),
+    };
+    let status = match inst
         .source
-        .abort_backup_session(
-            inst.context(ordinal),
-            AbortBackupSession {
-                destination: ALIAS.into(),
-                session_id: plan.session_id(ordinal),
-                reason: abort_reason(ordinal),
-            },
-        )
+        .abort_backup_session(context.clone(), request.clone())
         .await
-        .native("public abort")?;
+    {
+        Ok(status) => status,
+        Err(crate::SnapshotFailure::Operation(error))
+            if error.code == ErrorCode::UnknownOutcome =>
+        {
+            eprintln!("backup floor ordinal {ordinal} abort returned {error:?}");
+            let observed = inst
+                .source
+                .backup_session_status(
+                    context.clone(),
+                    BackupSessionRequest {
+                        destination: request.destination.clone(),
+                        session_id: request.session_id,
+                    },
+                )
+                .await
+                .native("public abort status after unknown outcome")?;
+            anyhow::ensure!(
+                observed.intent.session_id == request.session_id
+                    && observed.intent.tenant == context.tenant
+                    && observed.intent.principal == context.principal
+                    && observed.intent.request_id == context.request_id
+                    && observed.intent.source_incarnation
+                        == inst.source.engine.generation()?.incarnation(),
+                "public abort status selected another original request"
+            );
+            if observed.outcome.is_some() {
+                observed
+            } else {
+                inst.source
+                    .abort_backup_session(context, request)
+                    .await
+                    .native("same public abort after a verified pending session")?
+            }
+        }
+        Err(original) => return Err(anyhow::anyhow!("public abort: {original:?}")),
+    };
     anyhow::ensure!(
         matches!(&status.outcome, Some(BackupSessionOutcome::Aborted { reason, .. }) if *reason == abort_reason(ordinal)),
         "abort did not select its original failure"
