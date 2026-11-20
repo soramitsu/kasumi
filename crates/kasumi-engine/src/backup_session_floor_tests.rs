@@ -247,7 +247,7 @@ impl Installation {
             persistent.max_persistent_subdirectories += 2 * FLOOR;
             persistent.max_bytes = 200 << 30;
         }
-        let policy = serde_json::json!({
+        let disk_policy = serde_json::json!({
             "max_bytes": persistent.max_bytes,
             "max_persistent_files": persistent.max_persistent_files,
             "max_persistent_subdirectories": persistent.max_persistent_subdirectories,
@@ -255,10 +255,10 @@ impl Installation {
         });
         let policy_path = root.join("disk-policy.json");
         if create {
-            write_json(&policy_path, &policy)?;
+            write_json(&policy_path, &disk_policy)?;
         } else if policy_path.exists() {
             anyhow::ensure!(
-                read_json::<serde_json::Value>(&policy_path)? == policy,
+                read_json::<serde_json::Value>(&policy_path)? == disk_policy,
                 "reopened disk policy differs"
             );
         }
