@@ -202,7 +202,7 @@ async fn substituted_directory_with_the_same_path_and_store_identity_is_refused(
     // Exercise the recycled-inode case deterministically on filesystems that
     // allocate a different inode here as well as those that immediately reuse it.
     let recycled = TargetFileBinding {
-        directory: substitute.directory,
+        directory: substitute.directory.clone(),
         ..binding.clone()
     };
     for enrolled in [binding, recycled] {
@@ -233,6 +233,47 @@ async fn substituted_directory_with_the_same_path_and_store_identity_is_refused(
         substitute.directory_stamp
     );
     kept.shutdown().await.unwrap();
+}
+
+/// The creation stamp survives the last group-file unlink. A fresh claim
+/// after a Deleting record can finish the exact empty directory.
+#[tokio::test]
+async fn deleting_resumes_from_the_original_stamped_rootless_directory() {
+    let fixture = Fixture::new();
+    let key = ("city".to_owned(), Uuid::new_v4());
+    let id = Uuid::new_v4();
+    let binding = fixture.create(&key, id).await;
+    let path = fixture.path(&key);
+    let target = file(&key, &path, id);
+    let ledger = MemoryLedger::default();
+    ledger.bind(&binding).unwrap();
+    interruption::stop_after(&path, "deleting");
+    assert!(delete_exact(&ledger, &fixture.storage(), &target).is_err());
+    let disk = &fixture.physical.persistent;
+    let mut files = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert!(!files.is_empty());
+    files.sort_by_key(|p| p.file_name() == Some(kasumi_kv::ROOT_FILE_NAME.as_ref()));
+    for p in files {
+        let (root, relative) = fixture.config.binding(&p).unwrap();
+        disk.delete_file(disk.open_file(root, relative).unwrap())
+            .unwrap();
+    }
+    let claim = target.claim(&fixture.storage()).unwrap();
+    assert_eq!(claim.root_identity().unwrap(), None);
+    assert_eq!(
+        claim.target_directory_stamp().unwrap(),
+        binding.directory_stamp
+    );
+    drop(claim);
+    delete_exact(&ledger, &fixture.storage(), &target).unwrap();
+    assert_eq!(
+        ledger.cleanup().unwrap(),
+        Some(target.cleanup(TargetCleanupStage::Deleted, Some(binding)))
+    );
+    assert!(!path.exists());
 }
 
 /// A never-created target has a managed absence proof and records a terminal
