@@ -2,7 +2,7 @@
 use super::{AuditWork, SecurityAudit};
 use anyhow::{Context, Result};
 use kasumi_types::drain::{DrainFailure, DrainIssueRef};
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Jobs {
@@ -14,7 +14,17 @@ struct Job {
     handle: tokio::task::JoinHandle<()>,
     // Charge retained task/registry metadata until the actual handle is reaped.
     // The separately reserved maintenance worker never needs this admission.
-    _reservation: crate::admission::Reservation,
+    _reservation: Arc<parking_lot::Mutex<crate::admission::Reservation>>,
+}
+
+// The worker owns its execution slot through persistence. Its retained join
+// handle still owns the same 4 KiB of metadata after completion or unwinding.
+struct AuditExecution(Arc<parking_lot::Mutex<crate::admission::Reservation>>);
+
+impl Drop for AuditExecution {
+    fn drop(&mut self) {
+        self.0.lock().retain_workspace();
+    }
 }
 
 /// Pause the actual blocking record child before its injected panic.
@@ -86,7 +96,10 @@ impl SecurityAudit {
                 }
             }
             let work = self.begin()?;
-            let reservation = self.writer.admission.reserve(4096, None)?;
+            let reservation = Arc::new(parking_lot::Mutex::new(
+                self.writer.admission.reserve(4096, None)?,
+            ));
+            let execution = AuditExecution(reservation.clone());
             let id = jobs.next;
             jobs.next = id.checked_add(1).context("audit job identity exhausted")?;
             // No await between dispatch and retained registration. The caller
@@ -98,7 +111,9 @@ impl SecurityAudit {
                     // Keep the writer alive through reply delivery or disposal
                     // after caller cancellation, including after AuditWork ends.
                     let _owner = audit;
-                    let _ = send.send(run(work, id).await);
+                    let outcome = run(work, id).await;
+                    drop(execution);
+                    let _ = send.send(outcome);
                 }),
                 _reservation: reservation,
             });
