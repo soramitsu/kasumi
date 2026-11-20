@@ -629,6 +629,24 @@ pins of the Control callbacks as `callback_principal` and
 `callback_certificate_pins` on each data member. The administrative listeners
 must trust the corresponding client CAs and admit those client certificate pins.
 
+For global signer and security audit key inventory, enroll a separate Control
+reader on each dedicated Data voter. Set `remote_control.catalog_reader.principal`
+and `client_certificate_pins` to its service identity and approved client leaf
+hashes. Its `groups` map binds each local tenant name to its installed
+incarnation UUID. Issue this principal a renewable, expiring bearer for the
+exact Control resource with the single `audit` scope.
+
+On each dedicated Control voter, set `control.catalog_sources` to the reader's
+`principal`, `tls`, `client_certificate_pins`, private `bearer_file` and
+`server_ca`. Its `members` map binds every Data node ID to its recorded
+`verifier.node_id`, `verifier.installation_id`, `admin.endpoint` and
+`admin.certificate_pins`. Its `groups` map binds each Data tenant to its
+`incarnation` UUID and `members` set, including learners. The administrative
+listeners must accept the reader's mTLS identity. These service grants and
+routes are part of the original node enrollment. A protected key inventory
+reports missing coverage when a currently enrolled physical catalog cannot
+be verified through the group's leader.
+
 Run `kasumid check-config` and provision with these routes on each new member.
 Startup compares the configured delegation to the original encrypted enrollment.
 Install rotating bearer values by atomic replacement of their original private
