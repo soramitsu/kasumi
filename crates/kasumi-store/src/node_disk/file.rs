@@ -3261,6 +3261,11 @@ impl NodeDiskFile {
             self.0.disk.fail_locked(&mut state);
             return Err(self.0.record_error(error));
         }
+        #[cfg(test)]
+        self.0
+            .disk
+            .written_bytes
+            .fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
         if !data.is_empty() {
             budget.actual_len = budget.actual_len.max(end);
         }

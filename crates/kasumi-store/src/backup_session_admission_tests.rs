@@ -115,7 +115,7 @@ fn retry_clears_stale_reserved_payload_without_materializing_the_untouched_tail(
     use std::os::unix::fs::MetadataExt;
     let directory = private_tempdir().unwrap();
     let disk = open(directory.path(), 2);
-    let destination = Directory::open(directory.path(), disk).unwrap();
+    let destination = Directory::open(directory.path(), disk.clone()).unwrap();
     let session = Uuid::new_v4();
     destination
         .put(session, BackupSessionSlot::Intent, b"immutable intent")
@@ -129,17 +129,25 @@ fn retry_clears_stale_reserved_payload_without_materializing_the_untouched_tail(
     let before = reserve_path.metadata().unwrap();
     let reserve = owner.open_leaf("outcome.reserve").unwrap().unwrap();
     let long = vec![0x5a; 3 * terminal::IO_CHUNK_BYTES + 17];
+    let initial_writes = disk.physical_written_bytes();
     terminal::write(&reserve, session, Terminal::Outcome, &long).unwrap();
     let after = reserve_path.metadata().unwrap();
     assert_eq!(after.len(), terminal::FILE_BYTES as u64);
-    if before.blocks() == 0 {
-        assert!(
-            after.blocks() * 512 < terminal::FILE_BYTES as u64,
-            "small record materialized the full sparse reserve"
-        );
-    }
+    // APFS may allocate the entire private reserve on its first prefix write.
+    // The Store must issue only the payload and header writes on a fresh tail.
+    assert_eq!(
+        disk.physical_written_bytes() - initial_writes,
+        (terminal::HEADER_BYTES + long.len()) as u64
+    );
     let short = b"retried outcome";
+    let before_retry = disk.physical_written_bytes();
     terminal::write(&reserve, session, Terminal::Outcome, short).unwrap();
+    let stale_bytes = long.len() - short.len();
+    let repaired_tail = stale_bytes.next_multiple_of(terminal::IO_CHUNK_BYTES);
+    assert!(
+        disk.physical_written_bytes() - before_retry
+            <= (terminal::HEADER_BYTES + short.len() + repaired_tail) as u64
+    );
     assert_eq!(
         terminal::read(&reserve, session, Terminal::Outcome, short.len()).unwrap(),
         short
@@ -156,6 +164,7 @@ fn retry_clears_stale_reserved_payload_without_materializing_the_untouched_tail(
         .unwrap();
     let final_path = reserve_path.with_file_name("outcome.kasumi");
     let published = final_path.metadata().unwrap();
+    assert!(published.blocks() * 512 < terminal::FILE_BYTES as u64);
     assert_eq!(
         (published.dev(), published.ino()),
         (before.dev(), before.ino())

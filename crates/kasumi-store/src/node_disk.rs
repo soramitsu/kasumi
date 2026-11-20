@@ -640,6 +640,8 @@ pub struct NodeDisk {
     // Bytes read through this disk's file owners.
     #[cfg(test)]
     read_bytes: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    written_bytes: std::sync::atomic::AtomicU64,
     // Fixture devices: tenant leases on this disk measure awake time.
     #[cfg(any(test, feature = "test-utils"))]
     fixture_lease_time: bool,
@@ -1092,6 +1094,8 @@ impl NodeDisk {
             sync_pause: Mutex::new(None),
             #[cfg(test)]
             read_bytes: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            written_bytes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             namespace_failure: std::sync::atomic::AtomicU8::new(0),
             #[cfg(any(test, feature = "test-utils"))]
@@ -1841,6 +1845,11 @@ impl NodeDisk {
     #[cfg(test)]
     pub(crate) fn physical_read_bytes(&self) -> u64 {
         self.read_bytes.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn physical_written_bytes(&self) -> u64 {
+        self.written_bytes.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
