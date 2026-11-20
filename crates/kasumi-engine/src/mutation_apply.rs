@@ -223,7 +223,7 @@ impl TenantEngine {
             }
         };
         let owner = match scope {
-            ApplyScope::Committed => previous.receipts.clone(),
+            ApplyScope::Committed { .. } => previous.receipts.clone(),
             #[cfg(any(test, feature = "test-utils"))]
             ApplyScope::Fixture(disk) => previous.receipts.fixture_owner(disk, state)?,
         };
