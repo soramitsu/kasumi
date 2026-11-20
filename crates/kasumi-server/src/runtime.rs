@@ -7134,7 +7134,7 @@ mod lifecycle_tests {
                     let operation = original
                         .and_then(kasumi_engine::SnapshotFailure::operation_error)
                         .expect("joined target deadline holds its original typed error");
-                    assert_eq!(operation.code, ErrorCode::Unavailable);
+                    assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
                     assert_eq!(operation.message, "backup verification deadline expired");
                 });
         }
