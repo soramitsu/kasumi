@@ -133,6 +133,15 @@ impl ReadFailure<Infallible> {
 pub trait DocumentSource: crate::CollectionRecords {
     /// Indexes captured with this exact source, including verified hydration.
     fn indexes(&self) -> &crate::QueryIndexes;
+    /// Visit the authenticated primary headers in increasing ID order.
+    /// A source without a selected header directory returns false before lending.
+    fn visit_primary_ids(
+        &self,
+        _cancellation: &QueryCancellation,
+        _lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        Ok(false)
+    }
     /// Visit one field's ordered postings if this exact
     /// generation has published them. An unsupported layout returns false
     /// before lending any IDs. An installed but unreadable index returns an error.
@@ -220,6 +229,19 @@ impl<S: DocumentSource + ?Sized> crate::CollectionRecords for BoundSource<'_, S>
 impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     fn indexes(&self) -> &crate::QueryIndexes {
         self.source.indexes()
+    }
+    fn visit_primary_ids(
+        &self,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.check()?;
+        let available = self.source.visit_primary_ids(cancellation, |id| {
+            self.check()?;
+            lend(id)
+        })?;
+        self.check()?;
+        Ok(available)
     }
     fn visit_field_posting(
         &self,

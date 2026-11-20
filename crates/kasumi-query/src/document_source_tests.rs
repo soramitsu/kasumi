@@ -32,6 +32,7 @@ struct LoanSource {
     failure: Arc<()>,
     archived: bool,
     field_postings: Vec<Vec<&'static str>>,
+    primary_ids: Option<Vec<String>>,
     expected: RefCell<Vec<Option<u64>>>,
 }
 impl LoanSource {
@@ -83,6 +84,7 @@ impl LoanSource {
             failure: Arc::new(()),
             archived: false,
             field_postings: Vec::new(),
+            primary_ids: None,
             expected: RefCell::new(vec![]),
         }
     }
@@ -101,6 +103,36 @@ impl LoanSource {
         }
     }
 }
+#[test]
+fn unfiltered_candidate_ids_use_only_bounded_selected_headers() {
+    let mut source = LoanSource::new();
+    let expected: Vec<_> = (0..70).map(|i| format!("selected-{i:03}")).collect();
+    source.primary_ids = Some(expected.clone());
+    let request = QueryRequest::new("docs");
+    let cancellation = QueryCancellation::default();
+    let mut limits = Limits::default();
+    let mut memory = query_memory();
+    let selected = source
+        .indexes
+        .indexed_candidate_ids(&source, &request, &limits, &cancellation, &mut memory)
+        .unwrap();
+    assert_eq!(selected, expected);
+    assert_eq!(source.calls.get(), 0);
+    limits.max_query_candidates = 69;
+    let mut memory = query_memory();
+    assert!(
+        matches!(source.indexes.indexed_candidate_ids(&source, &request, &limits, &cancellation, &mut memory),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::ResourceExhausted)
+    );
+    assert_eq!(memory.live_bytes(), 0);
+    source.primary_ids.as_mut().unwrap().swap(32, 33);
+    assert!(
+        matches!(source.indexes.indexed_candidate_ids(&source, &request, &limits, &cancellation, &mut memory),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption)
+    );
+    assert_eq!(memory.live_bytes(), 0);
+}
+
 #[test]
 fn compound_postings_use_selected_ids_and_release_partial_results() {
     let mut source = LoanSource::new();
@@ -508,6 +540,21 @@ impl CollectionRecords for LoanSource {
     }
 }
 impl DocumentSource for LoanSource {
+    fn visit_primary_ids(
+        &self,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        let Some(ids) = &self.primary_ids else {
+            return Ok(false);
+        };
+        for id in ids {
+            cancellation.check()?;
+            lend(id)?;
+        }
+        Ok(true)
+    }
+
     fn visit_field_posting(
         &self,
         field: usize,

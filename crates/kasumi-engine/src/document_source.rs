@@ -286,40 +286,24 @@ impl GenerationDocumentSource<'_> {
     }
 }
 
-impl CollectionRecords for GenerationDocumentSource<'_> {
-    type Failure = DocumentSourceFailure;
-
-    fn identity(&self) -> SourceIdentity<'_> {
-        SourceIdentity::new(
-            self.generation.as_ref(),
-            &self.generation.state.tenant,
-            &self.generation.state.incarnation,
-            &self.collection,
-        )
-    }
-
-    fn definition(&self) -> &CollectionDefinition {
-        &self.collection().definition
-    }
-
-    fn visit_records(
+impl GenerationDocumentSource<'_> {
+    fn visit_selected_headers(
         &self,
-        mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
-    ) -> ReadResult<(), Self::Failure> {
-        // Checked before each load: the visit loads a record, then lends it.
-        self.check_deadline()?;
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str, u64) -> ReadResult<(), DocumentSourceFailure>,
+    ) -> ReadResult<bool, DocumentSourceFailure> {
         if let Some(selection) = self.generation.application_selection.get() {
-            // Release the header loan before decoding any body through the same
+            // Release the header loan before lending a row to a caller using the same
             // selected reader. Both the page and the exclusive cursor are bounded.
             const ROWS: usize = 32;
             let state = &self.generation.state;
-            let cancellation = QueryCancellation::default();
             let mut cursor = [0; 256];
             let mut length = 0;
             loop {
                 let after = (length != 0).then(|| {
                     std::str::from_utf8(&cursor[..length]).expect("validated document ID")
                 });
+                cancellation.check()?;
                 let selected = selection
                     .with_serving_primary(self.directory_reader(), state, |tree, memory, layout| {
                         if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
@@ -351,25 +335,56 @@ impl CollectionRecords for GenerationDocumentSource<'_> {
                         )
                         .into());
                     }
-                    break;
+                    return Ok(false);
                 };
                 for (id, version) in &page {
-                    self.with_record(id, Some(*version), &cancellation, |record| {
-                        lend(
-                            id,
-                            record.ok_or_else(|| {
-                                corruption("selected primary header lost its record")
-                            })?,
-                        )
-                    })?;
+                    cancellation.check()?;
+                    self.check_deadline()?;
+                    lend(id, *version)?;
                 }
                 if page.len() < ROWS {
-                    return Ok(());
+                    return Ok(true);
                 }
                 let id = page.last().expect("full record window").0.as_bytes();
                 length = id.len();
                 cursor[..length].copy_from_slice(id);
             }
+        }
+        Ok(false)
+    }
+}
+
+impl CollectionRecords for GenerationDocumentSource<'_> {
+    type Failure = DocumentSourceFailure;
+
+    fn identity(&self) -> SourceIdentity<'_> {
+        SourceIdentity::new(
+            self.generation.as_ref(),
+            &self.generation.state.tenant,
+            &self.generation.state.incarnation,
+            &self.collection,
+        )
+    }
+
+    fn definition(&self) -> &CollectionDefinition {
+        &self.collection().definition
+    }
+
+    fn visit_records(
+        &self,
+        mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+    ) -> ReadResult<(), Self::Failure> {
+        self.check_deadline()?;
+        let cancellation = QueryCancellation::default();
+        if self.visit_selected_headers(&cancellation, |id, version| {
+            self.with_record(id, Some(version), &cancellation, |record| {
+                lend(
+                    id,
+                    record.ok_or_else(|| corruption("selected primary header lost its record"))?,
+                )
+            })
+        })? {
+            return Ok(());
         }
         crate::index_source::visit(
             self.collection(),
@@ -386,6 +401,14 @@ impl CollectionRecords for GenerationDocumentSource<'_> {
 impl DocumentSource for GenerationDocumentSource<'_> {
     fn indexes(&self) -> &QueryIndexes {
         self.generation.indexes.as_ref()
+    }
+
+    fn visit_primary_ids(
+        &self,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.visit_selected_headers(cancellation, |id, _| Ok(lend(id)?))
     }
 
     fn visit_field_posting(

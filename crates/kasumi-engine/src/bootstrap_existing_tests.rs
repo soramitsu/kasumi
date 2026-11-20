@@ -141,7 +141,7 @@ impl Installation {
         image: &SnapshotImage,
         manifest_bytes: impl AsRef<[u8]>,
         custody_digest: &str,
-        first_chunk: Option<Vec<u8>>,
+        mut first_chunk: Option<Vec<u8>>,
     ) -> anyhow::Result<()> {
         bind_deployment(&self.stores, b"local-v1")?;
         let mut reader = image.reader();
@@ -151,7 +151,7 @@ impl Installation {
                 vec![0; (image.len() - index * CHUNK as u64).min(CHUNK as u64) as usize];
             reader.read_exact(&mut chunk)?;
             if index == 0 {
-                chunk = first_chunk.clone().unwrap_or(chunk);
+                chunk = first_chunk.take().unwrap_or(chunk);
             }
             self.stores.application().write_batch(&[WriteOp::put(
                 NS,
@@ -288,6 +288,67 @@ fn assert_rejected<T, E: Into<crate::SnapshotFailure>>(result: std::result::Resu
             kasumi_store::StorageCensusDisposition::Retired
         );
     }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns the original native failure custody."
+)]
+async fn target_digest_stops_before_reading_the_next_encrypted_chunk()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let first = vec![0x1b; CHUNK];
+    let last = [0x92];
+    let expected = hex::encode(
+        Sha256::new()
+            .chain_update(&first)
+            .chain_update(last)
+            .finalize(),
+    );
+    let manifest = ApplicationBootstrapManifest {
+        format: 2,
+        bytes: CHUNK as u64 + 1,
+        chunks: 2,
+        digest: expected.clone(),
+    };
+    fixture.first_publish(
+        &fixture.image()?,
+        serde_json::to_vec(&manifest)?,
+        &expected,
+        Some(first),
+    )?;
+    let token = kasumi_query::QueryCancellation::default();
+    let mut checks = 0;
+    let stopped = target::verify_persisted_digest(&fixture.stores, &expected, || {
+        checks += 1;
+        if checks == 3 {
+            token.cancel();
+        }
+        Ok(token.check()?)
+    })
+    .unwrap_err();
+    let stopped = stopped
+        .downcast_ref::<Error>()
+        .expect("original cancellation");
+    assert_eq!(stopped.code, ErrorCode::ResourceExhausted);
+    assert_eq!(stopped.message, token.check().unwrap_err().message);
+    // Without cancellation, the same opening observes the missing second
+    // row. After that original row arrives both domains authenticate.
+    let missing =
+        target::verify_persisted_digest(&fixture.stores, &expected, || Ok(())).unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("target bootstrap chunk absent")
+    );
+    fixture
+        .stores
+        .application()
+        .write_batch(&[WriteOp::put(NS, 1u64.to_be_bytes(), last)])?;
+    target::verify_persisted_digest(&fixture.stores, &expected, || Ok(()))?;
+    fixture.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
