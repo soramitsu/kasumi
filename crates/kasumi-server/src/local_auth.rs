@@ -428,6 +428,23 @@ impl LocalCredentials {
         self.statuses.insert(epoch, family, &status);
         Ok(status)
     }
+    /// A missing family gives the same policy refusal as another audience.
+    /// An unreadable ledger must reach the worker and its drain as a failure.
+    pub(crate) fn is_mcp_family(&self, family: Uuid) -> Result<bool> {
+        match self.status(family) {
+            Ok(status) => Ok(status.specification.audience == CredentialAudience::Mcp),
+            Err(error)
+                if error.chain().len() == 1
+                    && error.downcast_ref::<Error>().is_some_and(|e| {
+                        e.code == ErrorCode::NotFound && !e.has_physical_source()
+                    }) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn authorization_status(&self, family: Uuid) -> kasumi_types::Result<CredentialStatus> {
         self.status(family)
             .map_err(|error| family_status_error(&error, self.store.key_lease_failure_class()))
@@ -1793,6 +1810,11 @@ mod tests {
             status
         );
         let resource = status.specification.resource.clone();
+        assert!(!manager.is_mcp_family(Uuid::new_v4()).unwrap());
+        assert_eq!(
+            manager.is_mcp_family(family).unwrap(),
+            status.specification.audience == CredentialAudience::Mcp
+        );
         let mut alternates = respelled(&current).to_vec();
         alternates.push(omitted.clone());
         for alternate in alternates {
@@ -1802,6 +1824,10 @@ mod tests {
             let before = rows(&store);
             refused(
                 manager.status(family).unwrap_err(),
+                "credential family record",
+            );
+            refused(
+                manager.is_mcp_family(family).unwrap_err(),
                 "credential family record",
             );
             refused(

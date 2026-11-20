@@ -119,13 +119,7 @@ impl NativeAdmin {
                     // An MCP credential cannot reach this listener, so a
                     // Control administrator renews it explicitly.
                     let renewable = own_family == Some(renewal.family_id)
-                        || (control
-                            && manager
-                                .status(renewal.family_id)
-                                .is_ok_and(|status| {
-                                    status.specification.audience
-                                        == kasumi_types::CredentialAudience::Mcp
-                                }));
+                        || (control && manager.is_mcp_family(renewal.family_id)?);
                     anyhow::ensure!(
                         renewable,
                         kasumi_types::Error::new(
@@ -155,22 +149,23 @@ impl NativeAdmin {
             }
         })
         .await;
-        let (fence, mut bytes) = self
+        let (fence, bytes) = self
             .auth
             .audit_result(&context, result)
             .await
             .map_err(status)?;
-        let response = release_response(
+        let mut released = release_response(
             &self.auth,
             &context,
             fence,
-            CredentialJsonResponse {
-                response_json: std::mem::take(&mut *bytes),
-            },
+            bytes,
             !matches!(operation, CredentialOperation::Status),
         )
         .await
         .map_err(status)?;
+        let response = CredentialJsonResponse {
+            response_json: std::mem::take(&mut *released),
+        };
         #[cfg(test)]
         if matches!(operation, CredentialOperation::Renew) {
             cancelled_reply::after_commit(own_family, &response)?;
@@ -213,9 +208,11 @@ impl NativeAdmin {
             Err((outcome, _)) => outcome.clone(),
         };
         let recorded = self.auth.record_recovery(context, outcome).await;
-        let response = result.map_err(|(_, refused)| refused)?;
+        let mut released = result.map_err(|(_, refused)| refused)?;
         recorded.map_err(status)?;
-        Ok(Response::new(response))
+        Ok(Response::new(CredentialJsonResponse {
+            response_json: std::mem::take(&mut *released),
+        }))
     }
 
     /// The recovery itself. A failure carries the outcome to record (denied
@@ -224,7 +221,7 @@ impl NativeAdmin {
         &self,
         recovery: &crate::auth::VerifiedRecovery,
         payload: Vec<u8>,
-    ) -> Result<CredentialJsonResponse, (kasumi_types::SecurityOutcome, Status)> {
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, (kasumi_types::SecurityOutcome, Status)> {
         let refused =
             |error: kasumi_types::Error| (crate::auth::recovery_outcome(error.code), status(error));
         let context = &recovery.context;
@@ -278,7 +275,7 @@ impl NativeAdmin {
         let manager = self.auth.local_credentials().map_err(refused)?.clone();
         let caller = context.clone();
         let proof = recovery.proof.clone();
-        let (fence, mut issued) = credential_worker(fence, move || {
+        let (fence, issued) = credential_worker(fence, move || {
             Ok(encode_json(&manager.recover(
                 &proof,
                 &renewal,
@@ -287,17 +284,9 @@ impl NativeAdmin {
         })
         .await
         .map_err(refused)?;
-        release_response(
-            &self.auth,
-            context,
-            fence,
-            CredentialJsonResponse {
-                response_json: std::mem::take(&mut *issued),
-            },
-            true,
-        )
-        .await
-        .map_err(refused)
+        release_response(&self.auth, context, fence, issued, true)
+            .await
+            .map_err(refused)
     }
 }
 
