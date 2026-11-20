@@ -129,9 +129,7 @@ impl MemberCatalogRequest {
         } = self.purpose
         {
             ensure!(
-                !control.is_nil()
-                    && expires_at_ms != 0
-                    && !matches!(self.start, CatalogStart::Identity { .. }),
+                !control.is_nil() && expires_at_ms != 0,
                 "invalid Control journal read"
             );
         }
@@ -717,6 +715,43 @@ mod tests {
             truncated: false,
         };
         journal.validate(&journal_request, 2)?;
+        // A retirement seeks the first version at or above one key identity.
+        // Both authenticated member routes still bind and validate that window.
+        for purpose in [
+            journal_request.purpose,
+            CatalogPurpose::DataJournal {
+                installation_id: journal.verifier.installation_id,
+                control: Uuid::new_v4(),
+                expires_at_ms: 101,
+            },
+        ] {
+            let mut seek = MemberCatalogRequest {
+                purpose,
+                start: CatalogStart::Identity {
+                    identity: KeyIdentityRef {
+                        provider: "kms".into(),
+                        key_ref: "retained".into(),
+                    },
+                },
+                ..journal_request.clone()
+            };
+            let mut result = journal.clone();
+            result.request_sha256 = staged_digest(&seek)?.0;
+            result.validate(&seek, 2)?;
+            seek.start = CatalogStart::Identity {
+                identity: KeyIdentityRef {
+                    provider: "kms".into(),
+                    key_ref: "zzz".into(),
+                },
+            };
+            result.request_sha256 = staged_digest(&seek)?.0;
+            assert!(
+                result.validate(&seek, 2).is_err(),
+                "earlier journal key crossed the retirement window"
+            );
+            result.entries.clear();
+            result.validate(&seek, 2)?;
+        }
         let mut excluded = journal.clone();
         excluded.excluded_by_enrollment = Some([6; 32]);
         assert!(excluded.validate(&journal_request, 2).is_err());
