@@ -66,6 +66,11 @@ the Read scope for a current Authority administrator. Use a separate file
 from the node's serving token. The Control reader contacts and rechecks every
 current voter and learner over its pinned endpoint. A missing credential,
 unreachable member or changed inventory leaves that partition unreported.
+For the Control members' own signer keys, each voter and learner answers
+through its enrolled cluster connection. A signer page can contain fewer
+entries than requested. Follow its continuation until the last page and
+inspect the coverage field. A missing node report or changed membership
+prevents a complete observation.
 Publish renewed credentials using a new private file, sync it, atomically rename
 it over the installed path and sync the parent directory. Every finite pooled
 operation reads one fresh snapshot after anchoring its original deadline and

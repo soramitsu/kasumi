@@ -517,3 +517,51 @@ apply. Omitting the interval selects the earlier completion-heavy workload.
 The retained plan, original records, observed device, filesystem measurements,
 and both shutdown outcomes belong to the evidence for each run. Workload
 measurements alone do not qualify a production filesystem policy.
+
+### Dedicated backup binding and physical key catalogs
+
+Commit `53dc2094` incorporated the dedicated Data-to-Control transport from
+`28862ab6`. The macOS ARM64 test used six separately opened encrypted stores,
+two three-voter Raft groups and two pinned TLS administrative listeners. The
+first Control reply was discarded after commit. A retry recovered that
+decision, refused a stale nonce and reproduced the original session UUID and
+external ciphertext. The test also covered duplicate completion, abortion,
+cleanup and revoked authorization. The three selected transport tests passed
+in 39.73 seconds and repeated in 37.14 seconds. They used an in-process Raft
+router and a fixture Authority lease. The earlier admission refusal and every
+retry are indexed in the private donor receipt, SHA-256
+`0dab7699da42726021d31538ea489e59e3ea1b3865cef7d6fdf5356f68c2b6ad`.
+The 100,001-session disk workload is separate.
+
+The first integrated build failed because the Engine used `async-trait` in an
+ordinary library path while declaring it only for tests. Commit `3fa4ab97`
+corrected the dependency declaration. Strict all-target, all-feature Clippy
+for Server, Engine, Client and Types passed in 618.00 seconds with 2,382,594,048
+bytes peak RSS. All 95 Types tests passed on that commit.
+
+The real three-member Authority test on `1767dd0a` followed an enrolled
+member through quorum loss, rotation and physical reopen. It passed in 6.27
+seconds. Its raw build-and-test log has SHA-256
+`d76218e25c57f2a5b4e4b62a9d857829fddc9b0c3ff10a5a0ee28d0aa0e4eee5`.
+Commit `6ea1062b` uses a distinct read credential for each installed issuer
+partition. Commit `39bfb96c` collects the signer catalog of each current
+Control voter and learner over its enrolled cluster connection. It reads
+each reported catalog twice, binds it to the requesting term and membership,
+and records unreported members in the public coverage result.
+
+The 513-row snapshot change-identity regression on `bb0146f9` requested
+143,059,946 bytes for a commit with a 134,217,728-byte scratch group limit.
+Commit `8b5e32dc` sizes batches from remaining group capacity and the maximum
+copy-on-write page cost of one edit. The original failure log has SHA-256
+`dc02781753046bbb7a23dc6a84ba12aa5e32f0566b135e7d591fc6451f594b42`.
+On `f3d3cba0`, eight native text-directory tests, the indexed snapshot
+reopen and four query shard tests passed.
+
+The second native Linux ARM64 Python run used a container init process.
+On `ff387173`, 518 cases finished in 957.592 seconds with one error, one
+failure and three skips. Both failures were in the recovery adapter fixture.
+The next fixture pins the original daemon PID until its operation completes.
+Original Linux outcomes remain part of G11. The macOS ARM64 full workspace
+also found a distinct MCP failure on `820ebd90`. An isolated original hit
+the source query deadline before the intended tool-result allocation check.
+The same binary subsequently passed the full unchanged test in 10.03 seconds.
