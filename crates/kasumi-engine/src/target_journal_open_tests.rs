@@ -21,6 +21,36 @@ struct Fixture {
     control_key: ring::signature::Ed25519KeyPair,
 }
 impl Fixture {
+    fn dispatch(
+        &self,
+        journal: &Arc<TargetJournal>,
+        root: &ControlSigningRoot,
+        phase: &kasumi_types::RecoveryPhaseRecord,
+        intent: &LifecycleIntent,
+        request: &kasumi_types::TargetRuntimeRequest,
+    ) -> Result<InitialDispatchReservation> {
+        match journal.reserve_initial_dispatch(root, phase, intent, request) {
+            Err(error) if error.is::<MissingDispatchWriter>() => {
+                let read = journal.begin_writer_read()?;
+                let observation = kasumi_types::TargetWriterObservation {
+                    challenge: read.challenge().clone(),
+                    observed_term: 1,
+                    observed_revision: 1,
+                    membership_epoch: 1,
+                    observed_policy_epoch: 1,
+                    retirements: Default::default(),
+                };
+                let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation))?;
+                let signature = hex::encode(self.control_key.sign(&bytes).as_ref());
+                let writer = read.admit(&kasumi_types::SignedTargetWriterObservation {
+                    observation,
+                    signature,
+                })?;
+                journal.reserve_observed_initial_dispatch(root, phase, intent, request, &writer)
+            }
+            result => result,
+        }
+    }
     async fn new() -> Result<Self> {
         Self::with_provider(Arc::new(LocalKeyProvider::new([39; 32]))).await
     }
@@ -390,8 +420,7 @@ async fn first_dispatch_rejects_a_tenant_outside_the_installed_placement_roster(
     let original = f.store.scan(NS)?;
     let (lifecycle, phase, request) = initial_dispatch(&f, true)?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     assert_eq!(f.store.scan(NS)?, original);
@@ -864,8 +893,11 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         let f = Fixture::new().await?;
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, initialize)?;
+        assert!(
+            matches!(journal.reserve_initial_dispatch(&f.installed.root,&phase,&lifecycle,&request),Err(error) if error.is::<MissingDispatchWriter>())
+        );
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no candidate")
         };
@@ -895,7 +927,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         assert_eq!(membership.bootstrap_sha256(), bootstrap_sha256.as_str());
         assert_eq!(membership.prebind().identity().phase_id, phase.phase_id);
         assert!(matches!(
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
             Decision::ExistingStatusOnly
         ));
     }
@@ -905,7 +937,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no candidate")
         };
@@ -948,7 +980,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         .input_sha256 = phase.input_sha256.clone();
     phase.validate()?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("changed signed dispatch returned no candidate")
     };
@@ -971,7 +1003,7 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     let journal = f.create()?;
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("signed first dispatch returned no one-use candidate")
     };
@@ -1030,7 +1062,7 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
         expected
     );
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
 
@@ -1052,7 +1084,8 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     // A second valid signed dispatch can reserve a different phase, but its
     // candidate cannot survive substitution of its accepted canonical row.
     let (later_lifecycle, later_phase, later_request) = signed_initial_dispatch(&f, true)?;
-    let Decision::NewlyAccepted(later) = journal.reserve_initial_dispatch(
+    let Decision::NewlyAccepted(later) = f.dispatch(
+        &journal,
         &f.installed.root,
         &later_phase,
         &later_lifecycle,
@@ -1127,7 +1160,7 @@ async fn first_prebind_rejects_partial_or_competing_raft_identity_without_repair
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no one-use candidate")
         };
@@ -1180,7 +1213,7 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1283,7 +1316,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1344,7 +1377,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
         after
     );
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     drop(journal);
@@ -1372,7 +1405,7 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1828,8 +1861,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
             .read_initial_dispatch_status(&f.installed.root, &wrong_digest, &request)
             .is_err()
     );
-    let first =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?;
+    let first = f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?;
     let Decision::NewlyAccepted(prebind) = first else {
         anyhow::bail!("first exact dispatch did not return a one-use prebind")
     };
@@ -1877,13 +1909,12 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
             .is_err()
     );
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", metadata_before.as_bytes())?;
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     assert_eq!(
@@ -1898,15 +1929,13 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
         .attempt_id = Uuid::new_v4();
     changed.validate()?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &changed, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &changed, &lifecycle, &request)
             .is_err()
     );
     let mut wrong_root = f.installed.root.clone();
     wrong_root.public_key = "ff".repeat(32);
     assert!(
-        journal
-            .reserve_initial_dispatch(&wrong_root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &wrong_root, &phase, &lifecycle, &request)
             .is_err()
     );
     let (initialize_lifecycle, initialize_phase, initialize_request) = initial_dispatch(&f, true)?;
@@ -1916,18 +1945,19 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
     );
     write_plaintext_copy_for_fixture(&f.store, NS, &stopped_key, b"{}")?;
     assert!(
-        journal
-            .reserve_initial_dispatch(
-                &f.installed.root,
-                &initialize_phase,
-                &initialize_lifecycle,
-                &initialize_request
-            )
-            .is_err()
+        f.dispatch(
+            &journal,
+            &f.installed.root,
+            &initialize_phase,
+            &initialize_lifecycle,
+            &initialize_request
+        )
+        .is_err()
     );
     f.store.write_batch(&[WriteOp::delete(NS, stopped_key)])?;
     assert!(matches!(
-        journal.reserve_initial_dispatch(
+        f.dispatch(
+            &journal,
             &f.installed.root,
             &initialize_phase,
             &initialize_lifecycle,
@@ -1945,7 +1975,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
     drop(journal);
     let reopened = f.reopen()?;
     assert!(matches!(
-        reopened.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&reopened, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     reopened.shutdown().await?;
@@ -1957,7 +1987,7 @@ async fn previous_formats_and_corrupt_dispatch_or_accounting_fail_closed_on_reop
     let f = Fixture::new().await?;
     let journal = f.create()?;
     let (lifecycle, phase, request) = initial_dispatch(&f, false)?;
-    journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?;
+    f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?;
     drop(journal);
     let original_head = f.store.get(NS, b"metadata")?.unwrap();
     let key = format!("dispatch/{}/{}", phase.operation_id, phase.phase_id).into_bytes();
@@ -2045,8 +2075,7 @@ async fn terminal_reserve_failure_never_writes_an_accepted_dispatch() -> Result<
     )?;
     let (lifecycle, phase, request) = initial_dispatch(&f, false)?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     let metadata: Metadata = serde_json::from_slice(&f.store.get(NS, b"metadata")?.unwrap())?;
@@ -2072,7 +2101,7 @@ async fn target_first_entry_rejects_missing_invalid_and_substituted_original_cau
     let journal = f.create()?;
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("candidate absent")
     };

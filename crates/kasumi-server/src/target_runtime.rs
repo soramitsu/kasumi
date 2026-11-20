@@ -1272,6 +1272,7 @@ impl TargetRecoveryRuntime {
         let phase = RuntimeTargetPhase::acquire(
             &self.installed,
             &self.journal,
+            &self.signer,
             authority,
             self.authority_trusts
                 .get(&template.authority)

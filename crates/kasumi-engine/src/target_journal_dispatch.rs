@@ -865,6 +865,28 @@ impl TargetJournal {
         lifecycle: &LifecycleIntent,
         request: &TargetRuntimeRequest,
     ) -> Result<InitialDispatchReservation> {
+        self.reserve_dispatch(claimed_root, phase, lifecycle, request, None)
+    }
+
+    pub fn reserve_observed_initial_dispatch(
+        &self,
+        claimed_root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        lifecycle: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+        writer: &CurrentTargetJournalWriter,
+    ) -> Result<InitialDispatchReservation> {
+        self.reserve_dispatch(claimed_root, phase, lifecycle, request, Some(writer))
+    }
+
+    fn reserve_dispatch(
+        &self,
+        claimed_root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        lifecycle: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+        writer: Option<&CurrentTargetJournalWriter>,
+    ) -> Result<InitialDispatchReservation> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
             .mutation
@@ -911,6 +933,29 @@ impl TargetJournal {
                 .is_none(),
             "target incarnation permanently stopped locally"
         );
+        let original = &lifecycle.request;
+        if let Some(bytes) = self.store.get_bounded(
+            NS,
+            &generation_key(&original.tenant, original.target_incarnation),
+            MAX_RECORD,
+        )? {
+            let generation: GenerationBinding = decode_current(&bytes)?;
+            ensure!(
+                generation.checkpoint == original.checkpoint
+                    && generation.source_incarnation == original.source_incarnation
+                    && generation.source_epoch == original.source_authority_epoch
+                    && generation.nodes == original.target_nodes,
+                "dispatch differs from enrolled physical generation"
+            );
+        } else {
+            writer
+                .ok_or(MissingDispatchWriter)?
+                .require(self, &metadata.retirements)?;
+            ensure!(
+                !metadata.retirements.requires_graph(),
+                "first dispatch under a wrapping-key fence requires its original locally admitted materialization"
+            );
+        }
         metadata.dispatches = metadata
             .dispatches
             .checked_add(1)

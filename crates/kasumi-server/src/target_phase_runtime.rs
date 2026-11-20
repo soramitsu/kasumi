@@ -220,7 +220,8 @@ impl RuntimeTargetPhase {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire(
         configured: &super::target_runtime_config::TargetRecoveryConfig,
-        journal: &TargetJournal,
+        journal: &Arc<TargetJournal>,
+        signer: &kasumi_engine::TargetSigner,
         authority: &ServingAuthorityConfig,
         trust: AuthorityTrust,
         credential: CredentialSource,
@@ -332,12 +333,39 @@ impl RuntimeTargetPhase {
             admission.check()?;
             #[cfg(test)]
             marked_read_count.fetch_add(1, Ordering::AcqRel);
-            let decision = journal.reserve_initial_dispatch(
+            let decision = match journal.reserve_initial_dispatch(
                 &configured.control_root,
                 &marked,
                 intent,
                 request,
-            )?;
+            ) {
+                Err(error) if error.is::<kasumi_engine::MissingDispatchWriter>() => {
+                    let read = journal.begin_dispatch_writer_read(&original)?;
+                    let enrollment = signer.sign_writer_challenge(&read)?;
+                    let signed = admission
+                        .run(async {
+                            Ok::<_, anyhow::Error>(
+                                control
+                                    .observe_target_writer(
+                                        &enrollment,
+                                        admission.remaining_response()?,
+                                    )
+                                    .await?,
+                            )
+                        })
+                        .await?;
+                    admission.check()?;
+                    let writer = read.admit(&signed)?;
+                    journal.reserve_observed_initial_dispatch(
+                        &configured.control_root,
+                        &marked,
+                        intent,
+                        request,
+                        &writer,
+                    )?
+                }
+                result => result?,
+            };
             let InitialDispatchReservation::NewlyAccepted(prebind) = decision else {
                 return Err(kasumi_types::Error::new(
                     kasumi_types::ErrorCode::Conflict,

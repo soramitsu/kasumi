@@ -95,6 +95,21 @@ impl TargetJournal {
             state: state.clone(),
         };
         head.retirements.require_successor(&next)?;
+        if !state.completed.is_empty() {
+            self.store
+                .visit_wrapping_identities(|_, provider, key_ref, version| {
+                    let identity = kasumi_types::KeyIdentityRef {
+                        provider: provider.to_owned(),
+                        key_ref: key_ref.to_owned(),
+                    };
+                    ensure!(
+                        version >= state.floor(&identity),
+                        "physical journal catalog still depends on a retired wrapping version"
+                    );
+                    Ok(())
+                })?;
+        }
+
         let digest = kasumi_types::staged_digest(&(
             &self.installed.root,
             &self.installed.node.verifier,
@@ -307,6 +322,24 @@ impl TargetJournal {
         self.writer_read(Some(original.intent.request.command_id))
     }
 
+    pub fn begin_dispatch_writer_read(
+        self: &Arc<Self>,
+        original: &kasumi_serving::VerifiedControlIntent,
+    ) -> Result<TargetWriterRead> {
+        ensure!(
+            original.observation().root == self.installed.root
+                && original
+                    .observation()
+                    .intent
+                    .request
+                    .target_nodes
+                    .get(&self.installed.node.node_id)
+                    .is_some_and(|node| node.verifier == self.installed.node.verifier),
+            "dispatch writer differs from the enrolled Control intent"
+        );
+        self.writer_read(Some(original.observation().intent.request.command_id))
+    }
+
     fn writer_read(self: &Arc<Self>, lifecycle_command: Option<Uuid>) -> Result<TargetWriterRead> {
         let observation = kasumi_clock::EpochClock::system()?.observe()?;
         let deadline = observation.until(
@@ -352,6 +385,7 @@ pub struct CurrentTargetJournalWriter {
     journal: Arc<TargetJournal>,
     position: WriterRetirements,
     deadline: kasumi_clock::ElapsedDeadline,
+    _workspace: crate::admission::Reservation,
 }
 impl CurrentTargetJournalWriter {
     pub(super) fn require(
@@ -403,6 +437,7 @@ impl TargetWriterRead {
                     state: signed.observation.retirements.clone(),
                 },
                 deadline: self.deadline,
+                _workspace: self._workspace,
             },
         ))
     }

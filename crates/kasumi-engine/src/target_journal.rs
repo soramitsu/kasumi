@@ -17,6 +17,14 @@ mod accounting;
 #[path = "target_journal_retirements.rs"]
 mod retirements;
 use retirements::JournalCheckpointPermit;
+#[derive(Debug)]
+pub struct MissingDispatchWriter;
+impl std::fmt::Display for MissingDispatchWriter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("first dispatch requires its original journal writer observation")
+    }
+}
+impl std::error::Error for MissingDispatchWriter {}
 pub use retirements::{CurrentTargetJournalWriter, TargetWriterRead};
 const NS: &str = "target.journal";
 #[cfg(test)]
@@ -160,6 +168,9 @@ struct GenerationBinding {
     nodes: std::collections::BTreeMap<u64, kasumi_types::LifecycleNode>,
     control_incarnation: Uuid,
     partition: ControlAuthorityPartition,
+    /// This generation identity was reserved solely by a terminal stop.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stop_before_prepare: bool,
 }
 impl GenerationBinding {
     fn from_intent(i: &TargetJournalIntent) -> Self {
@@ -173,6 +184,7 @@ impl GenerationBinding {
             nodes: r.target_nodes.clone(),
             control_incarnation: i.intent.control_incarnation,
             partition: i.authority_partition.clone(),
+            stop_before_prepare: false,
         }
     }
 }
@@ -322,11 +334,27 @@ impl TargetJournal {
 
     /// Each encrypted row retains its observed wrapping version. The caller must
     /// obtain the independent external key graph for each permanent checkpoint.
+    #[cfg(test)]
     pub(crate) fn visit_key_dependencies(
         &self,
         token: &kasumi_query::QueryCancellation,
-        mut version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
+        version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
         mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.visit_scoped_key_dependencies(
+            token,
+            version,
+            |id, record, _| checkpoint(id, record),
+            |_, _| Ok(false),
+        )
+    }
+
+    pub(crate) fn visit_scoped_key_dependencies(
+        &self,
+        token: &kasumi_query::QueryCancellation,
+        mut version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
+        mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint, bool) -> Result<()>,
+        mut stopped_absent: impl FnMut(&str, Uuid) -> Result<bool>,
     ) -> Result<[u8; 32]> {
         use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionEntry, KeyVersionRef};
         use sha2::{Digest, Sha256};
@@ -424,7 +452,57 @@ impl TargetJournal {
                     token.check()?;
                     if key.starts_with(b"generation/") {
                         let row: GenerationBinding = decode_current(value)?;
-                        checkpoint(row.target_incarnation, &row.checkpoint)?;
+                        if row.stop_before_prepare {
+                            let stop: TargetJournalStop = decode_current(
+                                &view
+                                    .get(
+                                        NS,
+                                        &stop_key(&row.tenant, row.target_incarnation),
+                                        MAX_RECORD,
+                                    )?
+                                    .context("stop-only generation lacks its terminal proof")?,
+                            )?;
+                            self.validate_stop(&stop)?;
+                            let mut original = GenerationBinding::from_intent(&stop.intent);
+                            original.stop_before_prepare = true;
+                            ensure!(
+                                original == row,
+                                "stop-only generation differs from its original signed stop"
+                            );
+                            if let Some(bytes) = view.get(
+                                NS,
+                                &cleanup_key(&row.tenant, row.target_incarnation),
+                                MAX_RECORD,
+                            )? {
+                                let cleanup: TargetCleanup = decode_current(&bytes)?;
+                                self.validate_cleanup(&cleanup)?;
+                                if cleanup.stage == TargetCleanupStage::Deleted
+                                    && cleanup.binding.is_none()
+                                    && view
+                                        .get(
+                                            NS,
+                                            &file_key(&row.tenant, row.target_incarnation),
+                                            MAX_RECORD,
+                                        )?
+                                        .is_none()
+                                    && view
+                                        .get(
+                                            NS,
+                                            &binding_key(&row.tenant, row.target_incarnation),
+                                            MAX_RECORD,
+                                        )?
+                                        .is_none()
+                                    && stopped_absent(&row.tenant, row.target_incarnation)?
+                                {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        checkpoint(
+                            row.target_incarnation,
+                            &row.checkpoint,
+                            row.stop_before_prepare,
+                        )?;
                     } else if key.starts_with(b"dispatch/") {
                         let row = self.validate_dispatch_record(key, value)?;
                         let request = &row.lifecycle.request;
@@ -439,10 +517,13 @@ impl TargetJournal {
                                     && original.nodes == request.target_nodes,
                                 "target dispatch differs from its retained generation"
                             );
+                            if original.stop_before_prepare {
+                                checkpoint(request.target_incarnation, &request.checkpoint, false)?;
+                            }
                         } else {
                             // A lost initial dispatch can precede the first local
                             // prepare. Its immutable checkpoint is already retained.
-                            checkpoint(request.target_incarnation, &request.checkpoint)?;
+                            checkpoint(request.target_incarnation, &request.checkpoint, false)?;
                         }
                     }
                     Ok(())
@@ -1401,6 +1482,8 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            let mut binding = binding;
+            binding.stop_before_prepare = true;
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations
