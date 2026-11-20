@@ -152,6 +152,9 @@ pub struct TenantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
+    /// Protected, read-only catalog sources for dedicated Data groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_sources: Option<crate::data_member_catalog::DataCatalogSources>,
     /// Protected callbacks for enrolled, dedicated data groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_sources: Option<crate::remote_backup::BackupSources>,
@@ -491,6 +494,17 @@ impl RuntimeConfig {
                     .remote_data
                     .as_ref()
                     .context("backup callbacks require dedicated Control placement")?,
+            )?;
+        }
+        if let Some(control) = &self.control
+            && let Some(sources) = &control.catalog_sources
+        {
+            sources.validate(
+                control
+                    .remote_data
+                    .as_ref()
+                    .context("catalog reader requires dedicated Control placement")?,
+                control.backup_sources.as_ref(),
             )?;
         }
         if let Some(remote) = self.control.as_ref().and_then(|c| c.remote_data.as_ref()) {
@@ -3195,6 +3209,7 @@ pub fn example_config(
         admin: mutual(9445),
         control: Some(ControlConfig {
             backup_sources: None,
+            catalog_sources: None,
             remote_data: None,
             lifecycle: None,
             startup_principal: None,

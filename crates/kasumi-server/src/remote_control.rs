@@ -52,6 +52,8 @@ const FIRST_RETRY: Duration = Duration::from_millis(250);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteControlConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_reader: Option<Arc<crate::data_member_catalog::CatalogReaderGrant>>,
     /// Optional separately enrolled Control writer and reverse-check identities.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<crate::remote_backup::BackupAccess>,
@@ -79,6 +81,9 @@ pub struct RemoteControlConfig {
 impl RemoteControlConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         self.root.validate()?;
+        if let Some(reader) = &self.catalog_reader {
+            reader.validate(self)?;
+        }
         if let Some(backup) = &self.backup {
             backup.validate(self)?;
         }
@@ -120,6 +125,20 @@ pub(crate) fn validate_data_only(
             && !config.tenants.is_empty(),
         "remote Control access requires a replicated data-only node with local tenants"
     );
+    if let Some(reader) = &remote.catalog_reader {
+        for (tenant, incarnation) in &reader.groups {
+            ensure!(
+                config.tenants.iter().any(|installed| {
+                    installed.tenant == *tenant
+                        && installed
+                            .incarnation
+                            .as_deref()
+                            .is_some_and(|id| uuid::Uuid::parse_str(id).ok() == Some(*incarnation))
+                }),
+                "catalog reader group differs from installed Data configuration"
+            );
+        }
+    }
     if let Some(target) = &config.target_recovery {
         ensure!(
             target.control_root == remote.root
@@ -159,6 +178,15 @@ pub(crate) fn validate_data_only(
         ensure!(
             backup.callback_certificate_pins.is_disjoint(&pins),
             "backup callback certificate belongs to a data peer"
+        );
+    }
+    if let Some(reader) = &remote.catalog_reader {
+        ensure!(
+            reader.client_certificate_pins.is_disjoint(&pins)
+                && remote.endpoints.values().all(|v| reader
+                    .client_certificate_pins
+                    .is_disjoint(&v.certificate_pins)),
+            "catalog reader identity overlaps an enrolled peer"
         );
     }
     for (id, member) in &remote.endpoints {
@@ -357,6 +385,14 @@ impl RemoteControl {
             &config.tls,
             &config.server_ca,
         )?;
+        if let Some(reader) = &config.catalog_reader {
+            ensure!(
+                connections.values().all(|route| !reader
+                    .client_certificate_pins
+                    .contains(&hex::encode(route.identity.certificate_pin()))),
+                "catalog reader certificate is also used by the topology client"
+            );
+        }
         let trust = kasumi_serving::ControlTrust::install(config.root.clone())?;
         let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> = Arc::new(
             kasumi_transport::credentials::FileCredentialSource::new(&config.bearer_file)?,

@@ -248,7 +248,13 @@ pub(crate) async fn admit(
         }
     }
     // A gRPC message adds its five-byte length prefix to the request limit.
-    let limit = MAX_REQUEST_BYTES as u64 + if grpc { GRPC_PREFIX_BYTES as u64 } else { 0 };
+    let protobuf_limit =
+        if grpc && request.uri().path() == "/kasumi.v1.KasumiAdmin/ReadDataMemberCatalog" {
+            kasumi_types::DATA_MEMBER_CATALOG_BYTES + 5
+        } else {
+            MAX_REQUEST_BYTES
+        };
+    let limit = protobuf_limit as u64 + if grpc { GRPC_PREFIX_BYTES as u64 } else { 0 };
     let mut lengths = request.headers().get_all(CONTENT_LENGTH).iter();
     let declared = match (lengths.next(), lengths.next()) {
         (Some(length), None) => length

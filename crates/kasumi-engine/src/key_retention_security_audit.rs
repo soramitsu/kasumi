@@ -618,12 +618,22 @@ impl SecurityAudit {
         ))?
         .0;
         let inventory_sha256 = if let Some(peers) = member_inventories {
-            staged_digest(&(
-                "kasumi.control-member-inventories.v1",
-                inventory_sha256,
-                peers.reported,
-            ))?
-            .0
+            if let Some(groups) = peers.data_groups_digest {
+                staged_digest(&(
+                    "kasumi.control-data-member-inventories.v1",
+                    inventory_sha256,
+                    peers.reported,
+                    groups,
+                ))?
+                .0
+            } else {
+                staged_digest(&(
+                    "kasumi.control-member-inventories.v1",
+                    inventory_sha256,
+                    peers.reported,
+                ))?
+                .0
+            }
         } else {
             inventory_sha256
         };

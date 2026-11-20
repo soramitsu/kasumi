@@ -27,6 +27,8 @@ impl ServiceIdentity {
 
 #[derive(Default)]
 pub(super) struct MemberInventories {
+    pub(super) data_groups_digest: Option<[u8; 32]>,
+    pub(super) data_charge: Option<crate::admission::Reservation>,
     pub(super) reported: std::collections::BTreeMap<u64, ServiceIdentity>,
     pub(super) catalogs: BTreeSet<uuid::Uuid>,
     pub(super) streams: BTreeSet<uuid::Uuid>,

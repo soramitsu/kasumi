@@ -27,6 +27,7 @@ pub use snapshot_decode::{
     SnapshotReadOptions,
 };
 mod credentials;
+mod data_member_catalog;
 mod profile;
 pub use profile::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
 mod remote_backup;

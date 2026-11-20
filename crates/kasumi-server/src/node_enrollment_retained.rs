@@ -24,6 +24,8 @@ pub(super) struct DataIdentity {
 }
 #[derive(Deserialize)]
 struct RemoteControlIdentity {
+    #[serde(default)]
+    catalog_reader: Option<crate::data_member_catalog::CatalogReaderGrant>,
     root: RemoteRootIdentity,
     #[serde(default)]
     backup: Option<crate::remote_backup::BackupAccess>,
@@ -52,6 +54,8 @@ struct ControlIdentity {
     incarnation: Uuid,
     #[serde(default)]
     backup_sources: Option<crate::remote_backup::BackupSources>,
+    #[serde(default)]
+    catalog_sources: Option<crate::data_member_catalog::DataCatalogSources>,
 }
 #[derive(Deserialize)]
 struct TenantIdentity {
@@ -128,20 +132,22 @@ impl RetainedInput {
         };
         if let (Some(original), Some(current)) = (&configuration.control, &config.control) {
             ensure!(
-                original.backup_sources == current.backup_sources,
-                "configured backup callback enrollment changed"
+                original.backup_sources == current.backup_sources
+                    && original.catalog_sources == current.catalog_sources,
+                "configured backup callback or catalog reader enrollment changed"
             );
         }
         if let (Some(original), Some(current)) =
             (&configuration.remote_control, &config.remote_control)
         {
             ensure!(
-                original.backup == current.backup
-                    && (original.backup.is_none()
+                original.catalog_reader.as_ref() == current.catalog_reader.as_deref()
+                    && original.backup == current.backup
+                    && ((original.backup.is_none() && original.catalog_reader.is_none())
                         || (original.root.public_key.as_ref() == Some(&current.root.public_key)
                             && original.endpoints == current.endpoints
                             && original.server_ca.as_ref() == Some(&current.server_ca))),
-                "configured backup Control enrollment changed"
+                "configured backup Control or catalog reader enrollment changed"
             );
         }
         Ok(())

@@ -15,6 +15,7 @@ pub mod cluster;
 mod control_genesis;
 pub mod daemon_signals;
 pub mod data_cli;
+pub mod data_member_catalog;
 mod data_node_enrollment;
 mod installed_clients;
 #[cfg(test)]
