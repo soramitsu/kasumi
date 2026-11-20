@@ -3790,7 +3790,7 @@ fn apply_operation(
             key_retirement::complete(state, command, request, revision, false).map_err(Into::into)
         }
         Operation::RegisterTargetJournalWriter(participant) => {
-            key_retirement::register_writer(state, command, participant, revision)
+            key_retirement::register_writer(state, command, participant, revision).map_err(Into::into)
         }
         Operation::CompleteTargetJournalRetirement(request) => {
             key_retirement::complete(state, command, request, revision, true).map_err(Into::into)
