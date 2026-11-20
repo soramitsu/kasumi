@@ -127,18 +127,51 @@ impl QueryIndexes {
             let iterator_bytes = crate::workspace::imbl_iterator_bytes()?;
             memory.reserve(iterator_bytes)?;
             {
-                let mut range_entries = index
-                    .entries
-                    .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()));
+                let mut tuples = index.entries.as_ref().map(|entries| {
+                    entries.range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
+                });
+                let mut posting = if tuples.is_none() {
+                    let field = indexes
+                        .structured
+                        .fields
+                        .get(&index.fields[0].path)
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::Corruption, "unique field tree absent")
+                        })?;
+                    Some(field.entries.range::<_, Scalar>((
+                        field_bound(&range.lower, true),
+                        field_bound(&range.upper, false),
+                    )))
+                } else {
+                    None
+                };
                 let mut entries = std::iter::from_fn(|| {
-                    if descending {
-                        range_entries.next_back()
-                    } else {
-                        range_entries.next()
+                    if let Some(tuples) = &mut tuples {
+                        return directed_next(tuples, descending)
+                            .map(|(key, id)| Ok((key.as_slice(), id)));
+                    }
+                    let posting = posting.as_mut()?;
+                    loop {
+                        let (scalar, ids) = directed_next(posting, descending)?;
+                        if *scalar == Scalar::Missing {
+                            continue;
+                        }
+                        return Some(if ids.len() == 1 {
+                            Ok((
+                                std::slice::from_ref(scalar),
+                                ids.get_min().expect("singleton posting"),
+                            ))
+                        } else {
+                            Err(Error::new(
+                                ErrorCode::Corruption,
+                                "unique seek posting has multiple or missing owners",
+                            ))
+                        });
                     }
                 })
                 .peekable();
-                while let Some((key, id)) = entries.next() {
+                while let Some(entry) = entries.next() {
+                    let (key, id) = entry?;
                     cancellation.check()?;
                     if page.is_full() {
                         more = true;
@@ -188,6 +221,32 @@ impl QueryIndexes {
         }
         cancellation.check()?;
         Ok((SeekPage { rows, last_key }, retained))
+    }
+}
+
+fn directed_next<I: DoubleEndedIterator>(iter: &mut I, descending: bool) -> Option<I::Item> {
+    if descending {
+        iter.next_back()
+    } else {
+        iter.next()
+    }
+}
+
+/// Compare a one-element stored tuple against the planner's complete or
+/// sentinel-extended bound. [v] sorts strictly before [v, UpperBound].
+fn field_bound(bound: &Bound<Vec<Scalar>>, lower: bool) -> Bound<&Scalar> {
+    let (key, inclusive) = match bound {
+        Bound::Included(key) => (key, true),
+        Bound::Excluded(key) => (key, false),
+        Bound::Unbounded => return Bound::Unbounded,
+    };
+    match key.as_slice() {
+        [] if lower => Bound::Unbounded,
+        [] => Bound::Excluded(&Scalar::Missing),
+        [scalar] if inclusive => Bound::Included(scalar),
+        [scalar] => Bound::Excluded(scalar),
+        [scalar, ..] if lower => Bound::Excluded(scalar),
+        [scalar, ..] => Bound::Included(scalar),
     }
 }
 

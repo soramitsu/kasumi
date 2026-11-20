@@ -507,3 +507,67 @@ fn seek_walks_sparse_unique_entries_and_keeps_explicit_nulls() {
     );
     assert!(page.last_key.is_none());
 }
+
+#[test]
+fn single_unique_postings_keep_sparse_seek_order_and_every_cursor_bound() {
+    let fixture = small_fixture(
+        &[("/at", ScalarType::Number)],
+        [
+            json!({}),
+            json!({"at":null}),
+            json!({"at":1}),
+            json!({"at":2}),
+            json!({"at":3}),
+        ],
+    );
+    let limits = Limits::default();
+    let cancellation = QueryCancellation::default();
+    for (request, expected) in [
+        (
+            QueryRequest::new("ordered").sort_asc("/at"),
+            vec![1, 2, 3, 4],
+        ),
+        (
+            QueryRequest::new("ordered").sort_desc("/at"),
+            vec![4, 3, 2, 1],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().gte("/at", 1).lt("/at", 3))
+                .sort_asc("/at"),
+            vec![2, 3],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().gt("/at", 1).lte("/at", 3))
+                .sort_desc("/at"),
+            vec![4, 3],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().eq("/at", 2))
+                .sort_desc("/at"),
+            vec![3],
+        ),
+    ] {
+        let request = request.limit(1).paging(Paging::Seek);
+        let mut after = None;
+        let mut ids = Vec::new();
+        loop {
+            let page = seek(&fixture, &request, after.as_deref(), &limits, &cancellation).unwrap();
+            ids.extend(page.rows.into_iter().map(|row| row.id));
+            after = page.last_key;
+            if after.is_none() {
+                break;
+            }
+            assert!(ids.len() <= expected.len());
+        }
+        assert_eq!(
+            ids,
+            expected
+                .iter()
+                .map(|n| format!("row-{n}"))
+                .collect::<Vec<_>>()
+        );
+    }
+}

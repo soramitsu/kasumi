@@ -40,6 +40,9 @@ pub(crate) use incremental::maintain;
 #[cfg(test)]
 pub(crate) use incremental::seed as seed_for_test;
 
+#[path = "application_unique.rs"]
+pub(crate) mod unique;
+
 use anyhow::{Context, Result, ensure};
 use kasumi_query::{FieldPredicate, FieldValue, QueryIndexes, StructuredRow};
 use kasumi_store::{

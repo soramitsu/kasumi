@@ -247,10 +247,20 @@ fn update(indexes: &QueryIndexes, changes: Changes<'_>) -> ReadResult<QueryIndex
     indexes.update::<&Rows, _>([IndexUpdate::Delta(changes)])
 }
 fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
-    indexes.collections[name].structured.unique["unique"]
+    let structured = &indexes.collections[name].structured;
+    let index = &structured.unique["unique"];
+    assert!(
+        index.entries.is_none(),
+        "a one-field unique index duplicated its scalar tree"
+    );
+    structured.fields[&index.fields[0].path]
         .entries
         .iter()
-        .map(|(key, id)| (format!("{key:?}"), id.clone()))
+        .filter(|(key, _)| **key != Scalar::Missing)
+        .map(|(key, ids)| {
+            assert_eq!(ids.len(), 1);
+            (format!("[{key:?}]"), ids.get_min().unwrap().clone())
+        })
         .collect()
 }
 

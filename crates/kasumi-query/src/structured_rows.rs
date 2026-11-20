@@ -205,6 +205,16 @@ impl QueryIndexes {
             .map(|indexes| indexes.structured.fields.len())
     }
 
+    /// The ordinal used by the selected native presence and posting keys.
+    pub fn structured_field_ordinal(&self, collection: &str, path: &str) -> Option<usize> {
+        self.collections
+            .get(collection)?
+            .structured
+            .fields
+            .keys()
+            .position(|key| key == path)
+    }
+
     /// The field value used to build the resident presence and scalar postings.
     /// Archived rows lend their authenticated stored projection.
     pub fn structured_field_value<'a>(

@@ -284,13 +284,11 @@ impl TenantEngine {
                     &previous.indexes,
                     previous.document_resolver(),
                 )?;
-                crate::index_source::validate_changes_with_resolvers(
-                    &previous.indexes,
-                    state,
+                crate::application_structured::unique::validate_ordinary(
+                    previous,
                     &next,
                     &changed,
-                    previous.document_resolver(),
-                    previous.document_resolver(),
+                    self.application_sources.get(),
                 )?;
                 crate::change_feed_state::append(state, &mut next, &changed)?;
                 Ok(receipt)

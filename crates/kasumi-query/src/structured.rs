@@ -28,7 +28,10 @@ pub(crate) struct Structured {
 #[derive(Debug, Clone)]
 pub(crate) struct UniqueIndex {
     pub(crate) fields: Vec<IndexField>,
-    pub(crate) entries: OrdMap<Vec<Scalar>, String>,
+    // A one-field generation uses its already selected scalar posting tree
+    // for both uniqueness and ordered seek. A standalone validation pass
+    // has no field tree and therefore builds its temporary tuple map.
+    pub(crate) entries: Option<OrdMap<Vec<Scalar>, String>>,
 }
 
 pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
@@ -46,17 +49,33 @@ impl UniqueIndex {
             .collect::<Result<Vec<_>>>()?;
         Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
-    fn insert(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
+    fn insert_tuple(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
         if let Some(key) = self.key(record)?
-            && self.entries.insert(key, id.to_owned()).is_some()
+            && self
+                .entries
+                .as_mut()
+                .expect("private unique tuple tree")
+                .insert(key, id.to_owned())
+                .is_some()
         {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                format!("unique index {name} conflicts"),
-            ));
+            return Err(unique_conflict(name));
         }
         Ok(())
     }
+}
+
+fn unique_conflict(name: &str) -> Error {
+    Error::new(
+        ErrorCode::Conflict,
+        format!("unique index {name} conflicts"),
+    )
+}
+
+fn old_owner_mismatch() -> Error {
+    Error::new(
+        ErrorCode::Corruption,
+        "old unique mapping differs from delta",
+    )
 }
 
 impl Structured {
@@ -115,23 +134,38 @@ impl Structured {
             // retain their checked passes; avoid two otherwise empty replays.
             return Ok(unique);
         }
-        // Remove every old mapping across the batch before adding any new one.
-        // Private COW roots are discarded on rejection; published roots stay intact.
+        // One-field constraints borrow the field tree's COW root. Only
+        // changed paths enter this validation pass, and no duplicate
+        // dictionary survives in the resulting generation.
+        let mut singles: BTreeMap<_, _> = unique
+            .iter()
+            .filter(|(_, index)| index.entries.is_none())
+            .map(|(name, index)| {
+                (
+                    name.clone(),
+                    self.fields[&index.fields[0].path].entries.clone(),
+                )
+            })
+            .collect();
+        // Remove every old mapping across the batch before inserting any new one.
         changes.visit_changes(|delta| {
             if let Some(old) = delta.old {
-                for index in unique.values_mut() {
-                    if let Some(key) = index.key(old)? {
-                        if index
-                            .entries
-                            .get(&key)
-                            .is_none_or(|owner| owner != delta.id)
-                        {
-                            return Err(Error::new(
-                                ErrorCode::Corruption,
-                                "old unique mapping differs from delta",
-                            ));
+                for (name, index) in &mut unique {
+                    if let Some(mut key) = index.key(old)? {
+                        if let Some(entries) = &mut index.entries {
+                            if entries.get(&key).is_none_or(|owner| owner != delta.id) {
+                                return Err(old_owner_mismatch());
+                            }
+                            entries.remove(&key);
+                        } else {
+                            let scalar = key.pop().expect("one-field unique key");
+                            let entries = singles.get_mut(name).expect("shared unique posting");
+                            let ids = entries.get(&scalar).ok_or_else(old_owner_mismatch)?;
+                            if ids.len() != 1 || !ids.contains(delta.id) {
+                                return Err(old_owner_mismatch());
+                            }
+                            entries.remove(&scalar);
                         }
-                        index.entries.remove(&key);
                     }
                 }
             }
@@ -140,7 +174,17 @@ impl Structured {
         changes.visit_changes(|delta| {
             if let Some(new) = delta.new {
                 for (name, index) in &mut unique {
-                    index.insert(name, delta.id, new)?;
+                    if index.entries.is_some() {
+                        index.insert_tuple(name, delta.id, new)?;
+                    } else if let Some(mut key) = index.key(new)? {
+                        let entries = singles.get_mut(name).expect("shared unique posting");
+                        let scalar = key.pop().expect("one-field unique key");
+                        if entries.contains_key(&scalar) {
+                            return Err(unique_conflict(name));
+                        }
+                        // Only occupied/vacant is consulted after all removals.
+                        entries.insert(scalar, IdSet::new());
+                    }
                 }
             }
             Ok(())
@@ -154,7 +198,10 @@ impl Structured {
         self.unique_delta(changes).map(|_| ())
     }
 
-    fn empty_unique(definition: &CollectionDefinition) -> BTreeMap<String, UniqueIndex> {
+    fn empty_unique(
+        definition: &CollectionDefinition,
+        share_fields: bool,
+    ) -> BTreeMap<String, UniqueIndex> {
         definition
             .indexes
             .iter()
@@ -164,7 +211,7 @@ impl Structured {
                     index.name.clone(),
                     UniqueIndex {
                         fields: index.fields.clone(),
-                        entries: OrdMap::new(),
+                        entries: (!share_fields || index.fields.len() != 1).then(OrdMap::new),
                     },
                 )
             })
@@ -173,13 +220,13 @@ impl Structured {
     pub(crate) fn build_unique<R: CollectionRecords + ?Sized>(
         source: &R,
     ) -> ReadResult<BTreeMap<String, UniqueIndex>, R::Failure> {
-        let mut unique = Self::empty_unique(source.definition());
+        let mut unique = Self::empty_unique(source.definition(), false);
         if unique.is_empty() {
             return Ok(unique);
         }
         source.visit_records(|id, record| {
             for (name, index) in &mut unique {
-                index.insert(name, id, record)?;
+                index.insert_tuple(name, id, record)?;
             }
             Ok(())
         })?;
@@ -200,7 +247,7 @@ impl Structured {
         }
         Self {
             ids: IdSet::new(),
-            unique: Self::empty_unique(definition),
+            unique: Self::empty_unique(definition, true),
             fields,
         }
     }
@@ -246,7 +293,14 @@ impl Structured {
             }
         }
         for (name, index) in &mut self.unique {
-            index.insert(name, id, record)?;
+            if index.entries.is_some() {
+                index.insert_tuple(name, id, record)?;
+            } else if let Some(mut key) = index.key(record)? {
+                let scalar = key.pop().expect("one-field unique key");
+                if self.fields[&index.fields[0].path].entries[&scalar].len() != 1 {
+                    return Err(unique_conflict(name));
+                }
+            }
         }
         Ok(())
     }
