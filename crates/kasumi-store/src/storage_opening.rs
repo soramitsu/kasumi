@@ -810,10 +810,7 @@ impl RegisteredNodeOpening {
     /// opening. A missing observation cannot establish that close is complete.
     pub(crate) fn active_native_handles(&self) -> Option<usize> {
         let state = self.registration.owner().state.try_lock()?;
-        state
-            .engine
-            .database()
-            .map(kasumi_kv::Database::active_transactions)
+        state.engine.report().active_transactions()
     }
 
     /// Dispose actual native owner, keeping the composite node allocation live.
