@@ -255,7 +255,13 @@ async fn deleting_resumes_from_the_original_stamped_rootless_directory() {
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
     assert!(!files.is_empty());
-    files.sort_by_key(|p| p.file_name() == Some(kasumi_kv::ROOT_FILE_NAME.as_ref()));
+    let root_identity = target
+        .claim(&fixture.storage())
+        .unwrap()
+        .identity()
+        .unwrap()
+        .root;
+    files.sort_by_key(|p| kasumi_store::private_files::file_identity(p).unwrap() == root_identity);
     for p in files {
         let (root, relative) = fixture.config.binding(&p).unwrap();
         disk.delete_file(disk.open_file(root, relative).unwrap())
