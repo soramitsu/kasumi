@@ -2,8 +2,8 @@
 use super::*;
 
 pub(in crate::service) struct SignerCatalog {
-    store: std::sync::Weak<TenantStore>,
-    verifier: TrustVerifierIdentity,
+    pub(super) store: std::sync::Weak<TenantStore>,
+    pub(super) verifier: TrustVerifierIdentity,
     pub(super) partitions: BTreeSet<(uuid::Uuid, u16)>,
 }
 
@@ -103,6 +103,7 @@ impl Database {
 pub(in crate::service) struct InstalledInventories<'a> {
     pub(super) signer: Option<&'a SignerCatalog>,
     pub(super) issuers: Option<IssuerCoverage>,
+    pub(super) member_signers: Option<member::MemberSigners>,
     pub(super) journal: Option<&'a crate::TargetJournal>,
     pub(super) local_recovery: Option<&'a dyn LocalRecoveryKeyInventory>,
 }
@@ -167,6 +168,7 @@ impl SecurityAudit {
         let InstalledInventories {
             signer,
             issuers,
+            mut member_signers,
             journal,
             local_recovery,
         } = owners;
@@ -223,13 +225,29 @@ impl SecurityAudit {
                 );
             }
         }
+        let page_limit = if member_signers.is_some() {
+            request
+                .limit
+                .min(kasumi_raft::member_catalog::MEMBER_CATALOG_LIMIT)
+        } else {
+            request.limit
+        };
+        if let Some(peers) = &mut member_signers {
+            for entry in std::mem::take(&mut peers.entries) {
+                consider_entry(request, &mut entries, entry)?;
+            }
+        }
         for &node_id in roster
             .topology
             .nodes
             .keys()
             .chain(member_set.membership().nodes().map(|(id, _)| id))
         {
-            if node_id != local {
+            if node_id != local
+                && !member_signers
+                    .as_ref()
+                    .is_some_and(|peers| peers.reported.contains_key(&node_id))
+            {
                 add_missing(
                     &mut missing,
                     &mut truncated,
@@ -274,6 +292,12 @@ impl SecurityAudit {
                 store
                     .visit_wrapping_identities(|catalog_id, provider, key_ref, version| {
                         token.check()?;
+                        if let Some(peers) = &member_signers {
+                            anyhow::ensure!(
+                                !peers.catalogs.contains(&catalog_id),
+                                "remote and local members share the same physical signer catalog"
+                            );
+                        }
                         anyhow::ensure!(
                             provider.len() <= MAX_KEY_PROVIDER_BYTES
                                 && key_ref.len() <= MAX_KEY_REF_BYTES,
@@ -418,6 +442,16 @@ impl SecurityAudit {
             truncated,
         ))?
         .0;
+        let inventory_sha256 = if let Some(peers) = member_signers {
+            staged_digest(&(
+                "kasumi.control-member-signers.v1",
+                inventory_sha256,
+                peers.reported,
+            ))?
+            .0
+        } else {
+            inventory_sha256
+        };
         let revision = state.revision;
         InventoryWindow {
             entries,
@@ -427,6 +461,6 @@ impl SecurityAudit {
             revision,
             membership_epoch,
         }
-        .page(request, request.limit, false)
+        .page(request, page_limit, false)
     }
 }

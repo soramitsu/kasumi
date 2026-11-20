@@ -17,6 +17,20 @@ pub const MEMBER_CATALOG_LIMIT: u16 = 4;
 /// Five maximum wrapping identities, including worst-case JSON escapes, plus framing.
 pub const MEMBER_CATALOG_BYTES: usize = 320 << 10;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogPurpose {
+    #[default]
+    Group,
+    ControlSigner,
+}
+
+impl CatalogPurpose {
+    fn is_group(&self) -> bool {
+        *self == Self::Group
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "start", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CatalogStart {
@@ -40,6 +54,8 @@ impl CatalogStart {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemberCatalogRequest {
+    #[serde(default, skip_serializing_if = "CatalogPurpose::is_group")]
+    pub purpose: CatalogPurpose,
     pub nonce: Uuid,
     pub leader: u64,
     pub term: u64,
@@ -134,7 +150,8 @@ impl MemberCatalogReport {
         application: KeyCatalogDomain,
     ) -> Result<()> {
         ensure!(
-            self.node_id == node_id
+            request.purpose == CatalogPurpose::Group
+                && self.node_id == node_id
                 && !self.application_catalog.is_nil()
                 && !self.custody_catalog.is_nil()
                 && self.custody_catalog != self.application_catalog
@@ -152,6 +169,44 @@ impl MemberCatalogReport {
                     && ((catalog_id == self.application_catalog && domain == application)
                         || (catalog_id == self.custody_catalog && domain == KeyCatalogDomain::RetirementCustody))),
                 "catalog entry differs from installed member identity"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberSignerReport {
+    pub request_sha256: String,
+    pub verifier: kasumi_types::TrustVerifierIdentity,
+    pub catalog: Uuid,
+    pub catalog_sha256: [u8; 32],
+    pub partitions_sha256: String,
+    pub entries: Vec<KeyRetentionEntry>,
+}
+
+impl MemberSignerReport {
+    pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
+        request.validate()?;
+        self.verifier.validate()?;
+        kasumi_types::validate_sha256(&self.partitions_sha256)?;
+        ensure!(
+            request.purpose == CatalogPurpose::ControlSigner
+                && self.verifier.node_id == node
+                && !self.catalog.is_nil()
+                && self.request_sha256 == staged_digest(request)?.0
+                && self.entries.len() <= usize::from(request.limit) + 1
+                && self.entries.windows(2).all(|window| window[0] < window[1]),
+            "signer catalog differs from the enrolled member or requested window"
+        );
+        for entry in &self.entries {
+            entry.validate()?;
+            ensure!(
+                request.start.includes(entry)
+                    && matches!(entry.reference, KeyReference::Catalog {node_id,catalog_id,domain:KeyCatalogDomain::LiveSignerTrust}
+                        if node_id == node && catalog_id == self.catalog),
+                "signer wrapping reference differs from this physical catalog"
             );
         }
         Ok(())
@@ -187,6 +242,10 @@ impl RaftGroup {
         application: KeyCatalogDomain,
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<MemberCatalogReport> {
+        ensure!(
+            request.purpose == CatalogPurpose::Group,
+            "group catalog purpose required"
+        );
         request.validate()?;
         request.check_position(self)?;
         let purpose = self.store.application().storage_access().purpose();
@@ -259,6 +318,41 @@ impl RaftGroup {
         node: &BasicNode,
         request: &MemberCatalogRequest,
     ) -> Result<MemberCatalogReport> {
+        ensure!(
+            request.purpose == CatalogPurpose::Group,
+            "group catalog purpose required"
+        );
+        match self.request_member_catalog(node_id, node, request).await? {
+            RpcResponse::MemberCatalog(Some(report)) => Ok(*report),
+            _ => anyhow::bail!("member catalog unavailable"),
+        }
+    }
+
+    pub async fn read_member_signer_catalog(
+        &self,
+        node_id: u64,
+        node: &BasicNode,
+        request: &MemberCatalogRequest,
+    ) -> Result<MemberSignerReport> {
+        ensure!(
+            request.purpose == CatalogPurpose::ControlSigner,
+            "Control signer catalog purpose required"
+        );
+        match self.request_member_catalog(node_id, node, request).await? {
+            RpcResponse::MemberSignerCatalog(report) => {
+                report.validate(request, node_id)?;
+                Ok(*report)
+            }
+            _ => anyhow::bail!("member signer catalog unavailable"),
+        }
+    }
+
+    async fn request_member_catalog(
+        &self,
+        node_id: u64,
+        node: &BasicNode,
+        request: &MemberCatalogRequest,
+    ) -> Result<RpcResponse> {
         request.validate()?;
         request.check_position(self)?;
         ensure!(
@@ -278,10 +372,7 @@ impl RaftGroup {
         );
         let response = tokio::time::timeout(Duration::from_secs(3), send).await??;
         request.check_position(self)?;
-        match response {
-            RpcResponse::MemberCatalog(Some(report)) => Ok(*report),
-            _ => anyhow::bail!("member catalog unavailable"),
-        }
+        Ok(response)
     }
 }
 
@@ -294,6 +385,7 @@ mod tests {
     fn report_binds_the_request_member_physical_catalogs_and_ordered_window() -> Result<()> {
         let applied = LogId::new(openraft::CommittedLeaderId::new(3, 1), 7);
         let request = MemberCatalogRequest {
+            purpose: CatalogPurpose::Group,
             nonce: Uuid::new_v4(),
             leader: 1,
             term: 3,
@@ -329,6 +421,29 @@ mod tests {
         };
         let application = KeyCatalogDomain::Application;
         report.validate(&request, 2, application)?;
+        let signer_request = MemberCatalogRequest {
+            purpose: CatalogPurpose::ControlSigner,
+            ..request.clone()
+        };
+        let signer_id = Uuid::new_v4();
+        let signer = MemberSignerReport {
+            request_sha256: staged_digest(&signer_request)?.0,
+            verifier: kasumi_types::TrustVerifierIdentity {
+                installation_id: Uuid::new_v4(),
+                node_id: 2,
+            },
+            catalog: signer_id,
+            catalog_sha256: [1; 32],
+            partitions_sha256: "a".repeat(64),
+            entries: vec![entry(3, signer_id, KeyCatalogDomain::LiveSignerTrust)],
+        };
+        signer.validate(&signer_request, 2)?;
+        assert!(signer.validate(&request, 2).is_err());
+        assert!(signer.validate(&signer_request, 3).is_err());
+        assert!(report.validate(&signer_request, 2, application).is_err());
+        let mut changed_signer = signer;
+        changed_signer.entries = report.entries.clone();
+        assert!(changed_signer.validate(&signer_request, 2).is_err());
         assert!(report.validate(&request, 3, application).is_err());
         assert!(
             report

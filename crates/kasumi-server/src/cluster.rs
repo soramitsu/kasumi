@@ -730,7 +730,8 @@ async fn receive(
         let Ok(bytes) = encode_bounded(&report, limit) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
-        if request.check_position(owner.raft_group()).is_err()
+        if owner.check_member_signer_release(&report).is_err()
+            || request.check_position(owner.raft_group()).is_err()
             || !network
                 .catalog_owner(&message.group, message.source, binding)
                 .is_ok_and(|current| Arc::ptr_eq(&current, &owner))

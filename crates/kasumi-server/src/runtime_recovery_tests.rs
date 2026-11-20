@@ -1368,19 +1368,29 @@ impl Fixture {
         let operator = auth.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
         let request = ReadKeyRetentionRequest {scope: KeyRetentionScope::Signer {}, cursor: None, limit: 64};
         let missing = MissingKeyDependency::AuthorityPartitionUnreported {authority_id:self.manifest.authority_id, partition:0};
-        let first = control.read_key_retention(&operator, request.clone()).await.unwrap();
-        if let KeyRetentionCoverage::Incomplete {missing: gaps, ..} = &first.coverage {
-            assert!(!gaps.contains(&missing), "issuer read omitted an installed partition: {gaps:?}");
+        let mut lookup = request.clone();
+        let mut entries = std::collections::BTreeSet::new();
+        loop {
+            let page = control.read_key_retention(&operator, lookup.clone()).await.unwrap();
+            assert!(matches!(&page.coverage, KeyRetentionCoverage::Complete { .. }), "incomplete signer coverage: {:?}", page.coverage);
+            for entry in &page.entries { assert!(entries.insert(entry.clone()), "repeated signer entry"); }
+            lookup.cursor = page.next_cursor.clone();
+            if lookup.cursor.is_none() { break; }
         }
         for (i, signer) in self.issuer_signers.iter().enumerate() {
+            let node = i as u64 + 1;
+            let catalogs = entries.iter().filter_map(|entry| match entry.reference {
+                KeyReference::Catalog {node_id, catalog_id, domain: KeyCatalogDomain::LiveSignerTrust} if node_id == node => Some(catalog_id),
+                _ => None,
+            }).collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(catalogs.len(), 2, "one Control and one independent issuer signer per installed node");
             signer.visit_wrapping_identities(|id, provider, key_ref, version| {
-                assert!(first.entries.iter().any(|entry| entry.key.provider == provider && entry.key.key_ref == key_ref && entry.key.version == version &&
+                assert!(entries.iter().any(|entry| entry.key.provider == provider && entry.key.key_ref == key_ref && entry.key.version == version &&
                     matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id, domain: KeyCatalogDomain::LiveSignerTrust}
                         if node_id == i as u64 + 1 && catalog_id == id)));
                 Ok(())
             }).unwrap();
         }
-        drop(first);
         let short = ReadKeyRetentionRequest {limit: 1, ..request.clone()};
         let page = control.read_key_retention(&operator, short.clone()).await.unwrap();
         let cursor = page.next_cursor.clone().unwrap();

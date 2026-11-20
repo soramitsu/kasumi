@@ -185,6 +185,7 @@ impl IndependentAuthority {
             .ok_or_else(|| unavailable("Authority catalog has no installed membership"))?;
         let (members, membership_sha256) = self.catalog_membership()?;
         let position = MemberCatalogRequest {
+            purpose: kasumi_raft::member_catalog::CatalogPurpose::Group,
             nonce: query.nonce,
             leader: metrics
                 .current_leader
