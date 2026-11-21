@@ -80,7 +80,7 @@ impl RaftLogReader<TestConfig> for Store {
     }
 }
 #[cfg(not(feature = "storage-v2"))]
-impl crate::storage::v2::sealed::Sealed for Store {}
+impl crate::storage::Sealed for Store {}
 impl RaftLogStorage<TestConfig> for Store {
     type LogReader = Self;
     async fn get_log_state(&mut self) -> Result<LogState<TestConfig>, StorageError<u64>> {
@@ -134,7 +134,7 @@ impl RaftLogStorage<TestConfig> for Store {
 }
 struct Machine(Arc<Mutex<State>>);
 #[cfg(not(feature = "storage-v2"))]
-impl crate::storage::v2::sealed::Sealed for Machine {}
+impl crate::storage::Sealed for Machine {}
 struct Builder;
 impl RaftSnapshotBuilder<TestConfig> for Builder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TestConfig>, StorageError<u64>> {

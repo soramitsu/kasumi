@@ -20,6 +20,8 @@ pub use helper::StorageHelper;
 pub use log_store_ext::RaftLogReaderExt;
 use openraft_macros::add_async_trait;
 pub use snapshot_signature::SnapshotSignature;
+#[cfg(all(test, not(any(feature = "storage-v2", feature = "singlethreaded"))))]
+pub(crate) use v2::sealed::Sealed;
 pub use v2::RaftLogStorage;
 pub use v2::RaftLogStorageExt;
 pub use v2::RaftStateMachine;

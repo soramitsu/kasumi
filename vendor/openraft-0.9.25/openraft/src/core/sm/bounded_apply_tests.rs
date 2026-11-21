@@ -84,7 +84,7 @@ struct Builder {
     last: Option<LogId<u64>>,
 }
 #[cfg(not(feature = "storage-v2"))]
-impl crate::storage::v2::sealed::Sealed for Machine {}
+impl crate::storage::Sealed for Machine {}
 impl RaftSnapshotBuilder<Config> for Builder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<Config>, StorageError<u64>> {
         Ok(Snapshot {
