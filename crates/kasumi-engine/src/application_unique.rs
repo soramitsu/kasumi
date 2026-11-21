@@ -230,6 +230,13 @@ pub(super) struct ClaimTree<'a, 's> {
 }
 #[cfg(test)]
 impl<'a, 's> ClaimTree<'a, 's> {
+    pub(super) fn checkpoint(reader: &'a TreeReader<'s>) -> Self {
+        Self {
+            reader,
+            fields: false,
+        }
+    }
+
     pub(super) fn ordinary(reader: &'a TreeReader<'s>) -> Self {
         Self {
             reader,

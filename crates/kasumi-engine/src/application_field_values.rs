@@ -20,7 +20,7 @@ fn ranked(field: &[u8], rank: u64, family: u8) -> Vec<u8> {
     key
 }
 
-pub(super) fn publish(
+pub(crate) fn publish(
     indexes: &QueryIndexes,
     emit: &mut impl FnMut(&[u8], &[u8]) -> Result<()>,
 ) -> Result<()> {

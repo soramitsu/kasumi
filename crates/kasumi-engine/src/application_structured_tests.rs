@@ -1565,7 +1565,22 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
     let initial = genesis.next(rows, &[], Some(Some(Arc::new(definition))));
     assert!(fixture.publish(&StructuredOwner::default(), &genesis, &initial, 1));
     let manifest = fixture.manifest();
+    use kasumi_store::application_manifest::{INITIAL_PAGE_SPACE, PAGE_FAMILY};
+    let family =
+        SelectedGeneration::adopt(&fixture.store, PAGE_FAMILY, &INITIAL_PAGE_SPACE).unwrap();
+    let stage = NamespaceStage::begin_generation(&fixture.store, PAGE_FAMILY).unwrap();
+    let checkpoint = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
+        crate::application_records::publish_field_values(&initial.indexes, &mut |key, value| {
+            builder.push(key, value)
+        })
+    })
+    .unwrap();
+    fixture
+        .store
+        .write_batch(&family.switch_writes(&fixture.store, &[&stage]).unwrap())
+        .unwrap();
     let view = fixture.store.read_view().unwrap();
+    let checkpoint_reader = TreeReader::new(&view, stage.namespace(), checkpoint, None).unwrap();
     let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
     assert!(
         ordered_unique_window(
@@ -1597,18 +1612,24 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
                 body: body(7, serial),
             }))),
         );
-        assert_eq!(
-            unique::prove(
-                &reader,
-                &initial.indexes,
-                &initial.state,
-                &next,
-                &changed,
-                None
-            )
-            .unwrap(),
-            decision
-        );
+        for source in [
+            unique::ClaimTree::ordinary(&reader),
+            unique::ClaimTree::checkpoint(&checkpoint_reader),
+        ] {
+            assert_eq!(
+                unique::prove_with_overlay(
+                    source,
+                    &initial.indexes,
+                    &initial.state,
+                    &next,
+                    &changed,
+                    None,
+                    &BTreeMap::new(),
+                )
+                .unwrap(),
+                decision
+            );
+        }
     }
     view.close().unwrap();
     fixture.close().await;
