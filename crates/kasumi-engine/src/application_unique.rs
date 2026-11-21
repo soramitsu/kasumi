@@ -38,10 +38,11 @@ pub(crate) fn validate_ordinary(
         && let Some((roots, selection)) = roots.zip(previous.application_selection.get())
     {
         let proved = selection
-            .with_structured_records(
+            .with_structured_records_since(
                 None,
                 old,
                 || previous.indexes.structured_layout_sha256(),
+                kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
                 |reader| {
                     let _workspace = roots.memory_owner().clone().reserve_installed(WORKSPACE)?;
                     prove(reader, &previous.indexes, old, candidate, changed, resolver)
@@ -121,6 +122,28 @@ fn probe(
     let mut hash = Sha256::new();
     hash_part(&mut hash, collection.as_bytes());
     hash_part(&mut hash, index.name.as_bytes());
+    if index.fields.len() > 1
+        && let Some(key) = kasumi_query::ordered_record_tuple(&index.fields, record)?
+    {
+        if !budget.read() {
+            return Ok(Probe::Inconclusive);
+        }
+        let ordinal = indexes
+            .compound_ordinal(collection, &index.name)
+            .context("compound absent from selected layout")?;
+        hash_part(&mut hash, &key);
+        let mut native = field_prefix(super::COMPOUND, collection, ordinal);
+        native.extend_from_slice(&key);
+        let owner = reader.with_value(&native, 256, |v| {
+            v.map(super::posting_id)
+                .transpose()
+                .map(|id| id.map(str::to_owned))
+        })?;
+        return Ok(Probe::Known {
+            fingerprint: hash.finalize().into(),
+            owner,
+        });
+    }
     let mut prefixes = Vec::with_capacity(index.fields.len());
     let mut absent = false;
     for field in &index.fields {

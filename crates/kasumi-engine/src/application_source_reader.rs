@@ -455,6 +455,17 @@ impl SelectedApplication {
         layout_sha256: impl FnOnce() -> [u8; 32],
         read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
     ) -> Result<Option<T>> {
+        self.with_structured_records_since(shared, state, layout_sha256, 1, read)
+    }
+
+    pub(crate) fn with_structured_records_since<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &kasumi_types::TenantState,
+        layout_sha256: impl FnOnce() -> [u8; 32],
+        minimum_format: u32,
+        read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
         use kasumi_raft::SelectedAppliedRef;
         use kasumi_store::{ordered_pages::TreeReader, structured_manifest::StructuredManifest};
         let Some(position) =
@@ -488,7 +499,8 @@ impl SelectedApplication {
             let Some(manifest) = StructuredManifest::load_from_pair(view)? else {
                 return Ok(None);
             };
-            if !manifest.is_current()
+            if manifest.format < minimum_format
+                || !manifest.is_current()
                 || manifest.revision != state.revision
                 || !self.matches_structured_boundary(&manifest)?
             {

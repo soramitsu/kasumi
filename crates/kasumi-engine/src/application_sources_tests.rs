@@ -1401,6 +1401,47 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         assert!(snapshot.bytes > 0 && snapshot.chunks > 0);
         assert!(!proof.is_covered_reconstruction());
     }
+    fn compound_seek(
+        generation: &Arc<crate::Generation>,
+        admission: &Arc<NodeAdmission>,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
+        use kasumi_query::DocumentSource as _;
+        let source = generation.document_source("docs")?;
+        let cancellation = kasumi_query::QueryCancellation::default();
+        let actual = source
+            .ordered_unique_window(
+                0,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+                true,
+                &cancellation,
+            )?
+            .expect("selected persisted compound directory");
+        assert_eq!(
+            actual.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        let query = kasumi_types::QueryRequest::new("docs")
+            .sort_desc("/nil")
+            .sort_desc("/value")
+            .paging(kasumi_types::Paging::Seek);
+        let mut memory = kasumi_query::QueryMemory::empty(admission.reserve(0, None)?);
+        let page = generation.indexes.seek_page(
+            &source,
+            &query,
+            None,
+            &generation.state.limits,
+            &|_| Ok(16),
+            &cancellation,
+            &mut memory,
+        )?;
+        assert_eq!(
+            page.rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        assert!(page.last_key.is_none());
+        Ok(())
+    }
     let source = Fixture::with_admission(1, None, NodeAdmission::new_fixture).await?;
     let source_audit = audit(&source.node, &source.storage.admission, false).await?;
     crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
@@ -1471,6 +1512,18 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     unique: name == "value",
                     text: None,
                 })
+                .chain([kasumi_types::IndexDefinition {
+                    name: "nil_value".into(),
+                    text: None,
+                    unique: true,
+                    fields: ["/nil", "/value"]
+                        .into_iter()
+                        .map(|path| kasumi_types::IndexField {
+                            path: path.into(),
+                            kind: kasumi_types::ScalarType::String,
+                        })
+                        .collect(),
+                }])
                 .collect(),
                 strict_read_audit: false,
             }),
@@ -1504,11 +1557,12 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         use kasumi_query::DocumentSource as _;
         use std::ops::Bound::Included;
         let ordinary = source_engine.generation()?;
+        compound_seek(&ordinary, &source.storage.admission)?;
         let selection = ordinary.application_selection.get().unwrap();
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
         );
-        // Four presence rows and seven postings, four of them absences.
+        // Four presence rows, seven scalar postings and one complete compound tuple.
         assert_eq!(
             selection.with_structured_records(
                 None,
@@ -1516,7 +1570,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || ordinary.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(11)
+            Some(12)
         );
         let docs = ordinary.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
@@ -1619,7 +1673,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || ordinary.indexes.structured_layout_sha256(),
                     |tree| Ok(tree.root().count())
                 )?,
-                Some(11)
+                Some(12)
             );
         }
     }
@@ -1665,7 +1719,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                         || current.indexes.structured_layout_sha256(),
                         |t| Ok(t.root().count()),
                     )?
-                    == Some(11)
+                    == Some(12)
                 {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -1684,7 +1738,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || retained.indexes.structured_layout_sha256(),
                     |t| Ok(t.root().count())
                 )?,
-            Some(11)
+            Some(12)
         );
     }
     let expected = source_db
@@ -1819,6 +1873,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     )
     .await?;
     let reopened = reopened_engine.generation()?;
+    compound_seek(&reopened, &target.storage.admission)?;
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
     let selection = reopened.application_selection.get().unwrap();
@@ -1833,7 +1888,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || reopened.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(11)
+            Some(12)
         );
     }
     for (after, limit, expected) in [

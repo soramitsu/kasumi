@@ -717,6 +717,35 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     let manifest = fixture.manifest();
     let view = fixture.store.read_view().unwrap();
     let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
+    let read = |lower, upper, descending| {
+        ordered_unique_window(&reader, "docs", 0, lower, upper, descending, || Ok(())).unwrap()
+    };
+    let page = read(Bound::Unbounded, Bound::Unbounded, false);
+    assert_eq!(
+        page.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+        (0..16).map(|n| format!("d{n:03}")).collect::<Vec<_>>()
+    );
+    let end = &page.last().unwrap().0;
+    let next = read(Bound::Excluded(end.as_slice()), Bound::Unbounded, false);
+    assert_eq!(
+        (
+            next.first().unwrap().1.as_str(),
+            next.last().unwrap().1.as_str()
+        ),
+        ("d016", "d031")
+    );
+    let reverse = read(
+        Bound::Excluded(page[12].0.as_slice()),
+        Bound::Included(next[1].0.as_slice()),
+        true,
+    );
+    assert_eq!(
+        reverse
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["d017", "d016", "d015", "d014", "d013"]
+    );
     let candidate = |rows: Vec<(&str, Value)>| {
         let mut next = first.state.clone();
         next.revision += 1;

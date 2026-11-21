@@ -411,6 +411,61 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         self.visit_selected_headers(cancellation, |id, _| Ok(lend(id)?))
     }
 
+    fn has_ordered_unique_source(&self) -> bool {
+        self.generation.application_selection.get().is_some()
+    }
+    fn ordered_unique_window(
+        &self,
+        index: usize,
+        lower: std::ops::Bound<&[u8]>,
+        upper: std::ops::Bound<&[u8]>,
+        descending: bool,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<kasumi_query::OrderedTupleWindow>, Self::Failure> {
+        self.check_deadline()?;
+        cancellation.check()?;
+        if !self
+            .generation
+            .indexes
+            .compound_order_complete(&self.collection, index)
+        {
+            return Ok(None);
+        }
+        let Some(selection) = self.generation.application_selection.get() else {
+            return Ok(None);
+        };
+        let mut interrupted = None;
+        let result = selection.with_structured_records_since(
+            self.directory_reader(),
+            &self.generation.state,
+            || self.generation.indexes.structured_layout_sha256(),
+            kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
+            |tree| {
+                crate::application_structured::ordered_unique_window(
+                    tree,
+                    &self.collection,
+                    index,
+                    lower,
+                    upper,
+                    descending,
+                    || {
+                        if let Err(error) =
+                            cancellation.check().and_then(|()| self.check_deadline())
+                        {
+                            interrupted = Some(error);
+                            anyhow::bail!("ordered tuple read interrupted");
+                        }
+                        Ok(())
+                    },
+                )
+            },
+        );
+        if let Some(error) = interrupted {
+            return Err(error.into());
+        }
+        result.map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))
+    }
+
     fn visit_field_posting(
         &self,
         field: usize,

@@ -55,7 +55,7 @@ use kasumi_store::{
 use kasumi_types::TenantState;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ops::Bound;
+use std::ops::{Bound, RangeBounds};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -79,6 +79,7 @@ const REBUILD_RETRY_REVISIONS: u64 = 4096;
 
 const LONG: u8 = b'D';
 const PRESENT: u8 = b'P';
+const COMPOUND: u8 = b'U';
 const POSTING: u8 = b'V';
 /// Scalar bytes kept in an ordered key. Longer scalars order by this prefix
 /// and their digest. Numbers always fit.
@@ -268,6 +269,11 @@ fn checked_key(key: Vec<u8>) -> Result<Vec<u8>> {
 /// from the immutable input until the entire edit has storage admission.
 fn encode_row<'a>(collection: &str, row: StructuredRow<'a>) -> Result<Option<(Vec<u8>, &'a [u8])>> {
     Ok(Some(match row {
+        StructuredRow::Compound { index, key, id } => {
+            let mut native = field_prefix(COMPOUND, collection, index);
+            native.extend_from_slice(key);
+            (checked_key(native)?, id.as_bytes())
+        }
         StructuredRow::Present { field, id } => {
             let mut key = field_prefix(PRESENT, collection, field);
             key.extend_from_slice(id.as_bytes());
@@ -376,6 +382,12 @@ pub(crate) fn visit_rows(
             }
         }
     }
+    indexes.visit_compound_rows(|name, index, key, id| -> Result<bool> {
+        let mut native = field_prefix(COMPOUND, name, index);
+        native.extend_from_slice(key);
+        emit(&checked_key(native)?, id.as_bytes())?;
+        Ok(true)
+    })?;
     for (name, fields) in indexes.structured_collections() {
         for (ordinal, field) in fields.enumerate() {
             let prefix = field_prefix(POSTING, name, ordinal);
@@ -476,6 +488,17 @@ fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
         bytes = bytes.checked_add(size)?;
         (rows <= MAX_REBUILD_ROWS && bytes <= MAX_REBUILD_BYTES).then_some(())
     };
+    if !indexes
+        .visit_compound_rows(|name, ordinal, key, id| -> Result<bool> {
+            Ok(
+                charge(field_prefix(COMPOUND, name, ordinal).len() + key.len() + id.len())
+                    .is_some(),
+            )
+        })
+        .ok()?
+    {
+        return None;
+    }
     let mut largest = 0usize;
     for (collection, fields) in indexes.structured_collections() {
         for (ordinal, field) in fields.enumerate() {
@@ -985,6 +1008,9 @@ fn edit(
 ) -> Result<Option<StructuredPublication>> {
     owner.recover(store)?;
     let layout = candidate_indexes.structured_layout_sha256();
+    if base.format < structured::ORDERED_TUPLE_FORMAT {
+        return Ok(None);
+    }
     if base.rebuild().is_some() && layout != base.layout_sha256 {
         return Ok(None);
     }
@@ -1082,6 +1108,65 @@ fn edit(
         _workspace: Some(workspace),
         _rows: Some(rows_lease),
     }))
+}
+
+pub(crate) fn ordered_unique_window(
+    reader: &TreeReader<'_>,
+    collection: &str,
+    index: usize,
+    lower: Bound<&[u8]>,
+    upper: Bound<&[u8]>,
+    descending: bool,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<kasumi_query::OrderedTupleWindow> {
+    let prefix = field_prefix(COMPOUND, collection, index);
+    let mut start_key = prefix.clone();
+    let bound = if descending { upper } else { lower };
+    let start = match bound {
+        Bound::Included(key) | Bound::Excluded(key) => {
+            ensure!(
+                key.len() <= kasumi_query::MAX_ORDERED_TUPLE_BYTES,
+                "ordered tuple range exceeds native bound"
+            );
+            start_key.extend_from_slice(key);
+            if matches!(bound, Bound::Included(_)) {
+                Bound::Included(start_key.as_slice())
+            } else {
+                Bound::Excluded(start_key.as_slice())
+            }
+        }
+        Bound::Unbounded if descending => {
+            start_key = successor(start_key).context("compound prefix successor absent")?;
+            Bound::Excluded(start_key.as_slice())
+        }
+        Bound::Unbounded => Bound::Included(start_key.as_slice()),
+    };
+    let mut rows = Vec::with_capacity(kasumi_query::ORDERED_TUPLE_WINDOW);
+    let direction = if descending {
+        Direction::Reverse
+    } else {
+        Direction::Forward
+    };
+    reader.scan(start, direction, &mut |key, value| {
+        check()?;
+        let Some(key) = key.strip_prefix(prefix.as_slice()) else {
+            return Ok(false);
+        };
+        if !RangeBounds::<[u8]>::contains(&(lower, upper), key) {
+            return Ok(false);
+        }
+        ensure!(
+            !key.is_empty() && key.len() <= kasumi_query::MAX_ORDERED_TUPLE_BYTES,
+            "invalid selected compound key"
+        );
+        let ordered_pages::ValueRef::Inline(id) = value else {
+            anyhow::bail!("compound owner exceeds inline bound")
+        };
+        let id = posting_id(id)?;
+        rows.push((key.to_vec(), id.to_owned()));
+        Ok(rows.len() < kasumi_query::ORDERED_TUPLE_WINDOW)
+    })?;
+    Ok(rows)
 }
 
 fn posting_id(id: &[u8]) -> Result<&str> {

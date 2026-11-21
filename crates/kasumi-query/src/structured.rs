@@ -32,6 +32,7 @@ pub(crate) struct UniqueIndex {
     // for both uniqueness and ordered seek. A standalone validation pass
     // has no field tree and therefore builds its temporary tuple map.
     pub(crate) entries: Option<OrdMap<Vec<Scalar>, String>>,
+    pub(crate) oversized: usize,
 }
 
 pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
@@ -50,15 +51,19 @@ impl UniqueIndex {
         Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
     fn insert_tuple(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
-        if let Some(key) = self.key(record)?
-            && self
+        if let Some(key) = self.key(record)? {
+            if self.fields.len() > 1 && crate::ordered_tuple::encode(&key).is_none() {
+                self.oversized += 1;
+            }
+            if self
                 .entries
                 .as_mut()
                 .expect("private unique tuple tree")
                 .insert(key, id.to_owned())
                 .is_some()
-        {
-            return Err(unique_conflict(name));
+            {
+                return Err(unique_conflict(name));
+            }
         }
         Ok(())
     }
@@ -157,6 +162,14 @@ impl Structured {
                                 return Err(old_owner_mismatch());
                             }
                             entries.remove(&key);
+                            if index.fields.len() > 1
+                                && crate::ordered_tuple::encode(&key).is_none()
+                            {
+                                index.oversized = index
+                                    .oversized
+                                    .checked_sub(1)
+                                    .ok_or_else(old_owner_mismatch)?;
+                            }
                         } else {
                             let scalar = key.pop().expect("one-field unique key");
                             let entries = singles.get_mut(name).expect("shared unique posting");
@@ -211,6 +224,7 @@ impl Structured {
                     index.name.clone(),
                     UniqueIndex {
                         fields: index.fields.clone(),
+                        oversized: 0,
                         entries: (!share_fields || index.fields.len() != 1).then(OrdMap::new),
                     },
                 )

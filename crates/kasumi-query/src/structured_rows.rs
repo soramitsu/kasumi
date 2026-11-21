@@ -17,6 +17,12 @@ use std::sync::Arc;
 /// One row of a collection's structured directory.
 #[derive(Clone, Copy)]
 pub enum StructuredRow<'a> {
+    /// An order-preserving, complete compound tuple and its unique owner.
+    Compound {
+        index: usize,
+        key: &'a [u8],
+        id: &'a str,
+    },
     /// The document has a value at the field's path, null and arrays included.
     Present { field: usize, id: &'a str },
     /// The field has at least one posting under this distinct scalar.
@@ -119,6 +125,80 @@ fn collection_rows<E>(
             return Ok(false);
         }
     }
+    compound_rows(indexes, emit)
+}
+
+fn compound_rows<E>(
+    indexes: &CollectionIndexes,
+    emit: &mut impl FnMut(StructuredRow<'_>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    for (index, unique) in indexes
+        .structured
+        .unique
+        .values()
+        .filter(|u| u.fields.len() > 1)
+        .enumerate()
+    {
+        for (tuple, id) in unique.entries.as_ref().expect("compound root") {
+            if let Some(key) = crate::ordered_tuple::encode(tuple)
+                && !emit(StructuredRow::Compound {
+                    index,
+                    key: &key,
+                    id,
+                })?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn compound_changes<E>(
+    old: &CollectionIndexes,
+    new: &CollectionIndexes,
+    mut emit: impl FnMut(bool, StructuredRow<'_>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    let indexes = old
+        .structured
+        .unique
+        .values()
+        .zip(new.structured.unique.values())
+        .filter(|(old, _)| old.fields.len() > 1);
+    for (index, (old, new)) in indexes.enumerate() {
+        let old = old.entries.as_ref().expect("compound root");
+        let new = new.entries.as_ref().expect("compound root");
+        if old.ptr_eq(new) {
+            continue;
+        }
+        for difference in old.diff(new) {
+            let (key, removed, added) = match difference {
+                ordmap::DiffItem::Add(key, id) => (key, None, Some(id)),
+                ordmap::DiffItem::Remove(key, id) => (key, Some(id), None),
+                ordmap::DiffItem::Update {
+                    old: (key, prior),
+                    new: (_, next),
+                } => (key, Some(prior), Some(next)),
+            };
+            let Some(key) = crate::ordered_tuple::encode(key) else {
+                continue;
+            };
+            for (added, id) in [(false, removed), (true, added)] {
+                if let Some(id) = id
+                    && !emit(
+                        added,
+                        StructuredRow::Compound {
+                            index,
+                            key: &key,
+                            id,
+                        },
+                    )?
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
     Ok(true)
 }
 
@@ -184,6 +264,75 @@ fn field_changes<E>(
 }
 
 impl QueryIndexes {
+    /// Emit all representable compound rows in native key order. Stops as soon
+    /// as the consumer refuses a row.
+    pub fn visit_compound_rows<E>(
+        &self,
+        mut emit: impl FnMut(&str, usize, &[u8], &str) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        for (name, collection) in &self.collections {
+            if !compound_rows(collection, &mut |row| match row {
+                StructuredRow::Compound { index, key, id } => emit(name, index, key, id),
+                _ => unreachable!("compound row producer"),
+            })? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn compound_ordinal(&self, collection: &str, name: &str) -> Option<usize> {
+        self.collections
+            .get(collection)?
+            .structured
+            .unique
+            .iter()
+            .filter(|(_, unique)| unique.fields.len() > 1)
+            .position(|(key, _)| key == name)
+    }
+
+    pub fn compound_order_complete(&self, collection: &str, ordinal: usize) -> bool {
+        self.collections
+            .get(collection)
+            .and_then(|indexes| {
+                indexes
+                    .structured
+                    .unique
+                    .values()
+                    .filter(|u| u.fields.len() > 1)
+                    .nth(ordinal)
+            })
+            .is_some_and(|u| u.oversized == 0)
+    }
+
+    pub fn compound_count(&self, collection: &str) -> usize {
+        self.collections.get(collection).map_or(0, |c| {
+            c.structured
+                .unique
+                .values()
+                .filter(|u| u.fields.len() > 1)
+                .count()
+        })
+    }
+
+    pub fn compound_fields(
+        &self,
+        collection: &str,
+        ordinal: usize,
+    ) -> Option<&[kasumi_types::IndexField]> {
+        Some(
+            &self
+                .collections
+                .get(collection)?
+                .structured
+                .unique
+                .values()
+                .filter(|u| u.fields.len() > 1)
+                .nth(ordinal)?
+                .fields,
+        )
+    }
+
     /// Binds every collection's name and complete definition in name order.
     /// Rows written under one layout are never read under another.
     pub fn structured_layout_sha256(&self) -> [u8; 32] {
@@ -268,6 +417,17 @@ impl QueryIndexes {
     pub fn structured_rows_within(&self, limit: usize) -> bool {
         let mut rows = 0usize;
         for indexes in self.collections.values() {
+            for index in indexes
+                .structured
+                .unique
+                .values()
+                .filter(|u| u.fields.len() > 1)
+            {
+                rows = rows.saturating_add(index.entries.as_ref().expect("compound root").len());
+                if rows > limit {
+                    return false;
+                }
+            }
             for index in indexes.structured.fields.values() {
                 rows = rows.saturating_add(index.present.len());
                 if rows > limit {
@@ -317,6 +477,9 @@ impl QueryIndexes {
                             return Ok(false);
                         }
                     }
+                    if !compound_changes(old, new, |added, row| emit(name, added, row))? {
+                        return Ok(false);
+                    }
                 }
                 _ => {
                     if !collection_rows(old, &mut |row| emit(name, false, row))? {
@@ -356,6 +519,9 @@ mod tests {
 
     fn row(collection: &str, row: StructuredRow<'_>) -> Row {
         match row {
+            StructuredRow::Compound { index, key, id } => {
+                (collection.into(), b'U', index, 0, key.to_vec(), id.into())
+            }
             StructuredRow::Present { field, id } => {
                 (collection.into(), b'P', field, 0, Vec::new(), id.into())
             }

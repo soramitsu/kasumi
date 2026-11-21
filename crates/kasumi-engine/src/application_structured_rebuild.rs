@@ -222,18 +222,48 @@ fn advance(
                 let count = indexes
                     .structured_field_count(name)
                     .context("structured collection absent")?;
-                for ordinal in at.map_or(0, |f| f.ordinal as usize)..count {
+                let stop = count + indexes.compound_count(name);
+                for ordinal in at.map_or(0, |f| f.ordinal as usize)..stop {
                     let resume = at
                         .filter(|c| c.ordinal as usize == ordinal)
                         .map_or(&[][..], |c| c.after.as_slice());
-                    let (kind, value) = indexes
-                        .structured_field_value(name, ordinal, record.as_record())
-                        .context("structured field absent")?;
-                    let last = window.field(name, id, ordinal, resume, kind, value)?;
+                    let last = if ordinal < count {
+                        let (kind, value) = indexes
+                            .structured_field_value(name, ordinal, record.as_record())
+                            .context("structured field absent")?;
+                        window.field(name, id, ordinal, resume, kind, value)?
+                    } else {
+                        let index = ordinal - count;
+                        let fields = indexes
+                            .compound_fields(name, index)
+                            .context("compound index absent")?;
+                        if let Some(component) =
+                            kasumi_query::ordered_record_tuple(fields, record.as_record())?
+                        {
+                            let mut key = field_prefix(COMPOUND, name, index);
+                            key.extend_from_slice(&component);
+                            let key = checked_key(key)?;
+                            let size = key.len() + id.len();
+                            if window.bytes + size > WINDOW_BYTES && window.lookups != 0 {
+                                next.cursor = Some(StructuredCursor {
+                                    document: doc,
+                                    field: Some(StructuredFieldCursor {
+                                        ordinal: ordinal.try_into()?,
+                                        after: Vec::new(),
+                                    }),
+                                });
+                                return Ok(next);
+                            }
+                            window.bytes += size;
+                            window.lookups += 1;
+                            window.rows.insert(key, id.as_bytes().to_vec());
+                        }
+                        None
+                    };
                     window.fields += 1;
                     let pending = if let Some(after) = last {
                         Some((ordinal, after))
-                    } else if window.full() && ordinal + 1 < count {
+                    } else if window.full() && ordinal + 1 < stop {
                         Some((ordinal + 1, Vec::new()))
                     } else {
                         None
@@ -316,7 +346,10 @@ pub(crate) fn maintain(
     }
     let layout = indexes.structured_layout_sha256();
     let positioned = manifest.as_ref().is_some_and(|m| {
-        m.revision == state.revision && m.matches_applied(applied) && m.layout_sha256 == layout
+        m.format >= structured::ORDERED_TUPLE_FORMAT
+            && m.revision == state.revision
+            && m.matches_applied(applied)
+            && m.layout_sha256 == layout
     });
     if positioned
         && manifest
