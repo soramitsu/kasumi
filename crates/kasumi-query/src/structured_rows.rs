@@ -302,7 +302,7 @@ impl QueryIndexes {
                     .filter(|u| u.fields.len() > 1)
                     .nth(ordinal)
             })
-            .is_some_and(|u| u.oversized == 0)
+            .is_some_and(|u| u.overflow.is_empty())
     }
 
     pub fn compound_count(&self, collection: &str) -> usize {

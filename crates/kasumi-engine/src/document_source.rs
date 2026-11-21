@@ -424,11 +424,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
     ) -> ReadResult<Option<kasumi_query::OrderedTupleWindow>, Self::Failure> {
         self.check_deadline()?;
         cancellation.check()?;
-        if !self
-            .generation
-            .indexes
-            .compound_order_complete(&self.collection, index)
-        {
+        if index >= self.generation.indexes.compound_count(&self.collection) {
             return Ok(None);
         }
         let Some(selection) = self.generation.application_selection.get() else {

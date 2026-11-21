@@ -109,11 +109,20 @@ pub(crate) fn range_bound(
         Bound::Unbounded => return Bound::Unbounded,
     };
     let (prefix, complete) = parts(key, true);
-    if if complete { inclusive } else { !lower } {
+    let inclusive = if complete { inclusive } else { !lower };
+    if inclusive {
         Bound::Included(prefix)
     } else {
         Bound::Excluded(prefix)
     }
+}
+
+/// Compare an entire native key against an oversized typed tuple without
+/// materializing the latter. Equal prefixes sort before the longer tuple.
+pub(crate) fn compare_overflow(native: &[u8], overflow: &[Scalar]) -> std::cmp::Ordering {
+    let (prefix, complete) = parts(overflow, true);
+    debug_assert!(!complete);
+    native.cmp(&prefix).then(std::cmp::Ordering::Less)
 }
 
 /// Encode the same logical key directly from a live or archived projection.

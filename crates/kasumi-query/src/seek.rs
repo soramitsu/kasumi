@@ -125,16 +125,18 @@ impl QueryIndexes {
         let mut more = false;
         if !empty(&range.lower, &range.upper) {
             let iterator_bytes = crate::workspace::imbl_iterator_bytes()?;
+            let iterator_bytes = if index.overflow.is_empty() {
+                iterator_bytes
+            } else {
+                allocation::add(iterator_bytes, iterator_bytes)?
+            };
             memory.reserve(iterator_bytes)?;
             {
                 // Acquire a bounded native tuple window before opening a document
                 // loan: page and document readers may share the same native handle.
                 let mut native_workspace = 0;
                 let mut native = None;
-                if source.has_ordered_unique_source()
-                    && index.fields.len() > 1
-                    && index.oversized == 0
-                {
+                if source.has_ordered_unique_source() && index.fields.len() > 1 {
                     let workspace = ((crate::ORDERED_TUPLE_WINDOW + 3)
                         * (crate::MAX_ORDERED_TUPLE_BYTES
                             + 256
@@ -187,7 +189,7 @@ impl QueryIndexes {
                 } else {
                     None
                 };
-                let mut entries = std::iter::from_fn(|| {
+                let mut ordinary = std::iter::from_fn(|| {
                     if let Some(walk) = &mut native {
                         return walk
                             .next(source, cancellation)
@@ -216,6 +218,37 @@ impl QueryIndexes {
                             )
                             .into())
                         });
+                    }
+                })
+                .peekable();
+                let mut wide = (!index.overflow.is_empty()).then(|| {
+                    index
+                        .overflow
+                        .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
+                });
+                let mut wide =
+                    std::iter::from_fn(|| directed_next(wide.as_mut()?, descending)).peekable();
+                let mut entries = std::iter::from_fn(|| {
+                    let Some((key, _)) = wide.peek() else {
+                        return ordinary.next();
+                    };
+                    let first = match ordinary.peek() {
+                        Some(Ok(SeekEntry::Native(bytes, _))) => {
+                            crate::ordered_tuple::compare_overflow(bytes, key)
+                        }
+                        Some(Ok(SeekEntry::Resident(other, _))) => other.cmp(&key.as_slice()),
+                        Some(Err(_)) => return ordinary.next(),
+                        None => return wide.next().map(|(k, id)| Ok(SeekEntry::Resident(k, id))),
+                    };
+                    let take_ordinary = if descending {
+                        first.is_gt()
+                    } else {
+                        first.is_lt()
+                    };
+                    if take_ordinary {
+                        ordinary.next()
+                    } else {
+                        wide.next().map(|(k, id)| Ok(SeekEntry::Resident(k, id)))
                     }
                 })
                 .peekable();

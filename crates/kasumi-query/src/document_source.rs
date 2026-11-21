@@ -157,7 +157,8 @@ pub trait DocumentSource: crate::CollectionRecords {
     fn has_ordered_unique_source(&self) -> bool {
         false
     }
-    /// Return at most one window of complete compound tuples in native order.
+    /// Return at most one window of representable compound tuples in native order.
+    /// The planner merges longer keys from the same generation into that order.
     /// None means the directory is absent at this generation before any row
     /// was returned. Installed page failures keep their original owner.
     fn ordered_unique_window(
