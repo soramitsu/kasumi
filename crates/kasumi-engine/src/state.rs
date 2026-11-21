@@ -206,10 +206,9 @@ impl Generation {
         if !admit(bytes)? {
             return Ok(None);
         }
-        let indexes = self
-            .indexes
-            .published_seek_projection(name)
-            .expect("known compound collection");
+        let Some(indexes) = self.indexes.published_seek_worker_projection(name) else {
+            return Ok(None);
+        };
         Ok(Some(self.lease_with_collections(
             std::iter::once((name.to_owned(), collection.clone())).collect(),
             Arc::new(indexes),
