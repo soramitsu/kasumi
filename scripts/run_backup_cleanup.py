@@ -57,14 +57,15 @@ def native_targets(evidence, functional):
                              for case, crate, target, leaf, _, _ in CASES})
 
 
-def validate_checkpoints(created, checkpoint, status, verified, private):
+def validate_checkpoints(created, checkpoint, status, verified, private, *, tenant=install.TENANT,
+                         checkpoint_name="checkpoint.json"):
     acceptance.exact(created, {"checkpoint", "session_id"}, "backup create response")
     session = created["session_id"]
-    require(uuid.UUID(session).int > 0 and created["checkpoint"] == str(private / "checkpoint.json"),
+    require(uuid.UUID(session).int > 0 and created["checkpoint"] == str(private / checkpoint_name),
             "backup create returned another checkpoint location")
     acceptance.exact(checkpoint, {"tenant", "source_incarnation", "revision", "resident_sha256", "backup_id",
                                  "manifest_ciphertext_sha256", "key_lineage_digest"}, "full checkpoint")
-    require(checkpoint == verified and checkpoint["backup_id"] == session and checkpoint["tenant"] == install.TENANT
+    require(checkpoint == verified and checkpoint["backup_id"] == session and checkpoint["tenant"] == tenant
             and isinstance(checkpoint["source_incarnation"], str) and checkpoint["source_incarnation"],
             "verified backup differs from the original checkpoint")
     acceptance.uint(checkpoint["revision"], "backup revision")

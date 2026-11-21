@@ -46,10 +46,11 @@ import domain_run
 from domain_run import require
 import process_ha_topology as topology
 import repeatable_assembly as owned
+import run_backup_cleanup
 
 KIND = "ha-soak"
 RUNNER = "scripts/run_ha_soak.py"
-MODULES = ()
+MODULES = ("scripts/run_backup_cleanup.py", *run_backup_cleanup.MODULES)
 PLAN_SCHEMA = "kasumi-ha-soak-plan-v1"
 # The qualifying contract. A run with any other value is a rehearsal.
 QUALIFYING = {"duration_seconds": 86400, "heartbeat_seconds": 60, "session_seconds": 1500,
@@ -115,9 +116,40 @@ def archive_observer(commands):
     return [first[0], "audit", "status", first[3]]
 
 
-def absolute(value, label):
-    require(isinstance(value, str) and Path(value).is_absolute()
-            and Path(value).resolve(strict=True) == Path(value), label + " is not a canonical path")
+def backup_creation(commands):
+    creates = [command for command in commands["backup"] if command[1:3] == ["backup", "create"]]
+    require(len(creates) == 1 and len(creates[0]) == 6,
+            "soak backup needs one original checkpoint creation")
+    command = creates[0]
+    require(Path(command[3]).is_absolute() and Path(command[5]).is_absolute(),
+            "soak backup must specify its installed profile and checkpoint path")
+    return command
+
+
+def backup_readback(command, created):
+    path = Path(command[5])
+    owned.exact(created, {"session_id", "checkpoint"}, "soak backup creation")
+    session = created["session_id"]
+    require(uuid.UUID(session).int > 0 and created["checkpoint"] == str(path),
+            "soak backup returned another checkpoint")
+    return {operation: [command[0], "backup", operation, command[3], command[4], session]
+            for operation in ("status", "verify")}
+
+
+def check_completed_backup(command, created, checkpoint, outputs, profile):
+    path = Path(command[5])
+    require(profile["resource"]["kind"] == "database"
+            and checkpoint["source_incarnation"] == profile["resource"]["incarnation"],
+            "soak backup differs from the workload database incarnation")
+    run_backup_cleanup.validate_checkpoints(created, checkpoint, outputs["status"], outputs["verify"],
+                                            path.parent, tenant=profile["tenant"], checkpoint_name=path.name)
+
+
+def absolute(value, label, installed):
+    require(isinstance(value, str) and Path(value).is_absolute() and os.path.normpath(value) == value,
+            label + " is not a canonical path")
+    if installed:
+        require(Path(value).resolve(strict=True) == Path(value), label + " is not a canonical path")
     return value
 
 
@@ -136,16 +168,16 @@ def plan_command(binaries, kind, step):
     return [binaries[binary], *arguments]
 
 
-def check_plan(plan, binaries):
+def check_plan(plan, binaries, *, installed=True):
     owned.exact(plan, {"schema", "profile", "collection", "readiness", "maintenance"}, "soak plan")
     require(plan["schema"] == PLAN_SCHEMA, "unsupported soak plan")
-    absolute(plan["profile"], "soak client profile")
+    absolute(plan["profile"], "soak client profile", installed)
     require(isinstance(plan["collection"], str) and plan["collection"], "soak collection is absent")
     require(isinstance(plan["readiness"], list) and plan["readiness"]
             and len(set(plan["readiness"])) == len(plan["readiness"]),
             "soak readiness clients are absent or repeated")
     for client in plan["readiness"]:
-        absolute(client, "soak readiness client")
+        absolute(client, "soak readiness client", installed)
     owned.exact(plan["maintenance"], set(MAINTENANCE), "soak maintenance")
     commands = {}
     for kind, steps in plan["maintenance"].items():
@@ -300,6 +332,7 @@ def execute(run, parameters, topology_path, plan_path, pause):
     topology_file = run.configuration("ha-topology", topology_path)
     plan = owned.read(plan_file)
     maintenance = check_plan(plan, binaries)
+    create = backup_creation(maintenance)
     profile = run.configuration("soak-profile", plan["profile"])
     profile_sha256 = hashlib.sha256(profile.read_bytes()).hexdigest()
     admitted = topology.inspect(Path(topology_path).resolve(strict=True), run.environment)
@@ -379,8 +412,19 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 started = workload.elapsed()
                 steps = []
                 for index, command in enumerate(maintenance[kind]):
+                    if command == create:
+                        checkpoint = Path(create[5])
+                        require(not checkpoint.exists()
+                                and not checkpoint.with_suffix(".backup-attempt.json").exists(),
+                                "soak backup checkpoint or its original journal already exists")
                     steps.append(f"{kind}-{index}")
-                    run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                    output = run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                    if command == create:
+                        created = owned.read(output)
+                        saved = run.configuration("soak-checkpoint", create[5])
+                        verified = {op: owned.read(run.command("backup-proof-" + op, argv, COMMAND_SECONDS))
+                                    for op, argv in backup_readback(create, created).items()}
+                        check_completed_backup(create, created, owned.read(saved), verified, owned.read(profile))
                 if kind == "archival":
                     result = run.command("archive-progress", archive_command, REPLY_SECONDS)
                     archive_progress(original_archive, owned.read(result))
@@ -506,7 +550,8 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     nodes = admission["nodes"]
     topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and set(retained) == {
-                "soak-plan", "soak-profile", "ha-topology", *("node-" + node["id"] for node in nodes)}
+                "soak-plan", "soak-profile", "soak-checkpoint", "ha-topology",
+                *("node-" + node["id"] for node in nodes)}
             and admission["plan_sha256"] == acceptance.sha256(retained["ha-topology"])
             and acceptance.read_json(retained["ha-topology"])["nodes"] == [
                 {key: node[key] for key in ("id", "role", "group", "config")} for node in nodes],
@@ -582,7 +627,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
             == heartbeat_rows(rows, duration, interval),
             "soak heartbeats differ from the recomputed raw workload")
     # Maintenance: the plan's exact candidate commands, inside the interval.
-    commands = check_plan(plan, paths)
+    commands = check_plan(plan, paths, installed=False)
     archive_command = archive_observer(commands)
     for step in ("archive-baseline", "archive-progress"):
         require(receipts[step]["exit_code"] == 0
@@ -622,6 +667,18 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 previous_credential = credential_observation(
                     acceptance.json_reference(custody, logs[step]), profile_sha256,
                     previous_credential)
+        if kind == "backup":
+            create = backup_creation(commands)
+            created = acceptance.json_reference(custody, logs[observed[expected.index(create)]])
+            verified = {}
+            for op, argv in backup_readback(create, created).items():
+                step = "backup-proof-" + op
+                require(receipts[step]["record"]["command"] == argv and receipts[step]["exit_code"] == 0
+                        and receipts[step]["record"]["executable"]["sha256"] == domain["binaries"]["kasumid"],
+                        "soak backup readback differs from the original session")
+                verified[op] = acceptance.json_reference(custody, logs[step])
+            check_completed_backup(create, created, owned.read(retained["soak-checkpoint"]), verified,
+                                   owned.read(retained["soak-profile"]))
         first = next(item for item in domain["processes"] if item["id"] == observed[0])
         events.append({"id": kind, "elapsed_seconds": event["elapsed_seconds"],
                        "log": first["log"]})

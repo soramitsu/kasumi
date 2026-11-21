@@ -75,6 +75,24 @@ if args[:2] == ["audit", "status"]:
     print(json.dumps({"persistence_failed": False, "position": {"stream_id": stream,
                       "pruned_before": n, "archive_head": head}}))
     sys.exit(0)
+if args[:1] == ["backup"]:
+    source = json.loads(Path(args[2]).read_bytes())
+    session = "dd8ced8e-7ef4-4f2c-b5a6-f83395c17534"
+    ck = {"tenant": source["tenant"], "source_incarnation": source["resource"]["incarnation"],
+          "revision": 12, "backup_id": session, "resident_sha256": "1" * 64,
+          "manifest_ciphertext_sha256": "2" * 64, "key_lineage_digest": "3" * 64}
+    if args[1] == "create":
+        Path(args[4]).write_text(json.dumps(ck))
+        result = {"checkpoint": args[4], "session_id": session}
+    elif args[1] == "verify":
+        result = ck
+    else:
+        result = {"intent": {"session_id": session, "revision": ck["revision"], "tenant": ck["tenant"],
+                             "source_incarnation": ck["source_incarnation"]},
+                  "outcome": {"outcome": "complete", "checkpoint": ck, "intent_ciphertext_sha256": "4" * 64},
+                  "source_purpose_sha256": "5" * 64}
+    print(json.dumps(result))
+    sys.exit(0)
 print(json.dumps({"ok": True, "argv": args}))
 sys.exit(behavior.get("fail", {}).get(args[0], 0))
 '''
@@ -164,7 +182,9 @@ class DomainFixture(unittest.TestCase):
         for name in ("default-profile.json", "operator.json", "admin.json", "manage.json",
                      "checkpoint.json"):
             files[name] = installed / name
-            files[name].write_text(json.dumps({"synthetic": name}))
+            if name != "checkpoint.json":
+                files[name].write_text(json.dumps({"synthetic": name, "tenant": "soak",
+                    "resource": {"kind": "database", "incarnation": "3ad0e88d-9fa6-409c-8f3b-9466d09ab023"}}))
         self.soak_plan = installed / "soak-plan.json"
         self.soak_plan.write_text(json.dumps({
             "schema": soak.PLAN_SCHEMA, "profile": str(files["default-profile.json"]),
@@ -505,6 +525,11 @@ class SoakTests(DomainFixture):
         changed["position"]["stream_id"] = changed["position"]["archive_head"]["stream_id"] = str(uuid.uuid4())
         with self.assertRaisesRegex(ValueError, "original soak stream"):
             soak.archive_progress(baseline, changed)
+
+    def test_a_backup_status_query_cannot_supply_the_soak_checkpoint(self):
+        commands = {"backup": [["/candidate/kasumid", "backup", "status", "/admin", "object", "session"]]}
+        with self.assertRaisesRegex(ValueError, "original checkpoint creation"):
+            soak.backup_creation(commands)
 
     def test_heartbeats_count_only_replies_received_before_each_second(self):
         rows = [{"received_elapsed_seconds": second, "verdict": verdict}
