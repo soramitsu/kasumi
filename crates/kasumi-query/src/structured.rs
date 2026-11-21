@@ -8,10 +8,14 @@ use crate::{
 use imbl::{OrdMap, OrdSet};
 use kasumi_types::*;
 use serde_json::Value;
+use std::cell::LazyCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, RangeBounds};
+use std::sync::Arc;
 
 pub(crate) type IdSet = OrdSet<String>;
+/// Every compound index of one document can retain the same immutable ID.
+pub(crate) type TupleMap = OrdMap<Vec<Scalar>, Arc<str>>;
 
 /// Sharing lasts only for the current document. Correlated fields can grow
 /// or shrink the same immutable ID root even when their scalar keys differ.
@@ -138,10 +142,10 @@ pub(crate) struct UniqueIndex {
     // A one-field generation uses its already selected scalar posting tree
     // for both uniqueness and ordered seek. A standalone validation pass
     // has no field tree and therefore builds its temporary tuple map.
-    pub(crate) entries: Option<OrdMap<Vec<Scalar>, String>>,
+    pub(crate) entries: Option<TupleMap>,
     // Only keys longer than a native page key live here. A mixed index can
     // walk the published directory and merge these exceptions in tuple order.
-    pub(crate) overflow: OrdMap<Vec<Scalar>, String>,
+    pub(crate) overflow: TupleMap,
 }
 
 pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
@@ -159,7 +163,7 @@ impl UniqueIndex {
             .collect::<Result<Vec<_>>>()?;
         Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
-    fn owned_entries(&mut self, key: &[Scalar]) -> &mut OrdMap<Vec<Scalar>, String> {
+    fn owned_entries(&mut self, key: &[Scalar]) -> &mut TupleMap {
         if self.fields.len() > 1 && crate::ordered_tuple::encode(key).is_none() {
             &mut self.overflow
         } else {
@@ -181,7 +185,7 @@ impl UniqueIndex {
     fn insert_tuple(
         &mut self,
         name: &str,
-        id: &str,
+        owner: impl FnOnce() -> Arc<str>,
         record: Record<'_>,
         fields: Option<&BTreeMap<String, FieldIndex>>,
     ) -> Result<()> {
@@ -191,11 +195,7 @@ impl UniqueIndex {
             {
                 self.share_components(&mut key, fields);
             }
-            if self
-                .owned_entries(&key)
-                .insert(key, id.to_owned())
-                .is_some()
-            {
+            if self.owned_entries(&key).insert(key, owner()).is_some() {
                 return Err(unique_conflict(name));
             }
         }
@@ -219,7 +219,7 @@ impl UniqueIndex {
         self.share_components(&mut key, fields);
         let entries = self.owned_entries(&key);
         let (previous, owner) = entries.get_key_value(&key).ok_or_else(old_owner_mismatch)?;
-        if owner != id {
+        if owner.as_ref() != id {
             return Err(old_owner_mismatch());
         }
         let needs_binding =
@@ -363,7 +363,10 @@ impl Structured {
                     if let Some(mut key) = index.key(old)? {
                         if index.entries.is_some() {
                             let entries = index.owned_entries(&key);
-                            if entries.get(&key).is_none_or(|owner| owner != delta.id) {
+                            if entries
+                                .get(&key)
+                                .is_none_or(|owner| owner.as_ref() != delta.id)
+                            {
                                 return Err(old_owner_mismatch());
                             }
                             entries.remove(&key);
@@ -383,9 +386,10 @@ impl Structured {
         })?;
         changes.visit_changes(|delta| {
             if let Some(new) = delta.new {
+                let owner = LazyCell::new(|| Arc::<str>::from(delta.id));
                 for (name, index) in &mut unique {
                     if index.entries.is_some() {
-                        index.insert_tuple(name, delta.id, new, Some(&self.fields))?;
+                        index.insert_tuple(name, || Arc::clone(&owner), new, Some(&self.fields))?;
                     } else if let Some(mut key) = index.key(new)? {
                         let entries = singles.get_mut(name).expect("shared unique posting");
                         let scalar = key.pop().expect("one-field unique key");
@@ -436,8 +440,9 @@ impl Structured {
             return Ok(unique);
         }
         source.visit_records(|id, record| {
+            let owner = LazyCell::new(|| Arc::<str>::from(id));
             for (name, index) in &mut unique {
-                index.insert_tuple(name, id, record, None)?;
+                index.insert_tuple(name, || Arc::clone(&owner), record, None)?;
             }
             Ok(())
         })?;
@@ -557,9 +562,10 @@ impl Structured {
             }
         }
         self.ids.insert(id.to_owned());
+        let owner = LazyCell::new(|| Arc::<str>::from(id));
         for (name, index) in &mut self.unique {
             if index.entries.is_some() {
-                index.insert_tuple(name, id, record, Some(&self.fields))?;
+                index.insert_tuple(name, || Arc::clone(&owner), record, Some(&self.fields))?;
             } else if let Some(mut key) = index.key(record)? {
                 let scalar = key.pop().expect("one-field unique key");
                 if self.fields[&index.fields[0].path].entries[&scalar].len() != 1 {
