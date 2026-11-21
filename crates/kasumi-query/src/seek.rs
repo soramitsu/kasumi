@@ -1,6 +1,8 @@
 //! Seek paging: a query's rows in unique-index order, one page at a time, read
 //! straight from the index. There is no candidate set, sort or retained state,
 //! so each page costs the same however large the whole result is.
+#[path = "seek_ranked.rs"]
+mod ranked;
 use crate::page::{PageBound, PageWriter};
 use crate::scalar::{Scalar, invalid, query_scalar};
 use crate::select::Selection;
@@ -37,6 +39,25 @@ pub(crate) struct Projection {
     // A registered Engine worker executes exactly one page. Move its wide
     // fallback into that page only after the request has resolved its range.
     worker_wide: Option<std::sync::Mutex<Option<Vec<TupleMap>>>>,
+    wide_indexes: Vec<bool>,
+}
+
+fn take_worker_roots(roots: &std::sync::Mutex<Option<Vec<TupleMap>>>) -> Result<Vec<TupleMap>> {
+    roots
+        .lock()
+        .map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "captured wide seek fallback poisoned",
+            )
+        })?
+        .take()
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "registered seek worker already consumed its page",
+            )
+        })
 }
 
 impl QueryIndexes {
@@ -81,6 +102,13 @@ impl QueryIndexes {
             .filter(|index| index.fields.len() > 1)
             .map(|index| std::mem::take(index.entries.as_mut().expect("compound tuple root")))
             .collect();
+        let wide_indexes = selected
+            .structured
+            .unique
+            .values()
+            .filter(|index| index.fields.len() > 1)
+            .map(|index| !index.overflow.is_empty())
+            .collect();
         let worker_wide = worker.then(|| {
             let roots = selected
                 .structured
@@ -97,6 +125,7 @@ impl QueryIndexes {
             seek_projection: Some(Projection {
                 fallback: std::sync::Mutex::new(Some(fallback)),
                 worker_wide,
+                wide_indexes,
             }),
             structured_layout: std::sync::OnceLock::from(self.structured_layout_sha256()),
         })
@@ -214,6 +243,7 @@ impl QueryIndexes {
                 // loan: page and document readers may share the same native handle.
                 let mut native_workspace = 0;
                 let mut native = None;
+                let mut ranked = None;
                 if source.has_ordered_unique_source() && index.fields.len() > 1 {
                     let workspace = ((crate::ORDERED_TUPLE_WINDOW + 3)
                         * (crate::MAX_ORDERED_TUPLE_BYTES
@@ -229,16 +259,54 @@ impl QueryIndexes {
                         .filter(|u| u.fields.len() > 1)
                         .position(|candidate| std::ptr::eq(candidate, index))
                         .expect("selected compound index");
-                    let lower = crate::ordered_tuple::range_bound(&range.lower, true);
-                    let upper = crate::ordered_tuple::range_bound(&range.upper, false);
-                    if let Some(rows) = source.ordered_unique_window(
-                        ordinal,
-                        bytes_bound(&lower),
-                        bytes_bound(&upper),
-                        descending,
-                        cancellation,
-                    )? {
-                        native = Some(NativeWalk::new(ordinal, lower, upper, rows, descending));
+                    let wide = self
+                        .seek_projection
+                        .as_ref()
+                        .map_or(!index.overflow.is_empty(), |projection| {
+                            projection.wide_indexes[ordinal]
+                        });
+                    if wide {
+                        ranked = ranked::Walk::open(
+                            source,
+                            ordinal,
+                            &index.fields,
+                            &range,
+                            descending,
+                            cancellation,
+                            || {
+                                if let (Some(projection), Some(roots)) =
+                                    (&self.seek_projection, worker_wide)
+                                {
+                                    drop(take_worker_roots(roots)?);
+                                    projection
+                                        .fallback
+                                        .lock()
+                                        .map_err(|_| {
+                                            Error::new(
+                                                ErrorCode::Unavailable,
+                                                "captured seek fallback poisoned",
+                                            )
+                                        })?
+                                        .take();
+                                }
+                                Ok(())
+                            },
+                        )?;
+                    }
+                    if ranked.is_none() {
+                        let lower = crate::ordered_tuple::range_bound(&range.lower, true);
+                        let upper = crate::ordered_tuple::range_bound(&range.upper, false);
+                        if let Some(rows) = source.ordered_unique_window(
+                            ordinal,
+                            bytes_bound(&lower),
+                            bytes_bound(&upper),
+                            descending,
+                            cancellation,
+                        )? {
+                            native = Some(NativeWalk::new(ordinal, lower, upper, rows, descending));
+                        }
+                    }
+                    if ranked.is_some() || native.is_some() {
                         native_workspace = workspace;
                     } else {
                         memory.release(workspace)?;
@@ -250,7 +318,7 @@ impl QueryIndexes {
                     let mut fallback = read.fallback.lock().map_err(|_| {
                         Error::new(ErrorCode::Unavailable, "captured seek fallback poisoned")
                     })?;
-                    if native.is_some() {
+                    if native.is_some() || ranked.is_some() {
                         // The exact physical root now owns this immutable walk.
                         fallback.take();
                         None
@@ -278,7 +346,7 @@ impl QueryIndexes {
                 } else {
                     None
                 };
-                let mut tuples = if native.is_none() {
+                let mut tuples = if native.is_none() && ranked.is_none() {
                     projected_fallback
                         .as_ref()
                         .or(index.entries.as_ref())
@@ -291,7 +359,7 @@ impl QueryIndexes {
                 } else {
                     None
                 };
-                let mut posting = if tuples.is_none() && native.is_none() {
+                let mut posting = if tuples.is_none() && native.is_none() && ranked.is_none() {
                     let field = indexes
                         .structured
                         .fields
@@ -306,7 +374,14 @@ impl QueryIndexes {
                 } else {
                     None
                 };
+                let ranked_order = ranked.is_some();
                 let mut ordinary = std::iter::from_fn(|| {
+                    if let Some(walk) = &mut ranked {
+                        return walk
+                            .next(source, cancellation)
+                            .transpose()
+                            .map(|r| r.map(SeekEntry::Ranked));
+                    }
                     if let Some(walk) = &mut native {
                         return walk
                             .next(source, cancellation)
@@ -339,22 +414,8 @@ impl QueryIndexes {
                 })
                 .peekable();
                 let mut overflow_charge = 0;
-                let selected_wide = if let Some(captured) = worker_wide {
-                    let mut roots = captured
-                        .lock()
-                        .map_err(|_| {
-                            Error::new(
-                                ErrorCode::Unavailable,
-                                "captured wide seek fallback poisoned",
-                            )
-                        })?
-                        .take()
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorCode::Unavailable,
-                                "registered seek worker already consumed its page",
-                            )
-                        })?;
+                let selected_wide = if let Some(captured) = worker_wide.filter(|_| !ranked_order) {
+                    let mut roots = take_worker_roots(captured)?;
                     let selected = indexes
                         .structured
                         .unique
@@ -381,6 +442,7 @@ impl QueryIndexes {
                     None
                 };
                 let root = match &selected_wide {
+                    _ if ranked_order => None,
                     Some(WideRows::Page(_)) => None,
                     Some(WideRows::Full(root)) => Some(root),
                     None => Some(&index.overflow),
@@ -404,6 +466,9 @@ impl QueryIndexes {
                         return ordinary.next();
                     };
                     let first = match ordinary.peek() {
+                        Some(Ok(SeekEntry::Ranked(_))) => {
+                            unreachable!("ranked order owns all tuple widths")
+                        }
                         Some(Ok(SeekEntry::Native(bytes, _))) => {
                             crate::ordered_tuple::compare_overflow(bytes, key)
                         }
@@ -428,6 +493,7 @@ impl QueryIndexes {
                     let id = match &entry {
                         SeekEntry::Resident(_, id) => *id,
                         SeekEntry::Native(_, id) => id,
+                        SeekEntry::Ranked(row) => &row.id,
                     };
                     cancellation.check()?;
                     if page.is_full() {
@@ -448,6 +514,19 @@ impl QueryIndexes {
                                 return Ok(None);
                             }
                             let expected = match &entry {
+                                SeekEntry::Ranked(selected) => {
+                                    if crate::ranked_record_digest(
+                                        &index.fields,
+                                        crate::Record::Live(row),
+                                    )? != selected.digest
+                                    {
+                                        return Err(Error::new(
+                                            ErrorCode::Corruption,
+                                            "ranked compound owner differs from projected document",
+                                        ));
+                                    }
+                                    None
+                                }
                                 SeekEntry::Resident(key, _) => Some(*key),
                                 SeekEntry::Native(key, _) => {
                                     if crate::ordered_record_tuple(
@@ -574,6 +653,7 @@ impl WideRows {
 enum SeekEntry<'a> {
     Resident(&'a [Scalar], &'a str),
     Native(Vec<u8>, String),
+    Ranked(crate::RankedOwner),
 }
 fn bytes_bound(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
     bound.as_ref().map(Vec::as_slice)

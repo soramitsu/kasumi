@@ -140,6 +140,93 @@ pub fn ordered_record_tuple(fields: &[IndexField], record: Record<'_>) -> Result
     Ok(Some(result))
 }
 
+/// Immutable full-order checkpoint rows carry an ordinal, a complete typed
+/// tuple digest and the ID of the document that owns its original values.
+#[derive(Debug)]
+pub struct RankedOwner {
+    pub rank: u64,
+    pub digest: [u8; 32],
+    pub id: String,
+}
+
+pub enum RankedCompound<'a> {
+    Count(u64),
+    Owner {
+        rank: u64,
+        digest: [u8; 32],
+        id: &'a str,
+    },
+}
+pub(crate) fn ranked_bound(
+    bound: &std::ops::Bound<Vec<Scalar>>,
+) -> std::ops::Bound<Vec<FieldValue<'_>>> {
+    bound.as_ref().map(|parts| {
+        parts
+            .iter()
+            .map(|part| {
+                if *part == Scalar::UpperBound {
+                    FieldValue {
+                        tag: 6,
+                        bytes: std::borrow::Cow::Borrowed(&[]),
+                    }
+                } else {
+                    FieldValue::from_scalar(part)
+                }
+            })
+            .collect()
+    })
+}
+
+fn tuple_digest<'a>(parts: impl IntoIterator<Item = Result<FieldValue<'a>>>) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"kasumi.checkpoint.ranked.compound.v1");
+    for part in parts {
+        let part = part?;
+        hash.update([part.tag]);
+        hash.update((part.bytes.len() as u64).to_be_bytes());
+        hash.update(&part.bytes);
+    }
+    Ok(hash.finalize().into())
+}
+
+pub(crate) fn ranked_scalar_digest(tuple: &[Scalar]) -> [u8; 32] {
+    tuple_digest(tuple.iter().map(|part| Ok(FieldValue::from_scalar(part))))
+        .expect("immutable scalar encoding")
+}
+
+fn ranked_component<'a>(field: &IndexField, record: Record<'a>) -> Result<FieldValue<'a>> {
+    let raw = record_value(record, &field.path).ok_or_else(|| {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "ranked tuple field absent from document",
+        )
+    })?;
+    FieldValue::predicate(raw, field.kind)
+}
+
+pub fn ranked_record_digest(fields: &[IndexField], record: Record<'_>) -> Result<[u8; 32]> {
+    tuple_digest(fields.iter().map(|field| ranked_component(field, record)))
+}
+
+pub(crate) fn compare_ranked_record(
+    fields: &[IndexField],
+    record: Record<'_>,
+    target: &[FieldValue<'_>],
+) -> Result<std::cmp::Ordering> {
+    for (field, limit) in fields.iter().zip(target) {
+        let value = ranked_component(field, record)?;
+        let order = value
+            .tag
+            .cmp(&limit.tag)
+            .then_with(|| value.bytes.cmp(&limit.bytes));
+        if !order.is_eq() {
+            return Ok(order);
+        }
+    }
+    Ok(fields.len().cmp(&target.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

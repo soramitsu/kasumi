@@ -25,7 +25,8 @@ pub use allocation::{
 };
 mod ordered_tuple;
 pub use ordered_tuple::{
-    MAX_ORDERED_TUPLE_BYTES, ORDERED_TUPLE_WINDOW, OrderedTupleWindow, ordered_record_tuple,
+    MAX_ORDERED_TUPLE_BYTES, ORDERED_TUPLE_WINDOW, OrderedTupleWindow, RankedCompound, RankedOwner,
+    ordered_record_tuple, ranked_record_digest,
 };
 mod page;
 use page::PageWriter;
