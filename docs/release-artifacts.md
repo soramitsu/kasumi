@@ -299,6 +299,9 @@ Use a plan with schema `kasumi-systemd-smoke-v1`, `data_client` set to the
 absolute installed Control profile for the data service, and `authority_client`
 set to its installed authority maintenance client. Its enrolled authority peers
 must provide quorum throughout the smoke.
+The account running the smoke must own its client profiles, private keys and
+bearer files with owner-only permissions. The service accounts retain their
+own runtime files.
 
 ```sh
 python3 -I -B -S scripts/run_systemd_smoke.py --evidence "$functional" \

@@ -1,4 +1,6 @@
 """Native service-manager observations for the two delivered Kasumi units."""
+from contextlib import contextmanager
+import ctypes
 import hashlib
 import os
 from pathlib import Path
@@ -20,6 +22,36 @@ PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "Type", "User", "Gro
 
 def unit(role):
     return ROLES[role][0] + ".service"
+
+
+@contextmanager
+def hold_unit(role):
+    """Keep PID 1's original unit object and its main exit status through stop."""
+    lib = ctypes.CDLL("libsystemd.so.0")
+    bus = ctypes.c_void_p()
+    lib.sd_bus_open_system.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    lib.sd_bus_call_method.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p,
+    ]
+    lib.sd_bus_flush_close_unref.argtypes = [ctypes.c_void_p]
+    lib.sd_bus_flush_close_unref.restype = ctypes.c_void_p
+
+    def checked(rc):
+        if rc < 0:
+            raise OSError(-rc, os.strerror(-rc))
+
+    checked(lib.sd_bus_open_system(ctypes.byref(bus)))
+    try:
+        checked(lib.sd_bus_call_method(
+            bus, b"org.freedesktop.systemd1", b"/org/freedesktop/systemd1",
+            b"org.freedesktop.systemd1.Manager", b"RefUnit", None, None, b"s",
+            ctypes.c_char_p(unit(role).encode("ascii")),
+        ))
+        yield
+    finally:
+        # PID 1 releases every RefUnit owned by this connection on disconnect.
+        lib.sd_bus_flush_close_unref(bus)
 
 
 def program(role):

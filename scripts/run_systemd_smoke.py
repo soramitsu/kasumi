@@ -226,8 +226,9 @@ def execute(run, pack, units, plan_file):
                 previous[role] = current
             for role in reversed(sd.ROLES):
                 identity,show,proc = previous[role]
-                run.command("stop-"+role,manager_command(c,role,"stop"),600)
-                after = sd.properties(run.command("stopped-"+role,manager_command(c,role,"show"),60).read_text())
+                with sd.hold_unit(role):
+                    run.command("stop-"+role,manager_command(c,role,"stop"),600)
+                    after = sd.properties(run.command("stopped-"+role,manager_command(c,role,"show"),60).read_text())
                 dead = owned.read(run.command("drained-"+role,[*c["helper"],"gone",str(identity[1][0]),str(identity[1][1]),show["ControlGroup"]],
                                               60,scenario="clean-stop"))
                 sd.stopped(role,after,dead,proc)
