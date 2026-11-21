@@ -265,6 +265,53 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn distinct_fields_share_new_singleton_owners_and_split_on_later_writes() {
+    fn rows(values: &[(&str, u32, u32)]) -> Rows {
+        let values: Vec<_> = values
+            .iter()
+            .map(|&(id, serial, amount)| {
+                (id, serde_json::json!({"serial": serial, "amount": amount}))
+            })
+            .collect();
+        let mut rows = Rows::new("docs", &values, false, false);
+        rows.definition.indexes.push(IndexDefinition {
+            name: "ledger".into(),
+            fields: ["/serial", "/amount"]
+                .map(|path| IndexField {
+                    path: path.into(),
+                    kind: ScalarType::Number,
+                })
+                .into(),
+            unique: false,
+            text: None,
+        });
+        rows
+    }
+    fn posting<'a>(indexes: &'a QueryIndexes, field: &str, id: &str) -> &'a structured::IdSet {
+        indexes.collections["docs"].structured.fields[field]
+            .entries
+            .values()
+            .find(|ids| ids.contains(id))
+            .unwrap()
+    }
+    let old = rows(&[("a", 1, 10), ("b", 2, 20), ("c", 3, 30)]);
+    let new = rows(&[("a", 1, 10), ("b", 2, 30), ("c", 3, 30), ("d", 4, 40)]);
+    let first = QueryIndexes::build([&old]).unwrap();
+    let second = update(&first, Changes::new(&old, &new, &first, &["b", "d"])).unwrap();
+    assert!(posting(&first, "/serial", "b").ptr_eq(posting(&first, "/amount", "b")));
+    assert!(posting(&second, "/serial", "d").ptr_eq(posting(&second, "/amount", "d")));
+    assert_eq!(posting(&first, "/amount", "b").len(), 1);
+    assert_eq!(posting(&second, "/serial", "b").len(), 1);
+    assert_eq!(
+        posting(&second, "/amount", "b")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["b", "c"]
+    );
+}
+
+#[test]
 fn a_late_array_change_keeps_every_prior_id_in_the_original_posting() {
     let names: Vec<_> = (0..98).map(|i| format!("id_{i:03}")).collect();
     let values: Vec<_> = names
