@@ -143,6 +143,33 @@ def commands(inputs, source, suites, archives):
             *dependency_matrix.steps(cargo, source, suites, JOBS)]
 
 
+def split_doctest_results(stdout, rows):
+    """Rustdoc can run merged examples and standalone compile-fail examples separately."""
+    if not re.search(r"^all doctests ran in \S+; merged doctests compilation took \S+\s*\Z",
+                     stdout, re.M):
+        return False
+    groups = list(re.finditer(r"^running (\d+) tests?$", stdout, re.M))
+    if len(groups) != len(rows):
+        return False
+    names = set()
+    for index, (start, row) in enumerate(zip(groups, rows)):
+        end = groups[index + 1].start() if index + 1 < len(groups) else len(stdout)
+        group = stdout[start.end():end]
+        summaries = list(RUST_RESULT.finditer(group))
+        if len(summaries) != 1 or summaries[0].groups() != row:
+            return False
+        cases = TEST_VERDICT.findall(group[:summaries[0].start()])
+        verdicts = [verdict for _, verdict in cases]
+        if (len(cases) != int(start[1]) or int(row[4]) or int(row[5])
+                or [verdicts.count(v) for v in ("ok", "FAILED", "ignored")] != list(map(int, row[1:4]))):
+            return False
+        for name, _ in cases:
+            if name in names:
+                return False
+            names.add(name)
+    return True
+
+
 def parse_counts(kind, stdout, stderr, expected_packages, *, rust_mode=None, launches=None,
                  expected_output=None):
     combined = stdout + "\n" + stderr
@@ -179,7 +206,10 @@ def parse_counts(kind, stdout, stderr, expected_packages, *, rust_mode=None, lau
                 totals["failed"] += 1
         # A matrix command names its test executables; a target Cargo skipped
         # (for example over a missing required feature) is an incomplete run.
-        totals["complete"] = (bool(rows) and len(rows) == len(observed) and not unexpected
+        matched = len(rows) == len(observed)
+        if rust_mode == "doc" and len(doctests) == 1 and len(rows) > 1:
+            matched = split_doctest_results(stdout, rows)
+        totals["complete"] = (bool(rows) and matched and not unexpected
                               and type(launches) is int and len(observed) == launches
                               and all((status == "ok") == (int(failed) == 0)
                                       for status, _, failed, _, _, _ in rows))
