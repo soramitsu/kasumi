@@ -145,6 +145,53 @@ def check_completed_backup(command, created, checkpoint, outputs, profile):
                                             path.parent, tenant=profile["tenant"], checkpoint_name=path.name)
 
 
+def membership_commands(commands, retain):
+    """Execute the same typed request bytes that will be replayed from custody."""
+    bound, requests = [], []
+    for index, command in enumerate(commands):
+        require(len(command) == 5 and command[1] in ("--config", "--profile"),
+                "soak membership requires an installed administrative client and one request")
+        original_path, request = retain(f"membership-request-{index}", command[4])
+        bound.append([*command[:4], str(original_path)])
+        requests.append(request)
+    return bound, requests
+
+
+def membership_completed(commands, requests, replies):
+    issued = set()
+    in_progress = set()
+    for command, request, reply in zip(commands, requests, replies, strict=True):
+        if command[3] == "manage":
+            action = request.get("operation")
+            if action == "add_learner" and type(reply.get("caught_up")) is int and (
+                    reply["caught_up"] == request["node_id"] > 0):
+                return
+            if action == "change_membership" and reply.get("changed") is True:
+                return
+            if action in ("publish_membership", "publish_data_membership") and reply.get("published") is True:
+                return
+        elif reply.get("kind") == "operation":
+            status = reply["status"]
+            committed = status["command"]
+            if committed["action"]["kind"] not in ("enroll_learner", "replace_voters", "revoke_member"):
+                continue
+            op = committed["operation_id"]
+            if request["kind"] == "start" and request["command"] == committed:
+                issued.add(op)
+            elif request["kind"] in ("resume", "status") and request["operation_id"] == op:
+                if request["kind"] == "resume" and op in in_progress:
+                    issued.add(op)
+            else:
+                continue
+            if status["phase"].get("kind") in ("prepared", "dispatched", "draining"):
+                in_progress.add(op)
+                if request["kind"] == "resume":
+                    issued.add(op)
+            if op in issued and status["phase"] == {"kind": "completed"}:
+                return
+    raise ValueError("soak membership maintenance did not complete a membership operation")
+
+
 def absolute(value, label, installed):
     require(isinstance(value, str) and Path(value).is_absolute() and os.path.normpath(value) == value,
             label + " is not a canonical path")
@@ -161,7 +208,7 @@ def plan_command(binaries, kind, step):
             and all(isinstance(argument, str) for argument in arguments),
             "soak maintenance step is malformed")
     # kasumictl names its client file before the operation.
-    words = arguments[2:] if binary == "kasumictl" and arguments[0] == "--config" else arguments
+    words = arguments[2:] if binary == "kasumictl" and arguments[0] in ("--config", "--profile") else arguments
     require(any(binary == family and tuple(words[:len(prefix)]) == prefix
                 for family, prefix in MAINTENANCE[kind][1]),
             "soak " + kind + " step is outside its product command family")
@@ -333,6 +380,13 @@ def execute(run, parameters, topology_path, plan_path, pause):
     plan = owned.read(plan_file)
     maintenance = check_plan(plan, binaries)
     create = backup_creation(maintenance)
+
+    def retain_request(name, path):
+        retained = run.configuration(name, path)
+        return retained, owned.read(retained)
+
+    membership = "membership-maintenance"
+    maintenance[membership], member_requests = membership_commands(maintenance[membership], retain_request)
     profile = run.configuration("soak-profile", plan["profile"])
     profile_sha256 = hashlib.sha256(profile.read_bytes()).hexdigest()
     admitted = topology.inspect(Path(topology_path).resolve(strict=True), run.environment)
@@ -411,6 +465,7 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 _, kind = pending.pop(0)
                 started = workload.elapsed()
                 steps = []
+                member_replies = []
                 for index, command in enumerate(maintenance[kind]):
                     if command == create:
                         checkpoint = Path(create[5])
@@ -419,6 +474,8 @@ def execute(run, parameters, topology_path, plan_path, pause):
                                 "soak backup checkpoint or its original journal already exists")
                     steps.append(f"{kind}-{index}")
                     output = run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                    if kind == membership:
+                        member_replies.append(owned.read(output))
                     if command == create:
                         created = owned.read(output)
                         saved = run.configuration("soak-checkpoint", create[5])
@@ -428,6 +485,8 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 if kind == "archival":
                     result = run.command("archive-progress", archive_command, REPLY_SECONDS)
                     archive_progress(original_archive, owned.read(result))
+                if kind == membership:
+                    membership_completed(maintenance[kind], member_requests, member_replies)
                 events[kind] = {"id": kind, "elapsed_seconds": started,
                                 "finished_elapsed_seconds": workload.elapsed(), "steps": steps}
             elif now >= rotation and now < duration - interval:
@@ -548,15 +607,16 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 for item in report["configurations"]}
     admission = acceptance.json_reference(custody, details["admission"])
     nodes = admission["nodes"]
+    plan = acceptance.read_json(retained["soak-plan"])
+    request_ids = [f"membership-request-{i}" for i in range(len(plan["maintenance"]["membership-maintenance"]))]
     topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and set(retained) == {
                 "soak-plan", "soak-profile", "soak-checkpoint", "ha-topology",
-                *("node-" + node["id"] for node in nodes)}
+                *("node-" + node["id"] for node in nodes), *request_ids}
             and admission["plan_sha256"] == acceptance.sha256(retained["ha-topology"])
             and acceptance.read_json(retained["ha-topology"])["nodes"] == [
                 {key: node[key] for key in ("id", "role", "group", "config")} for node in nodes],
             "soak run retained another topology or configuration roster")
-    plan = acceptance.read_json(retained["soak-plan"])
     phases = details["phases"]
     owned.exact(phases, {"measured", "drain"}, "soak phases")
     measured = acceptance.number(phases["drain"], "drain start") - \
@@ -628,6 +688,13 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
             "soak heartbeats differ from the recomputed raw workload")
     # Maintenance: the plan's exact candidate commands, inside the interval.
     commands = check_plan(plan, paths, installed=False)
+
+    def original_request(name, _path):
+        reference = next(item["file"] for item in report["configurations"] if item["id"] == name)
+        return Path(report["custody_root"]) / reference["path"], owned.read(retained[name])
+
+    membership = "membership-maintenance"
+    commands[membership], member_requests = membership_commands(commands[membership], original_request)
     archive_command = archive_observer(commands)
     for step in ("archive-baseline", "archive-progress"):
         require(receipts[step]["exit_code"] == 0
@@ -679,6 +746,9 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 verified[op] = acceptance.json_reference(custody, logs[step])
             check_completed_backup(create, created, owned.read(retained["soak-checkpoint"]), verified,
                                    owned.read(retained["soak-profile"]))
+        if kind == membership:
+            membership_completed(expected, member_requests,
+                                 [acceptance.json_reference(custody, logs[step]) for step in observed])
         first = next(item for item in domain["processes"] if item["id"] == observed[0])
         events.append({"id": kind, "elapsed_seconds": event["elapsed_seconds"],
                        "log": first["log"]})

@@ -93,6 +93,11 @@ if args[:1] == ["backup"]:
                   "source_purpose_sha256": "5" * 64}
     print(json.dumps(result))
     sys.exit(0)
+if args[2:3] == ["manage"]:
+    request = json.loads(Path(args[3]).read_bytes())
+    if request.get("operation") == "add_learner":
+        print(json.dumps({"caught_up": request["node_id"]}))
+        sys.exit(0)
 print(json.dumps({"ok": True, "argv": args}))
 sys.exit(behavior.get("fail", {}).get(args[0], 0))
 '''
@@ -185,6 +190,7 @@ class DomainFixture(unittest.TestCase):
             if name != "checkpoint.json":
                 files[name].write_text(json.dumps({"synthetic": name, "tenant": "soak",
                     "resource": {"kind": "database", "incarnation": "3ad0e88d-9fa6-409c-8f3b-9466d09ab023"}}))
+        files["manage.json"].write_text(json.dumps({"operation": "add_learner", "node_id": 10}))
         self.soak_plan = installed / "soak-plan.json"
         self.soak_plan.write_text(json.dumps({
             "schema": soak.PLAN_SCHEMA, "profile": str(files["default-profile.json"]),
@@ -530,6 +536,26 @@ class SoakTests(DomainFixture):
         commands = {"backup": [["/candidate/kasumid", "backup", "status", "/admin", "object", "session"]]}
         with self.assertRaisesRegex(ValueError, "original checkpoint creation"):
             soak.backup_creation(commands)
+
+    def test_soak_membership_matches_the_typed_request_with_its_original_outcome(self):
+        data = [["/kasumictl", "--profile", "/admin", "manage", "/request"]]
+        action = {"operation": "add_learner", "node_id": 10}
+        soak.membership_completed(data, [action], [{"caught_up": 10}])
+        for request, reply in ((action, {"caught_up": 9}), ({"operation": "status"}, {"caught_up": 10})):
+            with self.assertRaisesRegex(ValueError, "did not complete"):
+                soak.membership_completed(data, [request], [reply])
+        authority = [["/kasumictl", "--config", "/admin", "authority-maintenance", "/request"]]
+        op = str(uuid.uuid4())
+        command = {"operation_id": op, "action": {"kind": "replace_voters", "voters": [1, 2, 4]}}
+        def result(phase):
+            return {"kind": "operation", "status": {"command": command, "phase": {"kind": phase}}}
+        status = {"kind": "status", "operation_id": op}
+        resume = {"kind": "resume", "operation_id": op}
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            soak.membership_completed(authority, [status], [result("completed")])
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            soak.membership_completed(authority, [resume], [result("completed")])
+        soak.membership_completed(authority * 2, [status, resume], [result("dispatched"), result("completed")])
 
     def test_heartbeats_count_only_replies_received_before_each_second(self):
         rows = [{"received_elapsed_seconds": second, "verdict": verdict}
