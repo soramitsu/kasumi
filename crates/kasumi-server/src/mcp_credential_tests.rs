@@ -1192,7 +1192,7 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
             .await;
     }
     let query = json!({"collection":"docs", "allow_scan":true, "limit":1000});
-    let request: kasumi_types::QueryRequest = serde_json::from_value(query.clone()).unwrap();
+    let baseline_query: kasumi_types::QueryRequest = serde_json::from_value(query.clone()).unwrap();
     // Establish the independent baseline before installing the MCP charge hook.
     // A read that expired without releasing a page has no baseline to measure.
     let until = tokio::time::Instant::now() + Duration::from_secs(300);
@@ -1200,7 +1200,7 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
         let before = fixture.admission.snapshot().reserved_bytes;
         match fixture
             .database
-            .query(&Fixture::context(), request.clone())
+            .query(&Fixture::context(), baseline_query.clone())
             .await
         {
             Err(error)
