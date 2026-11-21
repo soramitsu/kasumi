@@ -122,8 +122,8 @@ pub(crate) fn validate_data_only(
     ensure!(
         config.mode == DeploymentMode::Replicated
             && config.control.is_none()
-            && !config.tenants.is_empty(),
-        "remote Control access requires a replicated data-only node with local tenants"
+            && config.hosts_data_or_recovery_target(),
+        "remote Control access requires replicated data storage or an enrolled recovery target"
     );
     if let Some(reader) = &remote.catalog_reader {
         for (tenant, incarnation) in &reader.groups {

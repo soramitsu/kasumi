@@ -385,6 +385,10 @@ pub(crate) fn recover_original_retirement(
 }
 
 impl RuntimeConfig {
+    pub(crate) fn hosts_data_or_recovery_target(&self) -> bool {
+        !self.tenants.is_empty() || self.target_recovery.is_some()
+    }
+
     /// Explicit first HA node enrollment. All local catalogs and immutable
     /// genesis are installed under the original captured serving grants.
     pub async fn provision_node(&self) -> Result<()> {
@@ -478,7 +482,7 @@ impl RuntimeConfig {
             .as_ref()
             .is_some_and(|control| control.remote_data.is_some());
         ensure!(
-            (!self.tenants.is_empty() || self.target_recovery.is_some() || dedicated_control)
+            (self.hosts_data_or_recovery_target() || dedicated_control)
                 && self.tenants.len() <= 10_000,
             "configure at most 10000 tenants and an explicit role for a node with no tenants"
         );
