@@ -13,11 +13,13 @@ fn limits() -> BodyLimits {
 }
 
 fn encode(body: &Value, blobs: &mut HashMap<[u8; 32], Vec<u8>>) -> BodyManifest {
-    encode_body(body, limits(), |reference, bytes| {
-        if let Some(existing) = blobs.get(&reference.sha256) {
+    encode_body(body, limits(), |object| {
+        let bytes = object.bytes();
+        assert_eq!(object.digest(), <[u8; 32]>::from(Sha256::digest(bytes)));
+        if let Some(existing) = blobs.get(&object.digest()) {
             ensure!(existing == bytes, "immutable blob collision");
         } else {
-            blobs.insert(reference.sha256, bytes.to_vec());
+            blobs.insert(object.digest(), bytes.to_vec());
         }
         Ok(())
     })
@@ -123,7 +125,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 canonical_bytes: 50,
                 ..limits()
             },
-            |_, _| {
+            |_| {
                 called += 1;
                 Ok(())
             }
@@ -138,7 +140,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 fragments: 1,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -149,7 +151,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 blobs: 0,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -160,7 +162,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 depth: 1,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -171,7 +173,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 manifest_bytes: 10,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -278,7 +280,7 @@ fn missing_corrupt_truncated_and_reordered_chunks_are_rejected() {
 fn publication_is_impossible_when_blob_sink_fails() {
     let body = json!({"proof": hex::encode(vec![19; BLOB_CHUNK_BYTES * 3])});
     let mut puts = 0;
-    let result = encode_body(&body, limits(), |_, _| {
+    let result = encode_body(&body, limits(), |_| {
         puts += 1;
         if puts == 2 {
             bail!("injected native write failure");

@@ -32,6 +32,30 @@ pub(crate) struct BodyLimits {
     pub depth: usize,
 }
 
+/// A freshly encoded object and the SHA-256 of those exact borrowed bytes.
+/// Decoded manifests and references cannot construct one from a claimed digest.
+#[derive(Clone, Copy)]
+pub(crate) struct EncodedObject<'a> {
+    bytes: &'a [u8],
+    digest: [u8; 32],
+}
+impl<'a> EncodedObject<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            digest: Sha256::digest(bytes).into(),
+        }
+    }
+
+    pub(crate) fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(crate) fn digest(self) -> [u8; 32] {
+        self.digest
+    }
+}
+
 /// This digest is a content identity, not a complete physical storage key.
 /// The enclosing native namespace must additionally bind tenant/incarnation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -113,7 +137,7 @@ struct Encoder<'a, F> {
     blobs: usize,
     put: &'a mut F,
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Encoder<'_, F> {
     fn json_inline<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
         serde_json::to_writer(InlineWriter(self), value)?;
         Ok(())
@@ -150,11 +174,12 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
             "document blob limit exceeded"
         );
         chunks.try_reserve(1)?;
+        let object = EncodedObject::new(bytes);
         let reference = BlobReference {
-            sha256: Sha256::digest(bytes).into(),
+            sha256: object.digest(),
             bytes: bytes.len() as u64,
         };
-        (self.put)(&reference, bytes)?;
+        (self.put)(object)?;
         chunks.push(reference);
         self.blobs += 1;
         Ok(())
@@ -249,7 +274,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
 }
 
 struct InlineWriter<'a, 'b, F>(&'a mut Encoder<'b, F>);
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Write for InlineWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Write for InlineWriter<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.inline(bytes).map_err(io::Error::other)?;
         Ok(bytes.len())
@@ -266,7 +291,7 @@ struct ChunkWriter<'a, 'b, F> {
     chunks: &'a mut Vec<BlobReference>,
     pending: Vec<u8>,
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> ChunkWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> ChunkWriter<'_, '_, F> {
     fn finish(&mut self) -> Result<()> {
         if !self.pending.is_empty() {
             self.encoder.put_chunk(&self.pending, self.chunks)?;
@@ -275,7 +300,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> ChunkWriter<'_, '_, F> {
         Ok(())
     }
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Write for ChunkWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Write for ChunkWriter<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -327,7 +352,7 @@ fn classify(string: &str) -> Encoding {
 pub(crate) fn encode_body(
     body: &Value,
     limits: BodyLimits,
-    mut put: impl FnMut(&BlobReference, &[u8]) -> Result<()>,
+    mut put: impl FnMut(EncodedObject<'_>) -> Result<()>,
 ) -> Result<BodyManifest> {
     let mut encoder = Encoder {
         limits,

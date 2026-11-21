@@ -95,7 +95,7 @@ impl<'a> DocumentMeasurement<'a> {
     pub(crate) fn descriptor(
         &self,
         manifest: &BodyManifest,
-        wire: &[u8],
+        object: document_encoding::EncodedObject<'_>,
     ) -> Result<StoredDocument> {
         // encode_body independently hashes its emitted canonical spelling.
         // Never substitute a manifest's declared identity for input validation.
@@ -104,13 +104,14 @@ impl<'a> DocumentMeasurement<'a> {
                 && self.body_sha256 == manifest.canonical_sha256,
             "document encoding differs from canonical body"
         );
+        let wire = object.bytes();
         let descriptor = StoredDocument {
             id: self.document.id.clone(),
             version: self.document.version,
             body_bytes: self.body_bytes,
             document_bytes: self.document_bytes,
             body_sha256: self.body_sha256,
-            body_object: Sha256::digest(wire).into(),
+            body_object: object.digest(),
             body_object_bytes: wire.len() as u64,
             body_decode_work: self.body_work,
             body_manifest_work: crate::snapshot_codec::inspect_external_json_work(
@@ -238,17 +239,17 @@ impl PreparedDocuments {
         let collecting = self.collector.is_some();
         // At most `limits.blobs` digests, within this document's workspace.
         let mut blobs = Vec::new();
-        let manifest =
-            document_encoding::encode_body(&document.body, limits, |reference, bytes| {
-                if collecting {
-                    blobs.try_reserve(1)?;
-                    blobs.push(reference.sha256);
-                }
-                self.put(false, reference.sha256, bytes, work)
-            })?;
+        let manifest = document_encoding::encode_body(&document.body, limits, |object| {
+            if collecting {
+                blobs.try_reserve(1)?;
+                blobs.push(object.digest());
+            }
+            self.put(false, object, work)
+        })?;
         let wire = manifest.to_bytes(limits)?;
-        let descriptor = measured.descriptor(&manifest, &wire)?;
-        self.put(true, descriptor.body_object, &wire, work)?;
+        let object = document_encoding::EncodedObject::new(&wire);
+        let descriptor = measured.descriptor(&manifest, object)?;
+        self.put(true, object, work)?;
         drop(wire);
         drop(manifest);
         self.reservation.retain(self.retained);
@@ -259,11 +260,14 @@ impl PreparedDocuments {
         }
         Ok(descriptor)
     }
-    fn put(&mut self, body: bool, digest: [u8; 32], bytes: &[u8], work: u64) -> Result<()> {
-        ensure!(
-            Sha256::digest(bytes).as_slice() == digest,
-            "document object digest differs"
-        );
+    fn put(
+        &mut self,
+        body: bool,
+        object: document_encoding::EncodedObject<'_>,
+        work: u64,
+    ) -> Result<()> {
+        let digest = object.digest();
+        let bytes = object.bytes();
         if let Some(index) = self.seen.get(&(body, digest)) {
             let WriteOp::Put { value, .. } = &self.writes[*index] else {
                 unreachable!()

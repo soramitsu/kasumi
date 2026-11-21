@@ -614,22 +614,20 @@ impl Builder {
             .memory()
             .clone()
             .reserve_document_decode(work)?;
-        let manifest =
-            document_encoding::encode_body(&document.body, limits, |reference, bytes| {
-                self.put(false, reference.sha256, bytes)
-            })?;
+        let manifest = document_encoding::encode_body(&document.body, limits, |object| {
+            self.put(false, object)
+        })?;
         let wire = manifest.to_bytes(limits)?;
-        let descriptor = measured.descriptor(&manifest, &wire)?;
-        self.put(true, descriptor.body_object, &wire)?;
+        let object = document_encoding::EncodedObject::new(&wire);
+        let descriptor = measured.descriptor(&manifest, object)?;
+        self.put(true, object)?;
         self.failed = false;
         Ok(descriptor)
     }
 
-    fn put(&mut self, body: bool, digest: [u8; 32], bytes: &[u8]) -> Result<()> {
-        ensure!(
-            <[u8; 32]>::from(Sha256::digest(bytes)) == digest,
-            "document restore object digest differs"
-        );
+    fn put(&mut self, body: bool, object: document_encoding::EncodedObject<'_>) -> Result<()> {
+        let digest = object.digest();
+        let bytes = object.bytes();
         let key = self.tables.scope.key(digest);
         let backing = self.tables.backing.as_ref().expect("builder table backing");
         let (table, batch) = if body {
@@ -1644,7 +1642,7 @@ mod workspace_tests {
                     .unwrap();
             let limits = limits(body_bytes).unwrap();
             let manifest =
-                document_encoding::encode_body(&document.body, limits, |_, _| Ok(())).unwrap();
+                document_encoding::encode_body(&document.body, limits, |_| Ok(())).unwrap();
             let wire = manifest.to_bytes(limits).unwrap();
             let manifest_work =
                 crate::snapshot_codec::inspect_external_json_work(&wire, &mut || Ok(())).unwrap();
