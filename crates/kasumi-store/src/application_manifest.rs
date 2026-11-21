@@ -25,6 +25,8 @@ pub const FIELD_VALUES_LAYOUT: u32 = 3;
 pub const DOCUMENT_HEADERS_LAYOUT: u32 = 4;
 /// Adds canonical compound tuple keys after the document headers.
 pub const ORDERED_TUPLE_LAYOUT: u32 = 5;
+/// Adds sorted document owners for compound keys that can exceed the page key limit.
+pub const RANKED_COMPOUND_LAYOUT: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +67,7 @@ impl ApplicationManifest {
             revision,
             revision_base,
             snapshot_sha256,
-            layout_epoch: ORDERED_TUPLE_LAYOUT,
+            layout_epoch: RANKED_COMPOUND_LAYOUT,
             page_space: page_space.into(),
             records,
             document_count,
@@ -89,7 +91,7 @@ impl ApplicationManifest {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.format == FORMAT && (1..=ORDERED_TUPLE_LAYOUT).contains(&self.layout_epoch),
+            self.format == FORMAT && (1..=RANKED_COMPOUND_LAYOUT).contains(&self.layout_epoch),
             "unsupported application manifest format"
         );
         ensure!(

@@ -131,6 +131,30 @@ fn corruption(message: &'static str) -> Error {
 }
 
 impl GenerationDocumentSource<'_> {
+    fn with_ranked_compounds<T>(
+        &self,
+        cancel: &QueryCancellation,
+        read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> anyhow::Result<T>,
+    ) -> ReadResult<Option<T>, DocumentSourceFailure> {
+        self.check_deadline()?;
+        cancel.check()?;
+        let Some(selected) = self.generation.application_selection.get() else {
+            return Ok(None);
+        };
+        let result = selected
+            .with_checkpoint_tuples_since(
+                self.directory_reader(),
+                &self.generation.state,
+                std::iter::once(self.collection.as_str()),
+                kasumi_store::application_manifest::RANKED_COMPOUND_LAYOUT,
+                read,
+            )
+            .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+        self.check_deadline()?;
+        cancel.check()?;
+        Ok(result)
+    }
+
     fn collection(&self) -> &CollectionState {
         // The source retains this immutable allocation. No later engine
         // publication or hydration view can remove its validated collection.
@@ -413,6 +437,36 @@ impl DocumentSource for GenerationDocumentSource<'_> {
 
     fn has_ordered_unique_source(&self) -> bool {
         self.generation.application_selection.get().is_some()
+    }
+    fn ranked_compound_count(
+        &self,
+        index: usize,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<u64>, Self::Failure> {
+        self.with_ranked_compounds(cancel, |tree| {
+            crate::application_structured::ranked::count(tree, &self.collection, index)
+        })
+        .map(Option::flatten)
+    }
+    fn ranked_compound_window(
+        &self,
+        index: usize,
+        start: u64,
+        end: u64,
+        descending: bool,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<Vec<kasumi_query::RankedOwner>>, Self::Failure> {
+        self.with_ranked_compounds(cancel, |tree| {
+            crate::application_structured::ranked::window(
+                tree,
+                &self.collection,
+                index,
+                start,
+                end,
+                descending,
+                || Ok(()),
+            )
+        })
     }
     fn ordered_unique_window(
         &self,

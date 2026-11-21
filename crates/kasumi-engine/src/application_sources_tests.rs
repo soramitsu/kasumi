@@ -1487,7 +1487,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
         request_id: "snapshot-primary-point".into(),
     };
-    let body = serde_json::json!({"value": "persisted", "nil": null, "empty": []});
+    let body = serde_json::json!({"value": "persisted", "nil": null, "empty": [], "wide": format!("g{}", "w".repeat(1050))});
     source_db
         .administer(
             context.clone(),
@@ -1512,18 +1512,25 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     unique: name == "value",
                     text: None,
                 })
-                .chain([kasumi_types::IndexDefinition {
-                    name: "nil_value".into(),
-                    text: None,
-                    unique: true,
-                    fields: ["/nil", "/value"]
-                        .into_iter()
-                        .map(|path| kasumi_types::IndexField {
-                            path: path.into(),
-                            kind: kasumi_types::ScalarType::String,
-                        })
-                        .collect(),
-                }])
+                .chain(
+                    [
+                        ("nil_value", ["/nil", "/value"]),
+                        ("wide_value", ["/wide", "/value"]),
+                    ]
+                    .into_iter()
+                    .map(|(name, paths)| kasumi_types::IndexDefinition {
+                        name: name.into(),
+                        text: None,
+                        unique: true,
+                        fields: paths
+                            .into_iter()
+                            .map(|path| kasumi_types::IndexField {
+                                path: path.into(),
+                                kind: kasumi_types::ScalarType::String,
+                            })
+                            .collect(),
+                    }),
+                )
                 .collect(),
                 strict_read_audit: false,
             }),
@@ -1535,7 +1542,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             kasumi_types::MutationBatch::new().upsert("docs", "point", body.clone()),
         )
         .await?;
-    let second_body = serde_json::json!({"value": "zulu"});
+    let second_body = serde_json::json!({"value": "zulu", "wide":"g"});
     source_db
         .mutate(
             context.clone(),
@@ -1566,7 +1573,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
         );
-        // Four presence rows, seven scalar postings and one complete compound tuple.
+        // Six presence rows, nine scalar postings, one long scalar and two short compound tuples.
         assert_eq!(
             selection.with_structured_records(
                 None,
@@ -1574,7 +1581,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || ordinary.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(12)
+            Some(18)
         );
         let docs = ordinary.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
@@ -1694,7 +1701,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || ordinary.indexes.structured_layout_sha256(),
                     |tree| Ok(tree.root().count())
                 )?,
-                Some(12)
+                Some(18)
             );
         }
     }
@@ -1740,7 +1747,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                         || current.indexes.structured_layout_sha256(),
                         |t| Ok(t.root().count()),
                     )?
-                    == Some(12)
+                    == Some(18)
                 {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -1759,7 +1766,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || retained.indexes.structured_layout_sha256(),
                     |t| Ok(t.root().count())
                 )?,
-            Some(12)
+            Some(18)
         );
     }
     let expected = source_db
@@ -1899,6 +1906,60 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .physical_seek_view("docs", |_| Ok(true))?
         .expect("reopened seek worker projection");
     compound_seek(&Arc::new(physical), &target.storage.admission)?;
+    {
+        use kasumi_query::DocumentSource as _;
+        let cancel = kasumi_query::QueryCancellation::default();
+        let docs = reopened.document_source("docs")?;
+        assert_eq!(docs.ranked_compound_count(1, &cancel)?, Some(2));
+        assert!(docs.ranked_compound_count(0, &cancel)?.is_none());
+        let physical = docs
+            .ranked_compound_window(1, 0, 2, false, &cancel)?
+            .unwrap();
+        assert_eq!(
+            physical
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "point"]
+        );
+        for desc in [false, true] {
+            let req = kasumi_types::QueryRequest::new("docs")
+                .limit(1)
+                .paging(kasumi_types::Paging::Seek);
+            let req = if desc {
+                req.sort_desc("/wide").sort_desc("/value")
+            } else {
+                req.sort_asc("/wide").sort_asc("/value")
+            };
+            let mut cursor = None;
+            let mut ids = Vec::new();
+            loop {
+                let worker = Arc::new(reopened.physical_seek_view("docs", |_| Ok(true))?.unwrap());
+                let docs = worker.document_source("docs")?;
+                let mut memory =
+                    kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+                let page = worker.indexes.seek_page(
+                    &docs,
+                    &req,
+                    cursor.as_deref(),
+                    &worker.state.limits,
+                    &|_| Ok(32),
+                    &cancel,
+                    &mut memory,
+                )?;
+                ids.extend(page.rows.into_iter().map(|r| r.id));
+                cursor = page.last_key;
+                if cursor.is_none() {
+                    break;
+                }
+                assert!(ids.len() < 2);
+            }
+            if desc {
+                ids.reverse();
+            }
+            assert_eq!(ids, ["alpha", "point"]);
+        }
+    }
     let checkpoint_rows = reopened
         .application_selection
         .get()
@@ -1940,7 +2001,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || reopened.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(12)
+            Some(18)
         );
     }
     for (after, limit, expected) in [

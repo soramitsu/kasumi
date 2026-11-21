@@ -264,6 +264,55 @@ fn field_changes<E>(
 }
 
 impl QueryIndexes {
+    /// In a collection containing oversized tuples, enumerate *all* owners
+    /// in canonical order. Each checkpoint can stage ranks without holding a
+    /// second tuple map or copying wide document values into its directory.
+    pub fn visit_ranked_compounds<E>(
+        &self,
+        mut emit: impl FnMut(&str, usize, crate::RankedCompound<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for (name, collection) in &self.collections {
+            for (ordinal, index) in collection
+                .structured
+                .unique
+                .values()
+                .filter(|u| u.fields.len() > 1)
+                .enumerate()
+            {
+                if index.overflow.is_empty() {
+                    continue;
+                }
+                let compact = index.entries.as_ref().expect("compound root");
+                emit(
+                    name,
+                    ordinal,
+                    crate::RankedCompound::Count((compact.len() + index.overflow.len()) as u64),
+                )?;
+                let mut small = compact.iter().peekable();
+                let mut wide = index.overflow.iter().peekable();
+                for rank in 0..(compact.len() + index.overflow.len()) as u64 {
+                    let first = match (small.peek(), wide.peek()) {
+                        (Some((a, _)), Some((b, _))) => a < b,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+                    let (key, id) = if first { small.next() } else { wide.next() }
+                        .expect("counted compound row");
+                    emit(
+                        name,
+                        ordinal,
+                        crate::RankedCompound::Owner {
+                            rank,
+                            digest: crate::ordered_tuple::ranked_scalar_digest(key),
+                            id,
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Emit all representable compound rows in native key order. Stops as soon
     /// as the consumer refuses a row.
     pub fn visit_compound_rows<E>(
