@@ -1531,3 +1531,86 @@ async fn an_interrupted_publication_leaves_the_selected_directory_and_no_orphan_
     assert_eq!(fixture.space_rows(&replacement), fixture.reachable());
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_intersections() {
+    let fixture = Fixture::new().await;
+    let genesis = genesis();
+    let mut definition = (*definition(&[])).clone();
+    definition.indexes.push(IndexDefinition {
+        name: "group_serial".into(),
+        unique: true,
+        text: None,
+        fields: vec![
+            IndexField {
+                path: "/group".into(),
+                kind: ScalarType::String,
+            },
+            IndexField {
+                path: "/serial".into(),
+                kind: ScalarType::Number,
+            },
+        ],
+    });
+    let common = "group-".repeat(175);
+    let body = |group: usize, serial: usize| json!({"group":format!("{common}-{group:03}"),"serial":serial});
+    let mut rows = Vec::new();
+    for group in 0..24 {
+        for serial in 0..24 {
+            if (group, serial) != (7, 13) {
+                rows.push((format!("g{group:03}-s{serial:03}"), body(group, serial)));
+            }
+        }
+    }
+    let initial = genesis.next(rows, &[], Some(Some(Arc::new(definition))));
+    assert!(fixture.publish(&StructuredOwner::default(), &genesis, &initial, 1));
+    let manifest = fixture.manifest();
+    let view = fixture.store.read_view().unwrap();
+    let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
+    assert!(
+        ordered_unique_window(
+            &reader,
+            "docs",
+            0,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            false,
+            || true
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let changed = ChangedIds::from([("docs".into(), BTreeSet::from(["new".into()]))]);
+    for (serial, decision) in [
+        (5, unique::Decision::Conflict("group_serial".into())),
+        (13, unique::Decision::Accepted),
+    ] {
+        let mut next = initial.state.clone();
+        next.revision += 1;
+        let collection = next.collections.get_mut("docs").unwrap();
+        collection.data_epoch = next.revision;
+        collection.documents.insert(
+            "new".into(),
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
+                id: "new".into(),
+                version: next.revision,
+                body: body(7, serial),
+            }))),
+        );
+        assert_eq!(
+            unique::prove(
+                &reader,
+                &initial.indexes,
+                &initial.state,
+                &next,
+                &changed,
+                None
+            )
+            .unwrap(),
+            decision
+        );
+    }
+    drop(reader);
+    view.close().unwrap();
+    fixture.close().await;
+}
