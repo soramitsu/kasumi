@@ -3572,6 +3572,40 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         .wait(Some(std::time::Duration::from_secs(10)))
         .snapshot(expected, "text directory snapshot")
         .await?;
+    // The entry after the checkpoint leaves this collection untouched. Its
+    // ordinary primary tree then names a different log term, so version
+    // checks can come only from the checkpoint on the retained paired view.
+    db.administer(
+        context.clone(),
+        kasumi_types::Operation::SetLimits(engine.generation()?.state.limits.clone()),
+    )
+    .await?;
+    engine.select_wrong_primary_history_for_test()?;
+    let checkpoint_reader = engine.generation()?;
+    let selected = checkpoint_reader.application_selection.get().unwrap();
+    assert!(
+        selected
+            .with_primary_records(None, &checkpoint_reader.state, |_, _| Ok(()))?
+            .is_none()
+    );
+    assert!(!selected.has_exact_snapshot(
+        checkpoint_reader.state.revision_base,
+        checkpoint_reader.state.revision,
+    ));
+    check_physical_versions(&checkpoint_reader, &["a", "b"])?;
+    let mut changed = checkpoint_reader.state.clone();
+    Arc::make_mut(&mut changed.collections.get_mut("docs").unwrap().definition).strict_read_audit =
+        true;
+    selected
+        .with_text_records(None, &changed, |_, view, _, _| {
+            assert!(
+                selected
+                    .text_version_root_at(view, &changed, "docs")?
+                    .is_none()
+            );
+            Ok(())
+        })?
+        .expect("retained text directory");
     // Entries after the snapshot replay as covered publications on reopen.
     db.mutate(
         context.clone(),
@@ -3583,6 +3617,8 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
     assert_eq!(search(&db, &context, "shared").await?, ["a"]);
     assert!(search(&db, &context, "alpha").await?.is_empty());
     assert!(search(&db, &context, "beta").await?.is_empty());
+    check_physical_versions(&checkpoint_reader, &["a", "b"])?;
+    drop(checkpoint_reader);
 
     // A retained generation keeps searching its own revision after later
     // writes edit the directory.
@@ -3643,6 +3679,7 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         .install_full_snapshot(vote, snapshot)
         .await?;
     let installed = target_engine.generation()?;
+    check_physical_versions(&installed, &["a", "b"])?;
     assert_eq!(
         installed.indexes.text_residency(),
         kasumi_query::TextResidency::Directory
