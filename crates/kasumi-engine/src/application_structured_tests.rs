@@ -669,7 +669,7 @@ async fn structured_edits_borrow_overflow_values_until_the_producer_fits() {
             &owner,
             &fixture.store,
             &selected,
-            &first.indexes,
+            (&first.indexes, None),
             &next.state,
             &next.indexes,
             Some(applied(&next.state, 1)),
