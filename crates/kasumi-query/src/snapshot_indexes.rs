@@ -47,7 +47,7 @@ impl SnapshotIndexBuilder {
             .ids
             .iter()
             .next_back()
-            .is_some_and(|last| last >= &document.id)
+            .is_some_and(|last| last.as_ref() >= document.id.as_str())
         {
             return Err(invalid("snapshot index documents are out of order"));
         }
@@ -56,7 +56,10 @@ impl SnapshotIndexBuilder {
             &document.body,
             &indexes.validator,
         )?;
-        indexes.structured.ids.insert(document.id.clone());
+        indexes
+            .structured
+            .ids
+            .insert(Arc::from(document.id.as_str()));
         self.failed = false;
         Ok(())
     }

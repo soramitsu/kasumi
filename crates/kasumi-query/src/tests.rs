@@ -2079,7 +2079,7 @@ fn selective_equality_checks_range_survivors_and_preserves_index_only_planning()
         )
         .unwrap();
     assert_eq!(
-        matched.iter().map(String::as_str).collect::<Vec<_>>(),
+        matched.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["500"]
     );
     // The one prepared range is evaluated on the one equality survivor.

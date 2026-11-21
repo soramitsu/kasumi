@@ -143,7 +143,7 @@ impl ReadIds {
                 Bound::Unbounded,
             ))
             .take(limit)
-            .cloned()
+            .map(|id| id.as_ref().to_owned())
             .collect())
     }
 }
@@ -334,7 +334,7 @@ impl QueryIndexes {
             cancellation.check()?;
             let bytes = allocation::string_clone_bytes(id)?;
             memory.reserve(bytes)?;
-            ids.push(id.clone());
+            ids.push(id.as_ref().to_owned());
             retained = allocation::add(retained, bytes)?;
         }
         memory.release(iterator_bytes)?;
@@ -362,7 +362,7 @@ impl QueryIndexes {
             .ids
             .range::<_, str>((start, Bound::Unbounded))
             .take(limit)
-            .cloned()
+            .map(|id| id.as_ref().to_owned())
             .collect())
     }
     pub fn build<R: CollectionRecords>(
@@ -839,7 +839,13 @@ impl QueryIndexes {
                 let mut ids = IdSet::new();
                 for id in scores.keys() {
                     cancellation.check()?;
-                    ids.insert(id.clone());
+                    ids.insert(
+                        structured
+                            .ids
+                            .get(id.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| Arc::from(id.as_str())),
+                    );
                 }
                 Ok(ids)
             })
@@ -1073,7 +1079,7 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
     let mut has_numeric_sort_key = false;
     for id in candidates {
         cancellation.check()?;
-        let score = scores.and_then(|scores| scores.get(id)).copied();
+        let score = scores.and_then(|scores| scores.get(id.as_ref())).copied();
         let keys = if request.sort.is_empty() {
             Vec::new()
         } else {
@@ -1110,7 +1116,7 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
                         });
                     match copy {
                         Some((_, clone)) => {
-                            held.rows.push((id.as_str(), Some(row.into_owned()), clone));
+                            held.rows.push((id.as_ref(), Some(row.into_owned()), clone));
                             held.admitted = allocation::add(held.admitted, clone)?;
                         }
                         None => abandon_copies(&mut copies, memory)?,
@@ -1177,7 +1183,7 @@ pub struct RemainingRows<'a> {
 }
 enum Remaining<'a> {
     Candidates(
-        std::iter::Peekable<imbl::ordset::Iter<'a, String, imbl::shared_ptr::DefaultSharedPtr>>,
+        std::iter::Peekable<imbl::ordset::Iter<'a, Arc<str>, imbl::shared_ptr::DefaultSharedPtr>>,
     ),
     Ordered(std::slice::Iter<'a, OrderedRow<'a>>),
 }
@@ -1193,7 +1199,7 @@ impl<'a> Iterator for RemainingRows<'a> {
     type Item = (&'a str, Option<f32>);
     fn next(&mut self) -> Option<Self::Item> {
         let row = match &mut self.rows {
-            Remaining::Candidates(ids) => ids.next().map(|id| (id.as_str(), None)),
+            Remaining::Candidates(ids) => ids.next().map(|id| (id.as_ref(), None)),
             Remaining::Ordered(rows) => rows.next().map(|row| (row.id, row.score)),
         };
         self.len = self.len.saturating_sub(usize::from(row.is_some()));

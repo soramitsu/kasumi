@@ -1134,6 +1134,23 @@ fn compound_indexes_share_the_document_owner_across_short_and_oversized_tuples()
             }
         }
         assert_eq!(owners.len(), expected.len());
+        let structured = &fixture.1.collections["ordered"].structured;
+        for id in structured
+            .ids
+            .iter()
+            .chain(structured.fields.values().flat_map(|field| {
+                field
+                    .present
+                    .iter()
+                    .chain(field.entries.values().flat_map(|posting| posting.iter()))
+            }))
+        {
+            assert_eq!(
+                owners[id.as_bytes()],
+                id.as_bytes().as_ptr(),
+                "logical or field posting copied the document ID"
+            );
+        }
     }
 
     let wide = "z".repeat(4096);
@@ -1175,7 +1192,35 @@ fn compound_indexes_share_the_document_owner_across_short_and_oversized_tuples()
         .update_fixture(&original.0, &next, &changed)
         .unwrap();
     let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
-    verify(&(next.clone(), updated), ["row-2", "row-1", "row-0"]);
-    verify(&(next, rebuilt), ["row-2", "row-1", "row-0"]);
+    let updated = (next.clone(), updated);
+    verify(&updated, ["row-2", "row-1", "row-0"]);
+    verify(&(next.clone(), rebuilt), ["row-2", "row-1", "row-0"]);
+    for id in updated.1.collections["ordered"].structured.ids.iter() {
+        let prior = original.1.collections["ordered"]
+            .structured
+            .ids
+            .get::<str>(id)
+            .unwrap();
+        assert_eq!(prior.as_bytes().as_ptr(), id.as_bytes().as_ptr());
+    }
+
+    let collection = next.get_mut("ordered").unwrap();
+    collection.data_epoch += 1;
+    collection.documents.remove("row-1");
+    collection.documents.insert(
+        "new".into(),
+        pending(Document {
+            id: "new".into(),
+            version: 1,
+            body: json!({"scope":"g","key":"b","rank":"2"}),
+        }),
+    );
+    let changed = BTreeMap::from([("ordered".into(), ["row-1".into(), "new".into()].into())]);
+    let replacement = updated
+        .1
+        .update_fixture(&updated.0, &next, &changed)
+        .unwrap();
+    verify(&(next, replacement), ["row-2", "new", "row-0"]);
+    verify(&updated, ["row-2", "row-1", "row-0"]);
     verify(&original, ["row-0", "row-1", "row-2"]);
 }

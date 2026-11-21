@@ -13,14 +13,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
-pub(crate) type IdSet = OrdSet<String>;
+pub(crate) type IdSet = OrdSet<Arc<str>>;
 /// Every compound index of one document can retain the same immutable ID.
 pub(crate) type TupleMap = OrdMap<Vec<Scalar>, Arc<str>>;
 
 /// Sharing lasts only for the current document. Correlated fields can grow
 /// or shrink the same immutable ID root even when their scalar keys differ.
 struct DocumentPostings<'a> {
-    id: &'a str,
+    id: &'a Arc<str>,
     singleton: Option<IdSet>,
     insertions: Vec<(IdSet, IdSet)>,
     removals: Vec<(IdSet, IdSet)>,
@@ -28,7 +28,7 @@ struct DocumentPostings<'a> {
 }
 
 impl<'a> DocumentPostings<'a> {
-    fn new(id: &'a str, fields: usize) -> Self {
+    fn new(id: &'a Arc<str>, fields: usize) -> Self {
         Self {
             id,
             singleton: None,
@@ -42,7 +42,7 @@ impl<'a> DocumentPostings<'a> {
 
     fn singleton(&mut self) -> IdSet {
         self.singleton
-            .get_or_insert_with(|| IdSet::unit(self.id.to_owned()))
+            .get_or_insert_with(|| IdSet::unit(Arc::clone(self.id)))
             .clone()
     }
 
@@ -58,9 +58,9 @@ impl<'a> DocumentPostings<'a> {
         }
         let old = (changes.len() < self.limit).then(|| ids.clone());
         if insert {
-            ids.insert(self.id.to_owned());
+            ids.insert(Arc::clone(self.id));
         } else {
-            ids.remove(self.id);
+            ids.remove(self.id.as_ref());
         }
         if let Some(old) = old {
             changes.push((old, ids.clone()));
@@ -253,6 +253,19 @@ pub fn unique_conflict(name: &str) -> Error {
     )
 }
 
+// New constraints, field postings and the collection share one immutable ID.
+// A replacement can reuse its predecessor's allocation across both generations.
+fn logical_owner(ids: &mut IdSet, id: &str, insert: bool) -> Arc<str> {
+    if let Some(owner) = ids.get(id) {
+        return Arc::clone(owner);
+    }
+    let owner: Arc<str> = id.into();
+    if insert {
+        ids.insert(Arc::clone(&owner));
+    }
+    owner
+}
+
 fn old_owner_mismatch() -> Error {
     Error::new(
         ErrorCode::Corruption,
@@ -263,7 +276,9 @@ fn old_owner_mismatch() -> Error {
 impl Structured {
     pub fn update<D: DocumentChanges + ?Sized>(&self, changes: &D) -> ReadResult<Self, D::Failure> {
         let mut next = self.clone();
-        next.unique = self.unique_delta(changes)?;
+        next.unique = self.unique_delta(changes, |id, is_new| {
+            logical_owner(&mut next.ids, id, is_new)
+        })?;
         changes.visit_changes(|delta| {
             let previous = delta.old;
             let current = delta.new;
@@ -271,15 +286,13 @@ impl Structured {
             if previous.is_none() && current.is_none() {
                 return Ok(());
             }
-            if current.is_none() {
-                next.ids.remove(id);
-            } else if previous.is_none() {
-                next.ids.insert(id.to_owned());
-            }
+            let owner = if current.is_none() {
+                next.ids.remove(id).unwrap_or_else(|| Arc::from(id))
+            } else {
+                logical_owner(&mut next.ids, id, previous.is_none())
+            };
             let mut changed_shared_text = false;
-            // An ID can be the sole owner of many distinct indexed values.
-            // Reuse its singleton across this loan and later mutations.
-            let mut postings = DocumentPostings::new(id, next.fields.len());
+            let mut postings = DocumentPostings::new(&owner, next.fields.len());
             for (path, index) in &mut next.fields {
                 let old_value = previous.and_then(|record| record_value(record, path));
                 let new_value = current.and_then(|record| record_value(record, path));
@@ -336,6 +349,7 @@ impl Structured {
     fn unique_delta<D: DocumentChanges + ?Sized>(
         &self,
         changes: &D,
+        mut document_owner: impl FnMut(&str, bool) -> Arc<str>,
     ) -> ReadResult<BTreeMap<String, UniqueIndex>, D::Failure> {
         let mut unique = self.unique.clone();
         if unique.is_empty() {
@@ -386,7 +400,7 @@ impl Structured {
         })?;
         changes.visit_changes(|delta| {
             if let Some(new) = delta.new {
-                let owner = LazyCell::new(|| Arc::<str>::from(delta.id));
+                let owner = LazyCell::new(|| document_owner(delta.id, delta.old.is_none()));
                 for (name, index) in &mut unique {
                     if index.entries.is_some() {
                         index.insert_tuple(name, || Arc::clone(&owner), new, Some(&self.fields))?;
@@ -409,7 +423,10 @@ impl Structured {
         &self,
         changes: &D,
     ) -> ReadResult<(), D::Failure> {
-        self.unique_delta(changes).map(|_| ())
+        self.unique_delta(changes, |id, _| {
+            self.ids.get(id).cloned().unwrap_or_else(|| Arc::from(id))
+        })
+        .map(|_| ())
     }
 
     fn empty_unique(
@@ -534,7 +551,8 @@ impl Structured {
         record: Record<'_>,
         building: &mut [BuildingField],
     ) -> Result<()> {
-        let mut postings = DocumentPostings::new(id, self.fields.len());
+        let owner: Arc<str> = id.into();
+        let mut postings = DocumentPostings::new(&owner, self.fields.len());
         for ((path, index), state) in self.fields.iter_mut().zip(building) {
             let value = record_value(record, path);
             if state.complete_presence && value.is_none() {
@@ -561,8 +579,7 @@ impl Structured {
                 index.insert(key, &mut postings);
             }
         }
-        self.ids.insert(id.to_owned());
-        let owner = LazyCell::new(|| Arc::<str>::from(id));
+        self.ids.insert(Arc::clone(&owner));
         for (name, index) in &mut self.unique {
             if index.entries.is_some() {
                 index.insert_tuple(name, || Arc::clone(&owner), record, Some(&self.fields))?;
@@ -1335,7 +1352,7 @@ impl Structured {
                 ids.contains(id)
             } else {
                 ids.get_max()
-                    .is_some_and(|previous: &String| previous.as_str() >= id)
+                    .is_some_and(|previous: &Arc<str>| previous.as_ref() >= id)
             };
             if invalid_order {
                 return Err(Error::new(
@@ -1343,7 +1360,7 @@ impl Structured {
                     "unordered field postings",
                 ));
             }
-            ids.insert(id.to_owned());
+            ids.insert(self.ids.get(id).cloned().unwrap_or_else(|| Arc::from(id)));
             Ok(())
         })?;
         if !available && visited {
@@ -1473,7 +1490,7 @@ impl Structured {
                                     "index/document generation mismatch",
                                 )
                             })?;
-                            if matches!(record, Record::Live(document) if document.id != *id) {
+                            if matches!(record, Record::Live(document) if document.id != id.as_ref()) {
                                 return Err(Error::new(
                                     ErrorCode::Corruption,
                                     "source document identity/version differs",
@@ -1532,7 +1549,7 @@ fn reserve_posting_id<W: crate::QueryWorkspace>(
     id: &str,
 ) -> Result<()> {
     memory.reserve(crate::allocation::add(
-        2048,
+        2048 + (2 * size_of::<usize>()) as u64,
         crate::allocation::string_clone_bytes(id)?,
     )?)
 }

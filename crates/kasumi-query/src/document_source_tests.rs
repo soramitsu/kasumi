@@ -172,7 +172,7 @@ fn compound_postings_use_selected_ids_and_release_partial_results() {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(ids.iter().map(String::as_str).collect::<Vec<_>>(), expected);
+        assert_eq!(ids.iter().map(AsRef::as_ref).collect::<Vec<_>>(), expected);
         assert!(memory.live_bytes() > 0);
     }
     let mut memory = query_memory();
@@ -1134,7 +1134,7 @@ fn scan_boolean_subtree_borrows_each_body_once_and_prepares_constants_once() {
         )
         .unwrap();
     assert_eq!(
-        ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        ids.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["d0", "d2"]
     );
     assert_eq!(source.calls.get(), 3);

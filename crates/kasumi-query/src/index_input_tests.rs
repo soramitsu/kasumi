@@ -259,7 +259,7 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
         .filter(|(key, _)| **key != Scalar::Missing)
         .map(|(key, ids)| {
             assert_eq!(ids.len(), 1);
-            (format!("[{key:?}]"), ids.get_min().unwrap().clone())
+            (format!("[{key:?}]"), ids.get_min().unwrap().to_string())
         })
         .collect()
 }
@@ -306,7 +306,7 @@ fn distinct_fields_share_new_singleton_owners_and_split_on_later_writes() {
     assert_eq!(
         ledger_posting(&second, "/amount", "b")
             .iter()
-            .map(String::as_str)
+            .map(AsRef::as_ref)
             .collect::<Vec<_>>(),
         ["b", "c"]
     );
@@ -342,7 +342,7 @@ fn correlated_postings_share_repeated_edits_only_for_the_same_predecessor() {
         let group = ledger_posting(version, "/serial", "e");
         assert!(group.ptr_eq(ledger_posting(version, "/amount", "e")));
         assert_eq!(
-            group.iter().map(String::as_str).collect::<Vec<_>>(),
+            group.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
             expected
         );
     }
@@ -350,11 +350,11 @@ fn correlated_postings_share_repeated_edits_only_for_the_same_predecessor() {
     let amount = ledger_posting(&last, "/amount", "e");
     assert!(!serial.ptr_eq(amount));
     assert_eq!(
-        serial.iter().map(String::as_str).collect::<Vec<_>>(),
+        serial.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["e", "f"]
     );
     assert_eq!(
-        amount.iter().map(String::as_str).collect::<Vec<_>>(),
+        amount.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["c", "e", "f"]
     );
 }
@@ -382,8 +382,22 @@ fn a_late_array_change_keeps_every_prior_id_in_the_original_posting() {
     assert_eq!(field.entries.len(), 2);
     assert_eq!(field.present.len(), 98);
     let mut postings = field.entries.values();
-    assert!(postings.next().unwrap().iter().eq(&names[..97]));
-    assert!(postings.next().unwrap().iter().eq(&names[96..97]));
+    assert!(
+        postings
+            .next()
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .eq(names[..97].iter().map(String::as_str))
+    );
+    assert!(
+        postings
+            .next()
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .eq(names[96..97].iter().map(String::as_str))
+    );
 }
 
 #[test]
@@ -407,7 +421,7 @@ fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
         let entries = &structured.fields["/key"].entries;
         assert_eq!(entries.len(), 1);
         let (_, posting) = entries.get_min().unwrap();
-        assert_eq!(posting.iter().map(String::as_str).collect::<Vec<_>>(), ids);
+        assert_eq!(posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(), ids);
         assert_eq!(posting.ptr_eq(&structured.ids), all);
     }
     let uniform = rows(serde_json::json!([7]));
@@ -433,7 +447,7 @@ fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
     fn check(indexes: &QueryIndexes, ids: &[&str], dense: bool) {
         let structured = &indexes.collections["docs"].structured;
         let presence = &structured.fields["/key"].present;
-        assert_eq!(presence.iter().map(String::as_str).collect::<Vec<_>>(), ids);
+        assert_eq!(presence.iter().map(AsRef::as_ref).collect::<Vec<_>>(), ids);
         assert_eq!(presence.ptr_eq(&structured.ids), dense);
     }
 
@@ -608,7 +622,7 @@ fn absent_unique_constraints_skip_body_replays_but_keep_schema_ids_and_field_che
                 .structured
                 .ids
                 .iter()
-                .map(String::as_str)
+                .map(AsRef::as_ref)
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );

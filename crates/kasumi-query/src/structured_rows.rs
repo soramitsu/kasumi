@@ -47,7 +47,7 @@ pub struct StructuredField<'a> {
 impl<'a> StructuredField<'a> {
     /// Documents with a value at the path, in ID order.
     pub fn present(&self) -> impl Iterator<Item = &'a str> + use<'a> {
-        self.index.present.iter().map(String::as_str)
+        self.index.present.iter().map(AsRef::as_ref)
     }
     /// Distinct scalars in canonical scalar order with their postings.
     pub fn values(&self) -> impl Iterator<Item = StructuredPostings<'a>> + use<'a> {
@@ -69,7 +69,7 @@ pub struct StructuredPostings<'a> {
 impl<'a> StructuredPostings<'a> {
     /// Document IDs in ID order.
     pub fn ids(&self) -> impl Iterator<Item = &'a str> + use<'a> {
-        self.ids.iter().map(String::as_str)
+        self.ids.iter().map(AsRef::as_ref)
     }
 }
 
