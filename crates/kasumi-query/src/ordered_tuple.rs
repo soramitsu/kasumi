@@ -9,6 +9,43 @@ pub const MAX_ORDERED_TUPLE_BYTES: usize = 720;
 pub const ORDERED_TUPLE_WINDOW: usize = 16;
 pub type OrderedTupleWindow = Vec<(Vec<u8>, String)>;
 
+pub(crate) fn check_window(
+    rows: &[(Vec<u8>, String)],
+    lower: std::ops::Bound<&[u8]>,
+    upper: std::ops::Bound<&[u8]>,
+    descending: bool,
+) -> Result<()> {
+    use std::ops::RangeBounds;
+    let corrupt = || {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "compound directory returned an invalid ordered window",
+        )
+    };
+    if rows.len() > ORDERED_TUPLE_WINDOW {
+        return Err(corrupt());
+    }
+    let mut previous = None;
+    for (key, id) in rows {
+        if key.is_empty()
+            || key.len() > MAX_ORDERED_TUPLE_BYTES
+            || !RangeBounds::<[u8]>::contains(&(lower, upper), key.as_slice())
+            || previous.is_some_and(|last: &[u8]| {
+                if descending {
+                    last <= key.as_slice()
+                } else {
+                    last >= key.as_slice()
+                }
+            })
+            || kasumi_types::validate_name(id).is_err()
+        {
+            return Err(corrupt());
+        }
+        previous = Some(key);
+    }
+    Ok(())
+}
+
 fn part(out: &mut Vec<u8>, value: FieldValue<'_>) -> bool {
     let payload = value.bytes.as_ref();
     if payload.len() > MAX_ORDERED_TUPLE_BYTES.saturating_sub(out.len()) {
@@ -71,6 +108,35 @@ pub fn ordered_record_tuple(fields: &[IndexField], record: Record<'_>) -> Result
 mod tests {
     use super::*;
     use crate::scalar::decimal;
+    #[test]
+    fn seek_windows_enforce_the_bound_and_progress_in_both_directions() {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let rows = |keys: &[u8]| -> OrderedTupleWindow {
+            keys.iter()
+                .map(|&key| (vec![key], format!("id{key}")))
+                .collect()
+        };
+        check_window(&rows(&[2, 3]), Excluded(&[1]), Included(&[3]), false).unwrap();
+        check_window(&rows(&[3, 2]), Excluded(&[1]), Included(&[3]), true).unwrap();
+        for keys in [&[3, 1][..], &[2, 2], &[1], &[4]] {
+            assert_eq!(
+                check_window(&rows(keys), Excluded(&[1]), Included(&[3]), false)
+                    .unwrap_err()
+                    .code,
+                kasumi_types::ErrorCode::Corruption
+            );
+        }
+        assert!(
+            check_window(
+                &rows(&[1; ORDERED_TUPLE_WINDOW + 1]),
+                Unbounded,
+                Unbounded,
+                false
+            )
+            .is_err()
+        );
+        assert!(check_window(&[(vec![1], String::new())], Unbounded, Unbounded, false).is_err());
+    }
     #[test]
     fn bounded_compound_encoding_matches_scalar_order_including_prefixes_and_sentinels() {
         let fields = vec![

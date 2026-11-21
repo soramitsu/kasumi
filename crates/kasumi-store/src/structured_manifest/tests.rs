@@ -289,3 +289,31 @@ async fn an_interrupted_staged_structured_edit_is_abandoned_within_its_family() 
     assert_eq!(rows(&**store, &three).len(), 5000);
     Ok(())
 }
+
+#[test]
+fn legacy_structured_manifest_stays_writable_and_requires_replacement_to_claim_tuple_coverage() {
+    let mut legacy = StructuredManifest::new(
+        "tenant",
+        "incarnation",
+        0,
+        0,
+        None,
+        [7; 32],
+        INITIAL_SPACE[0],
+        TreeRoot::new_tree(),
+    );
+    legacy.format = 1;
+    let decoded = StructuredManifest::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert_eq!(decoded, legacy);
+    let applied = StructuredApplied {
+        index: 1,
+        log_sha256: [3; 32],
+        command_sha256: Some([4; 32]),
+    };
+    let next = legacy.advance(1, Some(applied), legacy.layout_sha256, legacy.records);
+    next.write().unwrap();
+    next.check_successor(&legacy).unwrap();
+    let mut forged = next.clone();
+    forged.format = ORDERED_TUPLE_FORMAT;
+    assert!(forged.check_successor(&legacy).is_err());
+}

@@ -41,6 +41,7 @@ pub use search::{
 mod seek;
 mod select;
 mod structured;
+pub use structured::unique_conflict;
 mod structured_rows;
 pub use seek::SeekPage;
 pub use structured_rows::{StructuredField, StructuredPostings, StructuredRow};

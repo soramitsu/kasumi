@@ -69,7 +69,8 @@ impl UniqueIndex {
     }
 }
 
-fn unique_conflict(name: &str) -> Error {
+/// The deterministic rejection shared by resident and durable uniqueness owners.
+pub fn unique_conflict(name: &str) -> Error {
     Error::new(
         ErrorCode::Conflict,
         format!("unique index {name} conflicts"),

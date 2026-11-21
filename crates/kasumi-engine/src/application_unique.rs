@@ -9,15 +9,15 @@ use kasumi_query::{FieldValue, QueryIndexes, Record};
 use kasumi_store::{NodeDiskMemoryAdmission, ordered_pages::TreeReader};
 use kasumi_types::{DocumentResolver, IndexDefinition, TenantState};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 const DOCUMENTS: usize = 32;
 const TUPLES: usize = 32;
 const ANCHOR_IDS: usize = 16;
 const READS: usize = 512;
 const SCALAR_BYTES: usize = 256 << 10;
-// At most eight native prefixes, sixteen IDs, one candidate point and 32
-// fixed digests are retained. Physical pages/overflow reads own their grants.
+// At most eight prefixes, 16 IDs, one candidate and 32 exact bounded keys
+// and digests are retained. Physical pages and overflow own their grants.
 const WORKSPACE: u64 = 64 << 10;
 
 pub(crate) fn validate_ordinary(
@@ -49,8 +49,12 @@ pub(crate) fn validate_ordinary(
                 },
             )
             .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
-        if proved == Some(true) {
-            return Ok(());
+        match proved {
+            Some(Decision::Accepted) => return Ok(()),
+            Some(Decision::Conflict(name)) => {
+                return Err(kasumi_query::unique_conflict(&name).into());
+            }
+            Some(Decision::Inconclusive) | None => {}
         }
     }
     index_source::validate_changes_with_resolvers(
@@ -84,13 +88,13 @@ enum Probe {
     Inconclusive,
     Known {
         fingerprint: [u8; 32],
+        exact: Option<Vec<u8>>,
         owner: Option<String>,
     },
 }
 
-/// Include the length of each part. Only equality of two fingerprints can
-/// cause a fallback. A digest match never authorizes a write or declares a
-/// deterministic conflict.
+/// Include each part length. The digest locates a private candidate bucket.
+/// A duplicate requires identical scoped, complete keys before rejection.
 fn hash_part(hash: &mut Sha256, value: &[u8]) {
     hash.update((value.len() as u64).to_be_bytes());
     hash.update(value);
@@ -122,8 +126,9 @@ fn probe(
     let mut hash = Sha256::new();
     hash_part(&mut hash, collection.as_bytes());
     hash_part(&mut hash, index.name.as_bytes());
+    let exact = kasumi_query::ordered_record_tuple(&index.fields, record)?;
     if index.fields.len() > 1
-        && let Some(key) = kasumi_query::ordered_record_tuple(&index.fields, record)?
+        && let Some(key) = &exact
     {
         if !budget.read() {
             return Ok(Probe::Inconclusive);
@@ -131,9 +136,9 @@ fn probe(
         let ordinal = indexes
             .compound_ordinal(collection, &index.name)
             .context("compound absent from selected layout")?;
-        hash_part(&mut hash, &key);
+        hash_part(&mut hash, key);
         let mut native = field_prefix(super::COMPOUND, collection, ordinal);
-        native.extend_from_slice(&key);
+        native.extend_from_slice(key);
         let owner = reader.with_value(&native, 256, |v| {
             v.map(super::posting_id)
                 .transpose()
@@ -141,6 +146,7 @@ fn probe(
         })?;
         return Ok(Probe::Known {
             fingerprint: hash.finalize().into(),
+            exact,
             owner,
         });
     }
@@ -183,6 +189,7 @@ fn probe(
     if absent {
         return Ok(Probe::Known {
             fingerprint,
+            exact,
             owner: None,
         });
     }
@@ -226,9 +233,20 @@ fn probe(
                 owner = Some(id);
             }
         }
-        return Ok(Probe::Known { fingerprint, owner });
+        return Ok(Probe::Known {
+            fingerprint,
+            exact,
+            owner,
+        });
     }
     Ok(Probe::Inconclusive)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Decision {
+    Accepted,
+    Conflict(String),
+    Inconclusive,
 }
 
 pub(super) fn prove(
@@ -238,7 +256,7 @@ pub(super) fn prove(
     new: &TenantState,
     changed: &ChangedIds,
     resolver: Option<&dyn DocumentResolver>,
-) -> Result<bool> {
+) -> Result<Decision> {
     ensure!(
         old.tenant == new.tenant && old.incarnation == new.incarnation,
         "unique delta scope differs"
@@ -248,7 +266,7 @@ pub(super) fn prove(
         reads: READS,
         bytes: SCALAR_BYTES,
     };
-    let mut inserted = BTreeSet::new();
+    let mut inserted = BTreeMap::new();
     for (name, ids) in changed {
         let previous = old
             .collections
@@ -265,21 +283,44 @@ pub(super) fn prove(
         if !previous.definition.indexes.iter().any(|i| i.unique) {
             continue;
         }
+        // This is the persisted validator's rejection order: changed IDs and
+        // unique index names are both ascending. The definition itself may
+        // declare its indexes in a different order.
+        let mut unique: Vec<_> = previous
+            .definition
+            .indexes
+            .iter()
+            .filter(|i| i.unique)
+            .collect();
+        unique.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         // Every old claim must match. All changed IDs are then considered
         // released together, so a swap is independent of their lexical order.
         for (state, collection, removing) in [(old, previous, true), (new, candidate, false)] {
             for id in ids {
                 let loan = index_source::record(collection, id, state.revision, resolver)
                     .map_err(index_source::into_anyhow)?;
+                if removing {
+                    // The replayable resident delta opens both records on its
+                    // removal pass. Retain a real candidate read failure before
+                    // a later new-claim conflict can settle its write receipt.
+                    drop(
+                        index_source::record(candidate, id, new.revision, resolver)
+                            .map_err(index_source::into_anyhow)?,
+                    );
+                }
                 let Some(loan) = loan else {
                     continue;
                 };
-                for index in collection.definition.indexes.iter().filter(|i| i.unique) {
-                    let (key, owner) =
+                for index in &unique {
+                    let (key, exact, owner) =
                         match probe(reader, indexes, name, index, loan.as_record(), &mut budget)? {
                             Probe::Sparse => continue,
-                            Probe::Inconclusive => return Ok(false),
-                            Probe::Known { fingerprint, owner } => (fingerprint, owner),
+                            Probe::Inconclusive => return Ok(Decision::Inconclusive),
+                            Probe::Known {
+                                fingerprint,
+                                exact,
+                                owner,
+                            } => (fingerprint, exact, owner),
                         };
                     if removing {
                         ensure!(
@@ -289,14 +330,23 @@ pub(super) fn prove(
                         continue;
                     }
                     if owner.as_ref().is_some_and(|id| !ids.contains(id)) {
-                        return Ok(false);
+                        return Ok(Decision::Conflict(index.name.clone()));
                     }
-                    if !inserted.insert(key) {
-                        return Ok(false);
+                    let scope = exact.map(|bytes| (name.as_str(), index.name.as_str(), bytes));
+                    match inserted.entry(key) {
+                        std::collections::btree_map::Entry::Vacant(v) => {
+                            v.insert(scope);
+                        }
+                        std::collections::btree_map::Entry::Occupied(o) => {
+                            if scope.is_some() && scope.as_ref() == o.get().as_ref() {
+                                return Ok(Decision::Conflict(index.name.clone()));
+                            }
+                            return Ok(Decision::Inconclusive);
+                        }
                     }
                 }
             }
         }
     }
-    Ok(true)
+    Ok(Decision::Accepted)
 }

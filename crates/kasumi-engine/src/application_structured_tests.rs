@@ -706,6 +706,11 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
             },
         ],
     });
+    // Reverse declaration order relative to the canonical unique-name order.
+    let mut reversed = definition.indexes.last().unwrap().clone();
+    reversed.name = "aaa_serial_group".into();
+    reversed.fields.reverse();
+    definition.indexes.push(reversed);
     let group = "business-group-".repeat(30);
     let body = |n: usize| json!({"group": group, "serial": n});
     let first = genesis.next(
@@ -769,7 +774,11 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         let (next, changed) = candidate(rows);
         assert_eq!(
             unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
-            expected
+            if expected {
+                unique::Decision::Accepted
+            } else {
+                unique::Decision::Conflict("aaa_serial_group".into())
+            }
         );
         let actual =
             crate::index_source::validate_changes(&first.indexes, &first.state, &next, &changed);
@@ -777,7 +786,7 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
             actual.unwrap();
         } else {
             assert!(
-                matches!(actual,Err(kasumi_query::ReadFailure::Query(ref e)) if e.code == kasumi_types::ErrorCode::Conflict)
+                matches!(actual,Err(kasumi_query::ReadFailure::Query(ref e)) if e == &kasumi_query::unique_conflict("aaa_serial_group"))
             );
         }
     };
@@ -802,6 +811,19 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         ],
         false,
         false,
+    );
+
+    // A matching digest for oversized tuples forces canonical comparison.
+    let long = "x".repeat(kasumi_query::MAX_ORDERED_TUPLE_BYTES + 1);
+    let over = json!({"group":long,"serial":100});
+    let (next, changed) = candidate(vec![("aa", over.clone()), ("zz", over)]);
+    assert_eq!(
+        unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
+        unique::Decision::Inconclusive
+    );
+    assert!(
+        matches!(crate::index_source::validate_changes(&first.indexes,&first.state,&next,&changed),
+        Err(kasumi_query::ReadFailure::Query(ref e)) if e==&kasumi_query::unique_conflict("aaa_serial_group"))
     );
 
     struct Failing<'a>(&'a kasumi_store::TenantReadView);

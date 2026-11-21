@@ -275,6 +275,9 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
             self.source
                 .ordered_unique_window(index, lower, upper, descending, cancellation)?;
         self.check()?;
+        if let Some(rows) = &result {
+            crate::ordered_tuple::check_window(rows, lower, upper, descending)?;
+        }
         Ok(result)
     }
     fn visit_field_posting(
