@@ -570,6 +570,9 @@ pub(crate) fn visit_all(
             }
         }
     }
+    if layout >= kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT {
+        crate::application_structured::visit_compound_rows(&generation.indexes, &mut emit)?;
+    }
     Ok(())
 }
 

@@ -855,7 +855,7 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         );
         assert_eq!(
             unique::prove_with_overlay(
-                &reader,
+                unique::ClaimTree::ordinary(&reader),
                 &logical.indexes,
                 &logical.state,
                 &next,

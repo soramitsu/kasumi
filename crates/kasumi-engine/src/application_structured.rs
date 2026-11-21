@@ -345,6 +345,21 @@ fn ordered_values<'a>(
     flush_run(&mut run, &mut visit)
 }
 
+/// This family has identical physical keys in the applied directory and a
+/// verified immutable snapshot. Values are the complete owner IDs.
+pub(crate) fn visit_compound_rows(
+    indexes: &QueryIndexes,
+    emit: &mut impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    indexes.visit_compound_rows(|name, index, key, id| -> Result<bool> {
+        let mut native = field_prefix(COMPOUND, name, index);
+        native.extend_from_slice(key);
+        emit(&checked_key(native)?, id.as_bytes())?;
+        Ok(true)
+    })?;
+    Ok(())
+}
+
 /// Every row of `indexes` in strictly increasing key order.
 pub(crate) fn visit_rows(
     indexes: &QueryIndexes,
@@ -382,12 +397,7 @@ pub(crate) fn visit_rows(
             }
         }
     }
-    indexes.visit_compound_rows(|name, index, key, id| -> Result<bool> {
-        let mut native = field_prefix(COMPOUND, name, index);
-        native.extend_from_slice(key);
-        emit(&checked_key(native)?, id.as_bytes())?;
-        Ok(true)
-    })?;
+    visit_compound_rows(indexes, &mut emit)?;
     for (name, fields) in indexes.structured_collections() {
         for (ordinal, field) in fields.enumerate() {
             let prefix = field_prefix(POSTING, name, ordinal);

@@ -1874,6 +1874,33 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     .await?;
     let reopened = reopened_engine.generation()?;
     compound_seek(&reopened, &target.storage.admission)?;
+    let checkpoint_rows = reopened
+        .application_selection
+        .get()
+        .unwrap()
+        .with_snapshot_records(None, &reopened.state, |tree, _, layout| {
+            anyhow::ensure!(
+                layout >= kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT,
+                "restored checkpoint lacks compound tuples"
+            );
+            crate::application_structured::ordered_unique_window(
+                tree,
+                "docs",
+                0,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+                true,
+                || true,
+            )
+        })?
+        .expect("authenticated checkpoint compound root");
+    assert_eq!(
+        checkpoint_rows
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["point"]
+    );
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
     let selection = reopened.application_selection.get().unwrap();

@@ -435,12 +435,11 @@ impl DocumentSource for GenerationDocumentSource<'_> {
             return Ok(None);
         };
         let mut interrupted = None;
-        let result = selection.with_structured_records_since(
+        let result = selection.with_ordered_tuples(
             self.directory_reader(),
             &self.generation.state,
             || self.generation.indexes.structured_layout_sha256(),
-            kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
-            |tree| {
+            |tree, _| {
                 crate::application_structured::ordered_unique_window(
                     tree,
                     &self.collection,

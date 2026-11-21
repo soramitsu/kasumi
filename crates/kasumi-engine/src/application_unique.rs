@@ -40,12 +40,11 @@ pub(crate) fn validate_ordinary(
         && let Some((roots, selection)) = roots.zip(base.application_selection.get())
     {
         let proved = selection
-            .with_structured_records_since(
+            .with_ordered_tuples(
                 None,
                 &base.state,
                 || base.indexes.structured_layout_sha256(),
-                kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
-                |reader| {
+                |reader, fields| {
                     let _workspace = roots.memory_owner().clone().reserve_installed(
                         if group.is_some_and(|(_, ids)| !ids.is_empty()) {
                             2 * WORKSPACE
@@ -64,7 +63,7 @@ pub(crate) fn validate_ordinary(
                         BTreeMap::new()
                     };
                     prove_with_overlay(
-                        reader,
+                        ClaimTree { reader, fields },
                         &previous.indexes,
                         old,
                         candidate,
@@ -221,8 +220,22 @@ fn hash_part(hash: &mut Sha256, value: &[u8]) {
     hash.update(value);
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ClaimTree<'a, 's> {
+    reader: &'a TreeReader<'s>,
+    fields: bool,
+}
+#[cfg(test)]
+impl<'a, 's> ClaimTree<'a, 's> {
+    pub(super) fn ordinary(reader: &'a TreeReader<'s>) -> Self {
+        Self {
+            reader,
+            fields: true,
+        }
+    }
+}
 fn probe(
-    reader: &TreeReader<'_>,
+    source: ClaimTree<'_, '_>,
     indexes: &QueryIndexes,
     collection: &str,
     index: &IndexDefinition,
@@ -230,6 +243,7 @@ fn probe(
     budget: &mut Budget,
     overlay: &GroupOverlay,
 ) -> Result<Probe> {
+    let reader = source.reader;
     if index
         .fields
         .iter()
@@ -279,6 +293,9 @@ fn probe(
             exact,
             owner,
         });
+    }
+    if !source.fields {
+        return Ok(Probe::Inconclusive);
     }
     let mut prefixes = Vec::with_capacity(index.fields.len());
     let mut absent = false;
@@ -391,7 +408,7 @@ pub(super) fn prove(
     resolver: Option<&dyn DocumentResolver>,
 ) -> Result<Decision> {
     prove_with_overlay(
-        reader,
+        ClaimTree::ordinary(reader),
         indexes,
         old,
         new,
@@ -401,7 +418,7 @@ pub(super) fn prove(
     )
 }
 pub(super) fn prove_with_overlay(
-    reader: &TreeReader<'_>,
+    source: ClaimTree<'_, '_>,
     indexes: &QueryIndexes,
     old: &TenantState,
     new: &TenantState,
@@ -465,7 +482,7 @@ pub(super) fn prove_with_overlay(
                 };
                 for index in &unique {
                     let (key, exact, owner) = match probe(
-                        reader,
+                        source,
                         indexes,
                         name,
                         index,

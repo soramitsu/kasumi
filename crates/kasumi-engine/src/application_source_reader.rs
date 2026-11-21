@@ -458,6 +458,37 @@ impl SelectedApplication {
         self.with_structured_records_since(shared, state, layout_sha256, 1, read)
     }
 
+    /// Both layouts use identical canonical compound points. Only the ordinary
+    /// tree also contains ordinary-field postings. A caller over an earlier
+    /// snapshot would need to reconcile the selected log tail first.
+    pub(crate) fn with_ordered_tuples<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &kasumi_types::TenantState,
+        layout: impl FnOnce() -> [u8; 32],
+        mut read: impl FnMut(&kasumi_store::ordered_pages::TreeReader<'_>, bool) -> Result<T>,
+    ) -> Result<Option<T>> {
+        if let Some(result) = self.with_structured_records_since(
+            shared,
+            state,
+            layout,
+            kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
+            |tree| read(tree, true),
+        )? {
+            return Ok(Some(result));
+        }
+        if !self.has_exact_snapshot(state.revision_base, state.revision) {
+            return Ok(None);
+        }
+        self.with_snapshot_records(shared, state, |tree, _, layout| {
+            if layout < kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT {
+                return Ok(None);
+            }
+            read(tree, false).map(Some)
+        })
+        .map(Option::flatten)
+    }
+
     pub(crate) fn with_structured_records_since<T>(
         &self,
         shared: Option<&crate::document_store::SelectedRead>,
