@@ -20,7 +20,7 @@ fn prepare_publication(
     prepare_publication_at(
         owner,
         store,
-        (previous, previous_indexes),
+        (previous, previous_indexes, None),
         (candidate, candidate_indexes),
         applied,
         |_| Ok(true),
@@ -669,7 +669,7 @@ async fn structured_edits_borrow_overflow_values_until_the_producer_fits() {
             &owner,
             &fixture.store,
             &selected,
-            &first.indexes,
+            (&first.indexes, None),
             &next.state,
             &next.indexes,
             Some(applied(&next.state, 1)),
@@ -834,6 +834,40 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     let logical = first.next(vec![("d000".to_owned(), body(55))], &[], None);
     let touched = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["d000".to_owned()]))]);
     let changed = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["later".to_owned()]))]);
+    let captured = compound_delta::Captured::collect(
+        &first.state,
+        &logical.state,
+        &logical.indexes,
+        &touched,
+        None,
+        fixture.store.plaintext_memory_owner().clone(),
+    )
+    .unwrap()
+    .expect("admitted bounded tuple edits");
+    let mut expected = Vec::new();
+    logical
+        .indexes
+        .visit_structured_changes(&first.indexes, |name, added, row| {
+            if let StructuredRow::Compound { index, key, id } = row {
+                expected.push((name.to_owned(), added, index, key.to_vec(), id.to_owned()));
+            }
+            Ok::<_, ()>(true)
+        })
+        .unwrap();
+    let mut observed = Vec::new();
+    captured
+        .visit(|name, added, row| {
+            let StructuredRow::Compound { index, key, id } = row else {
+                unreachable!()
+            };
+            observed.push((name.to_owned(), added, index, key.to_vec(), id.to_owned()));
+            Ok::<_, ()>(true)
+        })
+        .unwrap();
+    expected.sort();
+    observed.sort();
+    assert_eq!(observed, expected);
+    assert_eq!(observed.len(), 4);
     let override_rows =
         unique::group_overlay(&first.state, &logical.state, &touched, &changed, None)
             .unwrap()

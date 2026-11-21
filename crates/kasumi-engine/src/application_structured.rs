@@ -40,6 +40,9 @@ pub(crate) use incremental::maintain;
 #[cfg(test)]
 pub(crate) use incremental::seed as seed_for_test;
 
+#[path = "application_compound_delta.rs"]
+pub(crate) mod compound_delta;
+
 #[path = "application_unique.rs"]
 pub(crate) mod unique;
 
@@ -358,6 +361,86 @@ pub(crate) fn visit_compound_rows(
         Ok(true)
     })?;
     Ok(())
+}
+
+/// Stage from the producer's selected tuple rows when available. Release
+/// each read before passing rows to a possibly writing checkpoint sink.
+/// An unselected collection follows its independent generation fallback.
+pub(crate) fn visit_checkpoint_compounds(
+    generation: &crate::Generation,
+    mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<usize> {
+    let Some(selected) = generation.application_selection.get() else {
+        visit_compound_rows(&generation.indexes, &mut emit)?;
+        return Ok(0);
+    };
+    let layout = std::cell::OnceCell::new();
+    let mut selected_collections = 0;
+    for name in generation.state.collections.keys() {
+        let count = generation.indexes.compound_count(name);
+        if count == 0 {
+            continue;
+        }
+        let mut physical = false;
+        for index in 0..count {
+            let prefix = field_prefix(COMPOUND, name, index);
+            let mut after: Option<Vec<u8>> = None;
+            loop {
+                let window = selected.with_ordered_tuples(
+                    None,
+                    &generation.state,
+                    || *layout.get_or_init(|| generation.indexes.structured_layout_sha256()),
+                    std::iter::once(name.as_str()),
+                    |reader, _| {
+                        ordered_unique_window(
+                            reader,
+                            name,
+                            index,
+                            after.as_deref().map_or(Bound::Unbounded, Bound::Excluded),
+                            Bound::Unbounded,
+                            false,
+                            || true,
+                        )
+                    },
+                )?;
+                let Some(rows) = window else {
+                    ensure!(
+                        !physical,
+                        "selected compound directory disappeared during checkpoint"
+                    );
+                    break;
+                };
+                physical = true;
+                let continued = rows.len() == kasumi_query::ORDERED_TUPLE_WINDOW;
+                for (key, id) in rows {
+                    let mut native = prefix.clone();
+                    native.extend_from_slice(&key);
+                    emit(&checked_key(native)?, id.as_bytes())?;
+                    after = Some(key);
+                }
+                if !continued {
+                    break;
+                }
+            }
+            if !physical {
+                break;
+            }
+        }
+        if physical {
+            selected_collections += 1;
+        } else {
+            generation.indexes.visit_collection_compound_rows(
+                name,
+                |index, key, id| -> Result<bool> {
+                    let mut native = field_prefix(COMPOUND, name, index);
+                    native.extend_from_slice(key);
+                    emit(&checked_key(native)?, id.as_bytes())?;
+                    Ok(true)
+                },
+            )?;
+        }
+    }
+    Ok(selected_collections)
 }
 
 /// Every row of `indexes` in strictly increasing key order.
@@ -761,7 +844,11 @@ fn step(
 pub(crate) fn prepare_publication_at(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: (&TenantState, &QueryIndexes),
+    previous: (
+        &TenantState,
+        &QueryIndexes,
+        Option<&compound_delta::Captured>,
+    ),
     candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
     matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
@@ -794,12 +881,16 @@ pub(crate) fn prepare_publication_at(
 fn follow(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: (&TenantState, &QueryIndexes),
+    previous: (
+        &TenantState,
+        &QueryIndexes,
+        Option<&compound_delta::Captured>,
+    ),
     candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
     matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
 ) -> Result<Option<StructuredPublication>> {
-    let (previous, previous_indexes) = previous;
+    let (previous, previous_indexes, compound) = previous;
     let (candidate, candidate_indexes) = candidate;
     if !owner
         .replacement
@@ -906,7 +997,7 @@ fn follow(
         owner,
         store,
         &base,
-        previous_indexes,
+        (previous_indexes, compound),
         candidate,
         candidate_indexes,
         applied.clone(),
@@ -1007,17 +1098,35 @@ fn stale(
     ])))
 }
 
+fn visit_edit_changes<E>(
+    previous: &QueryIndexes,
+    next: &QueryIndexes,
+    captured: Option<&compound_delta::Captured>,
+    mut emit: impl FnMut(&str, bool, StructuredRow<'_>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    if let Some(captured) = captured {
+        if !next.visit_structured_field_changes(previous, &mut emit)? {
+            return Ok(false);
+        }
+        captured.visit(emit)
+    } else {
+        next.visit_structured_changes(previous, emit)
+    }
+}
+
 fn edit(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
     base: &StructuredManifest,
-    previous_indexes: &QueryIndexes,
+    previous: (&QueryIndexes, Option<&compound_delta::Captured>),
     candidate: &TenantState,
     candidate_indexes: &QueryIndexes,
     applied: Option<StructuredApplied>,
 ) -> Result<Option<StructuredPublication>> {
+    let (previous_indexes, compound) = previous;
     owner.recover(store)?;
     let layout = candidate_indexes.structured_layout_sha256();
+    let compound = compound.filter(|_| layout == base.layout_sha256);
     if base.format < structured::ORDERED_TUPLE_FORMAT {
         return Ok(None);
     }
@@ -1031,8 +1140,10 @@ fn edit(
     let mut allocations = 0usize;
     // Both generations are immutable. Quote the producer stream without
     // retaining rows, before any map node, edit array or payload is allocated.
-    let within = candidate_indexes.visit_structured_changes(
+    let within = visit_edit_changes(
         previous_indexes,
+        candidate_indexes,
+        compound,
         |collection, added, row| -> Result<bool> {
             if let StructuredRow::Value { value, .. } = row {
                 if value.bytes.len() <= INLINE_VALUE {
@@ -1073,8 +1184,10 @@ fn edit(
     let retained = allocations + 2048 + 256 * operations.min(MAX_EDIT_ROWS + 1);
     let rows_lease = memory.clone().reserve_installed(retained.try_into()?)?;
     let mut rows = BTreeMap::new();
-    let within = candidate_indexes.visit_structured_changes(
+    let within = visit_edit_changes(
         previous_indexes,
+        candidate_indexes,
+        compound,
         |collection, added, row| -> Result<bool> {
             if let Some((key, value)) = encode_row(collection, row)? {
                 rows.insert(key, added.then(|| value.to_vec()));

@@ -713,3 +713,68 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         assert_eq!(seen, expected);
     }
 }
+
+#[test]
+fn compound_keys_share_field_strings_across_build_swaps_and_new_values() {
+    use crate::scalar::IndexString;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    fn check(indexes: &QueryIndexes) {
+        let structured = &indexes.collections["ordered"].structured;
+        let unique = structured.unique.values().next().unwrap();
+        let mut count = 0;
+        for (tuple, _) in unique
+            .entries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .chain(unique.overflow.iter())
+        {
+            for (key, field) in tuple.iter().zip(&unique.fields) {
+                let Some((Scalar::String(IndexString::Shared(posting)), _)) =
+                    structured.fields[&field.path].entries.get_key_value(key)
+                else {
+                    panic!("field did not own a shared string")
+                };
+                let Scalar::String(IndexString::Shared(component)) = key else {
+                    panic!("tuple copied a field string")
+                };
+                assert!(Arc::ptr_eq(component, posting));
+            }
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+    let wide = "q".repeat(4096);
+    let (base, indexes) = small_fixture(
+        &[("/scope", ScalarType::String), ("/key", ScalarType::String)],
+        [
+            json!({"scope":"g","key":"small"}),
+            json!({"scope":"g","key":wide}),
+            json!({"scope":"g","key":"untouched"}),
+        ],
+    );
+    check(&indexes);
+    let mut next = base.clone();
+    let coll = next.get_mut("ordered").unwrap();
+    coll.data_epoch += 1;
+    for (id, key) in [("row-0", wide.as_str()), ("row-1", "small")] {
+        coll.documents.insert(
+            id.into(),
+            pending(Document {
+                id: id.into(),
+                version: 2,
+                body: json!({"scope":"fresh","key":key}),
+            }),
+        );
+    }
+    let changed = BTreeMap::from([(
+        "ordered".to_owned(),
+        BTreeSet::from(["row-0".to_owned(), "row-1".to_owned()]),
+    )]);
+    let updated = indexes.update_fixture(&base, &next, &changed).unwrap();
+    check(&updated);
+    check(&indexes);
+    let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
+    check(&rebuilt);
+}

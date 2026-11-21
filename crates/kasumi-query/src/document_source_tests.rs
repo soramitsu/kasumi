@@ -146,6 +146,7 @@ fn compound_postings_use_selected_ids_and_release_partial_results() {
                     path.to_owned(),
                     structured::FieldIndex {
                         kind: ScalarType::String,
+                        share_strings: false,
                         entries: Default::default(),
                         present: Default::default(),
                     },

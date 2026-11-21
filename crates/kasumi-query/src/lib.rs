@@ -1519,7 +1519,7 @@ fn group_value(key: Scalar, kind: Option<ScalarType>) -> Result<Option<Value>> {
         Scalar::Missing => None,
         Scalar::Null => Some(Value::Null),
         Scalar::Boolean(value) => Some(Value::Bool(value)),
-        Scalar::String(value) => Some(Value::String(value)),
+        Scalar::String(value) => Some(Value::String(value.into_string())),
         Scalar::UpperBound => return Err(invalid("internal bound cannot be a stored value")),
         Scalar::Number(value) => Some(numeric_value(&value, kind)?),
     })
