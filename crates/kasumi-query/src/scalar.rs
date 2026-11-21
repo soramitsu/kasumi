@@ -160,29 +160,59 @@ pub(crate) fn query_scalar<W: QueryWorkspace>(
     Ok((scalar(value, kind)?, bytes))
 }
 
-pub(crate) fn indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<Vec<Scalar>> {
-    match kind {
-        ScalarType::StringArray | ScalarType::NumberArray => match value {
-            None => Ok(vec![Scalar::Missing]),
-            Some(Value::Null) => Ok(vec![Scalar::Null]),
-            Some(Value::Array(values)) => {
-                if values.len() > 4096 {
-                    return Err(invalid("indexed arrays are limited to 4096 values"));
-                }
-                values
-                    .iter()
-                    .map(|v| {
-                        if v.is_null() {
-                            return Err(invalid("indexed array elements cannot be null"));
-                        }
-                        scalar(Some(v), Some(kind))
-                    })
-                    .collect()
+/// Lend a declared array's elements individually. Missing and explicit null
+/// still represent one index key; an empty array has no keys.
+fn indexed_inputs(
+    value: Option<&Value>,
+    kind: ScalarType,
+) -> Result<impl Iterator<Item = Result<Option<&Value>>>> {
+    let array = match (kind, value) {
+        (ScalarType::StringArray | ScalarType::NumberArray, Some(Value::Array(values))) => {
+            if values.len() > 4096 {
+                return Err(invalid("indexed arrays are limited to 4096 values"));
             }
-            _ => Err(invalid("array index requires an array")),
-        },
-        _ => Ok(vec![scalar(value, Some(kind))?]),
+            Some(values.as_slice())
+        }
+        (ScalarType::StringArray | ScalarType::NumberArray, Some(value)) if !value.is_null() => {
+            return Err(invalid("array index requires an array"));
+        }
+        _ => None,
+    };
+    let single = array.is_none().then_some(value);
+    Ok(single
+        .into_iter()
+        .map(Ok)
+        .chain(array.unwrap_or_default().iter().map(|element| {
+            if element.is_null() {
+                Err(invalid("indexed array elements cannot be null"))
+            } else {
+                Ok(Some(element))
+            }
+        })))
+}
+
+pub(crate) fn indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<Vec<Scalar>> {
+    indexed_inputs(value, kind)?
+        .map(|part| scalar(part?, Some(kind)))
+        .collect()
+}
+
+pub(crate) fn validate_indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<()> {
+    for part in indexed_inputs(value, kind)? {
+        let part = part?;
+        // Arbitrary UTF-8 strings are valid for both string index kinds.
+        // Validation needs their type, while the writer constructs the key.
+        if !matches!(
+            (kind, part),
+            (
+                ScalarType::String | ScalarType::StringArray,
+                Some(Value::String(_))
+            )
+        ) {
+            scalar(part, Some(kind))?;
+        }
     }
+    Ok(())
 }
 
 pub(crate) fn validate_pointer(path: &str) -> Result<()> {

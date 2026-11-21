@@ -1,4 +1,6 @@
-use crate::scalar::{Scalar, decimal, indexed_values, invalid, validate_pointer};
+use crate::scalar::{
+    Scalar, decimal, indexed_values, invalid, validate_indexed_values, validate_pointer,
+};
 use crate::{
     CollectionRecords, ReadResult, Record, index_input::CheckedRecords, structured::Structured,
 };
@@ -342,7 +344,7 @@ fn validate_document_fields(
     })?;
     for index in &definition.indexes {
         for field in &index.fields {
-            indexed_values(body.pointer(&field.path), field.kind).map_err(|e| {
+            validate_indexed_values(body.pointer(&field.path), field.kind).map_err(|e| {
                 Error::new(
                     ErrorCode::SchemaViolation,
                     format!("{}: {}", field.path, e.message),
