@@ -704,7 +704,12 @@ pub(crate) fn prepare_publication(
                 }
                 // A failed rebuild backs off: the directory stays stale quietly.
                 Ok(None) => return Ok(stale(Some(manifest), candidate, &position.current)),
-                Err(error) => Err(error),
+                Err(error) => {
+                    // A later producer or store failure can leave unpublished
+                    // journal batches. Settle them before the next edit.
+                    owner.dirty.store(true, Ordering::Release);
+                    Err(error)
+                }
             }
         }
         Plan::Rebuild if rebuild_allowed => {
@@ -906,6 +911,7 @@ fn edit(
             .map(String::as_str),
     );
     let mut edits = Edits::new();
+    let mut updates = Vec::new();
     let mut totals = Totals {
         collections: manifest.collections,
         shards: manifest.shards,
@@ -950,37 +956,43 @@ fn edit(
                     previous.collections.contains_key(name),
                     "indexed text collection lacks its predecessor"
                 );
-                let ids = changed.get(name);
-                CollectionEdit {
-                    memory: store.plaintext_memory_owner(),
-                    tree: &tree,
-                    name,
-                    layout: &layout,
-                    collection,
-                    edits: &mut edits,
-                    totals: &mut totals,
-                }
-                .apply(descriptor, ids, bodies)?;
+                updates.push((name, collection, layout, descriptor));
             }
         }
     }
-    let rows: Vec<Edit<'_>> = edits
-        .iter()
-        .map(|(key, value)| match value {
-            Some(value) => Edit::Put(key, value),
-            None => Edit::Delete(key),
-        })
-        .collect();
-    let (records, mut writes, workspace) = if rows.is_empty() {
+    // Decide every rebuild/removal before the first edit can stage pages.
+    // Each file batch joins the same unpublished tree and original journal.
+    let (records, mut writes, workspace) = if edits.is_empty() && updates.is_empty() {
         (manifest.records, Vec::new(), None)
     } else {
-        let edit =
-            ordered_pages::edit_tree_staged(store, &manifest.page_space, &manifest.records, &rows)?;
+        let edit = ordered_pages::edit_tree_staged_batches(
+            store,
+            &manifest.page_space,
+            &manifest.records,
+            u32::MAX,
+            |stage| {
+                stage_edits(&edits, stage)?;
+                drop(edits);
+                for (name, collection, layout, descriptor) in updates {
+                    let mut metadata = Edits::new();
+                    CollectionEdit {
+                        memory: store.plaintext_memory_owner(),
+                        tree: &tree,
+                        name,
+                        layout: &layout,
+                        collection,
+                        edits: &mut metadata,
+                        totals: &mut totals,
+                    }
+                    .apply(descriptor, changed.get(name), bodies, stage)?;
+                    stage_edits(&metadata, stage)?;
+                }
+                Ok(())
+            },
+        )?;
         let (root, writes, workspace) = edit.into_parts();
         (root, writes, Some(workspace))
     };
-    drop(rows);
-    drop(edits);
     let next = TextManifest::new(
         &candidate.tenant,
         &candidate.incarnation,
@@ -1000,6 +1012,40 @@ fn edit(
         manifest: next,
         _workspace: workspace,
     }))
+}
+
+fn stage_edits(edits: &Edits, stage: &mut dyn FnMut(&[Edit<'_>]) -> Result<()>) -> Result<()> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let rows: Vec<_> = edits
+        .iter()
+        .map(|(key, value)| match value {
+            Some(value) => Edit::Put(key, value),
+            None => Edit::Delete(key),
+        })
+        .collect();
+    stage(&rows)
+}
+
+/// No later step can retire this new shard. Move its files into the current
+/// edit window and release them before building the next shard.
+fn stage_shard(
+    name: &str,
+    layout: &TextShardLayout,
+    seq: u64,
+    level: u8,
+    built: BuiltTextShard,
+    stage: &mut dyn FnMut(&[Edit<'_>]) -> Result<()>,
+) -> Result<()> {
+    let descriptor = encode(&ShardDescriptor::of(layout, &built))?;
+    let mut edits = Edits::new();
+    for (file, bytes) in built.files {
+        edits.insert(file_key(name, seq, &file), Some(bytes));
+    }
+    edits.insert(shard_key(name, seq), Some(descriptor));
+    edits.insert(level_key(name, level, seq), Some(Vec::new()));
+    stage_edits(&edits, stage)
 }
 
 fn delete_collection(
@@ -1066,6 +1112,7 @@ impl CollectionEdit<'_, '_> {
         mut descriptor: CollectionDescriptor,
         ids: Option<&BTreeSet<String>>,
         bodies: &dyn TextBodies,
+        stage: &mut dyn FnMut(&[Edit<'_>]) -> Result<()>,
     ) -> Result<()> {
         let start = (descriptor.shards, descriptor.bytes);
         // Shards are addressed by (level, seq); stored ones keep their files.
@@ -1095,6 +1142,7 @@ impl CollectionEdit<'_, '_> {
             }
         }
         // Index every changed live version in new shards.
+        let mut pending_per_level = [0usize; 5];
         if let Some(ids) = ids {
             let rows = ids.iter().filter_map(|id| {
                 live_version(self.collection, id)?;
@@ -1104,7 +1152,17 @@ impl CollectionEdit<'_, '_> {
                 let seq = descriptor.next_shard;
                 descriptor.next_shard += 1;
                 descriptor.add(shard.documents, shard.bytes(), &shard.tokens)?;
-                members.insert(seq, (level(shard.documents), Member::Pending(shard)));
+                let level = level(shard.documents);
+                // Each merge takes the earliest FANIN members. Later members
+                // cannot participate in either round, and compaction only
+                // considers pre-existing sealed shards.
+                if level == SEALED
+                    || pending_per_level[usize::from(level)] >= FANIN * MAX_MERGES_PER_PUBLICATION
+                {
+                    return stage_shard(self.name, self.layout, seq, level, shard, stage);
+                }
+                pending_per_level[usize::from(level)] += 1;
+                members.insert(seq, (level, Member::Pending(shard)));
                 Ok(())
             })?;
         }
@@ -1216,15 +1274,7 @@ impl CollectionEdit<'_, '_> {
             let Member::Pending(built) = member else {
                 unreachable!("only new shards are members")
             };
-            let descriptor = encode(&ShardDescriptor::of(self.layout, &built))?;
-            for (file, bytes) in built.files {
-                self.edits
-                    .insert(file_key(self.name, seq, &file), Some(bytes));
-            }
-            self.edits
-                .insert(shard_key(self.name, seq), Some(descriptor));
-            self.edits
-                .insert(level_key(self.name, level, seq), Some(Vec::new()));
+            stage_shard(self.name, self.layout, seq, level, built, stage)?;
         }
         self.edits
             .insert(collection_key(self.name), Some(encode(&descriptor)?));
