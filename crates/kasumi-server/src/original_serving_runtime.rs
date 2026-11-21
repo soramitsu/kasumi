@@ -317,13 +317,23 @@ impl RecoverySeat {
             && !self.stores_observation.unsettled()
             && !self.retired_observation.unsettled()
             && self.failure.as_ref().is_some_and(|failure| {
-                matches!(
-                    failure.original,
+                let native_free = match &failure.original {
+                    RecoveryOriginal::Snapshot(kasumi_engine::SnapshotFailure::Operation(
+                        error,
+                    )) => !error.has_physical_source(),
                     RecoveryOriginal::Snapshot(
-                        kasumi_engine::SnapshotFailure::Operation(_)
-                            | kasumi_engine::SnapshotFailure::AdmissionRefused(_)
-                    )
-                ) && failure.route_cleanup.is_none()
+                        kasumi_engine::SnapshotFailure::AdmissionRefused(_),
+                    ) => true,
+                    RecoveryOriginal::Snapshot(kasumi_engine::SnapshotFailure::Source(error)) => {
+                        // The actual outer fixed store gate refusal owns no resource.
+                        // Never inspect through a wrapping cleanup or provider owner.
+                        let outer: &(dyn std::error::Error + 'static) = error.as_ref();
+                        outer.is::<kasumi_store::KeyAccessDenied>()
+                    }
+                    _ => false,
+                };
+                native_free
+                    && failure.route_cleanup.is_none()
                     && failure.database_cleanup.is_none()
                     && failure.stores_cleanup.is_none()
                     && failure.retired_cleanup.is_none()
@@ -2061,6 +2071,17 @@ mod tests {
             ..Default::default()
         };
         assert!(seat.native_free_failure());
+        let typed_with_owner = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "provider returned an owner",
+        )
+        .with_physical_source(anyhow::anyhow!("original caller custody"));
+        let resource_free = seat.failure.replace(OriginalRecoveryFailure::snapshot_at(
+            typed_with_owner.into(),
+            RecoverStage::StorageOpen,
+        ));
+        assert!(!seat.native_free_failure());
+        seat.failure = resource_free;
         seat.stores_observation.entry = CleanupEntry::Entered;
         assert!(!seat.native_free_failure());
         seat.stores_observation.entry = CleanupEntry::Returned;
