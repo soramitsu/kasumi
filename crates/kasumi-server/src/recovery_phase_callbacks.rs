@@ -3,7 +3,7 @@
 use kasumi_engine::{Database, ResponseFence, TargetSigner};
 use kasumi_types::{
     Action, Error, ErrorCode, LifecycleNode, RequestContext, Result, SignedTargetWriterChallenge,
-    TargetRuntimeRequest, TargetRuntimeStep,
+    TargetReplicaInput, TargetRuntimeRequest, TargetRuntimeStep,
 };
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -63,7 +63,9 @@ impl PhaseCallbacks {
         fence.retain_response_bytes(8192)?;
         let mut phases = vec![phase];
         let mut historical_intent = None;
-        if let TargetRuntimeStep::InspectInitialMembership(input) = &request.step {
+        if let TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(input))
+        | TargetRuntimeStep::InspectInitialMembership(input) = &request.step
+        {
             historical_intent = Some(input.original_intent.request.command_id);
             for record in input
                 .starts
