@@ -42,6 +42,31 @@ fn observation(
     })
 }
 
+#[test]
+fn fresh_original_rechecks_the_installed_remote_control_incarnation() {
+    let remote = Arc::new(remote());
+    let access = crate::administration::ControlAccess::Remote(remote.clone());
+    let original = uuid::Uuid::new_v4().to_string();
+    let replacement = uuid::Uuid::new_v4().to_string();
+    assert!(access.routes_to("tenant", &original).is_err());
+
+    for (version, incarnation) in [(1_u8, &original), (2, &replacement)] {
+        let mut next = observation(&remote, version.into(), version.into(), version);
+        Arc::get_mut(&mut next).unwrap().topology.tenants.insert(
+            "tenant".into(),
+            TenantRoute {
+                incarnation: incarnation.clone(),
+                mode: kasumi_types::control_topology::DeploymentMode::Replicated,
+                voters: BTreeSet::from([4, 5, 6]),
+            },
+        );
+        remote.admit(next).unwrap();
+        assert!(access.routes_to("tenant", incarnation).unwrap());
+        assert_eq!(access.routes_to("tenant", &original).unwrap(), version == 1);
+        assert!(!access.routes_to("other", incarnation).unwrap());
+    }
+}
+
 #[tokio::test]
 async fn sealed_remote_observations_drain_all_admitted_readers() {
     let remote = remote();

@@ -1894,10 +1894,7 @@ impl Administration {
                 }
                 database.check_serving()?;
                 ensure!(
-                    self.committed_topology()?
-                        .tenants
-                        .get(tenant)
-                        .is_some_and(|route| route.incarnation == incarnation),
+                    self.control.routes_to(tenant, incarnation)?,
                     "Control route changed during fresh tenant admission"
                 );
                 Ok::<_, anyhow::Error>(())
