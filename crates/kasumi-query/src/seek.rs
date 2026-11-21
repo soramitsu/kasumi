@@ -27,7 +27,53 @@ const SHAPE: &str = "seek paging walks a unique index: the filter may only fix i
     fields with equality and bound the next field with one range, and sort lists the \
     remaining fields in one direction";
 
+type TupleMap = imbl::OrdMap<Vec<Scalar>, String>;
+
+#[derive(Debug)]
+pub(crate) struct Projection {
+    // The worker exclusively owns this projection. Keep the original captured
+    // fallback until its actual planned native read has returned successfully.
+    fallback: std::sync::Mutex<Option<Vec<TupleMap>>>,
+}
+
 impl QueryIndexes {
+    /// Retain only the fallback rows needed by a registered seek worker after
+    /// its first successful physical tuple window for this collection.
+    /// Its ordinary tuples are owned by that captured directory. Single-field
+    /// postings and oversized tuples keep their canonical fallback.
+    #[doc(hidden)]
+    pub fn published_seek_projection(&self, collection: &str) -> Option<Self> {
+        let source = self.collections.get(collection)?;
+        let mut selected = crate::CollectionIndexes::clone(source);
+        selected.text = None;
+        selected.structured.ids.clear();
+        selected.structured.fields.retain(|path, _| {
+            selected
+                .structured
+                .unique
+                .values()
+                .any(|index| index.fields.len() == 1 && index.fields[0].path == *path)
+        });
+        for field in selected.structured.fields.values_mut() {
+            field.present.clear();
+        }
+        let fallback = selected
+            .structured
+            .unique
+            .values_mut()
+            .filter(|index| index.fields.len() > 1)
+            .map(|index| std::mem::take(index.entries.as_mut().expect("compound tuple root")))
+            .collect();
+        Some(Self {
+            collections: BTreeMap::from([(collection.to_owned(), std::sync::Arc::new(selected))]),
+            text_residency: crate::TextResidency::Directory,
+            seek_projection: Some(Projection {
+                fallback: std::sync::Mutex::new(Some(fallback)),
+            }),
+            structured_layout: std::sync::OnceLock::from(self.structured_layout_sha256()),
+        })
+    }
+
     /// One page of `request` in the order of the unique index that its filter
     /// and sort describe, after `after` (a previous page's `last_key`). The
     /// page's row copies stay admitted in `memory`. `cursor_bytes` measures
@@ -166,11 +212,50 @@ impl QueryIndexes {
                         memory.release(workspace)?;
                     }
                 }
+                let projected_fallback = if let Some(read) = &self.seek_projection
+                    && index.fields.len() > 1
+                {
+                    let mut fallback = read.fallback.lock().map_err(|_| {
+                        Error::new(ErrorCode::Unavailable, "captured seek fallback poisoned")
+                    })?;
+                    if native.is_some() {
+                        // The exact physical root now owns this immutable walk.
+                        fallback.take();
+                        None
+                    } else {
+                        let ordinal = indexes
+                            .structured
+                            .unique
+                            .values()
+                            .filter(|i| i.fields.len() > 1)
+                            .position(|i| std::ptr::eq(i, index))
+                            .expect("selected compound index");
+                        Some(
+                            fallback
+                                .as_ref()
+                                .and_then(|roots| roots.get(ordinal))
+                                .ok_or_else(|| {
+                                    Error::new(
+                                        ErrorCode::Corruption,
+                                        "captured physical seek directory disappeared",
+                                    )
+                                })?
+                                .clone(),
+                        )
+                    }
+                } else {
+                    None
+                };
                 let mut tuples = if native.is_none() {
-                    index.entries.as_ref().map(|entries| {
-                        entries
-                            .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
-                    })
+                    projected_fallback
+                        .as_ref()
+                        .or(index.entries.as_ref())
+                        .map(|entries| {
+                            entries.range::<_, Vec<Scalar>>((
+                                range.lower.as_ref(),
+                                range.upper.as_ref(),
+                            ))
+                        })
                 } else {
                     None
                 };

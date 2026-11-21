@@ -144,22 +144,77 @@ impl Generation {
     /// Share persistent document roots and fixed point-history owners without
     /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
+        self.lease_with_collections(
+            self.state.collections.clone(),
+            Arc::new(QueryIndexes::default()),
+            true,
+        )
+    }
+
+    fn lease_with_collections(
+        &self,
+        collections: BTreeMap<String, CollectionState>,
+        indexes: Arc<QueryIndexes>,
+        history: bool,
+    ) -> Self {
         let mut state = crate::snapshot_codec::metadata(&self.state);
-        state.collections = self.state.collections.clone();
-        state.history_archives = self.state.history_archives.clone();
+        state.collections = collections;
+        if history {
+            state.history_archives = self.state.history_archives.clone();
+        }
         Self {
             receipts: self.receipts.clone(),
             backup_bindings: self.backup_bindings.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
-            indexes: Arc::new(QueryIndexes::default()),
+            indexes,
             snapshot_accounting: SnapshotAccounting::default(),
             application_selection: self.clone_application_selection(),
             staged_documents: self.staged_documents.clone(),
             document_sources: self.clone_document_sources(),
             _read_reservations: Vec::new(),
         }
+    }
+
+    /// A seek worker owns its exact selected source. Once it proves the
+    /// collection's durable tuple directory it can release unrelated indexes
+    /// and the generation-wide copy of its ordinary compound keys.
+    pub(crate) fn physical_seek_view(
+        &self,
+        name: &str,
+        admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
+    ) -> anyhow::Result<Option<Self>> {
+        if self.application_selection.get().is_none() {
+            return Ok(None);
+        }
+        if self.indexes.compound_count(name) == 0 {
+            return Ok(None);
+        }
+        let Some(collection) = self.state.collections.get(name) else {
+            return Ok(None);
+        };
+        // Upper bound on the scoped field/name metadata and its private map
+        // slots. Document and posting roots stay shared and no body is copied.
+        let mut bytes = 16_384u64;
+        for index in &collection.definition.indexes {
+            bytes += 1024 + index.name.len() as u64;
+            for field in &index.fields {
+                bytes += 1024 + 3 * field.path.len() as u64;
+            }
+        }
+        if !admit(bytes)? {
+            return Ok(None);
+        }
+        let indexes = self
+            .indexes
+            .published_seek_projection(name)
+            .expect("known compound collection");
+        Ok(Some(self.lease_with_collections(
+            std::iter::once((name.to_owned(), collection.clone())).collect(),
+            Arc::new(indexes),
+            false,
+        )))
     }
 
     pub(crate) fn read_view(

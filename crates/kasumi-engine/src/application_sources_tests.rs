@@ -1558,6 +1558,10 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         use std::ops::Bound::Included;
         let ordinary = source_engine.generation()?;
         compound_seek(&ordinary, &source.storage.admission)?;
+        let physical = ordinary
+            .physical_seek_view("docs", |_| Ok(true))?
+            .expect("physical seek worker projection");
+        compound_seek(&Arc::new(physical), &source.storage.admission)?;
         let selection = ordinary.application_selection.get().unwrap();
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
@@ -1891,6 +1895,10 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     .await?;
     let reopened = reopened_engine.generation()?;
     compound_seek(&reopened, &target.storage.admission)?;
+    let physical = reopened
+        .physical_seek_view("docs", |_| Ok(true))?
+        .expect("reopened seek worker projection");
+    compound_seek(&Arc::new(physical), &target.storage.admission)?;
     let checkpoint_rows = reopened
         .application_selection
         .get()

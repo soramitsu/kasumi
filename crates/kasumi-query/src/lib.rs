@@ -113,6 +113,8 @@ pub enum TextResidency {
 pub struct QueryIndexes {
     collections: BTreeMap<String, Arc<CollectionIndexes>>,
     text_residency: TextResidency,
+    seek_projection: Option<seek::Projection>,
+    structured_layout: std::sync::OnceLock<[u8; 32]>,
 }
 
 /// Persistent primary-ID roots for coherent point/scan leases. This intentionally
@@ -404,6 +406,8 @@ impl QueryIndexes {
         Ok(Self {
             collections,
             text_residency: residency,
+            seek_projection: None,
+            structured_layout: Default::default(),
         })
     }
 
@@ -433,6 +437,9 @@ impl QueryIndexes {
         R: CollectionRecords,
         D: DocumentChanges<Failure = R::Failure>,
     {
+        if self.seek_projection.is_some() {
+            return Err(invalid("read-only seek projection cannot be updated").into());
+        }
         if self.text_residency == TextResidency::Directory && residency == TextResidency::Resident {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -561,6 +568,8 @@ impl QueryIndexes {
         Ok(Self {
             collections,
             text_residency: residency,
+            seek_projection: None,
+            structured_layout: Default::default(),
         })
     }
 
@@ -593,6 +602,9 @@ impl QueryIndexes {
         &self,
         sources: impl IntoIterator<Item = D>,
     ) -> ReadResult<(), D::Failure> {
+        if self.seek_projection.is_some() {
+            return Err(invalid("read-only seek projection cannot validate writes").into());
+        }
         for source in sources {
             let source = index_input::CheckedChanges::new(&source)?;
             self.delta_indexes(&source)?
