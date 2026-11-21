@@ -44,9 +44,19 @@ impl FieldIndex {
         self.entries = OrdMap::unit(key, ids.clone());
     }
 
-    fn insert(&mut self, id: &str, key: Scalar) {
+    fn insert(&mut self, id: &str, key: Scalar, singleton: &mut Option<IdSet>) {
+        let mut first = || {
+            singleton
+                .get_or_insert_with(|| IdSet::unit(id.to_owned()))
+                .clone()
+        };
         if !self.share_strings {
-            self.entries.entry(key).or_default().insert(id.to_owned());
+            self.entries
+                .entry(key)
+                .and_modify(|ids| {
+                    ids.insert(id.to_owned());
+                })
+                .or_insert_with(first);
             return;
         }
         // Use the existing field key for repeated values. Occupied postings
@@ -61,7 +71,7 @@ impl FieldIndex {
             }
             key => key,
         };
-        self.entries.insert(key, OrdSet::unit(id.to_owned()));
+        self.entries.insert(key, first());
     }
 }
 
@@ -222,6 +232,9 @@ impl Structured {
                 next.ids.insert(id.to_owned());
             }
             let mut changed_shared_text = false;
+            // An ID can be the sole owner of many distinct indexed values.
+            // Reuse its singleton across this loan and later mutations.
+            let mut singleton = None;
             for (path, index) in &mut next.fields {
                 let old_value = previous.and_then(|record| record_value(record, path));
                 let new_value = current.and_then(|record| record_value(record, path));
@@ -239,10 +252,11 @@ impl Structured {
                 }
                 if previous.is_some() {
                     for key in indexed_values(old_value, index.kind)? {
-                        if let Some(ids) = index.entries.get_mut(&key) {
-                            ids.remove(id);
-                            if ids.is_empty() {
-                                index.entries.remove(&key);
+                        if let imbl::ordmap::Entry::Occupied(mut entry) = index.entries.entry(key) {
+                            if entry.get().len() == 1 && entry.get().contains(id) {
+                                singleton.get_or_insert(entry.remove());
+                            } else {
+                                entry.get_mut().remove(id);
                             }
                         }
                     }
@@ -251,7 +265,7 @@ impl Structured {
                     for key in indexed_values(new_value, index.kind)? {
                         changed_shared_text |=
                             index.share_strings && matches!(key, Scalar::String(_));
-                        index.insert(id, key);
+                        index.insert(id, key, &mut singleton);
                     }
                 }
             }
@@ -470,6 +484,7 @@ impl Structured {
         record: Record<'_>,
         building: &mut [BuildingField],
     ) -> Result<()> {
+        let mut singleton = None;
         for ((path, index), state) in self.fields.iter_mut().zip(building) {
             let value = record_value(record, path);
             if state.complete_presence && value.is_none() {
@@ -493,7 +508,7 @@ impl Structured {
                 }
             }
             for key in keys {
-                index.insert(id, key);
+                index.insert(id, key, &mut singleton);
             }
         }
         self.ids.insert(id.to_owned());
