@@ -179,16 +179,21 @@ mod tests {
         let long = "k".repeat(MAX_ORDERED_TUPLE_BYTES - 4);
         let stored = [
             vec![Scalar::Null],
-            vec![Scalar::String(long.clone())],
-            vec![Scalar::String(format!("{long}a"))],
-            vec![Scalar::String(format!("{long}b"))],
-            vec![Scalar::String(long.clone()), Scalar::Boolean(true)],
+            vec![Scalar::String(long.clone().into())],
+            vec![Scalar::String(format!("{long}a").into())],
+            vec![Scalar::String(format!("{long}b").into())],
+            vec![Scalar::String(long.clone().into()), Scalar::Boolean(true)],
             vec![Scalar::String("z".into())],
         ];
         let limits = [
-            vec![Scalar::String(format!("{long}a{}", "a".repeat(4096)))],
-            vec![Scalar::String(format!("{long}\0x"))],
-            vec![Scalar::String(long), Scalar::String("k".repeat(1024))],
+            vec![Scalar::String(
+                format!("{long}a{}", "a".repeat(4096)).into(),
+            )],
+            vec![Scalar::String(format!("{long}\0x").into())],
+            vec![
+                Scalar::String(long.into()),
+                Scalar::String("k".repeat(1024).into()),
+            ],
             vec![Scalar::UpperBound],
         ];
         for limit in limits {
@@ -244,8 +249,23 @@ mod tests {
             .map(|tuple| encode(tuple).unwrap())
             .collect::<Vec<_>>();
         assert!(encoded.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(encode(&[Scalar::String("x".repeat(MAX_ORDERED_TUPLE_BYTES - 3))]).is_some());
-        assert!(encode(&[Scalar::String("x".repeat(MAX_ORDERED_TUPLE_BYTES - 2))]).is_none());
-        assert!(encode(&[Scalar::String("\0".repeat(MAX_ORDERED_TUPLE_BYTES / 2))]).is_none());
+        assert!(
+            encode(&[Scalar::String(
+                "x".repeat(MAX_ORDERED_TUPLE_BYTES - 3).into()
+            )])
+            .is_some()
+        );
+        assert!(
+            encode(&[Scalar::String(
+                "x".repeat(MAX_ORDERED_TUPLE_BYTES - 2).into()
+            )])
+            .is_none()
+        );
+        assert!(
+            encode(&[Scalar::String(
+                "\0".repeat(MAX_ORDERED_TUPLE_BYTES / 2).into()
+            )])
+            .is_none()
+        );
     }
 }

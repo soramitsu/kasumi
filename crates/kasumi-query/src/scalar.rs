@@ -4,6 +4,63 @@ use kasumi_types::{Error, ErrorCode, Result, ScalarType};
 use serde_json::Value;
 use std::str::FromStr;
 
+/// A query owns its temporary string. Persistent compound tuples can instead
+/// share the immutable scalar already held by the field posting root.
+#[derive(Clone)]
+pub(crate) enum IndexString {
+    Owned(String),
+    Shared(std::sync::Arc<str>),
+}
+
+impl IndexString {
+    pub(crate) fn into_string(self) -> String {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared(text) => text.to_string(),
+        }
+    }
+}
+impl From<String> for IndexString {
+    fn from(text: String) -> Self {
+        Self::Owned(text)
+    }
+}
+impl From<&str> for IndexString {
+    fn from(text: &str) -> Self {
+        Self::Owned(text.to_owned())
+    }
+}
+impl std::ops::Deref for IndexString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+}
+impl std::fmt::Debug for IndexString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+impl PartialEq for IndexString {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+impl Eq for IndexString {}
+impl Ord for IndexString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(other)
+    }
+}
+impl PartialOrd for IndexString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Order is explicit: absent < null < boolean < number < string.
 /// Declared fields never mix non-null types. Decimal fields use numeric order.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -12,7 +69,7 @@ pub(crate) enum Scalar {
     Null,
     Boolean(bool),
     Number(BigDecimal),
-    String(String),
+    String(IndexString),
     /// Internal ordered-prefix upper bound; never parsed from or stored as JSON.
     UpperBound,
 }
@@ -52,7 +109,7 @@ pub(crate) fn scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Result<
     match (kind, value) {
         (Some(ScalarType::Decimal), Value::String(text)) => Ok(Scalar::Number(decimal(text)?)),
         (Some(ScalarType::String | ScalarType::StringArray) | None, Value::String(text)) => {
-            Ok(Scalar::String(text.clone()))
+            Ok(Scalar::String(text.clone().into()))
         }
         (Some(ScalarType::Number | ScalarType::NumberArray) | None, Value::Number(n)) => {
             Ok(Scalar::Number(decimal(n.as_str())?))

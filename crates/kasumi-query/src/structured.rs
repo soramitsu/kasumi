@@ -1,4 +1,6 @@
-use crate::scalar::{Scalar, exhausted, indexed_values, invalid, scalar, validate_pointer};
+use crate::scalar::{
+    IndexString, Scalar, exhausted, indexed_values, invalid, scalar, validate_pointer,
+};
 use crate::{
     CollectionRecords, DocumentChanges, DocumentSource, QueryCancellation, ReadResult, Record,
     document_source,
@@ -14,8 +16,31 @@ pub(crate) type IdSet = OrdSet<String>;
 #[derive(Debug, Clone)]
 pub(crate) struct FieldIndex {
     pub kind: ScalarType,
+    pub(crate) share_strings: bool,
     pub entries: OrdMap<Scalar, IdSet>,
     pub present: IdSet,
+}
+
+impl FieldIndex {
+    fn insert(&mut self, id: &str, key: Scalar) {
+        if !self.share_strings {
+            self.entries.entry(key).or_default().insert(id.to_owned());
+            return;
+        }
+        // Use the existing field key for repeated values. Occupied postings
+        // keep their backing across later changes and retained generations.
+        if let Some(ids) = self.entries.get_mut(&key) {
+            ids.insert(id.to_owned());
+            return;
+        }
+        let key = match key {
+            Scalar::String(IndexString::Owned(text)) => {
+                Scalar::String(IndexString::Shared(text.into()))
+            }
+            key => key,
+        };
+        self.entries.insert(key, OrdSet::unit(id.to_owned()));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,14 +85,79 @@ impl UniqueIndex {
         }
     }
 
-    fn insert_tuple(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
-        if let Some(key) = self.key(record)?
-            && self
+    fn share_components(&self, key: &mut [Scalar], fields: &BTreeMap<String, FieldIndex>) {
+        for (part, field) in key.iter_mut().zip(&self.fields) {
+            if let Scalar::String(_) = part
+                && let Some((stored @ Scalar::String(IndexString::Shared(_)), _)) =
+                    fields[&field.path].entries.get_key_value(part)
+            {
+                *part = stored.clone();
+            }
+        }
+    }
+
+    fn insert_tuple(
+        &mut self,
+        name: &str,
+        id: &str,
+        record: Record<'_>,
+        fields: Option<&BTreeMap<String, FieldIndex>>,
+    ) -> Result<()> {
+        if let Some(mut key) = self.key(record)? {
+            if let Some(fields) = fields
+                && self.fields.len() > 1
+            {
+                self.share_components(&mut key, fields);
+            }
+            if self
                 .owned_entries(&key)
                 .insert(key, id.to_owned())
                 .is_some()
-        {
-            return Err(unique_conflict(name));
+            {
+                return Err(unique_conflict(name));
+            }
+        }
+        Ok(())
+    }
+
+    /// The earlier unique pass sees the predecessor's field roots. Bind newly
+    /// introduced strings to the candidate's final postings before publication.
+    fn bind_new_components(
+        &mut self,
+        id: &str,
+        record: Record<'_>,
+        fields: &BTreeMap<String, FieldIndex>,
+    ) -> Result<()> {
+        if self.fields.len() < 2 {
+            return Ok(());
+        }
+        let Some(mut key) = self.key(record)? else {
+            return Ok(());
+        };
+        self.share_components(&mut key, fields);
+        let entries = self.owned_entries(&key);
+        let (previous, owner) = entries.get_key_value(&key).ok_or_else(old_owner_mismatch)?;
+        if owner != id {
+            return Err(old_owner_mismatch());
+        }
+        let needs_binding =
+            previous
+                .iter()
+                .zip(&key)
+                .any(|(prior, selected)| match (prior, selected) {
+                    (
+                        Scalar::String(IndexString::Shared(a)),
+                        Scalar::String(IndexString::Shared(b)),
+                    ) => !std::sync::Arc::ptr_eq(a, b),
+                    (
+                        Scalar::String(IndexString::Owned(_)),
+                        Scalar::String(IndexString::Shared(_)),
+                    ) => true,
+                    _ => false,
+                });
+        if needs_binding {
+            let owner = entries.remove(&key).expect("validated unique owner");
+            entries.insert(key, owner);
         }
         Ok(())
     }
@@ -104,6 +194,7 @@ impl Structured {
             } else if previous.is_none() {
                 next.ids.insert(id.to_owned());
             }
+            let mut changed_shared_text = false;
             for (path, index) in &mut next.fields {
                 let old_value = previous.and_then(|record| record_value(record, path));
                 let new_value = current.and_then(|record| record_value(record, path));
@@ -126,8 +217,15 @@ impl Structured {
                         index.present.insert(id.to_owned());
                     }
                     for key in indexed_values(new_value, index.kind)? {
-                        index.entries.entry(key).or_default().insert(id.to_owned());
+                        changed_shared_text |=
+                            index.share_strings && matches!(key, Scalar::String(_));
+                        index.insert(id, key);
                     }
+                }
+            }
+            if changed_shared_text && let Some(record) = current {
+                for index in next.unique.values_mut() {
+                    index.bind_new_components(id, record, &next.fields)?;
                 }
             }
             Ok(())
@@ -186,7 +284,7 @@ impl Structured {
             if let Some(new) = delta.new {
                 for (name, index) in &mut unique {
                     if index.entries.is_some() {
-                        index.insert_tuple(name, delta.id, new)?;
+                        index.insert_tuple(name, delta.id, new, Some(&self.fields))?;
                     } else if let Some(mut key) = index.key(new)? {
                         let entries = singles.get_mut(name).expect("shared unique posting");
                         let scalar = key.pop().expect("one-field unique key");
@@ -238,7 +336,7 @@ impl Structured {
         }
         source.visit_records(|id, record| {
             for (name, index) in &mut unique {
-                index.insert_tuple(name, id, record)?;
+                index.insert_tuple(name, id, record, None)?;
             }
             Ok(())
         })?;
@@ -248,13 +346,16 @@ impl Structured {
         let mut fields = BTreeMap::new();
         for index in &definition.indexes {
             for field in &index.fields {
-                fields
+                let entry = fields
                     .entry(field.path.clone())
                     .or_insert_with(|| FieldIndex {
                         kind: field.kind,
+                        share_strings: false,
                         entries: OrdMap::new(),
                         present: IdSet::new(),
                     });
+                entry.share_strings |=
+                    index.unique && index.fields.len() > 1 && field.kind == ScalarType::String;
             }
         }
         Self {
@@ -301,12 +402,12 @@ impl Structured {
                 index.present.insert(id.to_owned());
             }
             for key in indexed_values(value, index.kind)? {
-                index.entries.entry(key).or_default().insert(id.to_owned());
+                index.insert(id, key);
             }
         }
         for (name, index) in &mut self.unique {
             if index.entries.is_some() {
-                index.insert_tuple(name, id, record)?;
+                index.insert_tuple(name, id, record, Some(&self.fields))?;
             } else if let Some(mut key) = index.key(record)? {
                 let scalar = key.pop().expect("one-field unique key");
                 if self.fields[&index.fields[0].path].entries[&scalar].len() != 1 {
