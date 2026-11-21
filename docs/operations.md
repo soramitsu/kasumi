@@ -631,6 +631,16 @@ pins of the Control callbacks as `callback_principal` and
 `callback_certificate_pins` on each data member. The administrative listeners
 must trust the corresponding client CAs and admit those client certificate pins.
 
+Each Data voter that may verify a backup after a leadership change needs
+access to the tenant wrapping keys used by the original writer, including
+the required historical versions. With file keyrings, install the same
+tenant provider identity and key versions on those voters. For a remote key
+provider, grant each verifier access to that identity. Test this by stopping
+the original writer, reopening the object store and running both `kasumid
+backup status` and `kasumid backup verify` against the newly elected leader
+with the original session UUID. The status reads the durable outcome. Verify
+also opens the encrypted objects and returns the full original checkpoint.
+
 For global signer and security audit key inventory, enroll a separate Control
 reader on each dedicated Data voter. Set `remote_control.catalog_reader.principal`
 and `client_certificate_pins` to its service identity and approved client leaf
