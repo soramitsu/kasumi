@@ -201,8 +201,16 @@ impl Structured {
                 if previous.is_some() && current.is_some() && old_value == new_value {
                     continue;
                 }
+                match (old_value.is_some(), new_value.is_some()) {
+                    (false, true) => {
+                        index.present.insert(id.to_owned());
+                    }
+                    (true, false) => {
+                        index.present.remove(id);
+                    }
+                    _ => {}
+                }
                 if previous.is_some() {
-                    index.present.remove(id);
                     for key in indexed_values(old_value, index.kind)? {
                         if let Some(ids) = index.entries.get_mut(&key) {
                             ids.remove(id);
@@ -213,9 +221,6 @@ impl Structured {
                     }
                 }
                 if current.is_some() {
-                    if new_value.is_some() {
-                        index.present.insert(id.to_owned());
-                    }
                     for key in indexed_values(new_value, index.kind)? {
                         changed_shared_text |=
                             index.share_strings && matches!(key, Scalar::String(_));
@@ -230,6 +235,13 @@ impl Structured {
             }
             Ok(())
         })?;
+        // Presence is a subset of this collection's IDs. A sparse field
+        // can become complete when its last missing document is deleted.
+        for field in next.fields.values_mut() {
+            if field.present.len() == next.ids.len() {
+                field.present = next.ids.clone();
+            }
+        }
         Ok(next)
     }
     fn unique_delta<D: DocumentChanges + ?Sized>(
@@ -372,6 +384,9 @@ impl Structured {
     ) -> ReadResult<(), R::Failure> {
         let definition = source.definition();
         let mut index_failure = None;
+        // Delay building a separate presence tree until a document lacks
+        // the field. The field order stays fixed throughout this build.
+        let mut complete = vec![true; self.fields.len()];
         source.visit_records(|id, record| {
             if let Record::Live(document) = record {
                 crate::validation::validate_document_with_validator(
@@ -384,27 +399,35 @@ impl Structured {
             // over a conflict in these unpublished roots. Keep checking rows
             // under their original loan even after the first index failure.
             if index_failure.is_none() {
-                index_failure = self.insert_record(id, record).err();
+                index_failure = self.insert_record(id, record, &mut complete).err();
             }
             Ok(())
         })?;
         if let Some(error) = index_failure {
             return Err(error.into());
         }
+        for (field, complete) in self.fields.values_mut().zip(complete) {
+            if complete {
+                field.present = self.ids.clone();
+            }
+        }
         Ok(())
     }
 
-    fn insert_record(&mut self, id: &str, record: Record<'_>) -> Result<()> {
-        self.ids.insert(id.to_owned());
-        for (path, index) in &mut self.fields {
+    fn insert_record(&mut self, id: &str, record: Record<'_>, complete: &mut [bool]) -> Result<()> {
+        for ((path, index), complete) in self.fields.iter_mut().zip(complete) {
             let value = record_value(record, path);
-            if value.is_some() {
+            if *complete && value.is_none() {
+                index.present = self.ids.clone();
+                *complete = false;
+            } else if !*complete && value.is_some() {
                 index.present.insert(id.to_owned());
             }
             for key in indexed_values(value, index.kind)? {
                 index.insert(id, key);
             }
         }
+        self.ids.insert(id.to_owned());
         for (name, index) in &mut self.unique {
             if index.entries.is_some() {
                 index.insert_tuple(name, id, record, Some(&self.fields))?;

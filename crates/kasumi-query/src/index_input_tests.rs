@@ -265,6 +265,47 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
+    fn rows(values: &[(&str, Value)]) -> Rows {
+        let mut rows = Rows::new("docs", values, true, false);
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::NumberArray;
+        rows
+    }
+    fn check(indexes: &QueryIndexes, ids: &[&str], dense: bool) {
+        let structured = &indexes.collections["docs"].structured;
+        let presence = &structured.fields["/key"].present;
+        assert_eq!(presence.iter().map(String::as_str).collect::<Vec<_>>(), ids);
+        assert_eq!(presence.ptr_eq(&structured.ids), dense);
+    }
+
+    let dense = rows(&[
+        ("a", serde_json::json!({"key": null})),
+        ("b", serde_json::json!({"key": []})),
+    ]);
+    let sparse = rows(&[
+        ("a", serde_json::json!({})),
+        ("b", serde_json::json!({"key": [2, 3]})),
+        ("c", serde_json::json!({"key": [4]})),
+    ]);
+    let pruned = rows(&[
+        ("b", serde_json::json!({"key": [2, 3]})),
+        ("c", serde_json::json!({"key": [4]})),
+    ]);
+    let first = QueryIndexes::build([&dense]).unwrap();
+    let second = update(
+        &first,
+        Changes::new(&dense, &sparse, &first, &["a", "b", "c"]),
+    )
+    .unwrap();
+    let third = update(&second, Changes::new(&sparse, &pruned, &second, &["a"])).unwrap();
+    check(&first, &["a", "b"], true);
+    check(&second, &["b", "c"], false);
+    check(&third, &["b", "c"], true);
+    check(&QueryIndexes::build([&sparse]).unwrap(), &["b", "c"], false);
+}
+
+#[test]
 fn paired_delta_loans_allow_atomic_swaps_and_match_full_rebuild() {
     let old = Rows::new(
         "docs",
