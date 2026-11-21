@@ -412,6 +412,57 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         self.visit_selected_headers(cancellation, |id, _| Ok(lend(id)?))
     }
 
+    fn has_ordered_unique_source(&self) -> bool {
+        self.generation.application_selection.get().is_some()
+    }
+    fn ordered_unique_window(
+        &self,
+        index: usize,
+        lower: std::ops::Bound<&[u8]>,
+        upper: std::ops::Bound<&[u8]>,
+        descending: bool,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<kasumi_query::OrderedTupleWindow>, Self::Failure> {
+        self.check_deadline()?;
+        cancellation.check()?;
+        if index >= self.generation.indexes.compound_count(&self.collection) {
+            return Ok(None);
+        }
+        let Some(selection) = self.generation.application_selection.get() else {
+            return Ok(None);
+        };
+        let mut interrupted = None;
+        let result = selection.with_ordered_tuples(
+            self.directory_reader(),
+            &self.generation.state,
+            || self.generation.indexes.structured_layout_sha256(),
+            std::iter::once(self.collection.as_str()),
+            |tree, _| {
+                crate::application_structured::ordered_unique_window(
+                    tree,
+                    &self.collection,
+                    index,
+                    lower,
+                    upper,
+                    descending,
+                    || {
+                        interrupted = cancellation
+                            .check()
+                            .and_then(|()| self.check_deadline())
+                            .err();
+                        interrupted.is_none()
+                    },
+                )
+            },
+        );
+        let result =
+            result.map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+        if let Some(error) = interrupted {
+            return Err(error.into());
+        }
+        Ok(result)
+    }
+
     fn visit_field_posting(
         &self,
         field: usize,

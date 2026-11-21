@@ -571,3 +571,145 @@ fn single_unique_postings_keep_sparse_seek_order_and_every_cursor_bound() {
         );
     }
 }
+
+#[test]
+fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
+    use crate::{CollectionRecords, Header, Record, SourceIdentity};
+    use std::ops::RangeBounds;
+    struct Mixed<'a> {
+        source: ResidentSource<'a>,
+        compact: BTreeMap<Vec<u8>, String>,
+        reads: std::cell::Cell<usize>,
+    }
+    impl CollectionRecords for Mixed<'_> {
+        type Failure = std::convert::Infallible;
+        fn identity(&self) -> SourceIdentity<'_> {
+            self.source.identity()
+        }
+        fn definition(&self) -> &CollectionDefinition {
+            self.source.definition()
+        }
+        fn visit_records(
+            &self,
+            lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            self.source.visit_records(lend)
+        }
+    }
+    impl DocumentSource for Mixed<'_> {
+        fn indexes(&self) -> &QueryIndexes {
+            self.source.indexes
+        }
+        fn has_ordered_unique_source(&self) -> bool {
+            true
+        }
+        fn ordered_unique_window(
+            &self,
+            index: usize,
+            lower: Bound<&[u8]>,
+            upper: Bound<&[u8]>,
+            descending: bool,
+            cancellation: &QueryCancellation,
+        ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+            assert_eq!(index, 0);
+            cancellation.check()?;
+            self.reads.set(self.reads.get() + 1);
+            let mut rows = self
+                .compact
+                .iter()
+                .filter(|(k, _)| RangeBounds::<[u8]>::contains(&(lower, upper), k.as_slice()));
+            Ok(Some(
+                (0..crate::ORDERED_TUPLE_WINDOW)
+                    .map_while(|_| directed_next(&mut rows, descending))
+                    .map(|(k, id)| (k.clone(), id.clone()))
+                    .collect(),
+            ))
+        }
+        fn with_record<T>(
+            &self,
+            id: &str,
+            version: Option<u64>,
+            cancellation: &QueryCancellation,
+            lend: impl for<'a> FnOnce(Option<Record<'a>>) -> Result<T>,
+        ) -> ReadResult<T, Self::Failure> {
+            self.source.with_record(id, version, cancellation, lend)
+        }
+        fn header_after<T>(
+            &self,
+            after: Option<&str>,
+            cancel: &QueryCancellation,
+            lend: impl for<'a> FnOnce(Option<Header<'a>>) -> Result<T>,
+        ) -> ReadResult<T, Self::Failure> {
+            self.source.header_after(after, cancel, lend)
+        }
+    }
+
+    let mut expected: Vec<_> = (0..48).map(|n| format!("{n:02}")).collect();
+    for n in [0, 7, 15, 16, 17, 31, 32, 47] {
+        expected.push(format!("{n:02}{}", "x".repeat(2048)));
+    }
+    expected.sort();
+    let rows = expected
+        .iter()
+        .map(|v| json!({"scope":"g","key":v}))
+        .collect::<Vec<_>>();
+    let (collections, indexes) = small_fixture(
+        &[("/scope", ScalarType::String), ("/key", ScalarType::String)],
+        rows,
+    );
+    let mut compact = BTreeMap::new();
+    indexes
+        .visit_compound_rows(|_, _, key, id| {
+            compact.insert(key.to_vec(), id.to_owned());
+            Ok::<_, ()>(true)
+        })
+        .unwrap();
+    assert_eq!(compact.len(), 48);
+    let source = Mixed {
+        source: ResidentSource {
+            collection: &collections["ordered"],
+            indexes: &indexes,
+        },
+        compact,
+        reads: Default::default(),
+    };
+    for desc in [false, true] {
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let req = QueryRequest::new("ordered")
+            .filter(Filter::new().eq("/scope", "g"))
+            .limit(7)
+            .paging(Paging::Seek);
+        let req = if desc {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        loop {
+            let previous = source.reads.get();
+            let page = indexes
+                .seek_page(
+                    &source,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert!(source.reads.get() > previous);
+            for row in page.rows {
+                seen.push(row.body["key"].as_str().unwrap().to_owned());
+            }
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if desc {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected);
+    }
+}

@@ -23,6 +23,10 @@ pub use allocation::{
     change_event_clone_bytes, change_feed_page_workspace_bytes, document_clone_bytes,
     document_parts_clone_bytes, query_response_clone_bytes, vec_bytes,
 };
+mod ordered_tuple;
+pub use ordered_tuple::{
+    MAX_ORDERED_TUPLE_BYTES, ORDERED_TUPLE_WINDOW, OrderedTupleWindow, ordered_record_tuple,
+};
 mod page;
 use page::PageWriter;
 pub use page::{PageBound, copy_page, copy_page_from_source};
@@ -37,6 +41,7 @@ pub use search::{
 mod seek;
 mod select;
 mod structured;
+pub use structured::unique_conflict;
 mod structured_rows;
 pub use seek::SeekPage;
 pub use structured_rows::{StructuredField, StructuredPostings, StructuredRow};

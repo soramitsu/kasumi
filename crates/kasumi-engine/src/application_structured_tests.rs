@@ -706,6 +706,11 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
             },
         ],
     });
+    // Reverse declaration order relative to the canonical unique-name order.
+    let mut reversed = definition.indexes.last().unwrap().clone();
+    reversed.name = "aaa_serial_group".into();
+    reversed.fields.reverse();
+    definition.indexes.push(reversed);
     let group = "business-group-".repeat(30);
     let body = |n: usize| json!({"group": group, "serial": n});
     let first = genesis.next(
@@ -717,6 +722,50 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     let manifest = fixture.manifest();
     let view = fixture.store.read_view().unwrap();
     let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
+    let read = |lower, upper, descending| {
+        ordered_unique_window(&reader, "docs", 0, lower, upper, descending, || true).unwrap()
+    };
+    let page = read(Bound::Unbounded, Bound::Unbounded, false);
+    assert_eq!(
+        page.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+        (0..16).map(|n| format!("d{n:03}")).collect::<Vec<_>>()
+    );
+    let end = &page.last().unwrap().0;
+    let next = read(Bound::Excluded(end.as_slice()), Bound::Unbounded, false);
+    assert_eq!(
+        (
+            next.first().unwrap().1.as_str(),
+            next.last().unwrap().1.as_str()
+        ),
+        ("d016", "d031")
+    );
+    let reverse = read(
+        Bound::Excluded(page[12].0.as_slice()),
+        Bound::Included(next[1].0.as_slice()),
+        true,
+    );
+    assert_eq!(
+        reverse
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["d017", "d016", "d015", "d014", "d013"]
+    );
+    let mut visits = 0;
+    let canceled = ordered_unique_window(
+        &reader,
+        "docs",
+        0,
+        Bound::Unbounded,
+        Bound::Unbounded,
+        false,
+        || {
+            visits += 1;
+            visits <= 2
+        },
+    )
+    .unwrap();
+    assert_eq!((visits, canceled.len()), (3, 2));
     let candidate = |rows: Vec<(&str, Value)>| {
         let mut next = first.state.clone();
         next.revision += 1;
@@ -740,7 +789,11 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         let (next, changed) = candidate(rows);
         assert_eq!(
             unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
-            expected
+            if expected {
+                unique::Decision::Accepted
+            } else {
+                unique::Decision::Conflict("aaa_serial_group".into())
+            }
         );
         let actual =
             crate::index_source::validate_changes(&first.indexes, &first.state, &next, &changed);
@@ -748,7 +801,7 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
             actual.unwrap();
         } else {
             assert!(
-                matches!(actual,Err(kasumi_query::ReadFailure::Query(ref e)) if e.code == kasumi_types::ErrorCode::Conflict)
+                matches!(actual,Err(kasumi_query::ReadFailure::Query(ref e)) if e == &kasumi_query::unique_conflict("aaa_serial_group"))
             );
         }
     };
@@ -775,6 +828,67 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         false,
     );
 
+    // The original native root still names d000 as owner of tuple zero.
+    // The first unpublished member moved it. The next member must see the
+    // release and the newly held tuple in that same logical view.
+    let logical = first.next(vec![("d000".to_owned(), body(55))], &[], None);
+    let touched = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["d000".to_owned()]))]);
+    let changed = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["later".to_owned()]))]);
+    let override_rows =
+        unique::group_overlay(&first.state, &logical.state, &touched, &changed, None)
+            .unwrap()
+            .unwrap();
+    assert_eq!(override_rows.len(), 4);
+    for (value, expected) in [
+        (0, unique::Decision::Accepted),
+        (55, unique::Decision::Conflict("aaa_serial_group".into())),
+    ] {
+        let mut next = logical.state.clone();
+        next.revision += 1;
+        next.collections.get_mut("docs").unwrap().documents.insert(
+            "later".into(),
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
+                id: "later".into(),
+                version: next.revision,
+                body: body(value),
+            }))),
+        );
+        assert_eq!(
+            unique::prove_with_overlay(
+                unique::ClaimTree::ordinary(&reader),
+                &logical.indexes,
+                &logical.state,
+                &next,
+                &changed,
+                None,
+                &override_rows
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
+    // A matching digest triggers complete typed values from the two loans.
+    let long = "x".repeat(300 << 10);
+    check(
+        vec![
+            ("aa", json!({"group":format!("{long}a"),"serial":100})),
+            ("zz", json!({"group":format!("{long}b"),"serial":100})),
+        ],
+        true,
+        true,
+    );
+    let over = json!({"group":long,"serial":100});
+    let (next, changed) = candidate(vec![("aa", over.clone()), ("zz", over)]);
+    assert_eq!(
+        unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
+        unique::Decision::Conflict("aaa_serial_group".into())
+    );
+    assert!(
+        matches!(crate::index_source::validate_changes(&first.indexes,&first.state,&next,&changed),
+        Err(kasumi_query::ReadFailure::Query(ref e)) if e==&kasumi_query::unique_conflict("aaa_serial_group"))
+    );
+
     struct Failing<'a>(&'a kasumi_store::TenantReadView);
     impl PageSource for Failing<'_> {
         fn check_access(&self) -> Result<()> {
@@ -796,6 +910,20 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     }
     let failed = Failing(&view);
     let broken = TreeReader::new(&failed, &manifest.page_space, manifest.records, None).unwrap();
+    let page_error = ordered_unique_window(
+        &broken,
+        "docs",
+        0,
+        Bound::Unbounded,
+        Bound::Unbounded,
+        false,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        page_error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
     let (next, changed) = candidate(vec![("same", body(1))]);
     let error =
         unique::prove(&broken, &first.indexes, &first.state, &next, &changed, None).unwrap_err();

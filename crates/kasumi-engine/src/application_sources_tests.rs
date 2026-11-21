@@ -1401,6 +1401,47 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         assert!(snapshot.bytes > 0 && snapshot.chunks > 0);
         assert!(!proof.is_covered_reconstruction());
     }
+    fn compound_seek(
+        generation: &Arc<crate::Generation>,
+        admission: &Arc<NodeAdmission>,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
+        use kasumi_query::DocumentSource as _;
+        let source = generation.document_source("docs")?;
+        let cancellation = kasumi_query::QueryCancellation::default();
+        let actual = source
+            .ordered_unique_window(
+                0,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+                true,
+                &cancellation,
+            )?
+            .expect("selected persisted compound directory");
+        assert_eq!(
+            actual.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        let query = kasumi_types::QueryRequest::new("docs")
+            .sort_desc("/nil")
+            .sort_desc("/value")
+            .paging(kasumi_types::Paging::Seek);
+        let mut memory = kasumi_query::QueryMemory::empty(admission.reserve(0, None)?);
+        let page = generation.indexes.seek_page(
+            &source,
+            &query,
+            None,
+            &generation.state.limits,
+            &|_| Ok(16),
+            &cancellation,
+            &mut memory,
+        )?;
+        assert_eq!(
+            page.rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        assert!(page.last_key.is_none());
+        Ok(())
+    }
     let source = Fixture::with_admission(1, None, NodeAdmission::new_fixture).await?;
     let source_audit = audit(&source.node, &source.storage.admission, false).await?;
     crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
@@ -1471,6 +1512,18 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     unique: name == "value",
                     text: None,
                 })
+                .chain([kasumi_types::IndexDefinition {
+                    name: "nil_value".into(),
+                    text: None,
+                    unique: true,
+                    fields: ["/nil", "/value"]
+                        .into_iter()
+                        .map(|path| kasumi_types::IndexField {
+                            path: path.into(),
+                            kind: kasumi_types::ScalarType::String,
+                        })
+                        .collect(),
+                }])
                 .collect(),
                 strict_read_audit: false,
             }),
@@ -1504,11 +1557,12 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         use kasumi_query::DocumentSource as _;
         use std::ops::Bound::Included;
         let ordinary = source_engine.generation()?;
+        compound_seek(&ordinary, &source.storage.admission)?;
         let selection = ordinary.application_selection.get().unwrap();
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
         );
-        // Four presence rows and seven postings, four of them absences.
+        // Four presence rows, seven scalar postings and one complete compound tuple.
         assert_eq!(
             selection.with_structured_records(
                 None,
@@ -1516,7 +1570,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || ordinary.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(11)
+            Some(12)
         );
         let docs = ordinary.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
@@ -1619,7 +1673,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || ordinary.indexes.structured_layout_sha256(),
                     |tree| Ok(tree.root().count())
                 )?,
-                Some(11)
+                Some(12)
             );
         }
     }
@@ -1639,7 +1693,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .unwrap();
         assert!(!current || fields.is_current());
         if fields.is_current() {
-            assert_eq!(fields.records.count(), 11);
+            assert_eq!(fields.records.count(), 12);
         }
     }
     // A registered idle worker repairs an actual selected generation with
@@ -1665,7 +1719,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                         || current.indexes.structured_layout_sha256(),
                         |t| Ok(t.root().count()),
                     )?
-                    == Some(11)
+                    == Some(12)
                 {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -1684,7 +1738,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || retained.indexes.structured_layout_sha256(),
                     |t| Ok(t.root().count())
                 )?,
-            Some(11)
+            Some(12)
         );
     }
     let expected = source_db
@@ -1819,6 +1873,34 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     )
     .await?;
     let reopened = reopened_engine.generation()?;
+    compound_seek(&reopened, &target.storage.admission)?;
+    let checkpoint_rows = reopened
+        .application_selection
+        .get()
+        .unwrap()
+        .with_snapshot_records(None, &reopened.state, |tree, _, layout| {
+            anyhow::ensure!(
+                layout >= kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT,
+                "restored checkpoint lacks compound tuples"
+            );
+            crate::application_structured::ordered_unique_window(
+                tree,
+                "docs",
+                0,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+                true,
+                || true,
+            )
+        })?
+        .expect("authenticated checkpoint compound root");
+    assert_eq!(
+        checkpoint_rows
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["point"]
+    );
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
     let selection = reopened.application_selection.get().unwrap();
@@ -1833,7 +1915,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || reopened.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(11)
+            Some(12)
         );
     }
     for (after, limit, expected) in [
@@ -2285,9 +2367,60 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     reopened_audit.shutdown().await?;
     drop(reopened_audit);
     target.close().await?;
-    // Advance the actual source log beyond the published snapshot. The
-    // first two events still come from its immutable directory and the third
-    // arrives from the newly committed tail in the same native page.
+    // This serving entry is newer than the checkpoint but leaves the
+    // compound collection unchanged. Read the checkpoint directly so a
+    // current ordinary tree cannot satisfy the assertion.
+    source_db
+        .administer(
+            context.clone(),
+            kasumi_types::Operation::SetLimits(limits.clone()),
+        )
+        .await?;
+    {
+        let current = source_engine.generation()?;
+        let retained = current.application_selection.get().unwrap();
+        assert!(!retained.has_exact_snapshot(current.state.revision_base, current.state.revision));
+        let rows = retained
+            .with_checkpoint_ordered_tuples(
+                None,
+                &current.state,
+                std::iter::once("docs"),
+                |tree| {
+                    crate::application_structured::ordered_unique_window(
+                        tree,
+                        "docs",
+                        0,
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Unbounded,
+                        false,
+                        || true,
+                    )
+                },
+            )?
+            .expect("unchanged collection lost its checkpoint");
+        assert_eq!(
+            rows.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        let mut foreign = current.state.clone();
+        let changed = foreign.collections.get_mut("docs").unwrap();
+        Arc::make_mut(&mut changed.definition).strict_read_audit =
+            !changed.definition.strict_read_audit;
+        assert!(
+            retained
+                .with_checkpoint_ordered_tuples(
+                    None,
+                    &foreign,
+                    std::iter::once("docs"),
+                    |_| -> anyhow::Result<()> {
+                        panic!("changed schema exposed predecessor tuples")
+                    },
+                )?
+                .is_none()
+        );
+    }
+    // A document change invalidates this collection's checkpoint coverage.
+    // The first two feed events still come from the immutable directory.
     let third_body = serde_json::json!({"value": "later"});
     source_db
         .mutate(
@@ -2296,6 +2429,21 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         )
         .await?;
     let latest = source_engine.generation()?;
+    assert!(
+        latest
+            .application_selection
+            .get()
+            .unwrap()
+            .with_checkpoint_ordered_tuples(
+                None,
+                &latest.state,
+                std::iter::once("docs"),
+                |_| -> anyhow::Result<()> {
+                    panic!("changed data epoch exposed predecessor tuples")
+                },
+            )?
+            .is_none()
+    );
     let base = latest
         .application_selection
         .get()

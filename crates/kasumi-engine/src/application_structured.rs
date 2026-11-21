@@ -55,7 +55,7 @@ use kasumi_store::{
 use kasumi_types::TenantState;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ops::Bound;
+use std::ops::{Bound, RangeBounds};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -79,6 +79,7 @@ const REBUILD_RETRY_REVISIONS: u64 = 4096;
 
 const LONG: u8 = b'D';
 const PRESENT: u8 = b'P';
+const COMPOUND: u8 = b'U';
 const POSTING: u8 = b'V';
 /// Scalar bytes kept in an ordered key. Longer scalars order by this prefix
 /// and their digest. Numbers always fit.
@@ -268,6 +269,11 @@ fn checked_key(key: Vec<u8>) -> Result<Vec<u8>> {
 /// from the immutable input until the entire edit has storage admission.
 fn encode_row<'a>(collection: &str, row: StructuredRow<'a>) -> Result<Option<(Vec<u8>, &'a [u8])>> {
     Ok(Some(match row {
+        StructuredRow::Compound { index, key, id } => {
+            let mut native = field_prefix(COMPOUND, collection, index);
+            native.extend_from_slice(key);
+            (checked_key(native)?, id.as_bytes())
+        }
         StructuredRow::Present { field, id } => {
             let mut key = field_prefix(PRESENT, collection, field);
             key.extend_from_slice(id.as_bytes());
@@ -339,6 +345,21 @@ fn ordered_values<'a>(
     flush_run(&mut run, &mut visit)
 }
 
+/// This family has identical physical keys in the applied directory and a
+/// verified immutable snapshot. Values are the complete owner IDs.
+pub(crate) fn visit_compound_rows(
+    indexes: &QueryIndexes,
+    emit: &mut impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    indexes.visit_compound_rows(|name, index, key, id| -> Result<bool> {
+        let mut native = field_prefix(COMPOUND, name, index);
+        native.extend_from_slice(key);
+        emit(&checked_key(native)?, id.as_bytes())?;
+        Ok(true)
+    })?;
+    Ok(())
+}
+
 /// Every row of `indexes` in strictly increasing key order.
 pub(crate) fn visit_rows(
     indexes: &QueryIndexes,
@@ -376,6 +397,7 @@ pub(crate) fn visit_rows(
             }
         }
     }
+    visit_compound_rows(indexes, &mut emit)?;
     for (name, fields) in indexes.structured_collections() {
         for (ordinal, field) in fields.enumerate() {
             let prefix = field_prefix(POSTING, name, ordinal);
@@ -476,6 +498,17 @@ fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
         bytes = bytes.checked_add(size)?;
         (rows <= MAX_REBUILD_ROWS && bytes <= MAX_REBUILD_BYTES).then_some(())
     };
+    if !indexes
+        .visit_compound_rows(|name, ordinal, key, id| -> Result<bool> {
+            Ok(
+                charge(field_prefix(COMPOUND, name, ordinal).len() + key.len() + id.len())
+                    .is_some(),
+            )
+        })
+        .ok()?
+    {
+        return None;
+    }
     let mut largest = 0usize;
     for (collection, fields) in indexes.structured_collections() {
         for (ordinal, field) in fields.enumerate() {
@@ -985,6 +1018,9 @@ fn edit(
 ) -> Result<Option<StructuredPublication>> {
     owner.recover(store)?;
     let layout = candidate_indexes.structured_layout_sha256();
+    if base.format < structured::ORDERED_TUPLE_FORMAT {
+        return Ok(None);
+    }
     if base.rebuild().is_some() && layout != base.layout_sha256 {
         return Ok(None);
     }
@@ -1084,6 +1120,67 @@ fn edit(
     }))
 }
 
+pub(crate) fn ordered_unique_window(
+    reader: &TreeReader<'_>,
+    collection: &str,
+    index: usize,
+    lower: Bound<&[u8]>,
+    upper: Bound<&[u8]>,
+    descending: bool,
+    mut keep_reading: impl FnMut() -> bool,
+) -> Result<kasumi_query::OrderedTupleWindow> {
+    let prefix = field_prefix(COMPOUND, collection, index);
+    let mut start_key = prefix.clone();
+    let bound = if descending { upper } else { lower };
+    let start = match bound {
+        Bound::Included(key) | Bound::Excluded(key) => {
+            ensure!(
+                key.len() <= kasumi_query::MAX_ORDERED_TUPLE_BYTES,
+                "ordered tuple range exceeds native bound"
+            );
+            start_key.extend_from_slice(key);
+            if matches!(bound, Bound::Included(_)) {
+                Bound::Included(start_key.as_slice())
+            } else {
+                Bound::Excluded(start_key.as_slice())
+            }
+        }
+        Bound::Unbounded if descending => {
+            start_key = successor(start_key).context("compound prefix successor absent")?;
+            Bound::Excluded(start_key.as_slice())
+        }
+        Bound::Unbounded => Bound::Included(start_key.as_slice()),
+    };
+    let mut rows = Vec::with_capacity(kasumi_query::ORDERED_TUPLE_WINDOW);
+    let direction = if descending {
+        Direction::Reverse
+    } else {
+        Direction::Forward
+    };
+    reader.scan(start, direction, &mut |key, value| {
+        if !keep_reading() {
+            return Ok(false);
+        }
+        let Some(key) = key.strip_prefix(prefix.as_slice()) else {
+            return Ok(false);
+        };
+        if !RangeBounds::<[u8]>::contains(&(lower, upper), key) {
+            return Ok(false);
+        }
+        ensure!(
+            !key.is_empty() && key.len() <= kasumi_query::MAX_ORDERED_TUPLE_BYTES,
+            "invalid selected compound key"
+        );
+        let ordered_pages::ValueRef::Inline(id) = value else {
+            anyhow::bail!("compound owner exceeds inline bound")
+        };
+        let id = posting_id(id)?;
+        rows.push((key.to_vec(), id.to_owned()));
+        Ok(rows.len() < kasumi_query::ORDERED_TUPLE_WINDOW)
+    })?;
+    Ok(rows)
+}
+
 fn posting_id(id: &[u8]) -> Result<&str> {
     let id = std::str::from_utf8(id)?;
     kasumi_types::validate_name(id)?;
@@ -1126,23 +1223,31 @@ fn long_order(
 ) -> Result<Option<std::cmp::Ordering>> {
     let mut key = field_prefix(LONG, collection, field);
     key.extend_from_slice(component);
-    reader.with_value(&key, MAX_VALUE_BYTES, |value| {
-        Ok(value.map(|stored| stored.cmp(target)))
-    })
+    reader.compare_value_at(&key, target, MAX_VALUE_BYTES)
 }
 
 /// One range bound as key positions.
-struct Edge {
+struct Edge<'a> {
     /// The scalar component, without the digest for a long scalar.
     component: Vec<u8>,
     /// A long scalar's complete bytes: postings in its bucket compare them.
-    long: Option<Vec<u8>>,
+    long: Option<std::borrow::Cow<'a, [u8]>>,
     inclusive: bool,
 }
 
-impl Edge {
+impl<'a> Edge<'a> {
+    fn from_bound(
+        bound: Bound<&'a serde_json::Value>,
+        kind: kasumi_types::ScalarType,
+    ) -> Result<Option<Self>> {
+        match bound {
+            Bound::Unbounded => Ok(None),
+            Bound::Included(value) => Self::new(value, kind, true).map(Some),
+            Bound::Excluded(value) => Self::new(value, kind, false).map(Some),
+        }
+    }
     fn new(
-        value: &serde_json::Value,
+        value: &'a serde_json::Value,
         kind: kasumi_types::ScalarType,
         inclusive: bool,
     ) -> Result<Self> {
@@ -1158,14 +1263,14 @@ impl Edge {
         }
         Ok(Self {
             component,
-            long: long.then(|| value.bytes.to_vec()),
+            long: long.then_some(value.bytes),
             inclusive,
         })
     }
 }
 
 /// The bound whose long scalar shares `bucket`, the first bytes of a row's.
-fn in_bucket<'e>(edge: &'e Option<Edge>, bucket: &[u8]) -> Option<&'e Edge> {
+fn in_bucket<'e, 'a>(edge: &'e Option<Edge<'a>>, bucket: &[u8]) -> Option<&'e Edge<'a>> {
     edge.as_ref()
         .filter(|edge| edge.long.is_some() && edge.component == bucket)
 }
@@ -1241,14 +1346,10 @@ pub(crate) fn visit_posting(
             }
         }
         FieldPredicate::Range { lower, upper, kind } => {
-            let edge = |bound: Bound<&serde_json::Value>| -> Result<Option<Edge>> {
-                Ok(match bound {
-                    Bound::Unbounded => None,
-                    Bound::Included(value) => Some(Edge::new(value, kind, true)?),
-                    Bound::Excluded(value) => Some(Edge::new(value, kind, false)?),
-                })
-            };
-            let (lower, upper) = (edge(lower)?, edge(upper)?);
+            let (lower, upper) = (
+                Edge::from_bound(lower, kind)?,
+                Edge::from_bound(upper, kind)?,
+            );
             let key = |component: &[u8]| {
                 let mut key = base.clone();
                 key.extend_from_slice(component);

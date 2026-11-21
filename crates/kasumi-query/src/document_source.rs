@@ -154,6 +154,23 @@ pub trait DocumentSource: crate::CollectionRecords {
     ) -> ReadResult<bool, Self::Failure> {
         Ok(false)
     }
+    fn has_ordered_unique_source(&self) -> bool {
+        false
+    }
+    /// Return at most one window of representable compound tuples in native order.
+    /// The planner merges longer keys from the same generation into that order.
+    /// None means the directory is absent at this generation before any row
+    /// was returned. Installed page failures keep their original owner.
+    fn ordered_unique_window(
+        &self,
+        _index: usize,
+        _lower: std::ops::Bound<&[u8]>,
+        _upper: std::ops::Bound<&[u8]>,
+        _descending: bool,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+        Ok(None)
+    }
     /// Lend this exact generation's persisted text shards for the source's
     /// collection. `Ok(None)` when no directory is current at this generation;
     /// a directory that is selected but unreadable returns an error.
@@ -242,6 +259,27 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
         })?;
         self.check()?;
         Ok(available)
+    }
+    fn has_ordered_unique_source(&self) -> bool {
+        self.source.has_ordered_unique_source()
+    }
+    fn ordered_unique_window(
+        &self,
+        index: usize,
+        lower: std::ops::Bound<&[u8]>,
+        upper: std::ops::Bound<&[u8]>,
+        descending: bool,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+        self.check()?;
+        let result =
+            self.source
+                .ordered_unique_window(index, lower, upper, descending, cancellation)?;
+        self.check()?;
+        if let Some(rows) = &result {
+            crate::ordered_tuple::check_window(rows, lower, upper, descending)?;
+        }
+        Ok(result)
     }
     fn visit_field_posting(
         &self,

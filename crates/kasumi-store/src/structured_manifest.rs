@@ -38,7 +38,8 @@ pub const FAMILY: &str = "kasumi.app.structured";
 /// What an absent selector names. A pristine store's first directory edits
 /// pages here; the first replacement generation retires it.
 pub const INITIAL_SPACE: [&str; 1] = ["kasumi.app.structured"];
-const FORMAT: u32 = 1;
+/// Adds order-preserving compound tuple rows to each selected directory.
+pub const ORDERED_TUPLE_FORMAT: u32 = 2;
 
 /// Whether the tree holds exactly the rows at `revision`. A stale directory
 /// keeps naming its last tree so its space stays owned, but readers and
@@ -156,7 +157,7 @@ impl StructuredManifest {
         records: TreeRoot,
     ) -> Self {
         Self {
-            format: FORMAT,
+            format: ORDERED_TUPLE_FORMAT,
             tenant: tenant.into(),
             incarnation: incarnation.into(),
             revision_base,
@@ -238,7 +239,7 @@ impl StructuredManifest {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.format == FORMAT,
+            (1..=ORDERED_TUPLE_FORMAT).contains(&self.format),
             "unsupported structured manifest format"
         );
         ensure!(
@@ -322,7 +323,8 @@ impl StructuredManifest {
             "a stale structured directory needs a replacement generation"
         );
         ensure!(
-            self.tenant == previous.tenant
+            self.format == previous.format
+                && self.tenant == previous.tenant
                 && self.incarnation == previous.incarnation
                 && self.revision_base == previous.revision_base
                 && self.page_space == previous.page_space

@@ -32,6 +32,9 @@ pub(crate) struct UniqueIndex {
     // for both uniqueness and ordered seek. A standalone validation pass
     // has no field tree and therefore builds its temporary tuple map.
     pub(crate) entries: Option<OrdMap<Vec<Scalar>, String>>,
+    // Only keys longer than a native page key live here. A mixed index can
+    // walk the published directory and merge these exceptions in tuple order.
+    pub(crate) overflow: OrdMap<Vec<Scalar>, String>,
 }
 
 pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
@@ -49,12 +52,18 @@ impl UniqueIndex {
             .collect::<Result<Vec<_>>>()?;
         Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
+    fn owned_entries(&mut self, key: &[Scalar]) -> &mut OrdMap<Vec<Scalar>, String> {
+        if self.fields.len() > 1 && crate::ordered_tuple::encode(key).is_none() {
+            &mut self.overflow
+        } else {
+            self.entries.as_mut().expect("private unique tuple tree")
+        }
+    }
+
     fn insert_tuple(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
         if let Some(key) = self.key(record)?
             && self
-                .entries
-                .as_mut()
-                .expect("private unique tuple tree")
+                .owned_entries(&key)
                 .insert(key, id.to_owned())
                 .is_some()
         {
@@ -64,7 +73,8 @@ impl UniqueIndex {
     }
 }
 
-fn unique_conflict(name: &str) -> Error {
+/// The deterministic rejection shared by resident and durable uniqueness owners.
+pub fn unique_conflict(name: &str) -> Error {
     Error::new(
         ErrorCode::Conflict,
         format!("unique index {name} conflicts"),
@@ -152,7 +162,8 @@ impl Structured {
             if let Some(old) = delta.old {
                 for (name, index) in &mut unique {
                     if let Some(mut key) = index.key(old)? {
-                        if let Some(entries) = &mut index.entries {
+                        if index.entries.is_some() {
+                            let entries = index.owned_entries(&key);
                             if entries.get(&key).is_none_or(|owner| owner != delta.id) {
                                 return Err(old_owner_mismatch());
                             }
@@ -211,6 +222,7 @@ impl Structured {
                     index.name.clone(),
                     UniqueIndex {
                         fields: index.fields.clone(),
+                        overflow: OrdMap::new(),
                         entries: (!share_fields || index.fields.len() != 1).then(OrdMap::new),
                     },
                 )

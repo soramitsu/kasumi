@@ -125,12 +125,56 @@ impl QueryIndexes {
         let mut more = false;
         if !empty(&range.lower, &range.upper) {
             let iterator_bytes = crate::workspace::imbl_iterator_bytes()?;
+            let iterator_bytes = if index.overflow.is_empty() {
+                iterator_bytes
+            } else {
+                allocation::add(iterator_bytes, iterator_bytes)?
+            };
             memory.reserve(iterator_bytes)?;
             {
-                let mut tuples = index.entries.as_ref().map(|entries| {
-                    entries.range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
-                });
-                let mut posting = if tuples.is_none() {
+                // Acquire a bounded native tuple window before opening a document
+                // loan: page and document readers may share the same native handle.
+                let mut native_workspace = 0;
+                let mut native = None;
+                if source.has_ordered_unique_source() && index.fields.len() > 1 {
+                    let workspace = ((crate::ORDERED_TUPLE_WINDOW + 3)
+                        * (crate::MAX_ORDERED_TUPLE_BYTES
+                            + 256
+                            + std::mem::size_of::<(Vec<u8>, String)>())
+                        + 6 * crate::MAX_ORDERED_TUPLE_BYTES)
+                        as u64;
+                    memory.reserve(workspace)?;
+                    let ordinal = indexes
+                        .structured
+                        .unique
+                        .values()
+                        .filter(|u| u.fields.len() > 1)
+                        .position(|candidate| std::ptr::eq(candidate, index))
+                        .expect("selected compound index");
+                    let lower = crate::ordered_tuple::range_bound(&range.lower, true);
+                    let upper = crate::ordered_tuple::range_bound(&range.upper, false);
+                    if let Some(rows) = source.ordered_unique_window(
+                        ordinal,
+                        bytes_bound(&lower),
+                        bytes_bound(&upper),
+                        descending,
+                        cancellation,
+                    )? {
+                        native = Some(NativeWalk::new(ordinal, lower, upper, rows, descending));
+                        native_workspace = workspace;
+                    } else {
+                        memory.release(workspace)?;
+                    }
+                }
+                let mut tuples = if native.is_none() {
+                    index.entries.as_ref().map(|entries| {
+                        entries
+                            .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
+                    })
+                } else {
+                    None
+                };
+                let mut posting = if tuples.is_none() && native.is_none() {
                     let field = indexes
                         .structured
                         .fields
@@ -145,10 +189,16 @@ impl QueryIndexes {
                 } else {
                     None
                 };
-                let mut entries = std::iter::from_fn(|| {
+                let mut ordinary = std::iter::from_fn(|| {
+                    if let Some(walk) = &mut native {
+                        return walk
+                            .next(source, cancellation)
+                            .transpose()
+                            .map(|r| r.map(|(key, id)| SeekEntry::Native(key, id)));
+                    }
                     if let Some(tuples) = &mut tuples {
                         return directed_next(tuples, descending)
-                            .map(|(key, id)| Ok((key.as_slice(), id)));
+                            .map(|(key, id)| Ok(SeekEntry::Resident(key.as_slice(), id)));
                     }
                     let posting = posting.as_mut()?;
                     loop {
@@ -157,7 +207,7 @@ impl QueryIndexes {
                             continue;
                         }
                         return Some(if ids.len() == 1 {
-                            Ok((
+                            Ok(SeekEntry::Resident(
                                 std::slice::from_ref(scalar),
                                 ids.get_min().expect("singleton posting"),
                             ))
@@ -165,17 +215,58 @@ impl QueryIndexes {
                             Err(Error::new(
                                 ErrorCode::Corruption,
                                 "unique seek posting has multiple or missing owners",
-                            ))
+                            )
+                            .into())
                         });
                     }
                 })
                 .peekable();
+                let mut wide = (!index.overflow.is_empty()).then(|| {
+                    index
+                        .overflow
+                        .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
+                });
+                let mut wide =
+                    std::iter::from_fn(|| directed_next(wide.as_mut()?, descending)).peekable();
+                let mut entries = std::iter::from_fn(|| {
+                    let Some((key, _)) = wide.peek() else {
+                        return ordinary.next();
+                    };
+                    let first = match ordinary.peek() {
+                        Some(Ok(SeekEntry::Native(bytes, _))) => {
+                            crate::ordered_tuple::compare_overflow(bytes, key)
+                        }
+                        Some(Ok(SeekEntry::Resident(other, _))) => other.cmp(&key.as_slice()),
+                        Some(Err(_)) => return ordinary.next(),
+                        None => return wide.next().map(|(k, id)| Ok(SeekEntry::Resident(k, id))),
+                    };
+                    let take_ordinary = if descending {
+                        first.is_gt()
+                    } else {
+                        first.is_lt()
+                    };
+                    if take_ordinary {
+                        ordinary.next()
+                    } else {
+                        wide.next().map(|(k, id)| Ok(SeekEntry::Resident(k, id)))
+                    }
+                })
+                .peekable();
                 while let Some(entry) = entries.next() {
-                    let (key, id) = entry?;
+                    let entry = entry?;
+                    let id = match &entry {
+                        SeekEntry::Resident(_, id) => *id,
+                        SeekEntry::Native(_, id) => id,
+                    };
                     cancellation.check()?;
                     if page.is_full() {
                         more = true;
                         break;
+                    }
+                    if matches!(entries.peek(), Some(Err(_)))
+                        && let Some(Err(failure)) = entries.next()
+                    {
+                        return Err(failure);
                     }
                     let has_more = entries.peek().is_some();
                     let copied =
@@ -185,7 +276,25 @@ impl QueryIndexes {
                             if !page.push_with_cursor_bytes(row, None, 2, memory)? {
                                 return Ok(None);
                             }
-                            raw_key(row, &index.fields, key, memory).map(Some)
+                            let expected = match &entry {
+                                SeekEntry::Resident(key, _) => Some(*key),
+                                SeekEntry::Native(key, _) => {
+                                    if crate::ordered_record_tuple(
+                                        &index.fields,
+                                        crate::Record::Live(row),
+                                    )?
+                                    .as_ref()
+                                        != Some(key)
+                                    {
+                                        return Err(Error::new(
+                                            ErrorCode::Corruption,
+                                            "native seek entry differs from document",
+                                        ));
+                                    }
+                                    None
+                                }
+                            };
+                            raw_key(row, &index.fields, expected, memory).map(Some)
                         })?;
                     let Some((raw, bytes)) = copied else {
                         more = true;
@@ -201,6 +310,7 @@ impl QueryIndexes {
                         memory.release(bytes)?;
                     }
                 }
+                memory.release(native_workspace)?;
             }
             memory.release(iterator_bytes)?;
         }
@@ -224,6 +334,78 @@ impl QueryIndexes {
     }
 }
 
+enum SeekEntry<'a> {
+    Resident(&'a [Scalar], &'a str),
+    Native(Vec<u8>, String),
+}
+fn bytes_bound(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
+    bound.as_ref().map(Vec::as_slice)
+}
+
+struct NativeWalk {
+    ordinal: usize,
+    lower: Bound<Vec<u8>>,
+    upper: Bound<Vec<u8>>,
+    descending: bool,
+    rows: std::vec::IntoIter<(Vec<u8>, String)>,
+    more: bool,
+}
+impl NativeWalk {
+    fn new(
+        ordinal: usize,
+        lower: Bound<Vec<u8>>,
+        upper: Bound<Vec<u8>>,
+        rows: crate::OrderedTupleWindow,
+        descending: bool,
+    ) -> Self {
+        let more = rows.len() == crate::ORDERED_TUPLE_WINDOW;
+        Self {
+            ordinal,
+            lower,
+            upper,
+            descending,
+            more,
+            rows: rows.into_iter(),
+        }
+    }
+    fn next<S: DocumentSource + ?Sized>(
+        &mut self,
+        source: &S,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<(Vec<u8>, String)>, S::Failure> {
+        if self.rows.len() == 0 && self.more {
+            let rows = source
+                .ordered_unique_window(
+                    self.ordinal,
+                    bytes_bound(&self.lower),
+                    bytes_bound(&self.upper),
+                    self.descending,
+                    cancellation,
+                )?
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "compound directory disappeared during seek",
+                    )
+                })?;
+            self.more = rows.len() == crate::ORDERED_TUPLE_WINDOW;
+            self.rows = rows.into_iter();
+        }
+        let next = self.rows.next();
+        if self.rows.len() == 0
+            && self.more
+            && let Some((key, _)) = &next
+        {
+            let resumed = Bound::Excluded(key.clone());
+            if self.descending {
+                self.upper = resumed;
+            } else {
+                self.lower = resumed;
+            }
+        }
+        Ok(next)
+    }
+}
 fn directed_next<I: DoubleEndedIterator>(iter: &mut I, descending: bool) -> Option<I::Item> {
     if descending {
         iter.next_back()
@@ -476,7 +658,7 @@ fn empty(lower: &Bound<Vec<Scalar>>, upper: &Bound<Vec<Scalar>>) -> bool {
 fn raw_key<W: QueryWorkspace>(
     document: &Document,
     fields: &[IndexField],
-    expected: &[Scalar],
+    expected: Option<&[Scalar]>,
     memory: &mut QueryMemory<W>,
 ) -> Result<(Vec<Value>, u64)> {
     let value = |field: &IndexField| {
@@ -488,17 +670,19 @@ fn raw_key<W: QueryWorkspace>(
         })
     };
     let mut bytes = allocation::vec_bytes::<Value>(fields.len())?;
-    for (field, expected) in fields.iter().zip(expected) {
+    for (ordinal, field) in fields.iter().enumerate() {
         let value = value(field)?;
-        let matches = memory.scope::<_, Error>(|memory| {
-            let (actual, _) = query_scalar(Some(value), Some(field.kind), memory)?;
-            Ok((actual == *expected, 0))
-        })?;
-        if !matches {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "seek index entry differs from document",
-            ));
+        if let Some(expected) = expected {
+            let matches = memory.scope::<_, Error>(|memory| {
+                let (actual, _) = query_scalar(Some(value), Some(field.kind), memory)?;
+                Ok((actual == expected[ordinal], 0))
+            })?;
+            if !matches {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "seek index entry differs from document",
+                ));
+            }
         }
         bytes = allocation::add(bytes, allocation::json_clone_bytes(value)?)?;
     }
