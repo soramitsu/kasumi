@@ -29,6 +29,7 @@ from pathlib import Path
 import re
 import threading
 import time
+import uuid
 
 if __name__ == "__main__":
     _scripts = Path(__file__).resolve(strict=True).parent
@@ -82,6 +83,36 @@ def credential_observation(value, profile_sha256, previous=None):
                 and value["expires_at_ms"] > previous["expires_at_ms"],
                 "external issuer has not advanced the authenticated soak credential")
     return value
+
+
+def archive_position(response):
+    position = response["position"]
+    stream = uuid.UUID(position["stream_id"])
+    through = position["pruned_before"]
+    require(stream.int > 0 and type(through) is int and through >= 0
+            and response["persistence_failed"] is False, "invalid soak audit stream position")
+    head = position["archive_head"]
+    if head is None:
+        require(through == 0, "soak audit position has no archive head")
+    else:
+        require(head["stream_id"] == position["stream_id"]
+                and head["object"]["next_sequence"] == through
+                and 0 <= head["object"]["first_sequence"] < through
+                and re.fullmatch(r"[0-9a-f]{64}", head["object"]["ciphertext_sha256"]),
+                "soak archive head differs from the stream position")
+    return stream, through
+
+
+def archive_progress(before, after):
+    stream, start = archive_position(before)
+    current, end = archive_position(after)
+    require(current == stream and end > start, "no new records archived on the original soak stream")
+
+
+def archive_observer(commands):
+    first = commands["archival"][0]
+    require(len(first) >= 4, "soak archival command requires a service audit profile")
+    return [first[0], "audit", "status", first[3]]
 
 
 def absolute(value, label):
@@ -328,11 +359,14 @@ def execute(run, parameters, topology_path, plan_path, pause):
     observe = [binaries["kasumid"], "credential", "observe", plan["profile"]]
     previous_credential = credential_observation(
         owned.read(run.command("credential-baseline", observe, REPLY_SECONDS)), profile_sha256)
+    archive_command = archive_observer(maintenance)
     measured_start = services.enter("measured")
     workload = Workload(run, plan, measured_start, duration)
     stopped = []
     try:
         open_session(workload)
+        original_archive = owned.read(run.command("archive-baseline", archive_command, REPLY_SECONDS))
+        archive_position(original_archive)
         pending = sorted((fraction * duration, kind) for kind, (fraction, _) in MAINTENANCE.items())
         rotation = parameters["session_seconds"]
         events = {}
@@ -347,6 +381,9 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 for index, command in enumerate(maintenance[kind]):
                     steps.append(f"{kind}-{index}")
                     run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                if kind == "archival":
+                    result = run.command("archive-progress", archive_command, REPLY_SECONDS)
+                    archive_progress(original_archive, owned.read(result))
                 events[kind] = {"id": kind, "elapsed_seconds": started,
                                 "finished_elapsed_seconds": workload.elapsed(), "steps": steps}
             elif now >= rotation and now < duration - interval:
@@ -546,6 +583,14 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
             "soak heartbeats differ from the recomputed raw workload")
     # Maintenance: the plan's exact candidate commands, inside the interval.
     commands = check_plan(plan, paths)
+    archive_command = archive_observer(commands)
+    for step in ("archive-baseline", "archive-progress"):
+        require(receipts[step]["exit_code"] == 0
+                and receipts[step]["record"]["command"] == archive_command
+                and receipts[step]["record"]["executable"]["sha256"] == domain["binaries"]["kasumid"],
+                "soak archival observation differs from the planned audit stream")
+    archive_progress(acceptance.json_reference(custody, logs["archive-baseline"]),
+                     acceptance.json_reference(custody, logs["archive-progress"]))
     observe = [paths["kasumid"], "credential", "observe", plan["profile"]]
     baseline = receipts["credential-baseline"]
     require(baseline["exit_code"] == 0 and baseline["record"]["command"] == observe

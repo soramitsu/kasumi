@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 import attempt_index
@@ -63,6 +64,16 @@ if args[:2] == ["credential", "observe"]:
     counter.write_text(str(n))
     print(json.dumps({"profile_sha256": hashlib.sha256(Path(args[2]).read_bytes()).hexdigest(),
                       "bearer_sha256": f"{n:064x}", "expires_at_ms": 1800000000000 + n}))
+    sys.exit(0)
+if args[:2] == ["audit", "status"]:
+    counter = Path(__file__).with_name("archive-observations")
+    n = int(counter.read_text()) + 1 if counter.exists() else 0
+    counter.write_text(str(n))
+    stream = "12345678-1234-4234-8234-123456789abc"
+    head = ({"stream_id": stream, "object": {"first_sequence": n - 1, "next_sequence": n,
+                                            "ciphertext_sha256": "1" * 64}} if n else None)
+    print(json.dumps({"persistence_failed": False, "position": {"stream_id": stream,
+                      "pruned_before": n, "archive_head": head}}))
     sys.exit(0)
 print(json.dumps({"ok": True, "argv": args}))
 sys.exit(behavior.get("fail", {}).get(args[0], 0))
@@ -478,6 +489,22 @@ class SoakTests(DomainFixture):
                        {"bearer_sha256": original["bearer_sha256"]}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 soak.credential_observation({**renewed, **change}, original["profile_sha256"], original)
+
+    def test_soak_archival_requires_forward_progress_on_the_original_stream(self):
+        stream = "12345678-1234-4234-8234-123456789abc"
+        baseline = {"persistence_failed": False, "position": {
+            "stream_id": stream, "pruned_before": 0, "archive_head": None}}
+        head = {"stream_id": stream, "object": {"first_sequence": 0, "next_sequence": 2,
+                                               "ciphertext_sha256": "1" * 64}}
+        advanced = {"persistence_failed": False, "position": {
+            "stream_id": stream, "pruned_before": 2, "archive_head": head}}
+        soak.archive_progress(baseline, advanced)
+        with self.assertRaisesRegex(ValueError, "no new records"):
+            soak.archive_progress(advanced, advanced)
+        changed = copy.deepcopy(advanced)
+        changed["position"]["stream_id"] = changed["position"]["archive_head"]["stream_id"] = str(uuid.uuid4())
+        with self.assertRaisesRegex(ValueError, "original soak stream"):
+            soak.archive_progress(baseline, changed)
 
     def test_heartbeats_count_only_replies_received_before_each_second(self):
         rows = [{"received_elapsed_seconds": second, "verdict": verdict}
