@@ -265,6 +265,33 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn a_late_array_change_keeps_every_prior_id_in_the_original_posting() {
+    let names: Vec<_> = (0..98).map(|i| format!("id_{i:03}")).collect();
+    let values: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let keys = match i {
+                96 => vec![7, 9],
+                97 => vec![],
+                _ => vec![7],
+            };
+            (name.as_str(), serde_json::json!({"key": keys}))
+        })
+        .collect();
+    let mut rows = Rows::new("docs", &values, true, false);
+    rows.definition.indexes[0].unique = false;
+    rows.definition.indexes[0].fields[0].kind = ScalarType::NumberArray;
+    let indexes = QueryIndexes::build([&rows]).unwrap();
+    let field = &indexes.collections["docs"].structured.fields["/key"];
+    assert_eq!(field.entries.len(), 2);
+    assert_eq!(field.present.len(), 98);
+    let mut postings = field.entries.values();
+    assert!(postings.next().unwrap().iter().eq(&names[..97]));
+    assert!(postings.next().unwrap().iter().eq(&names[96..97]));
+}
+
+#[test]
 fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
     fn rows(last: Value) -> Rows {
         let mut rows = Rows::new(
