@@ -158,12 +158,13 @@ impl TextLayout {
     }
 }
 
-fn text_values<'a>(body: &'a Value, path: &str) -> Vec<&'a str> {
-    match body.pointer(path) {
-        Some(Value::String(text)) => vec![text.as_str()],
-        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
-    }
+fn text_values<'a>(body: &'a Value, path: &str) -> impl Iterator<Item = &'a str> {
+    let values = match body.pointer(path) {
+        Some(Value::Array(values)) => values.as_slice(),
+        Some(value) => std::slice::from_ref(value),
+        None => &[],
+    };
+    values.iter().filter_map(Value::as_str)
 }
 
 struct TextCore {
@@ -228,27 +229,29 @@ fn analyzer_name(kind: Analyzer, surface: bool) -> String {
     format!("{kind:?}_{}", if surface { "surface" } else { "ranked" })
 }
 
-fn tokens(
+fn visit_tokens(
     kind: Analyzer,
     text: &str,
     surface: bool,
     max_tokens: usize,
-) -> Result<Vec<(usize, String)>> {
+    mut visit: impl FnMut(usize, &str),
+) -> Result<usize> {
     let normalized: String = text.nfkc().collect();
     let mut analyzer = analyzer(kind, surface)?;
     let mut stream = analyzer.token_stream(&normalized);
-    let mut tokens = Vec::new();
+    let mut count = 0;
     while stream.advance() {
         let token = stream.token();
         if token.text.len() > 240 {
             return Err(invalid("text token exceeds 240 UTF-8 bytes"));
         }
-        tokens.push((token.position, token.text.clone()));
-        if tokens.len() > max_tokens {
+        if count == max_tokens {
             return Err(exhausted("text token budget exceeded"));
         }
+        visit(token.position, &token.text);
+        count += 1;
     }
-    Ok(tokens)
+    Ok(count)
 }
 
 /// Deterministic text limits must reject proposals before index materialization;
@@ -263,15 +266,10 @@ pub(crate) fn validate_text_document(
             continue;
         };
         for field in &index.fields {
-            let values: Vec<&str> = match body.pointer(&field.path) {
-                Some(Value::String(value)) => vec![value.as_str()],
-                Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
-                _ => Vec::new(),
-            };
-            for value in values {
+            for value in text_values(body, &field.path) {
                 // Prefix and fuzzy fields are unstemmed; validate both versions.
-                total += tokens(text.analyzer, value, false, 65_536)?.len();
-                tokens(text.analyzer, value, true, 65_536)?;
+                total += visit_tokens(text.analyzer, value, false, 65_536, |_, _| {})?;
+                visit_tokens(text.analyzer, value, true, 65_536, |_, _| {})?;
                 if total > 65_536 {
                     return Err(exhausted("document text-index token budget exceeded"));
                 }
@@ -531,7 +529,16 @@ pub(crate) fn run_search(
     if fuzzy && request.fuzzy_distance() > 2 {
         return Err(invalid("fuzzy distance must be 0, 1, or 2"));
     }
-    let terms = tokens(fields.analyzer, &request.query, surface_query, 64)?;
+    let mut terms = Vec::new();
+    visit_tokens(
+        fields.analyzer,
+        &request.query,
+        surface_query,
+        64,
+        |position, term| {
+            terms.push((position, term.to_owned()));
+        },
+    )?;
     if terms.is_empty() {
         return Err(invalid("text query contains no searchable tokens"));
     }
