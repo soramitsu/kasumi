@@ -363,15 +363,10 @@ async fn standalone_group_commit_validates_unique_indexes_against_prior_members(
             &kasumi_query::unique_conflict("value")
         );
     }
-    assert_eq!(
-        fixture
-            .db
-            .group
-            .fixture_local_joined_appends()
-            .unwrap()
-            .groups,
-        before.groups + 1
-    );
+    // A repeated document starts a new prefix: [a,b], then [a,b,c].
+    let after = fixture.db.group.fixture_local_joined_appends().unwrap();
+    assert_eq!(after.groups, before.groups + 2);
+    assert_eq!(after.applied, before.applied + 5);
     assert_eq!(
         fixture.db.engine.generation().unwrap().state.document_count,
         2
