@@ -6,7 +6,10 @@ use super::*;
 use crate::startup_owner::{Kind, Runtime};
 use std::{
     pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::Poll,
 };
 use tokio::sync::{Notify, oneshot};
@@ -73,9 +76,9 @@ async fn abandoned_open(fail: bool) -> Arc<Observation> {
 }
 
 fn final_drain(grace: Duration) -> impl Future<Output = ProcessDrain> {
-    bounded(grace, |failed| async move {
-        seal_startups().await;
-        startups(&failed).await
+    bounded(grace, async |progress| {
+        seal_startups(progress).await;
+        startups(progress).await
     })
 }
 
@@ -113,6 +116,16 @@ async fn expired_grace_reports_retained_and_leaves_the_owner_in_its_registry() {
         final_drain(Duration::from_millis(50)).await,
         ProcessDrain::Retained
     );
+    let mut progress = DrainProgress {
+        current: "startup_seal",
+        failed: false,
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), startups(&mut progress))
+            .await
+            .is_err()
+    );
+    assert_eq!(progress.current, "local_operator");
     assert!(!observation.closed.load(Ordering::Acquire));
     // The cancelled traversal dropped only its wait: a later one still joins.
     observation.release.notify_one();

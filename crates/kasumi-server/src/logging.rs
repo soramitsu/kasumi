@@ -150,9 +150,10 @@ pub(crate) fn process_drain_failed(registry: &'static str, error: &anyhow::Error
 }
 
 /// The final drain's grace expired with an owner still retained.
-pub(crate) fn process_drain_retained(grace: std::time::Duration) {
+pub(crate) fn process_drain_retained(grace: std::time::Duration, registry: &'static str) {
     tracing::error!(
         event = "process_drain_retained",
+        registry,
         grace_secs = grace.as_secs(),
         "a process-wide registry still retained an owner when the exit grace expired"
     );
