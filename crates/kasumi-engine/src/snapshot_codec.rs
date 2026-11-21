@@ -54,12 +54,17 @@ pub(crate) fn measure_document_json(
     document: &Document,
     observe_body: impl FnMut(&[u8]),
 ) -> anyhow::Result<((u64, u64), (u64, u64))> {
-    validate_name(&document.id)?;
     let body = measure_with_meter(
         &CanonicalJsonValue(&document.body),
         observe_body,
         record_work::Meter::document_body(),
     )?;
+    // A short body costs less to revisit than a second DTO with a null
+    // placeholder. Both routes use the same serializer and structural meter.
+    if body.0 <= 64 {
+        return Ok((body, measure_typed_json(document, |_| {})?));
+    }
+    validate_name(&document.id)?;
     let frame = Document {
         id: document.id.clone(),
         version: document.version,

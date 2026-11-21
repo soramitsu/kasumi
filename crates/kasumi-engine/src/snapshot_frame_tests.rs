@@ -10,6 +10,8 @@ fn document_measurement_preserves_exact_work_hash_and_enclosing_depth() {
         serde_json::Value::Null,
         serde_json::json!(false),
         serde_json::json!(-12345.125),
+        serde_json::json!("x".repeat(62)),
+        serde_json::json!("x".repeat(63)),
         serde_json::json!({"escaped\"\\":"安全\r\n", "values":vec![0u8; 500]}),
         serde_json::json!("a".repeat(65536)),
         nested.clone(),
