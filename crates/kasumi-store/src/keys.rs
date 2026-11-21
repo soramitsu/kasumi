@@ -938,7 +938,8 @@ mod tests {
             crate::test_utils::NODE_STORE_ID,
             memory.clone(),
             crate::ScratchDisk::fixture(scratch.path(), memory),
-        )?;
+        )
+        .expect("bounded fixture node opens");
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let transit = Arc::new(TransitKeyProvider::new(config(&fixture))?);
