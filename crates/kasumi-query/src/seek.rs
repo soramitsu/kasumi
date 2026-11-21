@@ -149,16 +149,15 @@ impl QueryIndexes {
                         .filter(|u| u.fields.len() > 1)
                         .position(|candidate| std::ptr::eq(candidate, index))
                         .expect("selected compound index");
-                    if let Some(lower) = encoded_bound(&range.lower)
-                        && let Some(upper) = encoded_bound(&range.upper)
-                        && let Some(rows) = source.ordered_unique_window(
-                            ordinal,
-                            bytes_bound(&lower),
-                            bytes_bound(&upper),
-                            descending,
-                            cancellation,
-                        )?
-                    {
+                    let lower = crate::ordered_tuple::range_bound(&range.lower, true);
+                    let upper = crate::ordered_tuple::range_bound(&range.upper, false);
+                    if let Some(rows) = source.ordered_unique_window(
+                        ordinal,
+                        bytes_bound(&lower),
+                        bytes_bound(&upper),
+                        descending,
+                        cancellation,
+                    )? {
                         native = Some(NativeWalk::new(ordinal, lower, upper, rows, descending));
                         native_workspace = workspace;
                     } else {
@@ -305,13 +304,6 @@ impl QueryIndexes {
 enum SeekEntry<'a> {
     Resident(&'a [Scalar], &'a str),
     Native(Vec<u8>, String),
-}
-fn encoded_bound(bound: &Bound<Vec<Scalar>>) -> Option<Bound<Vec<u8>>> {
-    Some(match bound {
-        Bound::Included(key) => Bound::Included(crate::ordered_tuple::encode(key)?),
-        Bound::Excluded(key) => Bound::Excluded(crate::ordered_tuple::encode(key)?),
-        Bound::Unbounded => Bound::Unbounded,
-    })
 }
 fn bytes_bound(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
     bound.as_ref().map(Vec::as_slice)

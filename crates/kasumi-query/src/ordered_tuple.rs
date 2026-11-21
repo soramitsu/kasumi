@@ -47,32 +47,30 @@ pub(crate) fn check_window(
 }
 
 fn part(out: &mut Vec<u8>, value: FieldValue<'_>) -> bool {
-    let payload = value.bytes.as_ref();
-    if payload.len() > MAX_ORDERED_TUPLE_BYTES.saturating_sub(out.len()) {
-        return false;
-    }
-    let size = if !matches!(value.tag, 4 | 5) {
-        1
-    } else {
-        3 + payload.len() + payload.iter().filter(|b| **b == 0).count()
+    let mut push = |byte| {
+        if out.len() == MAX_ORDERED_TUPLE_BYTES {
+            return false;
+        }
+        out.push(byte);
+        true
     };
-    if out.len() + size > MAX_ORDERED_TUPLE_BYTES {
+    if !push(value.tag) {
         return false;
     }
-    out.push(value.tag);
     if matches!(value.tag, 4 | 5) {
-        for byte in payload {
-            out.push(*byte);
-            if *byte == 0 {
-                out.push(255);
+        for &byte in value.bytes.as_ref() {
+            if !push(byte) || (byte == 0 && !push(255)) {
+                return false;
             }
         }
-        out.extend_from_slice(&[0, 1]);
+        if !push(0) || !push(1) {
+            return false;
+        }
     }
     true
 }
 
-pub(crate) fn encode(key: &[Scalar]) -> Option<Vec<u8>> {
+fn parts(key: &[Scalar], keep_prefix: bool) -> (Vec<u8>, bool) {
     let mut result = Vec::new();
     for scalar in key {
         let value = if *scalar == Scalar::UpperBound {
@@ -83,11 +81,39 @@ pub(crate) fn encode(key: &[Scalar]) -> Option<Vec<u8>> {
         } else {
             FieldValue::from_scalar(scalar)
         };
-        if !part(&mut result, value) {
-            return None;
+        if (!keep_prefix && value.bytes.len() > MAX_ORDERED_TUPLE_BYTES - result.len())
+            || !part(&mut result, value)
+        {
+            return (result, false);
         }
     }
-    Some(result)
+    (result, true)
+}
+
+pub(crate) fn encode(key: &[Scalar]) -> Option<Vec<u8>> {
+    let (result, complete) = parts(key, false);
+    complete.then_some(result)
+}
+
+/// Every stored key is at most M bytes. For a longer limit, a stored key
+/// equal to its first M bytes sorts strictly before the complete limit.
+/// This remains true if the cut splits a zero escape or a tuple terminator.
+pub(crate) fn range_bound(
+    bound: &std::ops::Bound<Vec<Scalar>>,
+    lower: bool,
+) -> std::ops::Bound<Vec<u8>> {
+    use std::ops::Bound;
+    let (key, inclusive) = match bound {
+        Bound::Included(key) => (key, true),
+        Bound::Excluded(key) => (key, false),
+        Bound::Unbounded => return Bound::Unbounded,
+    };
+    let (prefix, complete) = parts(key, true);
+    if if complete { inclusive } else { !lower } {
+        Bound::Included(prefix)
+    } else {
+        Bound::Excluded(prefix)
+    }
 }
 
 /// Encode the same logical key directly from a live or archived projection.
@@ -97,7 +123,8 @@ pub fn ordered_record_tuple(fields: &[IndexField], record: Record<'_>) -> Result
         let Some(value) = record_value(record, &field.path) else {
             return Ok(None);
         };
-        if !part(&mut result, FieldValue::predicate(value, field.kind)?) {
+        let value = FieldValue::predicate(value, field.kind)?;
+        if value.bytes.len() > MAX_ORDERED_TUPLE_BYTES - result.len() || !part(&mut result, value) {
             return Ok(None);
         }
     }
@@ -136,6 +163,46 @@ mod tests {
             .is_err()
         );
         assert!(check_window(&[(vec![1], String::new())], Unbounded, Unbounded, false).is_err());
+    }
+    #[test]
+    fn very_long_seek_bounds_preserve_order_for_every_storable_key() {
+        use std::ops::{Bound, RangeBounds};
+        let long = "k".repeat(MAX_ORDERED_TUPLE_BYTES - 4);
+        let stored = [
+            vec![Scalar::Null],
+            vec![Scalar::String(long.clone())],
+            vec![Scalar::String(format!("{long}a"))],
+            vec![Scalar::String(format!("{long}b"))],
+            vec![Scalar::String(long.clone()), Scalar::Boolean(true)],
+            vec![Scalar::String("z".into())],
+        ];
+        let limits = [
+            vec![Scalar::String(format!("{long}a{}", "a".repeat(4096)))],
+            vec![Scalar::String(format!("{long}\0x"))],
+            vec![Scalar::String(long), Scalar::String("k".repeat(1024))],
+            vec![Scalar::UpperBound],
+        ];
+        for limit in limits {
+            for original in [Bound::Included(limit.clone()), Bound::Excluded(limit)] {
+                for tuple in &stored {
+                    let native = encode(tuple).expect("stored key fits");
+                    for lower in [true, false] {
+                        let capped = range_bound(&original, lower);
+                        let logical = if lower {
+                            (original.as_ref(), Bound::Unbounded)
+                        } else {
+                            (Bound::Unbounded, original.as_ref())
+                        };
+                        let physical = if lower {
+                            (capped.as_ref(), Bound::Unbounded)
+                        } else {
+                            (Bound::Unbounded, capped.as_ref())
+                        };
+                        assert_eq!(logical.contains(tuple), physical.contains(&native));
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn bounded_compound_encoding_matches_scalar_order_including_prefixes_and_sentinels() {
