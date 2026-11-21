@@ -119,15 +119,47 @@ impl SelectedApplication {
             u64,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
-        use kasumi_raft::SelectedAppliedRef;
-        use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
-        let Some(position) =
-            self.cell.position.get().filter(|p| {
-                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
-            })
-        else {
+        let Some(position) = self.serving_position() else {
             return Ok(None);
         };
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected record installation absent")?;
+        self.with_record_reader(&roots, shared, |reader| {
+            reader.check_access()?;
+            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
+            let view = permit.view.as_ref().expect("loaned primary view").as_ref();
+            let Some(manifest) = Self::base_snapshot_manifest_at(position, view, state, &roots)?
+            else {
+                return Ok(None);
+            };
+            let tree = kasumi_store::ordered_pages::TreeReader::new(
+                view,
+                &manifest.page_space,
+                manifest.records,
+                None,
+            )?;
+            let memory = kasumi_store::ordered_pages::PageSource::memory(view);
+            read(&tree, &memory, manifest.layout_epoch, manifest.revision).map(Some)
+        })
+    }
+
+    fn serving_position(&self) -> Option<&Position> {
+        self.cell.position.get().filter(|position| {
+            self.cell.frozen.get() == Some(&false) && !position.is_covered_reconstruction()
+        })
+    }
+
+    fn base_snapshot_manifest_at(
+        position: &Position,
+        view: &TenantStorageReadView,
+        state: &kasumi_types::TenantState,
+        roots: &SourceRoots,
+    ) -> Result<Option<kasumi_store::application_manifest::ApplicationManifest>> {
+        use kasumi_raft::SelectedAppliedRef;
+        use kasumi_store::application_manifest::ApplicationManifest;
         let applied = position.applied();
         let log_id = match applied {
             Some(SelectedAppliedRef::Entry { log_id, .. }) => Some(log_id),
@@ -141,73 +173,61 @@ impl SelectedApplication {
                 == Some(state.revision),
             "applied directory position differs"
         );
-        let roots = self
-            .cell
-            .roots
-            .upgrade()
-            .context("selected record installation absent")?;
-        self.with_record_reader(&roots, shared, |reader| {
-            reader.check_access()?;
-            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
-            let view = permit.view.as_ref().expect("loaned primary view");
-            let Some(manifest) = ApplicationManifest::load_from_pair(view)? else {
-                return Ok(None);
-            };
-            let read_snapshot = |snapshot: kasumi_raft::SelectedSnapshotRef<'_>| {
-                let snapshot_id = snapshot.meta.last_log_id;
+        let Some(manifest) = ApplicationManifest::load_from_pair(view)? else {
+            return Ok(None);
+        };
+        let verify = |snapshot: kasumi_raft::SelectedSnapshotRef<'_>| {
+            let snapshot_id = snapshot.meta.last_log_id;
+            ensure!(
+                snapshot_id <= log_id
+                    && snapshot_id
+                        .map(|id| id.index)
+                        .cmp(&log_id.map(|id| id.index))
+                        == snapshot_id.cmp(&log_id),
+                "snapshot follows or contradicts applied position"
+            );
+            if let Some(SelectedAppliedRef::Entry { membership, .. }) = applied
+                && snapshot_id == log_id
+            {
                 ensure!(
-                    snapshot_id <= log_id
-                        && snapshot_id
-                            .map(|id| id.index)
-                            .cmp(&log_id.map(|id| id.index))
-                            == snapshot_id.cmp(&log_id),
-                    "snapshot follows or contradicts applied position"
+                    snapshot.meta.last_membership == *membership,
+                    "snapshot membership differs at applied position"
                 );
-                if let Some(SelectedAppliedRef::Entry { membership, .. }) = applied
-                    && snapshot_id == log_id
-                {
-                    ensure!(
-                        snapshot.meta.last_membership == *membership,
-                        "snapshot membership differs at applied position"
-                    );
-                }
-                let snapshot_revision = state
-                    .revision_base
-                    .checked_add(snapshot_id.map_or(0, |id| id.index))
-                    .context("snapshot revision overflow")?;
-                ensure!(
-                    manifest.snapshot_sha256
-                        == crate::application_checkpoint::snapshot_identity(
-                            snapshot.meta,
-                            snapshot.backend_sha256
-                        )?
-                        && manifest.tenant == state.tenant
-                        && manifest.incarnation == state.incarnation
-                        && manifest.revision_base == state.revision_base
-                        && manifest.revision == snapshot_revision
-                        && (snapshot_revision < state.revision
-                            || (manifest.document_count == state.document_count
-                                && manifest.logical_bytes == state.logical_bytes)),
-                    "selected record snapshot identity differs"
-                );
-                let tree =
-                    TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
-                let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
-                read(&tree, &memory, manifest.layout_epoch, snapshot_revision)
-            };
-            if let Some(snapshot) = position.snapshot() {
-                return read_snapshot(snapshot).map(Some);
             }
+            let snapshot_revision = state
+                .revision_base
+                .checked_add(snapshot_id.map_or(0, |id| id.index))
+                .context("snapshot revision overflow")?;
+            ensure!(
+                manifest.snapshot_sha256
+                    == crate::application_checkpoint::snapshot_identity(
+                        snapshot.meta,
+                        snapshot.backend_sha256
+                    )?
+                    && manifest.tenant == state.tenant
+                    && manifest.incarnation == state.incarnation
+                    && manifest.revision_base == state.revision_base
+                    && manifest.revision == snapshot_revision
+                    && (snapshot_revision < state.revision
+                        || (manifest.document_count == state.document_count
+                            && manifest.logical_bytes == state.logical_bytes)),
+                "selected record snapshot identity differs"
+            );
+            Ok(())
+        };
+        if let Some(snapshot) = position.snapshot() {
+            verify(snapshot)?;
+        } else {
             let workspace = Workspace {
                 core: roots.admission.memory().clone(),
                 baseline: 0,
                 planned_peak: None,
                 reservation: roots.admission.reserve_application_source(0)?,
             };
-            kasumi_raft::with_published_snapshot_at(view, &roots.limits, workspace, read_snapshot)?
-                .context("application directory lacks its selected Raft snapshot")
-                .map(Some)
-        })
+            kasumi_raft::with_published_snapshot_at(view, &roots.limits, workspace, verify)?
+                .context("application directory lacks its selected Raft snapshot")?;
+        }
+        Ok(Some(manifest))
     }
 
     /// Read primary descriptors and headers from the tree owned by this revision.
@@ -289,7 +309,7 @@ impl SelectedApplication {
 
     /// Both primary point readers and text shard version checks use this
     /// manifest on the same immutable paired source as their data.
-    pub(crate) fn current_primary_manifest(
+    fn current_primary_manifest(
         &self,
         view: &kasumi_store::TenantStorageReadView,
         state: &kasumi_types::TenantState,
@@ -312,6 +332,48 @@ impl SelectedApplication {
             "selected primary directory differs from its generation"
         );
         Ok(Some(manifest))
+    }
+
+    /// Resolve the live-version headers on the very view that owns the text
+    /// shards. A predecessor checkpoint may serve an untouched collection.
+    pub(crate) fn text_version_root_at(
+        &self,
+        view: &TenantStorageReadView,
+        state: &kasumi_types::TenantState,
+        collection: &str,
+    ) -> Result<Option<(String, kasumi_store::ordered_pages::TreeRoot)>> {
+        use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
+        use kasumi_store::ordered_pages::{PageSource, TreeReader};
+        if let Some(primary) = self.current_primary_manifest(view, state)? {
+            return Ok(Some((primary.page_space, primary.records)));
+        }
+        let Some(position) = self.serving_position() else {
+            return Ok(None);
+        };
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected text installation absent")?;
+        let Some(base) = Self::base_snapshot_manifest_at(position, view, state, &roots)? else {
+            return Ok(None);
+        };
+        if base.layout_epoch < DOCUMENT_HEADERS_LAYOUT {
+            return Ok(None);
+        }
+        if base.revision < state.revision {
+            let tree = TreeReader::new(view, &base.page_space, base.records, None)?;
+            if !crate::application_records::checkpoint_collection_matches(
+                &tree,
+                &view.memory(),
+                state,
+                collection,
+                base.revision,
+            )? {
+                return Ok(None);
+            }
+        }
+        Ok(Some((base.page_space, base.records)))
     }
 
     /// One document's live or archived record from the pinned primary
@@ -546,10 +608,7 @@ impl SelectedApplication {
 
     fn serving_revision(&self, base: u64) -> Option<u64> {
         use kasumi_raft::SelectedAppliedRef;
-        let position =
-            self.cell.position.get().filter(|p| {
-                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
-            })?;
+        let position = self.serving_position()?;
         let index = match position.applied() {
             Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
             Some(SelectedAppliedRef::Snapshot { meta, .. }) => {

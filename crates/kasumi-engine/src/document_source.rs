@@ -632,15 +632,13 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                 self.directory_reader(),
                 state,
                 |tree, source, manifest, memory| {
-                    let primary = selection.current_primary_manifest(source, state)?;
+                    let primary =
+                        selection.text_version_root_at(source, state, &self.collection)?;
                     let primary = primary
                         .as_ref()
-                        .map(|manifest| {
+                        .map(|(space, records)| {
                             kasumi_store::ordered_pages::TreeReader::new(
-                                source,
-                                &manifest.page_space,
-                                manifest.records,
-                                None,
+                                source, space, *records, None,
                             )
                         })
                         .transpose()?;

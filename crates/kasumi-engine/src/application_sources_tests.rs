@@ -3593,6 +3593,19 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         checkpoint_reader.state.revision,
     ));
     check_physical_versions(&checkpoint_reader, &["a", "b"])?;
+    let mut changed = checkpoint_reader.state.clone();
+    Arc::make_mut(&mut changed.collections.get_mut("docs").unwrap().definition).strict_read_audit =
+        true;
+    selected
+        .with_text_records(None, &changed, |_, view, _, _| {
+            assert!(
+                selected
+                    .text_version_root_at(view, &changed, "docs")?
+                    .is_none()
+            );
+            Ok(())
+        })?
+        .expect("retained text directory");
     // Entries after the snapshot replay as covered publications on reopen.
     db.mutate(
         context.clone(),
