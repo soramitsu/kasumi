@@ -77,6 +77,60 @@ enum DurableRecord<'a> {
     RecoveryCompletionHistory(&'a RecoveryCompletionHistory),
 }
 
+/// A checkpoint can still own an untouched collection after another
+/// collection or tenant metadata advances the applied revision. Compare the
+/// authenticated definition, logical data epoch and archive accounting. A
+/// large definition keeps its regular source and never opens its overflow.
+pub(super) fn checkpoint_collection_matches(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    state: &TenantState,
+    name: &str,
+    checkpoint_revision: u64,
+) -> Result<bool> {
+    use kasumi_store::ordered_pages::{Direction, ValueRef};
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", content = "value", deny_unknown_fields)]
+    enum Row {
+        Collection(CollectionDefinition, u64, usize),
+    }
+    let Some(current) = state.collections.get(name) else {
+        return Ok(false);
+    };
+    if current.data_epoch > checkpoint_revision {
+        return Ok(false);
+    }
+    let key = KeyBuilder::new(2).text(name).finish();
+    let mut matches = false;
+    tree.scan(
+        std::ops::Bound::Included(&key),
+        Direction::Forward,
+        &mut |found, row| {
+            if found == key
+                && let ValueRef::Inline(bytes) = row
+            {
+                let work =
+                    crate::snapshot_codec::inspect_external_json_work(bytes, &mut || Ok(()))?;
+                let _lease = crate::document_restore::ReadAdmissionFailure::reserve(
+                    memory,
+                    work.checked_add(2 * bytes.len() as u64 + 512)
+                        .context("checkpoint collection workspace overflow")?,
+                )?;
+                let Row::Collection(definition, epoch, archived) = serde_json::from_slice(bytes)?;
+                ensure!(
+                    definition.name == name,
+                    "checkpoint collection identity differs"
+                );
+                matches = epoch == current.data_epoch
+                    && archived == current.archived_document_bytes
+                    && &definition == current.definition.as_ref();
+            }
+            Ok(false)
+        },
+    )?;
+    Ok(matches)
+}
+
 pub(crate) fn document_key(collection: &str, id: &str) -> Vec<u8> {
     KeyBuilder::new(3).text(collection).text(id).finish()
 }

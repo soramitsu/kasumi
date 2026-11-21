@@ -2367,9 +2367,60 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     reopened_audit.shutdown().await?;
     drop(reopened_audit);
     target.close().await?;
-    // Advance the actual source log beyond the published snapshot. The
-    // first two events still come from its immutable directory and the third
-    // arrives from the newly committed tail in the same native page.
+    // This serving entry is newer than the checkpoint but leaves the
+    // compound collection unchanged. Read the checkpoint directly so a
+    // current ordinary tree cannot satisfy the assertion.
+    source_db
+        .administer(
+            context.clone(),
+            kasumi_types::Operation::SetLimits(limits.clone()),
+        )
+        .await?;
+    {
+        let current = source_engine.generation()?;
+        let retained = current.application_selection.get().unwrap();
+        assert!(!retained.has_exact_snapshot(current.state.revision_base, current.state.revision));
+        let rows = retained
+            .with_checkpoint_ordered_tuples(
+                None,
+                &current.state,
+                std::iter::once("docs"),
+                |tree| {
+                    crate::application_structured::ordered_unique_window(
+                        tree,
+                        "docs",
+                        0,
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Unbounded,
+                        false,
+                        || true,
+                    )
+                },
+            )?
+            .expect("unchanged collection lost its checkpoint");
+        assert_eq!(
+            rows.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+            ["point"]
+        );
+        let mut foreign = current.state.clone();
+        let changed = foreign.collections.get_mut("docs").unwrap();
+        Arc::make_mut(&mut changed.definition).strict_read_audit =
+            !changed.definition.strict_read_audit;
+        assert!(
+            retained
+                .with_checkpoint_ordered_tuples(
+                    None,
+                    &foreign,
+                    std::iter::once("docs"),
+                    |_| -> anyhow::Result<()> {
+                        panic!("changed schema exposed predecessor tuples")
+                    },
+                )?
+                .is_none()
+        );
+    }
+    // A document change invalidates this collection's checkpoint coverage.
+    // The first two feed events still come from the immutable directory.
     let third_body = serde_json::json!({"value": "later"});
     source_db
         .mutate(
@@ -2378,6 +2429,21 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         )
         .await?;
     let latest = source_engine.generation()?;
+    assert!(
+        latest
+            .application_selection
+            .get()
+            .unwrap()
+            .with_checkpoint_ordered_tuples(
+                None,
+                &latest.state,
+                std::iter::once("docs"),
+                |_| -> anyhow::Result<()> {
+                    panic!("changed data epoch exposed predecessor tuples")
+                },
+            )?
+            .is_none()
+    );
     let base = latest
         .application_selection
         .get()

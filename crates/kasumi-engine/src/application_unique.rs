@@ -44,6 +44,7 @@ pub(crate) fn validate_ordinary(
                 None,
                 &base.state,
                 || base.indexes.structured_layout_sha256(),
+                changed.keys().map(String::as_str),
                 |reader, fields| {
                     let _workspace = roots.memory_owner().clone().reserve_installed(
                         if group.is_some_and(|(_, ids)| !ids.is_empty()) {

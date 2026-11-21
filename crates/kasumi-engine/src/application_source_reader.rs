@@ -181,6 +181,7 @@ impl SelectedApplication {
                             snapshot.meta,
                             snapshot.backend_sha256
                         )?
+                        && manifest.tenant == state.tenant
                         && manifest.incarnation == state.incarnation
                         && manifest.revision_base == state.revision_base
                         && manifest.revision == snapshot_revision
@@ -459,13 +460,13 @@ impl SelectedApplication {
     }
 
     /// Both layouts use identical canonical compound points. Only the ordinary
-    /// tree also contains ordinary-field postings. A caller over an earlier
-    /// snapshot would need to reconcile the selected log tail first.
-    pub(crate) fn with_ordered_tuples<T>(
+    /// tree also contains ordinary-field postings.
+    pub(crate) fn with_ordered_tuples<'n, T>(
         &self,
         shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         layout: impl FnOnce() -> [u8; 32],
+        collections: impl ExactSizeIterator<Item = &'n str>,
         mut read: impl FnMut(&kasumi_store::ordered_pages::TreeReader<'_>, bool) -> Result<T>,
     ) -> Result<Option<T>> {
         if let Some(result) = self.with_structured_records_since(
@@ -477,16 +478,55 @@ impl SelectedApplication {
         )? {
             return Ok(Some(result));
         }
-        if !self.has_exact_snapshot(state.revision_base, state.revision) {
+        self.with_checkpoint_ordered_tuples(shared, state, collections, |tree| read(tree, false))
+    }
+
+    pub(super) fn with_checkpoint_ordered_tuples<'n, T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &kasumi_types::TenantState,
+        collections: impl ExactSizeIterator<Item = &'n str>,
+        read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        if self.serving_revision(state.revision_base) != Some(state.revision) {
             return Ok(None);
         }
-        self.with_snapshot_records(shared, state, |tree, _, layout| {
+        let exact = self.has_exact_snapshot(state.revision_base, state.revision);
+        self.with_base_snapshot_records(shared, state, |tree, memory, layout, revision| {
             if layout < kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT {
                 return Ok(None);
             }
-            read(tree, false).map(Some)
+            if !exact {
+                if revision >= state.revision || !(1..=32).contains(&collections.len()) {
+                    return Ok(None);
+                }
+                for name in collections {
+                    if !crate::application_records::checkpoint_collection_matches(
+                        tree, memory, state, name, revision,
+                    )? {
+                        return Ok(None);
+                    }
+                }
+            }
+            read(tree).map(Some)
         })
         .map(Option::flatten)
+    }
+
+    fn serving_revision(&self, base: u64) -> Option<u64> {
+        use kasumi_raft::SelectedAppliedRef;
+        let position =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })?;
+        let index = match position.applied() {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
+                meta.last_log_id.map_or(0, |id| id.index)
+            }
+            None => 0,
+        };
+        base.checked_add(index)
     }
 
     pub(crate) fn with_structured_records_since<T>(
@@ -497,23 +537,8 @@ impl SelectedApplication {
         minimum_format: u32,
         read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
     ) -> Result<Option<T>> {
-        use kasumi_raft::SelectedAppliedRef;
         use kasumi_store::{ordered_pages::TreeReader, structured_manifest::StructuredManifest};
-        let Some(position) =
-            self.cell.position.get().filter(|p| {
-                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
-            })
-        else {
-            return Ok(None);
-        };
-        let index = match position.applied() {
-            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
-            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
-                meta.last_log_id.map_or(0, |id| id.index)
-            }
-            None => 0,
-        };
-        if state.revision_base.checked_add(index) != Some(state.revision) {
+        if self.serving_revision(state.revision_base) != Some(state.revision) {
             // The selection belongs to another applied position than this
             // state: its directory says nothing about these indexes.
             return Ok(None);

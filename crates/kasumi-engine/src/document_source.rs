@@ -439,6 +439,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
             self.directory_reader(),
             &self.generation.state,
             || self.generation.indexes.structured_layout_sha256(),
+            std::iter::once(self.collection.as_str()),
             |tree, _| {
                 crate::application_structured::ordered_unique_window(
                     tree,
