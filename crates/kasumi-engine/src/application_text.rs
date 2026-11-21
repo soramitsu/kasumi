@@ -357,12 +357,34 @@ pub(crate) fn live_version(collection: &CollectionState, id: &str) -> Option<u64
     collection.documents.get(id).map(|slot| slot.version())
 }
 
-fn live_documents(collection: &CollectionState) -> u64 {
-    collection
-        .documents
-        .keys()
-        .filter(|id| !collection.archived_documents.contains_key(*id))
-        .count() as u64
+/// Hydrated archived rows can occur in both maps. Their intersection is
+/// needed only when these cardinality bounds leave the decision ambiguous.
+fn has_live_documents(collection: &CollectionState, required: u64) -> bool {
+    let Ok(required) = usize::try_from(required) else {
+        return false;
+    };
+    let documents = &collection.documents;
+    let archived = &collection.archived_documents;
+    if documents.len() < required {
+        return false;
+    }
+    if documents.len().saturating_sub(archived.len()) >= required {
+        return true;
+    }
+    if documents.len() <= archived.len() {
+        documents
+            .keys()
+            .filter(|id| !archived.contains_key(*id))
+            .nth(required - 1)
+            .is_some()
+    } else {
+        let allowed_hydrated = documents.len() - required;
+        archived
+            .keys()
+            .filter(|id| documents.contains_key(*id))
+            .nth(allowed_hydrated)
+            .is_none()
+    }
 }
 
 fn has_text(state: &TenantState) -> bool {
@@ -907,7 +929,7 @@ fn edit(
                     .is_none_or(|old| old.layout != layout.sha256()) =>
             {
                 // A new text collection, or a changed text definition.
-                if live_documents(collection.expect("layout has a collection")) > 0 {
+                if has_live_documents(collection.expect("layout has a collection"), 1) {
                     return Ok(None);
                 }
                 if let Some(old) = &existing
@@ -1153,8 +1175,11 @@ impl CollectionEdit<'_, '_> {
             }
         }
         // One bounded compaction step while superseded rows dominate.
-        let live = live_documents(self.collection);
-        if descriptor.documents > live.saturating_mul(2).saturating_add(COMPACTION_SLACK) {
+        let required_live = descriptor
+            .documents
+            .saturating_sub(COMPACTION_SLACK)
+            .div_ceil(2);
+        if !has_live_documents(self.collection, required_live) {
             let sealed: Vec<u64> = stored_levels
                 .iter()
                 .filter(|(_, level)| **level == SEALED)
