@@ -3312,6 +3312,35 @@ mod document_store_native_tests;
 async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::text_manifest::TextManifest;
+    fn check_physical_versions(
+        generation: &Arc<crate::Generation>,
+        expected: &[&str],
+    ) -> anyhow::Result<()> {
+        use kasumi_query::DocumentSource;
+        let mut collections = generation.state.collections.clone();
+        let collection = collections.get_mut("docs").unwrap();
+        collection.documents.clear();
+        collection.archived_documents.clear();
+        let detached = Arc::new(generation.read_view(collections, vec![]));
+        let source = detached.document_source("docs")?;
+        let scores = source
+            .with_text_shards(|shards| {
+                kasumi_query::search_text_shards(
+                    shards,
+                    &kasumi_types::TextSearch::new("text", "shared"),
+                    64,
+                    &Default::default(),
+                )
+            })
+            .map_err(crate::index_source::into_anyhow)?
+            .expect("current text directory");
+        assert_eq!(
+            scores.keys().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+        Ok(())
+    }
+
     async fn audit(
         node: &kasumi_store::NodeStore,
         admission: &Arc<NodeAdmission>,
@@ -3520,6 +3549,7 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
     assert!(before_search > 0);
     assert_eq!(search(&db, &context, "shared").await?, ["a", "b"]);
     let generation = engine.generation()?;
+    check_physical_versions(&generation, &["a", "b"])?;
     // Ordinary writes keep the directory current at every published revision
     // and build no resident text index.
     assert_eq!(
@@ -3692,6 +3722,7 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
     assert_eq!(kept.page_space, before.page_space);
     assert_eq!(kept.records.tree, before.records.tree);
     assert!(kept.is_current() && kept.revision >= before.revision);
+    check_physical_versions(&reopened, &["a", "c"])?;
     drop(reopened);
     assert_eq!(search(&db, &context, "shared").await?, ["a", "c"]);
     assert_eq!(search(&db, &context, "gamma").await?, ["a"]);

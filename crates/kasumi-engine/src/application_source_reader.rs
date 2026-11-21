@@ -249,7 +249,7 @@ impl SelectedApplication {
         ) -> Result<T>,
     ) -> Result<Option<T>> {
         use kasumi_raft::SelectedAppliedRef;
-        use kasumi_store::{ordered_pages::TreeReader, primary_manifest::PrimaryManifest};
+        use kasumi_store::ordered_pages::TreeReader;
         let Some(position) =
             self.cell.position.get().filter(|p| {
                 self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
@@ -277,27 +277,41 @@ impl SelectedApplication {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned primary view");
-            let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+            let Some(manifest) = self.current_primary_manifest(view, state)? else {
                 return Ok(None);
             };
-            if !manifest.is_current()
-                || manifest.revision != state.revision
-                || !self.matches_primary_boundary(&manifest)?
-            {
-                return Ok(None);
-            }
-            ensure!(
-                manifest.incarnation == state.incarnation
-                    && manifest.revision_base == state.revision_base
-                    && manifest.document_count == state.document_count
-                    && manifest.logical_bytes == state.logical_bytes,
-                "selected primary directory differs from its generation"
-            );
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
             read(&tree, &memory).map(Some)
         })
+    }
+
+    /// Both primary point readers and text shard version checks use this
+    /// manifest on the same immutable paired source as their data.
+    pub(crate) fn current_primary_manifest(
+        &self,
+        view: &kasumi_store::TenantStorageReadView,
+        state: &kasumi_types::TenantState,
+    ) -> Result<Option<kasumi_store::primary_manifest::PrimaryManifest>> {
+        use kasumi_store::primary_manifest::PrimaryManifest;
+        let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+            return Ok(None);
+        };
+        if !manifest.is_current()
+            || manifest.revision != state.revision
+            || !self.matches_primary_boundary(&manifest)?
+        {
+            return Ok(None);
+        }
+        ensure!(
+            manifest.incarnation == state.incarnation
+                && manifest.revision_base == state.revision_base
+                && manifest.document_count == state.document_count
+                && manifest.logical_bytes == state.logical_bytes,
+            "selected primary directory differs from its generation"
+        );
+        Ok(Some(manifest))
     }
 
     /// One document's live or archived record from the pinned primary
@@ -326,7 +340,7 @@ impl SelectedApplication {
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
-            &dyn kasumi_store::ordered_pages::PageSource,
+            &kasumi_store::TenantStorageReadView,
             &kasumi_store::text_manifest::TextManifest,
             &Arc<crate::admission::NodeAdmission>,
         ) -> Result<T>,

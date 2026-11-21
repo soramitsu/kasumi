@@ -1447,7 +1447,7 @@ struct DirectoryShards<'r, 't> {
     shard_count: usize,
     // Last visited (ordinal, level, sequence) on this immutable selected view.
     cursor: std::cell::Cell<Option<(usize, u8, u64)>>,
-    collection: &'r CollectionState,
+    current: &'r dyn Fn(&str, u64) -> Result<bool>,
     admission: &'r Arc<NodeAdmission>,
     failure: RefCell<Option<anyhow::Error>>,
 }
@@ -1617,7 +1617,7 @@ impl TextShardSet for DirectoryShards<'_, '_> {
         self.descriptor.tokens.get(field).copied().unwrap_or(0)
     }
     fn current(&self, id: &str, version: u64) -> kasumi_types::Result<bool> {
-        Ok(live_version(self.collection, id) == Some(version))
+        (self.current)(id, version).map_err(|error| self.fail(error))
     }
 }
 
@@ -1628,12 +1628,13 @@ pub(crate) fn search_collection<T>(
     tree: &TreeReader<'_>,
     source: &dyn PageSource,
     manifest: &TextManifest,
-    name: &str,
-    collection: &CollectionState,
+    definition: &kasumi_types::CollectionDefinition,
+    current: impl Fn(&str, u64) -> Result<bool>,
     admission: &Arc<NodeAdmission>,
     search: impl FnOnce(&dyn TextShardSet) -> kasumi_types::Result<T>,
 ) -> Result<kasumi_types::Result<T>> {
-    let layout = TextShardLayout::for_definition(&collection.definition)
+    let name = definition.name.as_str();
+    let layout = TextShardLayout::for_definition(definition)
         .context("searched collection has no text layout")?;
     let descriptor: CollectionDescriptor = read(tree, &collection_key(name))?
         .context("current text directory lacks an indexed collection")?;
@@ -1662,7 +1663,7 @@ pub(crate) fn search_collection<T>(
         descriptor,
         shard_count,
         cursor: std::cell::Cell::new(None),
-        collection,
+        current: &current,
         admission,
         failure: RefCell::new(None),
     };

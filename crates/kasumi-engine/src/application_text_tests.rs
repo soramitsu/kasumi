@@ -131,8 +131,8 @@ fn search_at(
         &tree,
         view,
         &manifest,
-        "docs",
-        &state.collections["docs"],
+        &state.collections["docs"].definition,
+        |id, version| Ok(live_version(&state.collections["docs"], id) == Some(version)),
         admission,
         |shards| {
             search_text_shards(
