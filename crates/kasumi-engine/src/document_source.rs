@@ -28,6 +28,7 @@ pub(crate) struct GenerationDocumentSource<'r> {
     reads: Option<&'r DocumentReads>,
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 impl Generation {
     pub(crate) fn document_source(
         self: &Arc<Self>,
