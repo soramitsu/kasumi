@@ -339,16 +339,39 @@ impl Fixture {
             .into_iter()
             .map(|(id, body)| json!({"op":"put", "collection":"docs", "id":id, "body":body, "expected":"absent"}))
             .collect::<Vec<_>>();
-        self.database
-            .mutate(
-                Self::context(),
-                serde_json::from_value(
-                    json!({"idempotency_key":key, "read_set":[], "operations":operations}),
-                )
-                .unwrap(),
-            )
+        let batch: kasumi_types::MutationBatch = serde_json::from_value(
+            json!({"idempotency_key":key, "read_set":[], "operations":operations}),
+        )
+        .unwrap();
+        let digest = batch.digest().unwrap();
+        let context = Self::context();
+        if let Err(error) = self.database.mutate(context.clone(), batch).await {
+            assert_eq!(
+                error.code,
+                kasumi_types::ErrorCode::UnknownOutcome,
+                "{error}"
+            );
+            eprintln!("Resolving the original fixture write {key}: {error}");
+            let receipt = tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    if let Some(receipt) = self
+                        .database
+                        .operation_receipt(&context, key)
+                        .await
+                        .unwrap()
+                    {
+                        break receipt;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
             .await
-            .unwrap();
+            .expect("uncertain fixture write never acquired a durable receipt");
+            assert_eq!(receipt.request_digest, digest);
+            assert_eq!(receipt.scope.tenant, context.tenant);
+            assert_eq!(receipt.scope.principal, context.principal);
+            receipt.outcome.unwrap();
+        }
     }
     fn context() -> RequestContext {
         RequestContext {
