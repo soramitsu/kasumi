@@ -164,16 +164,19 @@
     {
       "name": "openraft",
       "version": "0.9.25",
+      "vendored_manifest": "vendor/openraft-0.9.25/openraft/Cargo.toml",
       "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
       "repository": "https://github.com/datafuselabs/openraft",
       "files": [
         {
           "path": "datafuselabs--openraft--8815cdba2826--LICENSE-MIT",
+          "vendored_path": "vendor/openraft-0.9.25/LICENSE-MIT",
           "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
           "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-MIT"
         },
         {
           "path": "datafuselabs--openraft--8815cdba2826--LICENSE-APACHE",
+          "vendored_path": "vendor/openraft-0.9.25/LICENSE-APACHE",
           "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
           "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-APACHE"
         }
@@ -182,16 +185,19 @@
     {
       "name": "openraft-macros",
       "version": "0.9.25",
+      "vendored_manifest": "vendor/openraft-0.9.25/macros/Cargo.toml",
       "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
       "repository": "https://github.com/datafuselabs/openraft",
       "files": [
         {
           "path": "datafuselabs--openraft--8815cdba2826--LICENSE-MIT",
+          "vendored_path": "vendor/openraft-0.9.25/LICENSE-MIT",
           "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
           "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-MIT"
         },
         {
           "path": "datafuselabs--openraft--8815cdba2826--LICENSE-APACHE",
+          "vendored_path": "vendor/openraft-0.9.25/LICENSE-APACHE",
           "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
           "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-APACHE"
         }

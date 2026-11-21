@@ -6,6 +6,12 @@ and SHA-256 of each supplemented file. Original bytes and line endings are kept.
 The packager checks the published `.cargo_vcs_info.json` against the locked crate
 archive and the supplement's exact revision before using these texts.
 
+Kasumi builds OpenRaft and OpenRaft macros from separate members of the reviewed
+vendored workspace. Each supplement names its member's `Cargo.toml` and the
+workspace's original MIT and Apache license files. The packager checks the
+compiled member path and requires both vendored license texts to match the
+pinned upstream copies byte for byte.
+
 Kanaria 0.2.0's published repository URL is stale. Its exact published commit
 `c994ccf06d179851a1c7c3285c3a408ccb6279ec` and LICENSE.txt remain available under
 `sam-osamu/kanaria`; the manifest records both locations.

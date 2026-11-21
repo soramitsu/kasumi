@@ -311,12 +311,19 @@ def license_files(package, source, supplements):
         files[str(relative)] = (path, str(relative), None)
     extra = supplements["packages"].get((package["name"], package["version"]))
     if extra:
-        vcs = package_root / ".cargo_vcs_info.json"
-        if extra.get("upstream_commit"):
+        vendored = package["source"] is None and "vendored_manifest" in extra
+        if vendored:
+            manifest = owned_file(source, extra["vendored_manifest"])
+            if manifest != package_root / "Cargo.toml":
+                raise ValueError("notice supplement belongs to another vendored package")
+        elif extra.get("upstream_commit"):
+            vcs = package_root / ".cargo_vcs_info.json"
             if not vcs.is_file() or json.loads(vcs.read_text())["git"]["sha1"] != extra["upstream_commit"]:
                 raise ValueError("supplement does not match published crate source")
         for item in extra["files"]:
             path = verify_file(source / "release/licenses", item["path"], item["sha256"])
+            if vendored:
+                verify_file(source, item["vendored_path"], item["sha256"])
             files["supplement/" + item["path"]] = (path, item["path"], item["source_url"])
     if not files:
         raise ValueError("missing upstream license text: " + package["name"] + " " + package["version"])

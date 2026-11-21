@@ -268,6 +268,35 @@ class PackageReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.owned_file(crate, "LICENSE")
 
+    def test_openraft_notices_bind_each_compiled_member_and_the_vendored_text(self):
+        source = Path(package.__file__).resolve().parents[1]
+        licenses = source / "release/licenses"
+        entries = {p["name"]: p for p in json.loads((licenses / "sources.json").read_text())["packages"]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for name in ("openraft", "openraft-macros"):
+                extra = entries[name]
+                manifest = root / extra["vendored_manifest"]
+                manifest.parent.mkdir(parents=True)
+                manifest.write_bytes((source / extra["vendored_manifest"]).read_bytes())
+                for item in extra["files"]:
+                    for copy, original in ((root / "release/licenses" / item["path"], licenses / item["path"]),
+                                           (root / item["vendored_path"], source / item["vendored_path"])):
+                        copy.parent.mkdir(parents=True, exist_ok=True)
+                        copy.write_bytes(original.read_bytes())
+                dependency = {"name": name, "version": extra["version"], "id": name, "source": None,
+                              "manifest_path": str(manifest)}
+                supplements = {"packages": {(name, extra["version"]): extra}, "workspace_members": []}
+                actual = package.license_files(dependency, root, supplements)
+                self.assertEqual({sha256(path) for path, _, _ in actual}, {item["sha256"] for item in extra["files"]})
+                with self.assertRaisesRegex(ValueError, "another vendored package"):
+                    package.license_files(dict(dependency, manifest_path=str(root / "Cargo.toml")), root, supplements)
+                (root / extra["files"][0]["vendored_path"]).write_bytes(b"changed")
+                with self.assertRaisesRegex(ValueError, "artifact changed"):
+                    package.license_files(dependency, root, supplements)
+                with self.assertRaisesRegex(ValueError, "published crate source"):
+                    package.license_files(dict(dependency, source="registry+example"), root, supplements)
+
     def test_architecture_cannot_be_relabeled(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
