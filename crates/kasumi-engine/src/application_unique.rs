@@ -389,7 +389,57 @@ fn probe(
             owner,
         });
     }
-    Ok(Probe::Inconclusive)
+    // Dense individual postings can still intersect at one exact ID. Seek
+    // the next sorted stream directly to the largest ID seen, instead of
+    // scanning a dense anchor or retaining its owners in the apply process.
+    let mut target = String::new();
+    let mut owner = None;
+    let mut matched = 0;
+    let mut exclusive = false;
+    for prefix in prefixes.iter().cycle() {
+        if !budget.read() {
+            return Ok(Probe::Inconclusive);
+        }
+        let mut start = Vec::with_capacity(prefix.len() + target.len());
+        start.extend_from_slice(prefix);
+        start.extend_from_slice(target.as_bytes());
+        let lower = if exclusive {
+            std::ops::Bound::Excluded(start.as_slice())
+        } else {
+            std::ops::Bound::Included(start.as_slice())
+        };
+        let mut found = None;
+        reader.scan(lower, super::Direction::Forward, &mut |key, value| {
+            if let Some(id) = key.strip_prefix(prefix.as_slice()) {
+                ensure!(value.is_empty(), "structured posting carries a payload");
+                found = Some(super::posting_id(id)?.to_owned());
+            }
+            Ok(false)
+        })?;
+        let Some(id) = found else {
+            return Ok(Probe::Known {
+                fingerprint,
+                exact,
+                owner,
+            });
+        };
+        if id == target {
+            matched += 1;
+        } else {
+            target = id;
+            matched = 1;
+        }
+        exclusive = matched == prefixes.len();
+        if exclusive {
+            ensure!(
+                owner.is_none(),
+                "selected unique tuple names multiple original documents"
+            );
+            owner = Some(target.clone());
+            matched = 0;
+        }
+    }
+    anyhow::bail!("unique index has no posting components")
 }
 
 struct Inserted<'a> {
