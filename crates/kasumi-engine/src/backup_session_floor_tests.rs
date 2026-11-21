@@ -783,7 +783,6 @@ async fn abort(
                     },
                 )
                 .await
-                .map_err(snapshot_diagnostic)
                 .context("public abort status after unknown outcome")?;
             anyhow::ensure!(
                 observed.intent.session_id == request.session_id
