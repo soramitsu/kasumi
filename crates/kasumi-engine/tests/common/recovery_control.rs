@@ -2975,11 +2975,29 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     .await
     .unwrap();
     let (phase, input) = prepare_next(&f, &db, operation).await;
-    resolve_phase(
+    // The issuer transport gets only the time left on the original caller's
+    // credential after the marker committed, even with a 15-second phase cap.
+    let issuer = db
+        .recovery_phase(f.context_for("owner", 1_000), operation, phase)
+        .await
+        .unwrap();
+    let ticket = issuer
+        .begin_effect(RecoveryEffect::AuthorityCommand)
+        .await
+        .unwrap();
+    let attempt = ticket.attempt_id();
+    elapsed.advance(Duration::from_millis(750));
+    assert_eq!(
+        ticket.consume_remaining(&input).await.unwrap(),
+        Duration::from_millis(250)
+    );
+    drop(issuer);
+    resolve_phase_with_prior(
         &f,
         operation,
         phase,
         RecoveryDispatchOutcome::Authority(Box::new(prepare_receipt(&f, &input))),
+        Some((RecoveryEffect::AuthorityCommand, attempt)),
     )
     .await;
     let (original_id, input) = prepare_next(&f, &db, operation).await;

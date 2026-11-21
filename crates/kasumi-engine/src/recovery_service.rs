@@ -46,6 +46,10 @@ impl RecoveryEffectDispatchTicket {
         self.attempt_id
     }
     pub async fn consume(self, expected: &RecoveryDispatch) -> Result<()> {
+        self.consume_remaining(expected).await.map(|_| ())
+    }
+    /// Consume the one-use grant and return the wait still available for its RPC.
+    pub async fn consume_remaining(self, expected: &RecoveryDispatch) -> Result<Duration> {
         let phase = &self.phase;
         let marker = phase
             .record
@@ -61,7 +65,7 @@ impl RecoveryEffectDispatchTicket {
                 "recovery effect ticket changed frozen input",
             ));
         }
-        phase.admit_dispatch().await
+        phase.dispatch_remaining().await
     }
 }
 impl VerifiedRecoveryPhase {
@@ -153,8 +157,7 @@ impl VerifiedRecoveryPhase {
     /// Current finite wait allowance, measured using the same installed clock as
     /// dispatch admission. It never changes a recorded target command deadline.
     pub async fn dispatch_remaining(&self) -> Result<std::time::Duration> {
-        self.admit_dispatch().await?;
-        let limit = self.dispatch_limit().await?.min(
+        let limit = self.admitted_dispatch_limit().await?.min(
             self.context.authorization.expires_at_ms().ok_or_else(|| {
                 error(
                     ErrorCode::Forbidden,
@@ -162,12 +165,6 @@ impl VerifiedRecoveryPhase {
                 )
             })?,
         );
-        let limit = match &self.record.input {
-            RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
-            RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
-            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
-            _ => limit,
-        };
         let remaining = limit.saturating_sub(self.database.lifecycle_now()?);
         if remaining == 0 {
             return Err(error(
@@ -178,6 +175,9 @@ impl VerifiedRecoveryPhase {
         Ok(std::time::Duration::from_millis(remaining))
     }
     pub async fn admit_dispatch(&self) -> Result<()> {
+        self.admitted_dispatch_limit().await.map(|_| ())
+    }
+    async fn admitted_dispatch_limit(&self) -> Result<u64> {
         self.release().await?;
         let current = self.database.engine.generation()?;
         let head = current
@@ -187,13 +187,7 @@ impl VerifiedRecoveryPhase {
             .get(&self.record.operation_id.to_string())
             .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
         let phase = recovery::phase(&current.state, head, self.record.phase_id)?;
-        let limit = recovery::dispatch_limit(head, &self.record)?;
-        let limit = match &phase.input {
-            RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
-            RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
-            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
-            _ => limit,
-        };
+        let limit = recovery::effect_dispatch_limit(head, phase)?;
         if head.pending_phase != Some(self.record.phase_id)
             || phase.input_sha256 != self.record.input_sha256
             || phase.outcome.is_some()
@@ -204,7 +198,8 @@ impl VerifiedRecoveryPhase {
                 "original recovery dispatch is no longer eligible",
             ));
         }
-        self.context.authorization.check_live()
+        self.context.authorization.check_live()?;
+        Ok(limit)
     }
 }
 impl Database {
@@ -1046,11 +1041,16 @@ impl RecoveryProposal {
 fn error(code: ErrorCode, message: &str) -> Error {
     Error::new(code, message)
 }
-fn unknown(_stage: &'static str, _cause: impl std::fmt::Display) -> Error {
+fn unknown(stage: &'static str, _cause: impl std::fmt::Display) -> Error {
+    tracing::warn!(
+        event = "recovery_outcome_unknown",
+        stage,
+        "recovery response could not be confirmed"
+    );
     // Integration tests compile the library without cfg(test). Keep this
     // temporary cause trace behind their explicit test-utils feature as well.
     #[cfg(any(test, feature = "test-utils"))]
-    eprintln!("kasumi-engine recovery unknown: stage={_stage}; cause={_cause:#}");
+    eprintln!("kasumi-engine recovery unknown: stage={stage}; cause={_cause:#}");
     error(
         ErrorCode::UnknownOutcome,
         "recovery effect may be committed; resolve its exact permanent operation and phase",

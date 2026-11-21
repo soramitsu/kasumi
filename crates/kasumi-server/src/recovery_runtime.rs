@@ -935,8 +935,11 @@ impl ControlRecoveryCoordinator {
                                 .begin_effect(RecoveryEffect::ActivationIntentAcceptance)
                                 .await?;
                             let attempt_id = ticket.attempt_id();
-                            ticket.consume(&prepared.record().input).await?;
-                            let accepted = pool.execute_lifecycle(&acceptance, duration).await?;
+                            let remaining =
+                                ticket.consume_remaining(&prepared.record().input).await?;
+                            let accepted = pool
+                                .execute_lifecycle(&acceptance, duration.min(remaining))
+                                .await?;
                             observed.release().await?;
                             (accepted, attempt_id)
                         };
@@ -967,8 +970,8 @@ impl ControlRecoveryCoordinator {
                 let ticket = current
                     .begin_effect(RecoveryEffect::AuthorityCommand)
                     .await?;
-                ticket.consume(&prepared.record().input).await?;
-                let result = pool.execute(command, duration).await?;
+                let remaining = ticket.consume_remaining(&prepared.record().input).await?;
+                let result = pool.execute(command, duration.min(remaining)).await?;
                 prepared.release().await?;
                 Ok(RecoveryDispatchOutcome::Authority(Box::new(result)))
             }
