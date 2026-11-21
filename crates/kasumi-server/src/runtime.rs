@@ -7019,14 +7019,6 @@ mod lifecycle_tests {
             )
             .await;
         fixture_stage!("recovery targets installed");
-        if let Some(observer) = restart_initial_inspection {
-            fixture_stage!("checking expired Initialize after owned target restart");
-            fixture_operation(|| {
-                recovery.assert_expired_initialize_after_target_restart(&recovery_handles, observer)
-            })
-            .await;
-            fixture_stage!("expired Initialize after owned target restart checked");
-        }
         if protected_prepare_only || initial_start_only {
             // A separate installed three-node point-status acceptance case:
             // observe Prepare or resolve lost Start and Initialize replies
@@ -7115,6 +7107,17 @@ mod lifecycle_tests {
                 source_incarnation.to_string()
             );
             source_release.check_release().unwrap();
+            if let Some(observer) = restart_initial_inspection {
+                // The inspection starts real recovery and can unroute the source.
+                // Carry the response selected before that transition through it.
+                fixture_stage!("checking expired Initialize after owned target restart");
+                fixture_operation(|| {
+                    recovery
+                        .assert_expired_initialize_after_target_restart(&recovery_handles, observer)
+                })
+                .await;
+                fixture_stage!("expired Initialize after owned target restart checked");
+            }
             fixture_stage!("starting recovery");
             fixture_operation(|| {
                 recovery.recover(&cluster_networks, restart_initial_inspection.is_some())
