@@ -1693,7 +1693,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .unwrap();
         assert!(!current || fields.is_current());
         if fields.is_current() {
-            assert_eq!(fields.records.count(), 11);
+            assert_eq!(fields.records.count(), 12);
         }
     }
     // A registered idle worker repairs an actual selected generation with
