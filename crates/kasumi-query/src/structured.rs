@@ -22,6 +22,23 @@ pub(crate) struct FieldIndex {
 }
 
 impl FieldIndex {
+    fn share_complete_posting(&mut self, ids: &IdSet) {
+        if self.entries.len() != 1 {
+            return;
+        }
+        let (_, posting) = self.entries.get_min().expect("single field posting");
+        if posting.len() != ids.len() || posting.ptr_eq(ids) {
+            return;
+        }
+        // All postings are subsets of the collection IDs. Move the sole
+        // scalar out of this private root, including an oversized string.
+        let (key, _) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .next()
+            .expect("single field posting");
+        self.entries = OrdMap::unit(key, ids.clone());
+    }
+
     fn insert(&mut self, id: &str, key: Scalar) {
         if !self.share_strings {
             self.entries.entry(key).or_default().insert(id.to_owned());
@@ -237,9 +254,12 @@ impl Structured {
         })?;
         // Presence is a subset of this collection's IDs. A sparse field
         // can become complete when its last missing document is deleted.
-        for field in next.fields.values_mut() {
+        for (field, previous) in next.fields.values_mut().zip(self.fields.values()) {
             if field.present.len() == next.ids.len() {
                 field.present = next.ids.clone();
+            }
+            if !field.entries.ptr_eq(&previous.entries) {
+                field.share_complete_posting(&next.ids);
             }
         }
         Ok(next)
@@ -410,6 +430,7 @@ impl Structured {
             if complete {
                 field.present = self.ids.clone();
             }
+            field.share_complete_posting(&self.ids);
         }
         Ok(())
     }
