@@ -109,13 +109,13 @@ impl PhaseCallbacks {
         })
     }
 
-    pub(crate) fn resolve(
+    pub(crate) fn find(
         &self,
         reader: &RequestContext,
         peer: &[u8; 32],
         observation: Observation,
         database: &Database,
-    ) -> Result<Arc<PhaseCallback>> {
+    ) -> Result<Option<Arc<PhaseCallback>>> {
         let certificate = hex::encode(peer);
         let live = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut matches = live.values().filter(|c| {
@@ -129,12 +129,9 @@ impl PhaseCallbacks {
                     Observation::Writer(id) => c.command == id,
                 }
         });
-        let callback = matches.next().cloned().ok_or_else(|| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "no matching target dispatch on this Control member",
-            )
-        })?;
+        let Some(callback) = matches.next().cloned() else {
+            return Ok(None);
+        };
         if matches.next().is_some() {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -143,7 +140,7 @@ impl PhaseCallbacks {
         }
         drop(live);
         callback.check(reader, database)?;
-        Ok(callback)
+        Ok(Some(callback))
     }
 }
 impl PhaseCallback {

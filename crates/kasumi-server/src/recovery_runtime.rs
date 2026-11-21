@@ -386,6 +386,9 @@ pub(crate) mod phase_callbacks;
 pub(crate) mod writer_callbacks;
 pub(crate) struct ControlRecoveryCoordinator {
     pub(crate) phase_callbacks: phase_callbacks::PhaseCallbacks,
+    // Cleanup observers may share the same exact phase with an executing StopLocal.
+    // Dropping an observer must never revoke the executor's return path.
+    pub(crate) deletion_observers: phase_callbacks::PhaseCallbacks,
     pub(crate) writer_callbacks: writer_callbacks::WriterCallbacks,
     pub(crate) database: Arc<Database>,
     signer: Arc<LifecycleSigner>,
@@ -521,6 +524,7 @@ impl ControlRecoveryCoordinator {
             trusts,
             installed_digests,
             phase_callbacks: Default::default(),
+            deletion_observers: Default::default(),
             writer_callbacks: Default::default(),
         }))
     }
@@ -568,6 +572,82 @@ impl ControlRecoveryCoordinator {
             .recovery_control(context, RecoveryControlCommand::Start(Box::new(request)))
             .await?)
     }
+    pub(crate) async fn target_deletion_status(
+        &self,
+        context: &RequestContext,
+        query: &TargetDeletionQuery,
+    ) -> Result<TargetDeletionStatus> {
+        query.validate()?;
+        let head = self
+            .database
+            .recovery_status(context.clone(), query.operation_id)
+            .await?;
+        let phase = self
+            .database
+            .recovery_phase(context.clone(), query.operation_id, query.phase_id)
+            .await?;
+        let record = phase.record();
+        let RecoveryDispatch::Target { node_id, request } = &record.input else {
+            return Err(kasumi_types::Error::new(
+                ErrorCode::InvalidArgument,
+                "cleanup phase has no target",
+            )
+            .into());
+        };
+        ensure!(
+            record.phase == RecoveryPhase::Cleanup
+                && *node_id == query.node_id
+                && head.record().request.target_incarnation == query.target_incarnation
+                && request.tenant == head.record().request.tenant
+                && matches!(&request.step, TargetRuntimeStep::Stop(reference) if reference.tenant == request.tenant),
+            "cleanup observation differs from the original target stop"
+        );
+        let attempt = record
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .context("target stop has no original effect marker")?;
+        ensure!(
+            attempt.input_sha256 == record.input_sha256,
+            "target stop effect input differs"
+        );
+        let (route, _, _, cas) = self.route(&head.record().request)?;
+        let member = route
+            .targets
+            .get(node_id)
+            .context("original target is not installed")?;
+        let config = connection(
+            &member.client,
+            cas.target_cas
+                .get(node_id)
+                .context("original target CA absent")?,
+        )?;
+        let credential = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(head.record().request.phase_timeout_ms.min(30_000));
+        let _reader = self.deletion_observers.open(
+            &self.database,
+            context,
+            &member.node,
+            request,
+            (query.operation_id, query.phase_id),
+            deadline,
+        )?;
+        head.release().await?;
+        phase.release().await?;
+        let status = tokio::time::timeout_at(
+            deadline,
+            kasumi_client::read_target_deletion_status(&config, &credential, query),
+        )
+        .await??;
+        ensure!(
+            status.intent_id == request.command_id && status.attempt_id == attempt.attempt_id,
+            "target journal returned a different stop command or attempt"
+        );
+        head.release().await?;
+        phase.release().await?;
+        Ok(status)
+    }
+
     pub(crate) async fn issuer_stop_status(
         &self,
         context: &RequestContext,

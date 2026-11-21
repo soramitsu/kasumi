@@ -93,12 +93,16 @@ custody authority even if the former application credential is unavailable.
 
 ## Native API and CLI
 
-The `KasumiRecoveryControl` gRPC service and Rust `KasumiRecoveryClient` expose
-`start`, `status`, `resume`, `stop`, and `read_phase`. Every call requires actual
-mTLS and a current administrator credential bound to this exact Control
-incarnation. There is no RPC for arbitrary phase preparation or fabricated
-outcome insertion. Status and phase replies retain the original credential and
-policy/quorum release fences through serialization.
+The `KasumiRecoveryControl` gRPC service and Rust `KasumiRecoveryClient`
+expose operation start, status, resume and stop, along with phase, issuer-stop
+and target-deletion observations. The operator presents a current administrator
+credential bound to the actual TLS connection and the installed Control
+incarnation. An enrolled target can read its exact phase and signed intent on
+a separate, certificate-bound connection while its originating Control request
+is active. Control checks both principals and the original policy and quorum
+fences before releasing the response. A target-deletion observation reads the
+physical target selected by the original StopLocal phase and verifies the
+returned command and attempt against that phase.
 
 ```sh
 kasumid control-recovery configuration-digest /private/node.json city

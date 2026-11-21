@@ -43,6 +43,7 @@ impl TargetRecoveryRuntime {
             query.node_id == self.installed.node.node_id,
             "deletion observation names another installed target"
         );
+        let bearer = self.phase_observation_credential(bearer)?;
         let admission = TargetRequestAdmission::capture(
             context.clone(),
             self.installed.limits.operation_timeout_ms,

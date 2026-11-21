@@ -31,6 +31,15 @@ target uses its own certificate and credential. A target with both observation
 grants can use the same read-scoped credential for journal retirement and
 phase observation.
 
+An operator can inspect a stopped physical target using
+`kasumid control-recovery target-deletion-via-control CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS`.
+Control reads the original marked StopLocal effect, selects the enrolled target
+from that operation's installed route, and checks the returned command and
+attempt. The target rereads the phase and signed intent using its own credential.
+This point read also works after the original dispatch has ended or the target
+has restarted. The direct `target-deletion` command accepts a single pinned
+target profile for installations that share an eligible return identity.
+
 Every `target_recovery.tenants[tenant]` template requires its own
 `audit_placement`, using the tagged local replica only or nested external choice
 in the [tenant audit retention guide](tenant-audit-retention.md). The ordinary

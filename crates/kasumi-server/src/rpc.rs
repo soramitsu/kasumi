@@ -41,10 +41,25 @@ fn phase_reader(
             "target observation coordinator unavailable",
         )
     })?;
-    coordinator
-        .phase_callbacks
-        .resolve(reader, peer, observation, &coordinator.database)
-        .map(Some)
+    if let Some(active) =
+        coordinator
+            .phase_callbacks
+            .find(reader, peer, observation, &coordinator.database)?
+    {
+        return Ok(Some(active));
+    }
+    if !matches!(observation, Observation::Writer(_))
+        && let Some(active) =
+            coordinator
+                .deletion_observers
+                .find(reader, peer, observation, &coordinator.database)?
+    {
+        return Ok(Some(active));
+    }
+    Err(kasumi_types::Error::new(
+        kasumi_types::ErrorCode::Unavailable,
+        "no matching target request on this Control member",
+    ))
 }
 
 #[path = "rpc_lifecycle.rs"]

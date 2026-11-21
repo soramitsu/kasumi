@@ -581,6 +581,23 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         issuer_phase.outcome,
         Some(RecoveryDispatchOutcome::Authority(_))
     ));
+    let wrong_phase = kasumi_types::TargetDeletionQuery {
+        operation_id: operation,
+        phase_id: issuer_phase.phase_id,
+        target_incarnation: request.target_incarnation,
+        node_id: *request.target_nodes.keys().next().unwrap(),
+    };
+    for reader in [f.wrong_resource, f.readonly] {
+        assert!(matches!(
+            client.read_target_deletion(reader, &wrong_phase).await,
+            Err(kasumi_client::ClientError::Transport(ref denied))
+                if matches!(denied.code(), tonic::Code::PermissionDenied | tonic::Code::Unauthenticated)
+        ));
+    }
+    assert!(matches!(
+        client.read_target_deletion(f.control_admin, &wrong_phase).await,
+        Err(kasumi_client::ClientError::Transport(ref wrong)) if wrong.code() == tonic::Code::InvalidArgument
+    ));
     let intent = client.resume(f.control_admin, &advance).await.unwrap();
     assert!(intent.current_intent.is_some());
     let prepared = match client

@@ -167,7 +167,8 @@ def target_member(target, config, nodes, request, leaf):
                         and not Path(other).is_relative_to(root),
                         "recovery target storage overlaps an HA process")
     return {"id": target["id"], "config": target["config"], "node_id": node_id,
-            "leaf_sha256": leaf, "roots": sorted(roots), "scratch": scratch}
+            "leaf_sha256": leaf, "roots": sorted(roots), "scratch": scratch,
+            "control_observer": bool(config["target_recovery"].get("phase_observation_bearer_file"))}
 
 
 def retained_inputs(read, leaf, plan_path, admitted):
@@ -393,10 +394,17 @@ PENDING_DELETION = {"closing_gates": "gate-closure", "draining_workers": "worker
                     "parent_synced": "durable-evidence"}
 
 
+def can_observe_deletion(target):
+    return target.get("control_observer") or "observer_profile" in target
+
+
 def deletion_view(d, ctx, query, target, label):
-    argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"],
-                       query["operation_id"], query["phase_id"], query["target_incarnation"],
-                       str(query["node_id"]), str(ctx.timeout))
+    args = (query["operation_id"], query["phase_id"], query["target_incarnation"],
+            str(query["node_id"]), str(ctx.timeout))
+    if target.get("control_observer"):
+        argv = ctx.recovery("target-deletion-via-control", *args)
+    else:
+        argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"], *args)
     code, raw = d.attempt(label, argv)
     if code:
         return None, raw
@@ -547,7 +555,7 @@ def target_deletion_fault(d, ctx, operation, phase_id, step, facts):
     packet = dispatch["input"]
     target = next((t for t in ctx.targets if t["node_id"] == packet["node_id"]), None)
     require(target is not None, "pending cleanup names an uninstalled target")
-    if "observer_profile" not in target:
+    if not can_observe_deletion(target):
         return
     request = packet["request"]
     if set(request["step"]) != {"Stop"}:
@@ -633,14 +641,14 @@ def drive(d, ctx, operation, label, terminal, facts, hooks=()):
         if value["phase"] == terminal:
             return value, phases
         if (value["phase"] in ("stop_target", "cleanup") and value.get("pending_phase")
-                and any("observer_profile" in target for target in ctx.targets)):
+                and any(map(can_observe_deletion, ctx.targets))):
             issuer_point = ("issuer-stop", value["pending_phase"])
             if issuer_point not in seen:
                 seen.add(issuer_point)
                 issuer_stop_fault(d, ctx, operation, value["pending_phase"], step, facts)
                 continue
         if (value["phase"] == "cleanup" and value.get("pending_phase")
-                and any("observer_profile" in target for target in ctx.targets)):
+                and any(map(can_observe_deletion, ctx.targets))):
             phase_id = value["pending_phase"]
             if phase_id not in seen:
                 seen.add(phase_id)

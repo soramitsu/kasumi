@@ -172,6 +172,41 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             Status::unknown("recovery stop may be committed; resume exact operation cleanup")
         })
     }
+    async fn read_target_deletion(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        let context = self.context(&request).await?;
+        let query: kasumi_types::TargetDeletionQuery =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let read = || async {
+            self.runtime
+                .target_deletion_status(&context, &query)
+                .await
+                .map_err(failure)
+        };
+        let observed = self
+            .auth
+            .audit_result(&context, read().await)
+            .await
+            .map_err(status)?;
+        let response = ControlJsonResponse {
+            response_json: encode(&observed).map_err(status)?,
+        };
+        let latest = self
+            .auth
+            .audit_result(&context, read().await)
+            .await
+            .map_err(status)?;
+        if latest != observed {
+            return Err(Status::unavailable(
+                "target deletion advanced before release",
+            ));
+        }
+        context.authorization.check_live().map_err(status)?;
+        Ok(Response::new(response))
+    }
+
     async fn read_issuer_stop(
         &self,
         request: Request<ControlJsonRequest>,

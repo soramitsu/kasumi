@@ -1081,6 +1081,20 @@ class DeletionObservationTests(unittest.TestCase):
         recovery.target_deletion_fault(d, ctx, self.operation, self.phase, 0, facts)
         return d, facts
 
+    def test_distinct_target_certificate_observes_original_cleanup_via_control(self):
+        expected = self.observed(11)
+        query = expected["query"]
+        observer = Mock()
+        observer.attempt.return_value = (0, json.dumps(expected).encode())
+        ctx = SimpleNamespace(timeout=9000, recovery=Mock(return_value=["routed"]))
+        target = {"node_id": 11, "control_observer": True}
+        self.assertTrue(recovery.can_observe_deletion(target))
+        actual, _ = recovery.deletion_view(observer, ctx, query, target, "cleanup")
+        self.assertEqual(expected, actual)
+        ctx.recovery.assert_called_once_with("target-deletion-via-control", self.operation,
+                                             self.phase, self.incarnation, "11", "9000")
+        observer.attempt.assert_called_once_with("cleanup", ["routed"])
+
     def test_caller_disconnection_requires_unchanged_original_pending_journal(self):
         original = self.observed(11)
         driver, facts = self.run_fault(11, [original, original])

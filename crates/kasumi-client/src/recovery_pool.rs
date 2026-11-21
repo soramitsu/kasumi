@@ -112,6 +112,18 @@ impl KasumiRecoveryPool {
             })
             .await
     }
+    pub async fn read_target_deletion(
+        &mut self,
+        query: &TargetDeletionQuery,
+        timeout: Duration,
+    ) -> std::result::Result<TargetDeletionStatus, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let query = query.clone();
+                Box::pin(async move { client.read_target_deletion(bearer, &query).await })
+            })
+            .await
+    }
     pub async fn read_phase(
         &mut self,
         request: &RecoveryPhaseRequest,
