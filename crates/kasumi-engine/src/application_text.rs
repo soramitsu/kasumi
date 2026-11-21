@@ -1107,20 +1107,25 @@ impl CollectionEdit<'_, '_> {
             let mut group: Vec<u64> = group;
             group.sort_unstable();
             group.truncate(FANIN);
-            let opened = group
-                .iter()
-                .map(|seq| self.open(*seq, &members))
-                .collect::<Result<Vec<_>>>()?;
+            let mut opened = Vec::new();
             let mut survivors = 0u64;
             let mut bytes = 0u64;
-            for (shard, seq) in opened.iter().zip(&group) {
+            for seq in &group {
+                let (shard, size) = self.open(*seq, &members)?;
+                bytes += size;
                 shard.visit_rows(|id, version| {
                     survivors += u64::from(keep(id, version)?);
                     Ok(true)
                 })?;
-                bytes += self.member_bytes(*seq, &members)?;
+                // Once a group cannot merge, release its previous readers.
+                // Still authenticate and visit every remaining shard and row.
+                if survivors <= u64::from(MAX_SHARD_DOCUMENTS) && bytes <= MAX_SHARD_BYTES {
+                    opened.push(shard);
+                } else {
+                    opened.clear();
+                }
             }
-            if survivors <= u64::from(MAX_SHARD_DOCUMENTS) && bytes <= MAX_SHARD_BYTES {
+            if !opened.is_empty() {
                 let merged =
                     merge_text_shards(self.layout, &opened.iter().collect::<Vec<_>>(), keep)?;
                 drop(opened);
@@ -1162,7 +1167,7 @@ impl CollectionEdit<'_, '_> {
                 .copied();
             if let Some(seq) = next {
                 descriptor.compaction = seq + 1;
-                let shard = self.open(seq, &members)?;
+                let (shard, _) = self.open(seq, &members)?;
                 let mut survivors = 0u32;
                 shard.visit_rows(|id, version| {
                     survivors += u32::from(keep(id, version)?);
@@ -1207,29 +1212,22 @@ impl CollectionEdit<'_, '_> {
         Ok(())
     }
 
-    fn open(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<TextShard> {
+    fn open(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<(TextShard, u64)> {
         match members.get(&seq) {
-            Some((_, Member::Pending(built))) => Ok(TextShard::open(
-                self.layout,
-                built.files.clone(),
-                built.documents,
-            )?),
+            Some((_, Member::Pending(built))) => Ok((
+                TextShard::open(self.layout, built.files.clone(), built.documents)?,
+                built.bytes(),
+            )),
             Some((_, Member::Stored(_))) => unreachable!("stored shards are not members"),
             None => {
                 let descriptor: ShardDescriptor = read(self.tree, &shard_key(self.name, seq))?
                     .context("text shard descriptor missing")?;
-                open_shard(self.tree, self.layout, self.name, seq, &descriptor)
+                Ok((
+                    open_shard(self.tree, self.layout, self.name, seq, &descriptor)?,
+                    descriptor.bytes(),
+                ))
             }
         }
-    }
-
-    fn member_bytes(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<u64> {
-        Ok(match members.get(&seq) {
-            Some((_, member)) => member.bytes(),
-            None => read::<ShardDescriptor>(self.tree, &shard_key(self.name, seq))?
-                .context("text shard descriptor missing")?
-                .bytes(),
-        })
     }
 
     /// Remove one shard: a new one is dropped, a stored one deleted.
