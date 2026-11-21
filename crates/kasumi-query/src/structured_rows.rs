@@ -453,6 +453,26 @@ impl QueryIndexes {
     pub fn visit_structured_changes<E>(
         &self,
         previous: &Self,
+        emit: impl FnMut(&str, bool, StructuredRow<'_>) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        self.visit_changes(previous, true, emit)
+    }
+
+    /// Field-row changes for a stable layout whose compound ownership comes
+    /// from the accepted document journal. Layout changes must use the full
+    /// producer so collection removal and ordinal replacement stay complete.
+    pub fn visit_structured_field_changes<E>(
+        &self,
+        previous: &Self,
+        emit: impl FnMut(&str, bool, StructuredRow<'_>) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        self.visit_changes(previous, false, emit)
+    }
+
+    fn visit_changes<E>(
+        &self,
+        previous: &Self,
+        compounds: bool,
         mut emit: impl FnMut(&str, bool, StructuredRow<'_>) -> Result<bool, E>,
     ) -> Result<bool, E> {
         if std::ptr::eq(self, previous) {
@@ -477,7 +497,9 @@ impl QueryIndexes {
                             return Ok(false);
                         }
                     }
-                    if !compound_changes(old, new, |added, row| emit(name, added, row))? {
+                    if compounds
+                        && !compound_changes(old, new, |added, row| emit(name, added, row))?
+                    {
                         return Ok(false);
                     }
                 }

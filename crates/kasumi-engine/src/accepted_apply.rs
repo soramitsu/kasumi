@@ -378,6 +378,15 @@ impl AcceptedGeneration<'_> {
     ) -> anyhow::Result<PreparedApplicationWrites> {
         // Index pending after-images before they are staged: their bodies are
         // still resident, and staged bodies are unreadable until committed.
+        let compound = crate::application_structured::compound_delta::Captured::collect(
+            &self.owner.previous.state, &self.candidate.state, &self.candidate.indexes,
+            &self.delta.changed, self.owner.previous.document_resolver(), roots.memory_owner().clone(),
+        ).unwrap_or_else(|error| {
+            // This secondary producer cannot narrow write admission. The
+            // complete candidate indexes still carry the original transition.
+            tracing::debug!(error = %format!("{error:#}"), "compound edit capture fell back to generation indexes");
+            None
+        });
         let mut text = self.prepare_text(position)?;
         let mut documents = self.prepare_documents_since(roots, first_revision)?;
         let mut receipts = std::mem::take(&mut self.receipt_publications);
@@ -413,6 +422,7 @@ impl AcceptedGeneration<'_> {
             writes.extend(rows);
         }
         Ok(PreparedApplicationWrites {
+            compound,
             writes,
             _documents: documents,
             _receipts: receipts,
@@ -611,7 +621,11 @@ impl AcceptedGeneration<'_> {
         let mut publication = crate::application_structured::prepare_publication_at(
             &roots.structured,
             stores.application(),
-            (&self.owner.previous.state, &self.owner.previous.indexes),
+            (
+                &self.owner.previous.state,
+                &self.owner.previous.indexes,
+                prepared.compound.as_ref(),
+            ),
             (&self.candidate.state, &self.candidate.indexes),
             Some(crate::application_structured::entry_applied(position)?),
             |manifest| match self.owner.previous.application_selection.get() {
@@ -669,6 +683,7 @@ impl AcceptedGeneration<'_> {
 }
 
 pub(super) struct PreparedApplicationWrites {
+    compound: Option<crate::application_structured::compound_delta::Captured>,
     writes: Vec<kasumi_store::WriteOp>,
     _documents: Option<crate::document_store::PreparedDocuments>,
     _receipts: Vec<crate::mutation_receipt::PreparedPublication>,

@@ -40,6 +40,9 @@ pub(crate) use incremental::maintain;
 #[cfg(test)]
 pub(crate) use incremental::seed as seed_for_test;
 
+#[path = "application_compound_delta.rs"]
+pub(crate) mod compound_delta;
+
 #[path = "application_unique.rs"]
 pub(crate) mod unique;
 
@@ -761,7 +764,11 @@ fn step(
 pub(crate) fn prepare_publication_at(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: (&TenantState, &QueryIndexes),
+    previous: (
+        &TenantState,
+        &QueryIndexes,
+        Option<&compound_delta::Captured>,
+    ),
     candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
     matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
@@ -794,12 +801,16 @@ pub(crate) fn prepare_publication_at(
 fn follow(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
-    previous: (&TenantState, &QueryIndexes),
+    previous: (
+        &TenantState,
+        &QueryIndexes,
+        Option<&compound_delta::Captured>,
+    ),
     candidate: (&TenantState, &QueryIndexes),
     applied: Option<StructuredApplied>,
     matches_predecessor: impl FnOnce(&StructuredManifest) -> Result<bool>,
 ) -> Result<Option<StructuredPublication>> {
-    let (previous, previous_indexes) = previous;
+    let (previous, previous_indexes, compound) = previous;
     let (candidate, candidate_indexes) = candidate;
     if !owner
         .replacement
@@ -906,7 +917,7 @@ fn follow(
         owner,
         store,
         &base,
-        previous_indexes,
+        (previous_indexes, compound),
         candidate,
         candidate_indexes,
         applied.clone(),
@@ -1007,17 +1018,35 @@ fn stale(
     ])))
 }
 
+fn visit_edit_changes<E>(
+    previous: &QueryIndexes,
+    next: &QueryIndexes,
+    captured: Option<&compound_delta::Captured>,
+    mut emit: impl FnMut(&str, bool, StructuredRow<'_>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    if let Some(captured) = captured {
+        if !next.visit_structured_field_changes(previous, &mut emit)? {
+            return Ok(false);
+        }
+        captured.visit(emit)
+    } else {
+        next.visit_structured_changes(previous, emit)
+    }
+}
+
 fn edit(
     owner: &StructuredOwner,
     store: &Arc<TenantStore>,
     base: &StructuredManifest,
-    previous_indexes: &QueryIndexes,
+    previous: (&QueryIndexes, Option<&compound_delta::Captured>),
     candidate: &TenantState,
     candidate_indexes: &QueryIndexes,
     applied: Option<StructuredApplied>,
 ) -> Result<Option<StructuredPublication>> {
+    let (previous_indexes, compound) = previous;
     owner.recover(store)?;
     let layout = candidate_indexes.structured_layout_sha256();
+    let compound = compound.filter(|_| layout == base.layout_sha256);
     if base.format < structured::ORDERED_TUPLE_FORMAT {
         return Ok(None);
     }
@@ -1031,8 +1060,10 @@ fn edit(
     let mut allocations = 0usize;
     // Both generations are immutable. Quote the producer stream without
     // retaining rows, before any map node, edit array or payload is allocated.
-    let within = candidate_indexes.visit_structured_changes(
+    let within = visit_edit_changes(
         previous_indexes,
+        candidate_indexes,
+        compound,
         |collection, added, row| -> Result<bool> {
             if let StructuredRow::Value { value, .. } = row {
                 if value.bytes.len() <= INLINE_VALUE {
@@ -1073,8 +1104,10 @@ fn edit(
     let retained = allocations + 2048 + 256 * operations.min(MAX_EDIT_ROWS + 1);
     let rows_lease = memory.clone().reserve_installed(retained.try_into()?)?;
     let mut rows = BTreeMap::new();
-    let within = candidate_indexes.visit_structured_changes(
+    let within = visit_edit_changes(
         previous_indexes,
+        candidate_indexes,
+        compound,
         |collection, added, row| -> Result<bool> {
             if let Some((key, value)) = encode_row(collection, row)? {
                 rows.insert(key, added.then(|| value.to_vec()));
