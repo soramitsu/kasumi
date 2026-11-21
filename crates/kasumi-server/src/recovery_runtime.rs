@@ -380,7 +380,10 @@ impl RecoveryRoute {
         Ok(())
     }
 }
+#[path = "recovery_writer_callbacks.rs"]
+pub(crate) mod writer_callbacks;
 pub(crate) struct ControlRecoveryCoordinator {
+    pub(crate) writer_callbacks: writer_callbacks::WriterCallbacks,
     pub(crate) database: Arc<Database>,
     signer: Arc<LifecycleSigner>,
     configured: RecoveryRuntimeConfig,
@@ -445,6 +448,9 @@ impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
                         .context("missing original target CA")?,
                 )?;
                 let token = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+                let _callback =
+                    self.writer_callbacks
+                        .open(&query, &member.node, context, &self.database)?;
                 let receipt = tokio::time::timeout(Duration::from_secs(30), async {
                     let mut client = KasumiTargetClient::connect(
                         &config,
@@ -511,6 +517,7 @@ impl ControlRecoveryCoordinator {
             authorities: runtime.serving_authorities.clone(),
             trusts,
             installed_digests,
+            writer_callbacks: Default::default(),
         }))
     }
     pub(crate) fn control_incarnation(&self) -> Uuid {

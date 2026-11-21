@@ -7,6 +7,9 @@ use tonic::transport::Channel;
 mod topology;
 pub use topology::{CurrentControlTopology, CurrentControlTopologyRelease};
 
+/// Associates a target's private observation with an outstanding, admitted Control dispatch.
+pub const TARGET_WRITER_REFRESH_HEADER: &str = "kasumi-target-writer-refresh";
+
 /// Explicit pinned mTLS plus installed control signer trust. Verified immutable
 /// commitments are not live phase grants; the independent issuer supplies those.
 #[derive(Clone)]
@@ -71,16 +74,32 @@ impl KasumiLifecycleClient {
         bearer: &str,
         challenge: &SignedTargetWriterChallenge,
     ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        self.observe_writer(bearer, challenge, None).await
+    }
+
+    pub(crate) async fn observe_writer(
+        &mut self,
+        bearer: &str,
+        challenge: &SignedTargetWriterChallenge,
+        refresh: Option<uuid::Uuid>,
+    ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        let mut request = self.authorized(
+            bearer,
+            proto::ControlJsonRequest {
+                request_json: encode(challenge)?,
+            },
+        )?;
+        if let Some(nonce) = refresh {
+            request.metadata_mut().insert(
+                TARGET_WRITER_REFRESH_HEADER,
+                nonce.to_string().parse().map_err(anyhow::Error::from)?,
+            );
+        }
         let reply = self
             .inner
             .clone()
             .max_decoding_message_size(2 * MAX_KEY_RETIREMENT_STATE_BYTES)
-            .observe_target_writer(self.authorized(
-                bearer,
-                proto::ControlJsonRequest {
-                    request_json: encode(challenge)?,
-                },
-            )?)
+            .observe_target_writer(request)
             .await?
             .into_inner();
         let signed: SignedTargetWriterObservation = serde_json::from_slice(&reply.response_json)?;

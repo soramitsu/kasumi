@@ -1063,6 +1063,7 @@ impl TargetRecoveryRuntime {
         context: &RequestContext,
         bearer: &Zeroizing<String>,
         operation: Option<&kasumi_engine::TargetOperation>,
+        refresh: Option<Uuid>,
     ) -> Result<(
         kasumi_engine::TargetWriterRead,
         kasumi_types::SignedTargetWriterObservation,
@@ -1084,14 +1085,22 @@ impl TargetRecoveryRuntime {
             None => self.journal.begin_writer_read()?,
         };
         let signed_challenge = self.signer.sign_writer_challenge(&original)?;
-        let credential = bearer.clone();
+        let callback = refresh.zip(self.installed.writer_observation_bearer_file.as_ref());
+        let credential = match callback {
+            Some((_, path)) => (self.credential)(path)?,
+            None => bearer.clone(),
+        };
         let mut control = kasumi_client::KasumiLifecyclePool::new(
             self.installed.control_connections()?,
             ControlTrust::install(self.installed.control_root.clone())?,
             Arc::new(move || Ok(credential.clone())),
         )?;
         let observation = control
-            .observe_target_writer(&signed_challenge, std::time::Duration::from_secs(25))
+            .observe_writer(
+                &signed_challenge,
+                callback.map(|(nonce, _)| nonce),
+                std::time::Duration::from_secs(25),
+            )
             .await?;
         ensure!(
             !self.closing.load(Ordering::Acquire),
@@ -1117,7 +1126,9 @@ impl TargetRecoveryRuntime {
             .clone()
             .try_acquire_owned()
             .context("target writer concurrency exhausted")?;
-        let (original, observation) = self.observe_current_writer(context, &bearer, None).await?;
+        let (original, observation) = self
+            .observe_current_writer(context, &bearer, None, Some(query.nonce))
+            .await?;
         let catalog = original.challenge().catalog;
         let digest = observation.observation.retirements.target_writer_digest()?;
         ensure!(
@@ -1370,7 +1381,7 @@ impl TargetRecoveryRuntime {
                     let writer = operation
                         .run(async {
                             let (original, signed) = self
-                                .observe_current_writer(&context, &bearer, Some(&operation))
+                                .observe_current_writer(&context, &bearer, Some(&operation), None)
                                 .await?;
                             original.admit(&signed)
                         })
@@ -1484,7 +1495,7 @@ impl TargetRecoveryRuntime {
                 &input_hash,
                 || async {
                     let (original, signed) = self
-                        .observe_current_writer(&context, &bearer, Some(&operation))
+                        .observe_current_writer(&context, &bearer, Some(&operation), None)
                         .await?;
                     original.admit(&signed)
                 },

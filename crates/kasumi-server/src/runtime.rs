@@ -2033,13 +2033,15 @@ impl NodeRuntime {
             if let Some(signer) = lifecycle_signer {
                 // Only a hosted Control installs a lifecycle signer.
                 let control = runtime.control.as_ref().context("lifecycle signer requires a hosted Control group")?.database.clone();
+                let mut lifecycle_rpc = crate::rpc::NativeLifecycleControl::new(control.clone(), signer.clone(), auth.clone())?;
                 if config.hosted_control()?.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
                     let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, control.clone(), signer.clone(), runtime.authority_trusts.clone())?;
                     let writer_network:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
                     control.install_target_writer_network(Arc::downgrade(&writer_network))?;
+                    lifecycle_rpc = lifecycle_rpc.with_writer_callbacks(coordinator.clone());
                     admin = admin.add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth.clone()).service());
                 }
-                admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(control, signer, auth.clone())?.service());
+                admin = admin.add_service(lifecycle_rpc.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
             let admin = admin.into_axum_router().layer(request_admission).merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));

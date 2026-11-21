@@ -8,6 +8,17 @@ and drains its storage owners before success. Cancellation of the CLI waiter
 does not abandon that owned initializer. Existing or incomplete files are never
 adopted or reset. The configured parent directory must already exist.
 
+For target-journal key retirement across separate Control and Data nodes, set
+`target_recovery.writer_observation_bearer_file` on each target. Issue this
+credential for the installed Control incarnation, the target's enrolled node
+principal and its `control_tls` client certificate, with the single
+`kasumi:read` scope. In the Control policy, grant that principal `read` on
+`target_journal_writers`. Control continues to authenticate the initiating
+administrator. Each target presents its own credential and signed journal
+challenge while that administrator's request is active. If a target credential
+is unavailable after the fence commits, restore it at its installed path and
+retry the same retirement request.
+
 Every `target_recovery.tenants[tenant]` template requires its own
 `audit_placement`, using the tagged local replica only or nested external choice
 in the [tenant audit retention guide](tenant-audit-retention.md). The ordinary

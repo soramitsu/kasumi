@@ -84,10 +84,20 @@ impl KasumiLifecyclePool {
         challenge: &SignedTargetWriterChallenge,
         timeout: Duration,
     ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        self.observe_writer(challenge, None, timeout).await
+    }
+    /// The callback uses its own physical credential and the nonce of the Control
+    /// dispatch that is waiting for this exact installed journal.
+    pub async fn observe_writer(
+        &mut self,
+        challenge: &SignedTargetWriterChallenge,
+        refresh: Option<uuid::Uuid>,
+        timeout: Duration,
+    ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
         self.inner
             .request(timeout, true, |client, bearer| {
                 let challenge = challenge.clone();
-                Box::pin(async move { client.observe_target_writer(bearer, &challenge).await })
+                Box::pin(async move { client.observe_writer(bearer, &challenge, refresh).await })
             })
             .await
     }

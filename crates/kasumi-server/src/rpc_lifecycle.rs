@@ -9,6 +9,7 @@ mod topology;
 pub struct NativeLifecycleControl {
     database: Arc<Database>,
     signer: Arc<LifecycleSigner>,
+    coordinator: Option<Arc<crate::recovery_runtime::ControlRecoveryCoordinator>>,
     auth: Arc<Authenticator>,
 }
 impl NativeLifecycleControl {
@@ -27,8 +28,16 @@ impl NativeLifecycleControl {
         Ok(Self {
             database,
             signer,
+            coordinator: None,
             auth,
         })
+    }
+    pub(crate) fn with_writer_callbacks(
+        mut self,
+        coordinator: Arc<crate::recovery_runtime::ControlRecoveryCoordinator>,
+    ) -> Self {
+        self.coordinator = Some(coordinator);
+        self
     }
     pub fn service(self) -> kasumi_lifecycle_control_server::KasumiLifecycleControlServer<Self> {
         kasumi_lifecycle_control_server::KasumiLifecycleControlServer::new(self)
@@ -66,6 +75,29 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
         request: Request<ControlJsonRequest>,
     ) -> Result<Response<ControlJsonResponse>, Status> {
         let actor = self.context(&request).await?;
+        let mut headers = request
+            .metadata()
+            .get_all(kasumi_client::TARGET_WRITER_REFRESH_HEADER)
+            .iter();
+        let nonce = headers
+            .next()
+            .map(|v| {
+                v.to_str()
+                    .ok()
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or_else(|| Status::invalid_argument("invalid writer refresh nonce"))
+            })
+            .transpose()?;
+        if headers.next().is_some() {
+            return Err(Status::invalid_argument("duplicate writer refresh nonce"));
+        }
+        let peer = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|p| p.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
         let body = request.into_inner().request_json;
         if body.len() > 4096 {
             return Err(Status::resource_exhausted(
@@ -77,16 +109,57 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .database
             .admitted_response_fence(&actor)
             .map_err(status)?;
+        let callback = nonce
+            .map(|nonce| {
+                self.coordinator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        kasumi_types::Error::new(
+                            kasumi_types::ErrorCode::Unavailable,
+                            "original writer coordinator unavailable",
+                        )
+                    })
+                    .and_then(|owner| {
+                        owner.writer_callbacks.resolve(
+                            nonce,
+                            &actor,
+                            &peer,
+                            &challenge,
+                            &self.database,
+                        )
+                    })
+            })
+            .transpose();
+        let callback = self
+            .auth
+            .audit_result(&actor, callback)
+            .await
+            .map_err(status)?;
+        let original = callback.as_ref().map_or(&actor, |active| active.original());
         let result = self
             .signer
-            .observe_target_writer(&self.database, &actor, &challenge)
+            .observe_target_writer(&self.database, original, &challenge)
             .await;
         let output = self
             .auth
             .audit_result(&actor, result)
             .await
             .map_err(status)?;
-        response_owner::PendingReply::new(output, fence)
+        if let Some(active) = &callback {
+            active.check(&actor, &self.database).map_err(status)?;
+            if output
+                .observation
+                .retirements
+                .target_writer_digest()
+                .map_err(status)?
+                != active.state_sha256()
+            {
+                return Err(Status::aborted(
+                    "original writer state changed before callback release",
+                ));
+            }
+        }
+        let reply = response_owner::PendingReply::new(output, fence)
             .convert(|value, fence| {
                 Ok(ControlJsonResponse {
                     response_json: response_owner::encode_json(value, fence)?,
@@ -94,7 +167,11 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             })
             .map_err(status)?
             .release(&self.auth, &actor)
-            .await
+            .await?;
+        if let Some(active) = &callback {
+            active.check(&actor, &self.database).map_err(status)?;
+        }
+        Ok(reply)
     }
     async fn observe_topology(
         &self,
