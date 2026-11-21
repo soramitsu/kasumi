@@ -159,6 +159,15 @@ pub struct SchemaValidator {
 }
 
 impl SchemaValidator {
+    /// Compile a collection definition for checking documents before its indexes exist.
+    pub fn compile(definition: &CollectionDefinition) -> Result<Self> {
+        let (validator, _) = validation::validate_definition_and_compile(definition)?;
+        Ok(Self {
+            collection: definition.name.clone(),
+            validator,
+        })
+    }
+
     /// `definition` must be the one this validator was resolved for: its schema
     /// is checked first, then its index and text constraints.
     pub fn validate_document(&self, definition: &CollectionDefinition, body: &Value) -> Result<()> {
