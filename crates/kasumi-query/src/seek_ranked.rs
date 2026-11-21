@@ -32,6 +32,14 @@ fn partition<S: DocumentSource + ?Sized>(
         Bound::Included(key) => (key, !lower),
         Bound::Excluded(key) => (key, lower),
     };
+    // Every stored tuple is nonempty and its first scalar precedes the
+    // sentinel. An unrestricted walk must not load unrelated documents
+    // solely to rediscover either end of its published ordinal interval.
+    match key.first() {
+        None => return Ok(0),
+        Some(first) if first.tag == 6 => return Ok(count),
+        _ => {}
+    }
     let (mut start, mut end) = (0, count);
     while start < end {
         cancel.check()?;
@@ -68,6 +76,9 @@ impl Walk {
         let Some(count) = source.ranked_compound_count(index, cancel)? else {
             return Ok(None);
         };
+        if count == 0 {
+            return Err(corrupt().into());
+        }
         let start = partition(
             source,
             index,

@@ -580,6 +580,9 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         source: ResidentSource<'a>,
         compact: BTreeMap<Vec<u8>, String>,
         reads: std::cell::Cell<usize>,
+        ranked: Option<&'a [([u8; 32], String)]>,
+        damage: bool,
+        rank_reads: std::cell::Cell<usize>,
     }
     impl CollectionRecords for Mixed<'_> {
         type Failure = std::convert::Infallible;
@@ -602,6 +605,40 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         }
         fn has_ordered_unique_source(&self) -> bool {
             true
+        }
+        fn ranked_compound_count(
+            &self,
+            ordinal: usize,
+            _: &QueryCancellation,
+        ) -> ReadResult<Option<u64>, Self::Failure> {
+            assert_eq!(ordinal, 0);
+            Ok(self.ranked.map(|r| r.len() as u64))
+        }
+        fn ranked_compound_window(
+            &self,
+            _: usize,
+            start: u64,
+            end: u64,
+            descending: bool,
+            _: &QueryCancellation,
+        ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+            let Some(rows) = self.ranked else {
+                return Ok(None);
+            };
+            self.rank_reads.set(self.rank_reads.get() + 1);
+            let mut range = start..end;
+            Ok(Some(
+                (0..crate::ORDERED_TUPLE_WINDOW)
+                    .map_while(|_| directed_next(&mut range, descending))
+                    .map(|rank| {
+                        let (mut digest, id) = rows[rank as usize].clone();
+                        if self.damage {
+                            digest[0] ^= 1;
+                        }
+                        crate::RankedOwner { rank, digest, id }
+                    })
+                    .collect(),
+            ))
         }
         fn ordered_unique_window(
             &self,
@@ -701,6 +738,9 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         },
         compact,
         reads: Default::default(),
+        ranked: None,
+        damage: false,
+        rank_reads: Default::default(),
     };
     for desc in [false, true] {
         let mut seen = Vec::new();
@@ -786,6 +826,9 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
                 },
                 compact: source.compact.clone(),
                 reads: Default::default(),
+                ranked: None,
+                damage: false,
+                rank_reads: Default::default(),
             };
             let page = worker
                 .seek_page(
@@ -814,6 +857,109 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         }
         assert_eq!(seen, expected);
     }
+    let mut ranked_rows = Vec::new();
+    original
+        .visit_ranked_compounds(|_, _, row| {
+            match row {
+                crate::RankedCompound::Count(count) => assert_eq!(count as usize, expected.len()),
+                crate::RankedCompound::Owner { rank, digest, id } => {
+                    assert_eq!(rank as usize, ranked_rows.len());
+                    ranked_rows.push((digest, id.to_owned()));
+                }
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    for descending in [false, true] {
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let req = QueryRequest::new("ordered")
+            .filter(
+                Filter::new()
+                    .eq("/scope", "g")
+                    .gte("/key", expected[8].clone())
+                    .lt("/key", expected[45].clone()),
+            )
+            .limit(5)
+            .paging(Paging::Seek);
+        let req = if descending {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        loop {
+            let worker = original
+                .published_seek_worker_projection("ordered")
+                .unwrap();
+            let registered = Mixed {
+                source: ResidentSource {
+                    collection: &collections["ordered"],
+                    indexes: &worker,
+                },
+                compact: BTreeMap::new(),
+                reads: Default::default(),
+                ranked: Some(&ranked_rows),
+                damage: false,
+                rank_reads: Default::default(),
+            };
+            let page = worker
+                .seek_page(
+                    &registered,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert_eq!(registered.reads.get(), 0);
+            assert!(registered.rank_reads.get() > 0);
+            seen.extend(
+                page.rows
+                    .into_iter()
+                    .map(|r| r.body["key"].as_str().unwrap().to_owned()),
+            );
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(seen.len() < expected.len());
+        }
+        if descending {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected[8..45]);
+    }
+    let damaged = Mixed {
+        source: ResidentSource {
+            collection: &collections["ordered"],
+            indexes: &original,
+        },
+        compact: BTreeMap::new(),
+        reads: Default::default(),
+        ranked: Some(&ranked_rows),
+        damage: true,
+        rank_reads: Default::default(),
+    };
+    let all = QueryRequest::new("ordered")
+        .sort_asc("/scope")
+        .sort_asc("/key")
+        .limit(2)
+        .paging(Paging::Seek);
+    let failure = original
+        .seek_page(
+            &damaged,
+            &all,
+            None,
+            &Limits::default(),
+            &|_| Ok(32),
+            &Default::default(),
+            &mut query_memory(),
+        )
+        .unwrap_err();
+    assert!(matches!(failure,crate::ReadFailure::Query(ref e) if e.code==ErrorCode::Corruption));
+    assert_eq!(damaged.rank_reads.get(), 1);
 }
 
 #[test]
