@@ -253,6 +253,7 @@ impl Streams {
 
 pub(super) struct Cursor<'a> {
     identity: Identity,
+    namespace_times: [i64; 4],
     binding: NamespaceBinding,
     file: File,
     entries: Option<std::ptr::NonNull<libc::DIR>>,
@@ -275,7 +276,8 @@ impl<'a> Cursor<'a> {
             streams.close_errno().is_none(),
             "uncertain census stream requires process restart"
         );
-        let identity = Identity::of(&file.metadata()?);
+        let metadata = file.metadata()?;
+        let identity = Identity::of(&metadata);
         // A dup shares offsets. This independent file description is retained
         // until exactly one closedir invocation consumes its native owner.
         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
@@ -290,6 +292,7 @@ impl<'a> Cursor<'a> {
         streams.outstanding.set(next);
         Ok(Self {
             identity,
+            namespace_times: namespace_times(&metadata),
             binding,
             file,
             entries: Some(entries),
@@ -495,8 +498,6 @@ impl<'a> CensusSession<'a> {
                     &root.file,
                     NamespaceBinding::root(root.identity),
                     None,
-                    self.config.directory_policy,
-                    root.filesystem,
                 )?;
                 self.stack.push(Cursor::open(
                     root.file.try_clone()?,
@@ -515,7 +516,12 @@ impl<'a> CensusSession<'a> {
             let current = self.stack.last_mut().expect("active census stack");
             let Some(name) = current.next(self.config.max_name_bytes)? else {
                 current.file.sync_all()?;
-                verify_enrolled_directory(&self.scan, current)?;
+                settle_directory(
+                    &mut self.scan,
+                    current,
+                    self.config.directory_policy,
+                    root.filesystem,
+                )?;
                 current.close()?;
                 self.stack.pop();
                 if self.stack.is_empty() {
@@ -566,14 +572,7 @@ impl<'a> CensusSession<'a> {
                     self.stack.len() < self.config.max_depth as usize,
                     "census depth exhausted"
                 );
-                enroll_directory(
-                    &mut self.scan,
-                    &child,
-                    binding,
-                    Some(parent),
-                    self.config.directory_policy,
-                    root.filesystem,
-                )?;
+                enroll_directory(&mut self.scan, &child, binding, Some(parent))?;
                 self.subdirectories += 1;
                 self.stack.push(Cursor::open(
                     child,
@@ -700,28 +699,24 @@ pub(super) fn directory_extent(metadata: &Metadata) -> io::Result<u64> {
         .ok_or_else(|| io::ErrorKind::InvalidData.into())
 }
 
+fn namespace_times(metadata: &Metadata) -> [i64; 4] {
+    [
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ]
+}
+
 fn enroll_directory(
     totals: &mut Scan<'_>,
     file: &File,
     binding: NamespaceBinding,
     parent: Option<Identity>,
-    policy: super::DirectoryPolicy,
-    filesystem: usize,
 ) -> Result<()> {
     let metadata = file.metadata()?;
     directory(&metadata)?;
     let identity = Identity::of(&metadata);
-    let observed = directory_extent(&metadata)?;
-    let bytes = policy.extent_bytes.max(observed);
-    let pending = bytes - observed;
-    let next_bytes = totals
-        .bytes
-        .checked_add(bytes)
-        .context("directory extent overflow")?;
-    let next_directories = totals
-        .directory_bytes
-        .checked_add(observed)
-        .context("directory extent overflow")?;
     totals
         .accounted
         .try_reserve(1)
@@ -734,9 +729,9 @@ fn enroll_directory(
                 AccountedInode::Directory(AccountedDirectory {
                     binding,
                     parent,
-                    bytes,
-                    pending,
-                    settled: true,
+                    bytes: 0,
+                    pending: 0,
+                    settled: false,
                     len: metadata.len(),
                     children: 0,
                     live_handles: 0,
@@ -752,6 +747,45 @@ fn enroll_directory(
         .directories
         .checked_add(1)
         .context("census directory count overflow")?;
+    Ok(())
+}
+
+// Enumeration and fsync can settle directory blocks even when no entry
+// changes (including an empty Btrfs directory). Charge the final descriptor
+// metadata once, before the scan can publish its inactive accounting bank.
+fn settle_directory(
+    totals: &mut Scan<'_>,
+    cursor: &Cursor<'_>,
+    policy: super::DirectoryPolicy,
+    filesystem: usize,
+) -> Result<()> {
+    let metadata = cursor.file.metadata()?;
+    directory(&metadata)?;
+    let enrolled = totals
+        .accounted
+        .get_mut(&cursor.identity)
+        .and_then(AccountedInode::directory_mut)
+        .context("census directory missing")?;
+    ensure!(
+        Identity::of(&metadata) == cursor.identity
+            && metadata.len() == enrolled.len
+            && namespace_times(&metadata) == cursor.namespace_times,
+        "directory changed during persistent census"
+    );
+    let observed = directory_extent(&metadata)?;
+    let bytes = policy.extent_bytes.max(observed);
+    let pending = bytes - observed;
+    enrolled.bytes = bytes;
+    enrolled.pending = pending;
+    enrolled.settled = true;
+    let next_bytes = totals
+        .bytes
+        .checked_add(bytes)
+        .context("directory extent overflow")?;
+    let next_directories = totals
+        .directory_bytes
+        .checked_add(observed)
+        .context("directory extent overflow")?;
     totals.pending = totals
         .pending
         .checked_add(pending)
@@ -762,27 +796,6 @@ fn enroll_directory(
         .context("directory promises overflow")?;
     totals.bytes = next_bytes;
     totals.directory_bytes = next_directories;
-    Ok(())
-}
-
-fn verify_enrolled_directory(totals: &Scan<'_>, cursor: &Cursor<'_>) -> Result<()> {
-    let metadata = cursor.file.metadata()?;
-    directory(&metadata)?;
-    let enrolled = totals
-        .accounted
-        .get(&cursor.identity)
-        .and_then(AccountedInode::directory)
-        .context("census directory missing")?;
-    ensure!(
-        Identity::of(&metadata) == cursor.identity
-            && metadata.len() == enrolled.len
-            && directory_extent(&metadata)?
-                == enrolled
-                    .bytes
-                    .checked_sub(enrolled.pending)
-                    .context("invalid directory promise")?,
-        "directory changed during persistent census"
-    );
     Ok(())
 }
 

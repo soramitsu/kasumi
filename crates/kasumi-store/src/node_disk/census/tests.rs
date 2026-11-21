@@ -199,6 +199,39 @@ fn file_and_subdirectory_excess_fail_without_candidate_publication() {
 }
 
 #[test]
+fn directory_namespace_changes_during_enumeration_discard_the_partial_census() {
+    let (root, mut config, _memory) = fixture();
+    config.census_work_per_step = 1;
+    file(&root.path().join("data"));
+    let (roots, _locks, unit) = root_set(&config);
+    let mut banks = fixed_map::Banks::new(17).unwrap();
+    let streams = Streams::default();
+    let cancel = CensusCancellation::default();
+    let mut session = CensusSession::new(
+        &roots,
+        &config,
+        unit,
+        &cancel,
+        banks.stage(17).unwrap(),
+        &streams,
+    )
+    .unwrap();
+    while session.scan.files == 0 {
+        assert_eq!(session.advance(), Progress::Pending);
+    }
+    // Keep the directory length, entry count and allocation unchanged.
+    std::fs::rename(root.path().join("data"), root.path().join("next")).unwrap();
+    let dir = File::open(root.path()).unwrap();
+    let different_time =
+        dir.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(10);
+    dir.set_modified(different_time).unwrap();
+    while session.advance() == Progress::Pending {}
+    assert!(format!("{:#}", session.finish().unwrap_err()).contains("directory changed"));
+    assert_eq!(streams.outstanding(), 0);
+    assert_eq!(banks.len(), 0);
+}
+
+#[test]
 fn cancellation_between_steps_closes_actual_stream_and_resets_partial_spare() {
     let (root, mut config, _memory) = fixture();
     config.census_work_per_step = 1;
