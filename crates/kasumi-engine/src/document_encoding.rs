@@ -367,7 +367,7 @@ pub(crate) fn encode_body(
     body: &Value,
     limits: BodyLimits,
     mut put: impl FnMut(EncodedObject<'_>) -> Result<()>,
-) -> Result<BodyManifest> {
+) -> Result<(BodyManifest, Vec<u8>)> {
     let mut encoder = Encoder {
         limits,
         digest: CanonicalDigest::new(limits.canonical_bytes),
@@ -384,11 +384,9 @@ pub(crate) fn encode_body(
         canonical_sha256: encoder.digest.hash.finalize().into(),
         fragments: encoder.fragments,
     };
-    manifest.validate(limits)?;
-    // Check the durable representation's limit without retaining an encoded copy.
-    let mut count = CanonicalDigest::new(limits.manifest_bytes);
-    serde_json::to_writer(&mut count, &manifest)?;
-    Ok(manifest)
+    // Both staging paths persist exactly these validated, size-limited bytes.
+    let wire = manifest.to_bytes(limits)?;
+    Ok((manifest, wire))
 }
 
 impl BodyManifest {

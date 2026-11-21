@@ -235,14 +235,13 @@ impl PreparedDocuments {
         let collecting = self.collector.is_some();
         // At most `limits.blobs` digests, within this document's workspace.
         let mut blobs = Vec::new();
-        let manifest = document_encoding::encode_body(&document.body, limits, |object| {
+        let (manifest, wire) = document_encoding::encode_body(&document.body, limits, |object| {
             if collecting {
                 blobs.try_reserve(1)?;
                 blobs.push(object.digest());
             }
             self.put(false, object, work)
         })?;
-        let wire = manifest.to_bytes(limits)?;
         let object = document_encoding::EncodedObject::new(&wire);
         let descriptor = measured.descriptor(&manifest, object)?;
         self.put(true, object, work)?;

@@ -13,7 +13,7 @@ fn limits() -> BodyLimits {
 }
 
 fn encode(body: &Value, blobs: &mut HashMap<[u8; 32], Vec<u8>>) -> BodyManifest {
-    encode_body(body, limits(), |object| {
+    let (manifest, wire) = encode_body(body, limits(), |object| {
         let bytes = object.bytes();
         assert_eq!(object.digest(), <[u8; 32]>::from(Sha256::digest(bytes)));
         if let Some(existing) = blobs.get(&object.digest()) {
@@ -23,7 +23,9 @@ fn encode(body: &Value, blobs: &mut HashMap<[u8; 32], Vec<u8>>) -> BodyManifest 
         }
         Ok(())
     })
-    .unwrap()
+    .unwrap();
+    assert_eq!(wire, serde_json::to_vec(&manifest).unwrap());
+    manifest
 }
 
 fn reconstruct(manifest: &BodyManifest, blobs: &HashMap<[u8; 32], Vec<u8>>) -> Vec<u8> {
@@ -32,6 +34,30 @@ fn reconstruct(manifest: &BodyManifest, blobs: &HashMap<[u8; 32], Vec<u8>>) -> V
     })
     .unwrap()
     .into_owned()
+}
+
+#[test]
+fn staged_manifest_fits_its_exact_wire_limit() {
+    let body = json!({"nested": [true, "雪\n", "a".repeat(STRING_THRESHOLD * 2)]});
+    let (_, original) = encode_body(&body, limits(), |_| Ok(())).unwrap();
+    let exact = BodyLimits {
+        manifest_bytes: original.len(),
+        ..limits()
+    };
+    let (manifest, wire) = encode_body(&body, exact, |_| Ok(())).unwrap();
+    assert_eq!(wire, original);
+    assert_eq!(wire, serde_json::to_vec(&manifest).unwrap());
+    assert!(
+        encode_body(
+            &body,
+            BodyLimits {
+                manifest_bytes: original.len() - 1,
+                ..exact
+            },
+            |_| Ok(())
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -128,7 +154,7 @@ fn opaque_strings_use_the_exact_canonical_chunk_boundary_before_calling_the_sink
         let value = Value::String(format!("{}{tail}", "!".repeat(prefix)));
         let canonical = serde_json::to_vec(&value).unwrap();
         let mut chunks = Vec::new();
-        let manifest = encode_body(&value, limits(), |object| {
+        let (manifest, _) = encode_body(&value, limits(), |object| {
             chunks.push(object.bytes().to_vec());
             Ok(())
         })

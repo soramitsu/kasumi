@@ -614,10 +614,9 @@ impl Builder {
             .memory()
             .clone()
             .reserve_document_decode(work)?;
-        let manifest = document_encoding::encode_body(&document.body, limits, |object| {
+        let (manifest, wire) = document_encoding::encode_body(&document.body, limits, |object| {
             self.put(false, object)
         })?;
-        let wire = manifest.to_bytes(limits)?;
         let object = document_encoding::EncodedObject::new(&wire);
         let descriptor = measured.descriptor(&manifest, object)?;
         self.put(true, object)?;
@@ -1641,9 +1640,8 @@ mod workspace_tests {
                 crate::accounting::encoded_len(&kasumi_types::CanonicalJsonValue(&document.body))
                     .unwrap();
             let limits = limits(body_bytes).unwrap();
-            let manifest =
+            let (_, wire) =
                 document_encoding::encode_body(&document.body, limits, |_| Ok(())).unwrap();
-            let wire = manifest.to_bytes(limits).unwrap();
             let manifest_work =
                 crate::snapshot_codec::inspect_external_json_work(&wire, &mut || Ok(())).unwrap();
             let body_work = crate::snapshot_codec::inspect_typed_json_work(
