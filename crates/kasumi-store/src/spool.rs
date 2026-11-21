@@ -22,6 +22,9 @@ pub(crate) const NATIVE_BLOCK: usize = 4 << 10;
 /// extension is a filesystem metadata update.
 const EXTENT_STEP: u64 = 4 << 20;
 pub(crate) const NATIVE_SLOT: u64 = NATIVE_BLOCK as u64 + 40;
+// A group serializes append and resize under one owner. Its existing resize
+// buffer sets the shared workspace bound for both operations.
+pub(crate) const NATIVE_IO_WORKSPACE: usize = BLOCK;
 #[derive(Clone, Copy)]
 enum SpoolLayout {
     Sequential,
@@ -465,7 +468,8 @@ impl EncryptedSpool {
         debug_assert!(
             self.position == self.length && self.length.is_multiple_of(NATIVE_BLOCK as u64)
         );
-        const BLOCKS: usize = 4;
+        const BLOCKS: usize = 8;
+        const { assert!(BLOCKS * NATIVE_SLOT as usize <= NATIVE_IO_WORKSPACE) };
         let mut slots = Zeroizing::new([0u8; BLOCKS * NATIVE_SLOT as usize]);
         let cipher = XChaCha20Poly1305::new(self.key.as_bytes().into());
         for chunk in bytes.chunks(BLOCKS * NATIVE_BLOCK) {

@@ -318,7 +318,7 @@ impl Owner {
             provider.clone(),
             crate::disk_memory::add(
                 crate::disk_memory::add(
-                    64 << 10, // shared stack bound for resize zero-fill or encrypted native append
+                    crate::spool::NATIVE_IO_WORKSPACE as u64,
                     crate::disk_memory::size::<claim::GroupTransaction>()?,
                 )?,
                 crate::disk_memory::add(

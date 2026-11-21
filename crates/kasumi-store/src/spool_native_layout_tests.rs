@@ -34,8 +34,8 @@ fn native_segment_appends_share_writes_and_authenticate_each_original_slot() {
     regular.flush_extent().unwrap();
     grouped.flush_extent().unwrap();
     assert_eq!(regular.ciphertext_writes, 20);
-    // One prefix, five groups of up to four complete slots, one partial tail.
-    assert_eq!(grouped.ciphertext_writes, 7);
+    // One prefix, three groups of up to eight complete slots, one partial tail.
+    assert_eq!(grouped.ciphertext_writes, 5);
     assert_eq!(grouped.len(), regular.len());
     assert_eq!(grouped.physical_len, regular.physical_len);
     let mut actual = vec![0; data.len()];
