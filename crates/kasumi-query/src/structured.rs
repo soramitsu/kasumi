@@ -13,6 +13,57 @@ use std::ops::{Bound, RangeBounds};
 
 pub(crate) type IdSet = OrdSet<String>;
 
+/// Sharing lasts only for the current document. Correlated fields can grow
+/// or shrink the same immutable ID root even when their scalar keys differ.
+struct DocumentPostings<'a> {
+    id: &'a str,
+    singleton: Option<IdSet>,
+    insertions: Vec<(IdSet, IdSet)>,
+    removals: Vec<(IdSet, IdSet)>,
+    limit: usize,
+}
+
+impl<'a> DocumentPostings<'a> {
+    fn new(id: &'a str, fields: usize) -> Self {
+        Self {
+            id,
+            singleton: None,
+            insertions: Vec::new(),
+            removals: Vec::new(),
+            // A wide array may visit many values. Bound the old/new roots
+            // kept beyond the immediate edit, independently of array length.
+            limit: if fields > 1 { fields.min(16) } else { 0 },
+        }
+    }
+
+    fn singleton(&mut self) -> IdSet {
+        self.singleton
+            .get_or_insert_with(|| IdSet::unit(self.id.to_owned()))
+            .clone()
+    }
+
+    fn change(&mut self, ids: &mut IdSet, insert: bool) {
+        let changes = if insert {
+            &mut self.insertions
+        } else {
+            &mut self.removals
+        };
+        if let Some((_, next)) = changes.iter().find(|(old, _)| old.ptr_eq(ids)) {
+            *ids = next.clone();
+            return;
+        }
+        let old = (changes.len() < self.limit).then(|| ids.clone());
+        if insert {
+            ids.insert(self.id.to_owned());
+        } else {
+            ids.remove(self.id);
+        }
+        if let Some(old) = old {
+            changes.push((old, ids.clone()));
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FieldIndex {
     pub kind: ScalarType,
@@ -44,25 +95,19 @@ impl FieldIndex {
         self.entries = OrdMap::unit(key, ids.clone());
     }
 
-    fn insert(&mut self, id: &str, key: Scalar, singleton: &mut Option<IdSet>) {
-        let mut first = || {
-            singleton
-                .get_or_insert_with(|| IdSet::unit(id.to_owned()))
-                .clone()
-        };
+    fn insert(&mut self, key: Scalar, row: &mut DocumentPostings<'_>) {
         if !self.share_strings {
-            self.entries
-                .entry(key)
-                .and_modify(|ids| {
-                    ids.insert(id.to_owned());
-                })
-                .or_insert_with(first);
+            match self.entries.entry(key) {
+                imbl::ordmap::Entry::Occupied(mut entry) => row.change(entry.get_mut(), true),
+                imbl::ordmap::Entry::Vacant(entry) => {
+                    entry.insert(row.singleton());
+                }
+            }
             return;
         }
-        // Use the existing field key for repeated values. Occupied postings
-        // keep their backing across later changes and retained generations.
+        // Preserve the stored field key when other indexes share its string.
         if let Some(ids) = self.entries.get_mut(&key) {
-            ids.insert(id.to_owned());
+            row.change(ids, true);
             return;
         }
         let key = match key {
@@ -71,7 +116,7 @@ impl FieldIndex {
             }
             key => key,
         };
-        self.entries.insert(key, first());
+        self.entries.insert(key, row.singleton());
     }
 }
 
@@ -234,7 +279,7 @@ impl Structured {
             let mut changed_shared_text = false;
             // An ID can be the sole owner of many distinct indexed values.
             // Reuse its singleton across this loan and later mutations.
-            let mut singleton = None;
+            let mut postings = DocumentPostings::new(id, next.fields.len());
             for (path, index) in &mut next.fields {
                 let old_value = previous.and_then(|record| record_value(record, path));
                 let new_value = current.and_then(|record| record_value(record, path));
@@ -243,10 +288,10 @@ impl Structured {
                 }
                 match (old_value.is_some(), new_value.is_some()) {
                     (false, true) => {
-                        index.present.insert(id.to_owned());
+                        postings.change(&mut index.present, true);
                     }
                     (true, false) => {
-                        index.present.remove(id);
+                        postings.change(&mut index.present, false);
                     }
                     _ => {}
                 }
@@ -254,9 +299,9 @@ impl Structured {
                     for key in indexed_values(old_value, index.kind)? {
                         if let imbl::ordmap::Entry::Occupied(mut entry) = index.entries.entry(key) {
                             if entry.get().len() == 1 && entry.get().contains(id) {
-                                singleton.get_or_insert(entry.remove());
+                                postings.singleton.get_or_insert(entry.remove());
                             } else {
-                                entry.get_mut().remove(id);
+                                postings.change(entry.get_mut(), false);
                             }
                         }
                     }
@@ -265,7 +310,7 @@ impl Structured {
                     for key in indexed_values(new_value, index.kind)? {
                         changed_shared_text |=
                             index.share_strings && matches!(key, Scalar::String(_));
-                        index.insert(id, key, &mut singleton);
+                        index.insert(key, &mut postings);
                     }
                 }
             }
@@ -484,14 +529,14 @@ impl Structured {
         record: Record<'_>,
         building: &mut [BuildingField],
     ) -> Result<()> {
-        let mut singleton = None;
+        let mut postings = DocumentPostings::new(id, self.fields.len());
         for ((path, index), state) in self.fields.iter_mut().zip(building) {
             let value = record_value(record, path);
             if state.complete_presence && value.is_none() {
                 index.present = self.ids.clone();
                 state.complete_presence = false;
             } else if !state.complete_presence && value.is_some() {
-                index.present.insert(id.to_owned());
+                postings.change(&mut index.present, true);
             }
             let keys = indexed_values(value, index.kind)?;
             if state.uniform_posting {
@@ -508,7 +553,7 @@ impl Structured {
                 }
             }
             for key in keys {
-                index.insert(id, key, &mut singleton);
+                index.insert(key, &mut postings);
             }
         }
         self.ids.insert(id.to_owned());
