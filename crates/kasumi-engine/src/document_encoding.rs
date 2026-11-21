@@ -349,15 +349,14 @@ fn classify(string: &str) -> Encoding {
             return Encoding::UpperHex;
         }
     }
-    // Complete quartets of alphabet symbols encode exactly three bytes. Only
-    // the final quartet can have padding or unused bits. The standard decoder
-    // requires their canonical spelling before we choose the binary codec.
+    // STANDARD requires canonical padding and zero unused bits. Earlier
+    // chunks must be complete groups, since only the final chunk may pad.
+    let chunk_bytes = BLOB_CHUNK_BYTES / 3 * 4;
     if bytes.len().is_multiple_of(4)
-        && let Some((prefix, last)) = bytes.split_last_chunk::<4>()
-        && prefix
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/'))
-        && STANDARD.decode_slice(last, &mut [0; 3]).is_ok()
+        && (bytes.len() <= chunk_bytes || !bytes[..bytes.len() - 2].contains(&b'='))
+        && bytes
+            .chunks(chunk_bytes)
+            .all(|part| STANDARD.decode(part).is_ok())
     {
         return Encoding::Base64;
     }
