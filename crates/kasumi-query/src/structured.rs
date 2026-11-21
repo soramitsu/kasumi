@@ -22,6 +22,28 @@ pub(crate) struct FieldIndex {
 }
 
 impl FieldIndex {
+    fn share_complete_posting(&mut self, ids: &IdSet) {
+        if self.entries.len() != 1 {
+            return;
+        }
+        let (_, posting) = self.entries.get_min().expect("single field posting");
+        if posting.len() != ids.len() || posting.ptr_eq(ids) {
+            return;
+        }
+        self.set_only_posting(ids);
+    }
+
+    fn set_only_posting(&mut self, ids: &IdSet) {
+        debug_assert_eq!(self.entries.len(), 1);
+        // All postings are subsets of the collection IDs. Move the sole
+        // scalar out of this private root, including an oversized string.
+        let (key, _) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .next()
+            .expect("single field posting");
+        self.entries = OrdMap::unit(key, ids.clone());
+    }
+
     fn insert(&mut self, id: &str, key: Scalar) {
         if !self.share_strings {
             self.entries.entry(key).or_default().insert(id.to_owned());
@@ -41,6 +63,11 @@ impl FieldIndex {
         };
         self.entries.insert(key, OrdSet::unit(id.to_owned()));
     }
+}
+
+struct BuildingField {
+    complete_presence: bool,
+    uniform_posting: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -237,9 +264,12 @@ impl Structured {
         })?;
         // Presence is a subset of this collection's IDs. A sparse field
         // can become complete when its last missing document is deleted.
-        for field in next.fields.values_mut() {
+        for (field, previous) in next.fields.values_mut().zip(self.fields.values()) {
             if field.present.len() == next.ids.len() {
                 field.present = next.ids.clone();
+            }
+            if !field.entries.ptr_eq(&previous.entries) {
+                field.share_complete_posting(&next.ids);
             }
         }
         Ok(next)
@@ -384,9 +414,24 @@ impl Structured {
     ) -> ReadResult<(), R::Failure> {
         let definition = source.definition();
         let mut index_failure = None;
-        // Delay building a separate presence tree until a document lacks
-        // the field. The field order stays fixed throughout this build.
-        let mut complete = vec![true; self.fields.len()];
+        // A one-field unique validator reads posting counts during insertion.
+        // Other fields can defer their first posting until a second value or
+        // an empty array appears. Field order stays fixed throughout the build.
+        let mut building = {
+            let singles: BTreeSet<_> = self
+                .unique
+                .values()
+                .filter(|index| index.entries.is_none())
+                .map(|index| &index.fields[0].path)
+                .collect();
+            self.fields
+                .keys()
+                .map(|path| BuildingField {
+                    complete_presence: true,
+                    uniform_posting: !singles.contains(path),
+                })
+                .collect::<Vec<_>>()
+        };
         source.visit_records(|id, record| {
             if let Record::Live(document) = record {
                 crate::validation::validate_document_with_validator(
@@ -399,31 +444,55 @@ impl Structured {
             // over a conflict in these unpublished roots. Keep checking rows
             // under their original loan even after the first index failure.
             if index_failure.is_none() {
-                index_failure = self.insert_record(id, record, &mut complete).err();
+                index_failure = self.insert_record(id, record, &mut building).err();
             }
             Ok(())
         })?;
         if let Some(error) = index_failure {
             return Err(error.into());
         }
-        for (field, complete) in self.fields.values_mut().zip(complete) {
-            if complete {
+        for (field, state) in self.fields.values_mut().zip(building) {
+            if state.complete_presence {
                 field.present = self.ids.clone();
+            }
+            if state.uniform_posting && !field.entries.is_empty() {
+                field.set_only_posting(&self.ids);
+            } else {
+                field.share_complete_posting(&self.ids);
             }
         }
         Ok(())
     }
 
-    fn insert_record(&mut self, id: &str, record: Record<'_>, complete: &mut [bool]) -> Result<()> {
-        for ((path, index), complete) in self.fields.iter_mut().zip(complete) {
+    fn insert_record(
+        &mut self,
+        id: &str,
+        record: Record<'_>,
+        building: &mut [BuildingField],
+    ) -> Result<()> {
+        for ((path, index), state) in self.fields.iter_mut().zip(building) {
             let value = record_value(record, path);
-            if *complete && value.is_none() {
+            if state.complete_presence && value.is_none() {
                 index.present = self.ids.clone();
-                *complete = false;
-            } else if !*complete && value.is_some() {
+                state.complete_presence = false;
+            } else if !state.complete_presence && value.is_some() {
                 index.present.insert(id.to_owned());
             }
-            for key in indexed_values(value, index.kind)? {
+            let keys = indexed_values(value, index.kind)?;
+            if state.uniform_posting {
+                if let [key] = keys.as_slice()
+                    && index.entries.contains_key(key)
+                {
+                    continue;
+                }
+                if keys.len() != 1 || !index.entries.is_empty() {
+                    state.uniform_posting = false;
+                    if !index.entries.is_empty() {
+                        index.set_only_posting(&self.ids);
+                    }
+                }
+            }
+            for key in keys {
                 index.insert(id, key);
             }
         }
