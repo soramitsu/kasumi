@@ -12,7 +12,9 @@ mod feed;
 #[path = "application_field_values.rs"]
 mod field_values;
 pub(crate) use feed::SnapshotFeed;
-pub(crate) use field_values::visit_value_ids;
+#[cfg(test)]
+pub(crate) use field_values::publish as publish_field_values;
+pub(crate) use field_values::{RankedPosting, claim_posting, visit_value_ids};
 
 /// Order-preserving tuple encoding: each component escapes 0x00 as 0x00 0xFF
 /// and ends with 0x00 0x01, so a shorter component sorts before its extensions.
