@@ -242,6 +242,12 @@ The structural workload validators enforce:
   seconds, show continued successful workload, and end at the actual duration.
   Unexpected errors and integrity mismatches must remain zero. Credential
   renewal, archival, backup, and membership maintenance must occur during it.
+  Configure the HA installation's external OAuth issuer to refresh the workload
+  profile's private bearer file before each 1,500-second session rotation.
+  The runner takes a baseline and uses `kasumid credential observe <database-profile>`
+  to authenticate the exact bearer against the pinned native listener at each
+  rotation. The retained profile digest stays constant. Success requires a
+  different bearer digest and a later expiration after every renewal.
 - Archive segments no larger than 8 MiB, maintenance at 75% toward 50%, measured
   historical count crossings and the permanent backup-session floor, key-retention pages
   no larger than 256, and complete current-epoch readiness above 128 groups.

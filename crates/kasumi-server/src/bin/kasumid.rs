@@ -29,6 +29,7 @@ Credentials and keys:
                                              a native credential is bound to the named
                                              certificate, which its new profile presents
   credential renew|watch|inspect <profile>
+  credential observe <database-profile>      authenticate the current bearer and report its digest and expiry
   credential renew|watch <mcp-profile> <control-profile>
                                              a Control administrator renews an MCP credential
   credential status|revoke <control-profile> <family-uuid>

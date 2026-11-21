@@ -217,6 +217,9 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 )?
             ),
         },
+        [command, action, path] if command == "credential" && action == "observe" => {
+            println!("{}", observe_database_credential(Path::new(path)).await?);
+        }
         [command, action, path] if command == "credential" && action == "inspect" => {
             // Offline and unverified: reads this profile's own bearer file only
             // to report when it expires, e.g. before a planned restart.
@@ -407,20 +410,61 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
     Ok(true)
 }
 
-/// The `exp` claim of a compact JWT, in milliseconds, without verifying the
-/// token: the daemon verifies every use; this only reports the profile's state.
-fn bearer_expiry_ms(token: &str) -> Result<u64> {
+fn bearer_claims(token: &str) -> Result<serde_json::Value> {
     use base64::Engine as _;
     let payload = token
         .split('.')
         .nth(1)
         .context("bearer file does not hold a compact JWT")?;
-    let claims: serde_json::Value =
-        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)?)?;
+    Ok(serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)?,
+    )?)
+}
+
+/// The offline inspector only reports the expiry in the selected profile.
+fn bearer_expiry_ms(token: &str) -> Result<u64> {
+    expiry_ms(&bearer_claims(token)?)
+}
+
+fn expiry_ms(claims: &serde_json::Value) -> Result<u64> {
     claims["exp"]
         .as_u64()
         .and_then(|seconds| seconds.checked_mul(1000))
         .context("bearer token has no exp claim")
+}
+
+/// Authenticate the exact file snapshot whose digest and claims are reported.
+/// An issuer can replace the file while the protected read is in flight.
+async fn observe_database_credential(path: &Path) -> Result<serde_json::Value> {
+    use sha2::{Digest as _, Sha256};
+    let (profile, profile_sha256) = ClientProfile::load_with_sha256(path)?;
+    let kasumi_types::CredentialResource::Database { .. } = &profile.resource else {
+        anyhow::bail!("credential observation requires a database profile");
+    };
+    let bearer = profile.bearer()?;
+    let claims = bearer_claims(&bearer)?;
+    ensure!(
+        claims["sub"].as_str() == Some(profile.principal.as_str())
+            && claims["tenant"].as_str() == Some(profile.tenant.as_str())
+            && claims["kasumi_resource"] == serde_json::to_value(&profile.resource)?,
+        "credential identity differs from the installed database profile"
+    );
+    let expires_at_ms = expiry_ms(&claims)?;
+    let bearer_sha256 = hex::encode(Sha256::digest(bearer.as_bytes()));
+    let config = profile.connection(false)?;
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let db = kasumi_client::Kasumi::connect(&config, move || Ok(bearer.clone())).await?;
+        db.collections().await?;
+        Ok::<_, kasumi_client::ClientError>(())
+    })
+    .await
+    .context("credential observation exceeded its deadline")??;
+    ensure!(
+        expires_at_ms > kasumi_clock::EpochClock::system()?.now_ms()?,
+        "credential expired during observation"
+    );
+    Ok(serde_json::json!({ "profile_sha256": profile_sha256,
+        "bearer_sha256": bearer_sha256, "expires_at_ms": expires_at_ms }))
 }
 
 /// Renew somewhere between 50% and 70% of the remaining lifetime. Credentials

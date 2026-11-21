@@ -1,7 +1,7 @@
 """Domain runners against stand-in executables; never release evidence.
 
 The stand-ins are small scripts that speak the product's command surface
-(serve, session, ready, credential renew, ...). They prove custody, timing and
+(serve, session, ready, credential observe, ...). They prove custody, timing and
 adapter behaviour. They do not prove anything about Kasumi itself.
 """
 import base64
@@ -56,6 +56,14 @@ if args[-1:] == ["ready"]:
     seen = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(seen + 1))
     sys.exit(0 if seen >= behavior.get("ready_failures", 0) else 1)
+if args[:2] == ["credential", "observe"]:
+    import hashlib
+    counter = Path(__file__).with_name("credential-observations")
+    n = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(n))
+    print(json.dumps({"profile_sha256": hashlib.sha256(Path(args[2]).read_bytes()).hexdigest(),
+                      "bearer_sha256": f"{n:064x}", "expires_at_ms": 1800000000000 + n}))
+    sys.exit(0)
 print(json.dumps({"ok": True, "argv": args}))
 sys.exit(behavior.get("fail", {}).get(args[0], 0))
 '''
@@ -460,6 +468,16 @@ class SoakTests(DomainFixture):
         del changed["maintenance"]["backup"]
         with self.assertRaisesRegex(ValueError, "fields differ"):
             soak.check_plan(changed, binaries)
+
+    def test_renewal_requires_the_same_profile_and_a_new_later_expiring_bearer(self):
+        original = {"profile_sha256": "1" * 64, "bearer_sha256": "2" * 64, "expires_at_ms": 1000}
+        renewed = dict(original, bearer_sha256="3" * 64, expires_at_ms=2000)
+        self.assertEqual(soak.credential_observation(renewed, original["profile_sha256"], original),
+                         renewed)
+        for change in ({"profile_sha256": "4" * 64}, {"expires_at_ms": 1000},
+                       {"bearer_sha256": original["bearer_sha256"]}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                soak.credential_observation({**renewed, **change}, original["profile_sha256"], original)
 
     def test_heartbeats_count_only_replies_received_before_each_second(self):
         rows = [{"received_elapsed_seconds": second, "verdict": verdict}
