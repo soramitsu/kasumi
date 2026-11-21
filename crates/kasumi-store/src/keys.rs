@@ -253,7 +253,12 @@ impl TransitKeyProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Transit request failed"))?;
+            .map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "Transit request failed",
+                )
+            })?;
         let status = response.status();
         // Do not copy arbitrary provider error bodies into logs: they may contain secrets.
         if !status.is_success() {
@@ -998,13 +1003,17 @@ mod tests {
             .cert
             .pem()
             .into_bytes();
-        assert!(
-            TransitKeyProvider::new(wrong_trust)
-                .unwrap()
-                .generate_key("tenant")
-                .await
-                .is_err()
-        );
+        let denial = TransitKeyProvider::new(wrong_trust)
+            .unwrap()
+            .generate_key("tenant")
+            .await
+            .err()
+            .expect("untrusted Transit endpoint");
+        let outer: &(dyn std::error::Error + 'static) = denial.as_ref();
+        let completed = outer.downcast_ref::<kasumi_types::Error>().unwrap();
+        assert_eq!(completed.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(completed.message, "Transit request failed");
+        assert!(!completed.has_physical_source());
         assert!(state.requests.lock().is_empty());
         let provider = TransitKeyProvider::new(config(&fixture)).unwrap();
         for response in [2, 3, 4] {
