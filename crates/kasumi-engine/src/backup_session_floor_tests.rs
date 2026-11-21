@@ -71,6 +71,29 @@ impl<T, E: std::fmt::Debug> Native<T> for std::result::Result<T, E> {
     }
 }
 
+// The wire-facing Debug representation omits the physical cause. Preserve
+// that chain in the local qualification record when a session operation fails.
+fn snapshot_diagnostic(original: crate::SnapshotFailure) -> anyhow::Error {
+    match original {
+        crate::SnapshotFailure::Operation(error) => error.into(),
+        crate::SnapshotFailure::Source(error) => error,
+        other => anyhow::anyhow!("{other:?}"),
+    }
+}
+
+#[test]
+fn local_session_diagnostic_retains_the_storage_cause() {
+    let cause = std::io::Error::from_raw_os_error(libc::EIO);
+    let error = kasumi_types::Error::from_physical_source(cause.into());
+    let diagnostic = snapshot_diagnostic(error.into()).context("public abort");
+    assert!(diagnostic.chain().any(|source| {
+        source
+            .downcast_ref::<std::io::Error>()
+            .and_then(|e| e.raw_os_error())
+            == Some(libc::EIO)
+    }));
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
@@ -760,7 +783,8 @@ async fn abort(
                     },
                 )
                 .await
-                .native("public abort status after unknown outcome")?;
+                .map_err(snapshot_diagnostic)
+                .context("public abort status after unknown outcome")?;
             anyhow::ensure!(
                 observed.intent.session_id == request.session_id
                     && observed.intent.tenant == context.tenant
@@ -776,10 +800,11 @@ async fn abort(
                 inst.source
                     .abort_backup_session(context, request)
                     .await
-                    .native("same public abort after a verified pending session")?
+                    .map_err(snapshot_diagnostic)
+                    .context("same public abort after a verified pending session")?
             }
         }
-        Err(original) => return Err(anyhow::anyhow!("public abort: {original:?}")),
+        Err(original) => return Err(snapshot_diagnostic(original).context("public abort")),
     };
     anyhow::ensure!(
         matches!(&status.outcome, Some(BackupSessionOutcome::Aborted { reason, .. }) if *reason == abort_reason(ordinal)),
