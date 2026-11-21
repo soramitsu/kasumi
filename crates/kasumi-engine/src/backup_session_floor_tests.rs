@@ -881,13 +881,58 @@ async fn cleanup(
         .map_err(|error| format!("{:?}: {}", error.code, error.message))
 }
 
+/// The first unjournaled abort may already own a Control claim at an older
+/// source revision. Resolve the actual session before attempting another claim.
+async fn interrupted_abort_status(
+    inst: &Installation,
+    plan: &Plan,
+    ordinal: u64,
+) -> anyhow::Result<Option<BackupSessionStatus>> {
+    let context = inst.context(ordinal);
+    let session_id = plan.session_id(ordinal);
+    let observed = match inst
+        .source
+        .backup_session_status(
+            context.clone(),
+            BackupSessionRequest {
+                destination: ALIAS.into(),
+                session_id,
+            },
+        )
+        .await
+    {
+        Ok(status) => status,
+        Err(error) if error.code == ErrorCode::NotFound && !error.has_physical_source() => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context("resolve original population session"));
+        }
+    };
+    let live = inst.source.engine.generation()?;
+    anyhow::ensure!(
+        observed.intent.session_id == session_id && observed.intent.tenant == context.tenant
+            && observed.intent.principal == context.principal
+            && observed.intent.request_id == context.request_id
+            && observed.intent.source_incarnation == live.incarnation()
+            && observed.intent.revision <= live.state.revision
+            && observed.source_purpose_sha256 == kasumi_types::staged_digest(inst.source.store.storage_access().purpose())?.0
+            && observed.outcome.as_ref().is_none_or(|outcome|
+                matches!(outcome, BackupSessionOutcome::Aborted { reason, .. } if *reason == abort_reason(ordinal))),
+        "the retained population session belongs to another original request or outcome"
+    );
+    Ok(Some(observed))
+}
+
 async fn run_session(
     inst: &Installation,
     plan: &Plan,
     ordinal: u64,
     stage: &str,
+    resume: bool,
 ) -> anyhow::Result<Original> {
     let started = Instant::now();
+    let mut resolution = None;
     let id = plan.session_id(ordinal);
     let (checkpoint, outcome) = match plan.kind(ordinal) {
         Kind::Complete => (
@@ -895,11 +940,31 @@ async fn run_session(
             None,
         ),
         Kind::Aborted => {
-            claim_and_publish(inst, plan, ordinal).await?;
-            if ordinal == plan.cleanup_ordinal() {
-                stage_cleanup_objects(inst, plan, ordinal).await?;
+            let previous = if resume {
+                interrupted_abort_status(inst, plan, ordinal).await?
+            } else {
+                None
+            };
+            if previous.is_none() {
+                claim_and_publish(inst, plan, ordinal).await?;
+                if ordinal == plan.cleanup_ordinal() {
+                    stage_cleanup_objects(inst, plan, ordinal).await?;
+                }
             }
-            (None, abort(inst, plan, ordinal).await?.outcome)
+            let status = abort(inst, plan, ordinal).await?;
+            if let Some(original) = previous {
+                anyhow::ensure!(
+                    original.intent == status.intent
+                        && original.source_purpose_sha256 == status.source_purpose_sha256
+                        && original
+                            .outcome
+                            .as_ref()
+                            .is_none_or(|outcome| Some(outcome) == status.outcome.as_ref()),
+                    "public abort changed the original population identity or terminal result"
+                );
+                resolution = Some(serde_json::json!({"before": original, "after": status}));
+            }
+            (None, status.outcome)
         }
     };
     Ok(Original {
@@ -911,7 +976,7 @@ async fn run_session(
         checkpoint,
         outcome,
         seconds: started.elapsed().as_secs_f64(),
-        resolution: None,
+        resolution,
     })
 }
 
@@ -1469,6 +1534,7 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
     let mut journal = Journal::open(root)?;
     let mut durations: BTreeMap<Kind, Vec<f64>> = BTreeMap::new();
     let reserve = plan.reserve_start();
+    let first_missing = (0..reserve).find(|id| !done.contains_key(id));
     for ordinal in 0..reserve {
         if done.contains_key(&ordinal) {
             if ordinal == plan.cleanup_ordinal() {
@@ -1476,12 +1542,16 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
             }
             continue;
         }
-        let original = run_session(&inst, &plan, ordinal, "populate").await?;
+        let resume = resumed && first_missing == Some(ordinal);
+        let original = run_session(&inst, &plan, ordinal, "populate", resume).await?;
         durations
             .entry(original.kind)
             .or_default()
             .push(original.seconds);
         journal.append(&original)?;
+        if resume {
+            journal.sync()?;
+        }
         if ordinal == plan.cleanup_ordinal() {
             journal.sync()?;
             record_cleanup(root, &inst, &plan).await?;
@@ -1737,7 +1807,7 @@ async fn resolve(root: &Path) -> anyhow::Result<()> {
     }
     for ordinal in plan.reserve_start()..plan.sessions {
         if let std::collections::btree_map::Entry::Vacant(entry) = done.entry(ordinal) {
-            let original = run_session(&inst, &plan, ordinal, "resolve").await?;
+            let original = run_session(&inst, &plan, ordinal, "resolve", false).await?;
             journal.append(&original)?;
             entry.insert(original);
         }
@@ -2045,7 +2115,7 @@ async fn diagnose_next(root: &Path) -> anyhow::Result<()> {
         "diagnosis requires a contiguous interrupted population"
     );
     let installation = Installation::open(root, &plan).await?;
-    let attempt = run_session(&installation, &plan, ordinal, "diagnose").await;
+    let attempt = run_session(&installation, &plan, ordinal, "diagnose", true).await;
     let drain = installation.close().await;
     let evidence = serde_json::json!({
         "ordinal": ordinal, "session_id": plan.session_id(ordinal),
@@ -2560,6 +2630,79 @@ fn test_name(leaf: &str) -> String {
         "{}::{leaf}",
         module.split_once("::").map_or(module, |(_, rest)| rest)
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advances()
+-> anyhow::Result<()> {
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir(&root)?;
+    let plan = Plan {
+        schema: SCHEMA.into(),
+        cohort: "regression".into(),
+        sessions: 24,
+        failure_stride: 3,
+        profile: None,
+        kill_reserve: 2,
+        nonce: uuid::Uuid::new_v4(),
+        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
+        source_hot_audit_bytes: 128 << 10,
+        control_hot_audit_bytes: 1 << 20,
+        cleanup_objects: 300,
+        page_limit: 8,
+    };
+    let ordinal = 5;
+    let inst = Installation::open(&root, &plan).await?;
+    claim_and_publish(&inst, &plan, ordinal).await?;
+    let previous = interrupted_abort_status(&inst, &plan, ordinal)
+        .await?
+        .context("original claim absent")?;
+    anyhow::ensure!(
+        previous.outcome.is_none(),
+        "original claim already terminal"
+    );
+    inst.source
+        .administer(
+            inst.context(ordinal + 1),
+            Operation::CreateCollection(CollectionDefinition {
+                name: "later".into(),
+                write_mode: CollectionWriteMode::Mutable,
+                retention_class: CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .native("advance source after original claim")?;
+    inst.close().await?;
+    let reopened = Installation::open(&root, &plan).await?;
+    anyhow::ensure!(
+        reopened.source.engine.generation()?.state.revision > previous.intent.revision,
+        "cold generation did not advance beyond the captured revision"
+    );
+    let before = reopened.head()?;
+    let result = run_session(&reopened, &plan, ordinal, "populate", true).await?;
+    anyhow::ensure!(
+        result.resolution.is_some()
+            && result.session_id == previous.intent.session_id
+            && reopened.head()?.count == before.count + 1,
+        "cold abort did not select the one original claim"
+    );
+    let after = interrupted_abort_status(&reopened, &plan, ordinal)
+        .await?
+        .context("cold terminal absent")?;
+    anyhow::ensure!(
+        after.intent == previous.intent && after.outcome == result.outcome,
+        "original cold claim changed"
+    );
+    let replay = run_session(&reopened, &plan, ordinal, "populate", true).await?;
+    anyhow::ensure!(
+        replay.outcome == result.outcome && reopened.head()?.count == before.count + 1,
+        "retained terminal replay published another Control row"
+    );
+    reopened.close().await
 }
 
 /// Small normal regression: every process, kill point, replay, boundary and
