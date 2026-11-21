@@ -1487,6 +1487,8 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
         request_id: "snapshot-primary-point".into(),
     };
+    // Six presence rows, nine scalar postings, one long scalar and two short compound tuples.
+    const ORDINARY_RECORDS: u64 = 18;
     let body = serde_json::json!({"value": "persisted", "nil": null, "empty": [], "wide": format!("g{}", "w".repeat(1050))});
     source_db
         .administer(
@@ -1573,7 +1575,6 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
         );
-        // Six presence rows, nine scalar postings, one long scalar and two short compound tuples.
         assert_eq!(
             selection.with_structured_records(
                 None,
@@ -1581,7 +1582,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || ordinary.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(18)
+            Some(ORDINARY_RECORDS)
         );
         let docs = ordinary.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
@@ -1701,7 +1702,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || ordinary.indexes.structured_layout_sha256(),
                     |tree| Ok(tree.root().count())
                 )?,
-                Some(18)
+                Some(ORDINARY_RECORDS)
             );
         }
     }
@@ -1721,7 +1722,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .unwrap();
         assert!(!current || fields.is_current());
         if fields.is_current() {
-            assert_eq!(fields.records.count(), 12);
+            assert_eq!(fields.records.count(), ORDINARY_RECORDS);
         }
     }
     // A registered idle worker repairs an actual selected generation with
@@ -1747,7 +1748,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                         || current.indexes.structured_layout_sha256(),
                         |t| Ok(t.root().count()),
                     )?
-                    == Some(18)
+                    == Some(ORDINARY_RECORDS)
                 {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -1766,7 +1767,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     || retained.indexes.structured_layout_sha256(),
                     |t| Ok(t.root().count())
                 )?,
-            Some(18)
+            Some(ORDINARY_RECORDS)
         );
     }
     let expected = source_db
@@ -2001,7 +2002,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 || reopened.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
             )?,
-            Some(18)
+            Some(ORDINARY_RECORDS)
         );
     }
     for (after, limit, expected) in [
