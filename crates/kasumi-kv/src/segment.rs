@@ -1297,17 +1297,27 @@ impl SegmentWriter {
     }
 
     fn stage(&mut self, backend: &dyn SegmentGroupBackend, bytes: &[u8]) -> Result<(), CoreError> {
-        if self.stage.len() + bytes.len() > IO_WINDOW {
-            self.flush(backend)?;
-        }
         if bytes.len() >= IO_WINDOW {
+            self.flush(backend)?;
             let file = GroupFile::segment(self.active.expect("staged segment"));
             backend.write(file, self.end, bytes)?;
-            self.stage_at = self.end + bytes.len() as u64;
-        } else {
-            self.stage.extend_from_slice(bytes);
+            self.end += bytes.len() as u64;
+            self.stage_at = self.end;
+            return Ok(());
         }
-        self.end += bytes.len() as u64;
+
+        // Fill the admitted window across record boundaries. For a run of
+        // 32-KiB values an early flush would write a half-full segment window
+        // for every value and repeatedly seal partial scratch blocks.
+        let available = IO_WINDOW - self.stage.len();
+        let (first, rest) = bytes.split_at(available.min(bytes.len()));
+        self.stage.extend_from_slice(first);
+        self.end += first.len() as u64;
+        if !rest.is_empty() {
+            self.flush(backend)?;
+            self.stage.extend_from_slice(rest);
+            self.end += rest.len() as u64;
+        }
         Ok(())
     }
 
@@ -2720,6 +2730,35 @@ mod tests {
         assert!(log.writer.stage.is_empty());
         log.commit(&[Operation::create_table("u")]).unwrap();
         assert_eq!(log.writer.stage.capacity(), IO_WINDOW);
+    }
+
+    #[test]
+    fn mixed_record_fragments_fill_the_physical_window_and_preserve_value_offsets() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        let mut roll = RootRoll::new(&log.group, &mut log.root);
+        log.writer
+            .ensure_room(&log.group, IO_WINDOW as u64 * 3, &mut roll)
+            .unwrap();
+        let file = GroupFile::segment(log.writer.active.unwrap());
+        let start = log.writer.end;
+        let bytes = vec![31; IO_WINDOW / 2 + 17];
+        log.writer.stage(&log.group, &bytes).unwrap();
+        log.writer.stage(&log.group, &bytes).unwrap();
+        assert_eq!(log.group.len(file).unwrap(), start + IO_WINDOW as u64);
+        assert_eq!(log.writer.stage.len(), 34);
+
+        let mut log = Log::new(SEGMENT_BYTES);
+        let values = [bytes.clone(), vec![73; IO_WINDOW + 1], bytes];
+        let operations: Vec<_> = values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| put("t", &i.to_string(), value.clone()))
+            .collect();
+        log.commit(&operations).unwrap();
+        let opened = reopen(&log.group).unwrap();
+        for (i, expected) in values.iter().enumerate() {
+            assert_eq!(&value_at(&log.group, &opened.batches[0], i), expected);
+        }
     }
 
     #[test]
