@@ -912,6 +912,7 @@ fn edit(
     );
     let mut edits = Edits::new();
     let mut updates = Vec::new();
+    let mut first_layout = None;
     let mut totals = Totals {
         collections: manifest.collections,
         shards: manifest.shards,
@@ -956,7 +957,12 @@ fn edit(
                     previous.collections.contains_key(name),
                     "indexed text collection lacks its predecessor"
                 );
-                updates.push((name, collection, layout, descriptor));
+                // Reuse the first parsed schema for the common single-
+                // collection edit. Later schemas are built when staged.
+                if first_layout.is_none() {
+                    first_layout = Some(layout);
+                }
+                updates.push((name, collection, descriptor));
             }
         }
     }
@@ -973,7 +979,11 @@ fn edit(
             |stage| {
                 stage_edits(&edits, stage)?;
                 drop(edits);
-                for (name, collection, layout, descriptor) in updates {
+                for (name, collection, descriptor) in updates {
+                    let layout = first_layout
+                        .take()
+                        .or_else(|| TextShardLayout::for_definition(&collection.definition))
+                        .expect("validated text layout");
                     let mut metadata = Edits::new();
                     CollectionEdit {
                         memory: store.plaintext_memory_owner(),
