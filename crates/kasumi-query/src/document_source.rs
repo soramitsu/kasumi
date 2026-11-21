@@ -165,9 +165,9 @@ pub trait DocumentSource: crate::CollectionRecords {
     ) -> ReadResult<Option<u64>, Self::Failure> {
         Ok(None)
     }
-    /// Return consecutive original ordinals in `[start, end)`, from the first
-    /// requested end, with at most `ORDERED_TUPLE_WINDOW` owners. An empty
-    /// nonempty interval or changed selected source is a read failure.
+    /// Read up to `ORDERED_TUPLE_WINDOW` consecutive owners from `[start, end)`.
+    /// Begin at `start` when ascending and `end - 1` when descending. A
+    /// nonempty interval in a selected ranked index must return an owner.
     fn ranked_compound_window(
         &self,
         _index: usize,
