@@ -95,6 +95,49 @@ fn opaque_unicode_escaping_and_literal_markers_round_trip_exactly() {
 }
 
 #[test]
+fn opaque_strings_use_the_exact_canonical_chunk_boundary_before_calling_the_sink() {
+    for (prefix, tail) in [
+        (BLOB_CHUNK_BYTES - 3, "!"),
+        (BLOB_CHUNK_BYTES - 3, "\n"),
+        (BLOB_CHUNK_BYTES - 3, "\u{0001}"),
+        (BLOB_CHUNK_BYTES - 3, "雪"),
+        (STRING_THRESHOLD, "雪"),
+        (STRING_THRESHOLD, "\"\\"),
+    ] {
+        let value = Value::String(format!("{}{tail}", "!".repeat(prefix)));
+        let canonical = serde_json::to_vec(&value).unwrap();
+        let mut chunks = Vec::new();
+        let manifest = encode_body(&value, limits(), |object| {
+            chunks.push(object.bytes().to_vec());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            manifest.canonical_sha256,
+            <[u8; 32]>::from(Sha256::digest(&canonical))
+        );
+        assert_eq!(
+            chunks,
+            canonical.chunks(BLOB_CHUNK_BYTES).collect::<Vec<_>>()
+        );
+        let mut calls = 0;
+        let refused = encode_body(
+            &value,
+            BodyLimits {
+                canonical_bytes: canonical.len() - 1,
+                ..limits()
+            },
+            |_| {
+                calls += 1;
+                Ok(())
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(calls, 0);
+    }
+}
+
+#[test]
 fn alternate_binary_spellings_are_preserved_as_opaque_json() {
     // A mixed-case hex-looking value must not have its spelling normalized.
     let mixed = "aAbBcCdDeEfF".repeat(1000);

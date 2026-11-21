@@ -192,6 +192,7 @@ impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Encoder<'_, F> {
         let before = self.digest.bytes;
         // Hash the original logical spelling, independently of the physical codec.
         serde_json::to_writer(&mut self.digest, string)?;
+        let canonical_bytes = self.digest.bytes - before;
         let encoding = classify(string);
         let mut chunks = Vec::new();
         match encoding {
@@ -205,6 +206,18 @@ impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Encoder<'_, F> {
                     self.put_chunk(&STANDARD.decode(encoded)?, &mut chunks)?;
                 }
             }
+            // Every JSON escape expands its input. The measured size proves
+            // the exact spelling between the quotes is the original UTF-8.
+            Encoding::Json
+                if canonical_bytes <= BLOB_CHUNK_BYTES && canonical_bytes - 2 == string.len() =>
+            {
+                let mut chunk = Vec::new();
+                chunk.try_reserve_exact(canonical_bytes)?;
+                chunk.push(b'"');
+                chunk.extend_from_slice(string.as_bytes());
+                chunk.push(b'"');
+                self.put_chunk(&chunk, &mut chunks)?;
+            }
             Encoding::Json => {
                 let mut writer = ChunkWriter {
                     encoder: self,
@@ -217,7 +230,7 @@ impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Encoder<'_, F> {
         }
         self.fragment(Fragment::String(StringReference {
             encoding,
-            canonical_bytes: (self.digest.bytes - before) as u64,
+            canonical_bytes: canonical_bytes as u64,
             chunks,
         }))
     }
