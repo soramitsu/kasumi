@@ -612,6 +612,25 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         db.open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
     )
     .unwrap();
+    let leased = resolved!(
+        db,
+        db.read_snapshot_page(
+            &context(),
+            ReadSnapshotPage {
+                lease_id: lease.lease_id.clone(),
+                documents: vec![DocumentKey {
+                    collection: "docs".into(),
+                    id: "r0599".into(),
+                }],
+            },
+        )
+    )
+    .unwrap();
+    assert_eq!(
+        leased.documents[0].document.as_ref().unwrap(),
+        before.as_ref()
+    );
+    drop(leased);
     let mut after_id = None;
     let mut read = 0;
     loop {

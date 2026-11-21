@@ -894,6 +894,12 @@ impl LeaseManager {
                     reservation.reserve_additional((retained_bytes - charged_bytes) as u64)?;
                     charged_bytes = retained_bytes;
                 }
+                selected.archived_document_bytes = selected
+                    .archived_document_bytes
+                    .checked_add(crate::history_state::metadata_entry(&key.id, reference)?)
+                    .ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "archive metadata overflow")
+                    })?;
                 selected
                     .archived_documents
                     .insert(key.id.clone(), reference.clone());
