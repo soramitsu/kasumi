@@ -185,6 +185,8 @@ impl ApplyFailureSlot {
 pub(crate) struct RetainedApplyFailure(ChargedSlot);
 
 impl RetainedApplyFailure {
+    pub(crate) const MESSAGE: &'static str = "Raft apply failed; original failure retained";
+
     pub(crate) fn try_with_report<R>(
         &self,
         inspect: impl for<'a> FnOnce(RetainedApplyReport<'a>) -> R,
@@ -217,7 +219,7 @@ impl fmt::Debug for RetainedApplyFailure {
 
 impl fmt::Display for RetainedApplyFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("Raft apply failed; original failure retained")
+        formatter.write_str(Self::MESSAGE)
     }
 }
 

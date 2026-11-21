@@ -1655,29 +1655,16 @@ impl Drop for StorageWorkFailure {
     }
 }
 
-// Returning the preadmitted diagnostic from a detached worker only clones its
-// two handles. In particular, it does not allocate another anyhow error box.
-enum ApplyWorkerError {
-    Retained(crate::apply_failure::RetainedApplyFailure),
-    Fenced,
-}
-impl std::fmt::Display for ApplyWorkerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Retained(failure) => std::fmt::Display::fmt(failure, f),
-            Self::Fenced => f.write_str("state machine requires recovery"),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct StateMachine {
+    // Drop this clone's diagnostic owner before its last tracked storage handle
+    // can wake the process drain.
+    snapshot_buffers: Arc<SnapshotBufferOwner>,
     domains: StorageHandle<TenantStorageSet>,
     store: StorageHandle<TenantStore>,
     backend: StorageHandle<dyn StateMachineBackend>,
     state: Arc<Mutex<AppliedState>>,
     snapshot_gate: Arc<tokio::sync::Mutex<()>>,
-    snapshot_buffers: Arc<SnapshotBufferOwner>,
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     limits: RaftLimits,
@@ -2230,18 +2217,22 @@ impl StateMachine {
         + 'static,
     ) -> Result<T, StorageError<u64>> {
         let machine = self.clone();
-        tokio::task::spawn_blocking(move || -> std::result::Result<T, ApplyWorkerError> {
+        // A cancelled waiter may leave the blocking task's return value with
+        // the executor after storage drain. Return only the public message.
+        // The machine's prepaid slot already owns the exact original.
+        use crate::apply_failure::RetainedApplyFailure;
+        tokio::task::spawn_blocking(move || -> std::result::Result<T, &'static str> {
             // Recheck the terminal fence only after serialization. A queued
             // worker must not create a second independent failure owner.
             let (mut state, poisoned) = match machine.state.lock() {
                 Ok(state) => (state, false),
                 Err(poisoned) => (poisoned.into_inner(), true),
             };
-            if let Some(failure) = machine.snapshot_buffers.apply_failure() {
-                return Err(ApplyWorkerError::Retained(failure));
+            if machine.snapshot_buffers.apply_failure().is_some() {
+                return Err(RetainedApplyFailure::MESSAGE);
             }
             if machine.failed() {
-                return Err(ApplyWorkerError::Fenced);
+                return Err("state machine requires recovery");
             }
             let failure = StorageWorkFailure::new(machine.failure_flag());
             let outcome = (|| {
@@ -2251,9 +2242,9 @@ impl StateMachine {
                 work(&machine, &mut state)
             })();
             match outcome {
-                Ok(Err(retained)) => {
+                Ok(Err(_)) => {
                     machine.failed.store(true, Ordering::Release);
-                    Err(ApplyWorkerError::Retained(retained))
+                    Err(RetainedApplyFailure::MESSAGE)
                 }
                 Ok(Ok(output)) => {
                     failure.complete();
@@ -2261,9 +2252,8 @@ impl StateMachine {
                 }
                 Err(error) => {
                     machine.failed.store(true, Ordering::Release);
-                    Err(ApplyWorkerError::Retained(
-                        machine.snapshot_buffers.retain_apply_failure(error),
-                    ))
+                    drop(machine.snapshot_buffers.retain_apply_failure(error));
+                    Err(RetainedApplyFailure::MESSAGE)
                 }
             }
         })
