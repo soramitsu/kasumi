@@ -36,11 +36,11 @@ def _case(identifier, features=(), default_features=True):
 
 
 _OPENRAFT_REVIEWED = ("serde", "storage-v2", "single-term-leader", "generic-snapshot-data")
-_RMCP_HTTP = ("client", "elicitation", "reqwest", "transport-streamable-http-client-reqwest",
+_RMCP_HTTP = ("client", "elicitation", "reqwest", "transport-io", "transport-streamable-http-client-reqwest",
               "transport-streamable-http-server")
 _RMCP_UNSELECTED = ("auth", "auth-client-credentials-jwt", "auth-enterprise-managed", "local",
                     "request-state", "skills-fs",
-                    "reqwest-tls-no-provider", "transport-child-process", "transport-io",
+                    "reqwest-tls-no-provider", "transport-child-process",
                     "transport-streamable-http-client-unix-socket", "which-command")
 
 # root -> member directory ("." is the root package) -> reviewed selection.

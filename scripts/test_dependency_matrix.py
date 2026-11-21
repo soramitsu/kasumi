@@ -48,6 +48,10 @@ class DependencyMatrixTests(unittest.TestCase):
         self.assertEqual(excluded["test_with_js"], "external-runtime")
         self.assertEqual(excluded["test_with_python"], "external-runtime")
         self.assertEqual(excluded["test_local_client_handler"], "unselected")
+        stdio = {"test_cancelled_response", "test_stdio_response_concurrency"}
+        by_case = {case["id"]: set(case["tests"]) for case in rmcp["cases"]}
+        self.assertTrue(stdio.isdisjoint(by_case["product"]))
+        self.assertTrue(stdio <= by_case["upstream-http"])
         run = {name for case in rmcp["cases"] for name in case["tests"]}
         self.assertFalse(run & set(excluded))
         self.assertEqual(len(run) + len(excluded), 101)

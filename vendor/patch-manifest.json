@@ -537,14 +537,14 @@
           "sha256": "ddb5a20a91a74a11aea95a75edc448071fadb5cb3d0a2a8f001c42410f2cb99e"
         },
         "Cargo.toml": {
-          "bytes": 21368,
+          "bytes": 21462,
           "mode": "0o644",
-          "sha256": "7f09cf77378d2d759a385fc2d1ac41d50cf6a7af86f32e3057875e3850123370"
+          "sha256": "d972fc289060f10e4e669f6319168a328fd2aaacce29b60f6773d0ec79731a32"
         },
         "Cargo.toml.orig": {
-          "bytes": 15505,
+          "bytes": 15785,
           "mode": "0o644",
-          "sha256": "c5f9f92a046a0ddcd2d8b4d2979eef6bb1e375ca239009294366a9c1e1decd2f"
+          "sha256": "bc12a00fdada8b2e0afd840e32782ed2c3a4d0619686fa74e13cdf241757f68e"
         },
         "LICENSE": {
           "bytes": 12227,
@@ -4602,9 +4602,9 @@
       "sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3"
     },
     "rmcp-terminal-ownership.md": {
-      "bytes": 6112,
+      "bytes": 6471,
       "mode": "0o644",
-      "sha256": "985fdbdb8c84137b3b33ac2e1e1577d3bc84cf62f3ff3ec79fa087b2bdad2a92"
+      "sha256": "0b9fcb1f957c4277835db3e6d5434fab6ee3571d0708e82deb5f894154cacf95"
     },
     "serde-json-literal-keys.md": {
       "bytes": 10208,
