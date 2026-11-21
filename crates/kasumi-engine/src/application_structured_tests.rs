@@ -1662,10 +1662,56 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
                     &next,
                     &changed,
                     None,
-                    &BTreeMap::new(),
+                    &unique::GroupOverlay::default(),
                 )
                 .unwrap(),
                 decision
+            );
+        }
+    }
+    // The earlier group member moved a stored wide tuple into the one empty
+    // intersection. Both immutable trees still describe its original owner.
+    let logical = initial.next(vec![("g007-s005".into(), body(7, 13))], &[], None);
+    let touched = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["g007-s005".to_owned()]))]);
+    let overrides = unique::group_overlay(&initial.state, &logical.state, &touched, &changed, None)
+        .unwrap()
+        .expect("bounded wide group participants");
+    assert_eq!(overrides.len(), 2);
+    for (serial, expected) in [
+        (5, unique::Decision::Accepted),
+        (13, unique::Decision::Conflict("group_serial".into())),
+    ] {
+        let mut proposed = logical.state.clone();
+        proposed.revision += 1;
+        proposed
+            .collections
+            .get_mut("docs")
+            .unwrap()
+            .documents
+            .insert(
+                "new".into(),
+                Arc::new(DocumentSlot::Pending(Arc::new(Document {
+                    id: "new".into(),
+                    version: proposed.revision,
+                    body: body(7, serial),
+                }))),
+            );
+        for source in [
+            unique::ClaimTree::ordinary(&reader),
+            unique::ClaimTree::checkpoint(&checkpoint_reader),
+        ] {
+            assert_eq!(
+                unique::prove_with_overlay(
+                    source,
+                    &logical.indexes,
+                    &logical.state,
+                    &proposed,
+                    &changed,
+                    None,
+                    &overrides
+                )
+                .unwrap(),
+                expected
             );
         }
     }
