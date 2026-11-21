@@ -351,15 +351,17 @@ impl QueryIndexes {
     /// Binds every collection's name and complete definition in name order.
     /// Rows written under one layout are never read under another.
     pub fn structured_layout_sha256(&self) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(b"kasumi.structured.layout.v1");
-        hash.update((self.collections.len() as u64).to_be_bytes());
-        for (name, indexes) in &self.collections {
-            hash.update((name.len() as u64).to_be_bytes());
-            hash.update(name.as_bytes());
-            hash.update(indexes.definition_sha256);
-        }
-        hash.finalize().into()
+        *self.structured_layout.get_or_init(|| {
+            let mut hash = Sha256::new();
+            hash.update(b"kasumi.structured.layout.v1");
+            hash.update((self.collections.len() as u64).to_be_bytes());
+            for (name, indexes) in &self.collections {
+                hash.update((name.len() as u64).to_be_bytes());
+                hash.update(name.as_bytes());
+                hash.update(indexes.definition_sha256);
+            }
+            hash.finalize().into()
+        })
     }
 
     /// The number of indexed fields of `collection`, if it exists.

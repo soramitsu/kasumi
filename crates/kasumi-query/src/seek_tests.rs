@@ -665,6 +665,34 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         })
         .unwrap();
     assert_eq!(compact.len(), 48);
+    let indexes = indexes.published_seek_projection("ordered").unwrap();
+    let capture = indexes.seek_projection.as_ref().unwrap();
+    assert_eq!(
+        capture.fallback.lock().unwrap().as_ref().unwrap()[0].len(),
+        48
+    );
+    let fallback = ResidentSource {
+        collection: &collections["ordered"],
+        indexes: &indexes,
+    };
+    let plain = QueryRequest::new("ordered")
+        .filter(Filter::new().eq("/scope", "g"))
+        .sort_asc("/key")
+        .limit(7)
+        .paging(Paging::Seek);
+    let page = indexes
+        .seek_page(
+            &fallback,
+            &plain,
+            None,
+            &Limits::default(),
+            &|_| Ok(32),
+            &Default::default(),
+            &mut query_memory(),
+        )
+        .unwrap();
+    assert_eq!(page.rows.len(), 7);
+    assert!(capture.fallback.lock().unwrap().is_some());
     let source = Mixed {
         source: ResidentSource {
             collection: &collections["ordered"],
@@ -712,6 +740,18 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         }
         assert_eq!(seen, expected);
     }
+    assert!(capture.fallback.lock().unwrap().is_none());
+    assert_eq!(
+        indexes.collections["ordered"]
+            .structured
+            .unique
+            .values()
+            .next()
+            .unwrap()
+            .overflow
+            .len(),
+        8
+    );
 }
 
 #[test]

@@ -72,6 +72,8 @@ impl SnapshotIndexBuilder {
                 .map(|(name, (_, indexes))| (name, Arc::new(indexes)))
                 .collect(),
             text_residency: residency,
+            seek_projection: None,
+            structured_layout: Default::default(),
         })
     }
 }

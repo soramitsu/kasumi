@@ -782,24 +782,43 @@ struct QueryOutput {
 impl QueryWork {
     /// Copy the first page and pin the rest for a cursor, or read one seek page.
     fn run(mut self) -> QueryOutput {
-        let generation = &self.generation;
-        let limits = &generation.state.limits;
-        let cancellation = &self.cancellation;
-        let bound = kasumi_query::PageBound {
-            rows: self.request.page_size(),
-            bytes: limits.max_result_bytes,
-        };
         if self.request.paging == Paging::Seek {
-            let response = with_document_reads(generation, self.deadline, |reads| {
-                query_seek::seek_page(
-                    generation,
-                    reads,
-                    &self.request,
-                    cancellation,
-                    &mut self.memory,
-                )
-            })
-            .map(|page| (page, PinnedRows::default()));
+            let mut projection_charge = 0;
+            let mut response = self
+                .generation
+                .physical_seek_view(&self.request.collection, |bytes| {
+                    match self.memory.reserve(bytes) {
+                        Ok(()) => {
+                            projection_charge = bytes;
+                            Ok(true)
+                        }
+                        Err(e) if e.code == ErrorCode::ResourceExhausted => Ok(false),
+                        Err(e) => Err(e),
+                    }
+                })
+                .map_err(document_load_error)
+                .and_then(|projected| {
+                    if let Some(projected) = projected {
+                        self.generation = Arc::new(projected);
+                    }
+                    with_document_reads(&self.generation, self.deadline, |reads| {
+                        query_seek::seek_page(
+                            &self.generation,
+                            reads,
+                            &self.request,
+                            &self.cancellation,
+                            &mut self.memory,
+                        )
+                    })
+                })
+                .map(|page| (page, PinnedRows::default()));
+            drop(self.generation);
+            if projection_charge > 0
+                && let Err(error) = self.memory.release(projection_charge)
+                && response.is_ok()
+            {
+                response = Err(error);
+            }
             return QueryOutput {
                 response,
                 request: self.request,
@@ -807,6 +826,13 @@ impl QueryWork {
                 _registration: self.registration.clone(),
             };
         }
+        let generation = &self.generation;
+        let limits = &generation.state.limits;
+        let cancellation = &self.cancellation;
+        let bound = kasumi_query::PageBound {
+            rows: self.request.page_size(),
+            bytes: limits.max_result_bytes,
+        };
         let response = with_document_reads(generation, self.deadline, |reads| {
             let source = reads.source(&self.request.collection)?;
             generation
@@ -3543,6 +3569,10 @@ impl Database {
         // a snapshot continuation copies the next page from its pinned rows.
         let seek = request.paging == Paging::Seek;
         let continuation = request.cursor.as_ref().filter(|_| !seek);
+        let revision = state.revision;
+        let max_cursors = state.limits.max_cursors;
+        let max_cursor_bytes = state.limits.max_cursor_bytes;
+        let max_result_bytes = state.limits.max_result_bytes;
         let (mut full, mut page, offset, created) = if let Some(token) = continuation {
             let (mut full, offset, revision, created) = {
                 let cursors = self.cursors.lock().map_err(|_| {
@@ -3574,7 +3604,7 @@ impl Database {
                 };
                 (full, offset, revision, created)
             };
-            let max_result_bytes = state.limits.max_result_bytes;
+            drop(generation);
             // Stored cursor rows use native reads. The installed child owns
             // the selected generation and permit through its final read.
             let worker_deadline = deadline.into_std();
@@ -3597,7 +3627,7 @@ impl Database {
             (full, page, next, created)
         } else {
             let mut work = QueryWork {
-                generation: generation.clone(),
+                generation,
                 request: input.request,
                 cancellation: cancellation.clone(),
                 deadline: deadline.into_std(),
@@ -3631,7 +3661,7 @@ impl Database {
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
             if !seek {
-                page.revision = state.revision;
+                page.revision = revision;
             }
             (
                 QueryResultOwner {
@@ -3647,14 +3677,11 @@ impl Database {
                 self.clock.now(),
             )
         };
-        let max_cursors = state.limits.max_cursors;
-        let max_cursor_bytes = state.limits.max_cursor_bytes;
         // Each completed page releases its operation slot before a strict
         // read needs to submit its audit, while retaining every admitted byte.
         // Continuations retain a page charge independent of the full cursor.
         full.prepare_page_handoff()?;
         let request = &full.request;
-        drop(generation);
         tokio::select! {
             result = tokio::time::timeout_at(deadline, self.release(context, &request.collection, page.revision, strict, policy_epoch)) =>
                 result.map_err(|_| query_admission::deadline_error())??,
