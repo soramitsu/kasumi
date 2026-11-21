@@ -107,9 +107,11 @@ def procedure(io, plan_path, attempt):
     ready = [ctl, "--profile", control, "ready"]
     io.start(nodes)
     io.serve(NODE, serve, node=NODE)
+    io.serve("renewal-control", cap.renewal_argv(io, control), interactive=True)
     io.poll("startup-ready", ready, cap.ready_output, cap.READY_POLLS)
     io.enter("measured")
     io.serve("renewal", cap.renewal_argv(io, data), interactive=True)
+    io.serve("renewal-operator", cap.renewal_argv(io, operator), interactive=True)
     status_path = io.input("inputs/status.json", {"operation": "status"})
     io.command("set-limits", [ctl, "--profile", operator, "set-limits", plan["tenant_limits"]])
     io.command("create-corpus-collection", [ctl, "--profile", operator, "create-collection",
@@ -211,11 +213,15 @@ def procedure(io, plan_path, attempt):
     io.mark(operation, "finished")
 
     # Stopped restores of each original checkpoint into a new generation.
+    # All remaining restores use the original operator's principal under
+    # exclusive local recovery. Its old database bearer ends with this generation.
+    io.end("renewal-operator")
     active = incarnation
     for operation, source, alias in (("filesystem-restore", "filesystem-backup", plan["filesystem_destination"]),
                                      ("s3-restore", "s3-backup", plan["s3_destination"])):
         io.mark(operation, "started")
         io.end("renewal")
+        io.end("renewal-control")
         io.stop(NODE)
         identifier = cap.operation_uuid(attempt, operation)
         target = cap.operation_uuid(attempt, operation + "/target")
@@ -240,6 +246,7 @@ def procedure(io, plan_path, attempt):
         require(restored["tenant"] == tenant and restored["resource"] == {"kind": "database", "incarnation": target},
                 "restored client profile addresses another generation")
         io.serve(NODE, serve, node=NODE)
+        io.serve("renewal-control", cap.renewal_argv(io, control), interactive=True)
         io.poll(operation + "-ready", ready, cap.ready_output, cap.READY_POLLS)
         io.serve("renewal", cap.renewal_argv(io, status["client_profile"]), interactive=True)
         verify(operation, restored, target)
@@ -248,6 +255,7 @@ def procedure(io, plan_path, attempt):
 
     io.enter("drain")
     io.end("renewal")
+    io.end("renewal-control")
     io.stop(NODE)
     return cap.OPERATIONS, [NODE]
 

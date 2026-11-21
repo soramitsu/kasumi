@@ -206,6 +206,8 @@ def procedure(io, plan_path, attempt):
     status_path = io.input("inputs/status.json", {"operation": "status"})
     operator, control, data_path = plan["operator_profile"], plan["control_profile"], plan["data_profile"]
     status_argv = [ctl, "--profile", operator, "manage", status_path]
+    io.serve("renewal-operator", cap.renewal_argv(io, operator), interactive=True)
+    io.serve("renewal-control", cap.renewal_argv(io, control), interactive=True)
     io.poll("startup-leader", status_argv, settled_leader(voters, incarnation), cap.READY_POLLS)
     io.enter("measured")
     io.serve("renewal", cap.renewal_argv(io, data_path), interactive=True)
@@ -359,6 +361,7 @@ def procedure(io, plan_path, attempt):
     io.end("renewal-replacement")
     io.mark(operation, "finished")
 
+    io.end("renewal-operator")
     # Control recoveries of each original checkpoint into a new generation.
     previous = {incarnation}
     for operation, source in RESTORES:
@@ -406,6 +409,7 @@ def procedure(io, plan_path, attempt):
 
     io.enter("drain")
     io.end("renewal")
+    io.end("renewal-control")
     io.stop(REPLACEMENT)
     for node in reversed(nodes):
         if node["id"] != replaced["id"]:

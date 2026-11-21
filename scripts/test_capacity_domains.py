@@ -621,7 +621,11 @@ class ReplayTests(unittest.TestCase):
                          {"pressure-reader-0": {"served": 2, "refused": 0},
                           "pressure-reader-1": {"served": 2, "refused": 0}})
         self.assertEqual([p["id"] for p in self.facts["report"]["processes"]][:3],
-                         ["measure-corpus", "node-0001", "renewal-0002"])
+                         ["measure-corpus", "node-0001", "renewal-control-0002"])
+        renewals = [entry["record"] for entry in self.facts["receipts"].values()
+                    if entry["service"] and entry["record"]["name"].startswith("renewal")]
+        self.assertEqual([entry["name"] for entry in renewals].count("renewal-control"), 3)
+        self.assertEqual([entry["name"] for entry in renewals].count("renewal-operator"), 1)
         self.assertEqual(sorted(details["polls"]), ["filesystem-restore-ready", "restart-ready", "s3-restore-ready",
                                                     "startup-ready"])
 
