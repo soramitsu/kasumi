@@ -14,6 +14,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 pub(crate) const STRING_THRESHOLD: usize = 4096;
@@ -539,9 +540,29 @@ fn ensure_io(ok: bool) -> io::Result<()> {
 pub(crate) fn reconstruct_body<B: AsRef<[u8]>>(
     manifest: &BodyManifest,
     limits: BodyLimits,
+    get: impl FnMut(&BlobReference) -> Result<B>,
+) -> Result<Cow<'_, [u8]>> {
+    let bytes = manifest.validate(limits)?;
+    let output = match manifest.fragments.as_slice() {
+        [Fragment::Literal(text)] => Cow::Borrowed(text.as_bytes()),
+        _ => Cow::Owned(join_fragments(manifest, bytes, get)?),
+    };
+    ensure!(
+        output.len() == bytes,
+        "document reconstructed length differs"
+    );
+    ensure!(
+        <[u8; 32]>::from(Sha256::digest(output.as_ref())) == manifest.canonical_sha256,
+        "document reconstructed digest differs"
+    );
+    Ok(output)
+}
+
+fn join_fragments<B: AsRef<[u8]>>(
+    manifest: &BodyManifest,
+    bytes: usize,
     mut get: impl FnMut(&BlobReference) -> Result<B>,
 ) -> Result<Vec<u8>> {
-    let bytes = manifest.validate(limits)?;
     let mut output = Vec::new();
     output.try_reserve_exact(bytes)?;
     for fragment in &manifest.fragments {
@@ -588,14 +609,6 @@ pub(crate) fn reconstruct_body<B: AsRef<[u8]>>(
             }
         }
     }
-    ensure!(
-        output.len() == bytes,
-        "document reconstructed length differs"
-    );
-    ensure!(
-        <[u8; 32]>::from(Sha256::digest(&output)) == manifest.canonical_sha256,
-        "document reconstructed digest differs"
-    );
     Ok(output)
 }
 

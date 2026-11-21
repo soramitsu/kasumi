@@ -31,6 +31,27 @@ fn reconstruct(manifest: &BodyManifest, blobs: &HashMap<[u8; 32], Vec<u8>>) -> V
         blobs.get(&reference.sha256).context("missing blob")
     })
     .unwrap()
+    .into_owned()
+}
+
+#[test]
+fn single_literal_lends_its_authenticated_bytes_before_decode() {
+    let body = json!({"values": vec![0u8; 500]});
+    let mut manifest = encode(&body, &mut HashMap::new());
+    let [Fragment::Literal(text)] = manifest.fragments.as_slice() else {
+        panic!("expected one inline document");
+    };
+    let data = reconstruct_body::<Vec<u8>>(&manifest, limits(), |_| bail!("unexpected blob read"))
+        .unwrap();
+    assert!(matches!(data, Cow::Borrowed(_)));
+    assert_eq!(data.as_ptr(), text.as_ptr());
+    assert_eq!(serde_json::from_slice::<Value>(&data).unwrap(), body);
+    drop(data);
+    manifest.canonical_sha256[0] ^= 1;
+    assert!(
+        reconstruct_body::<Vec<u8>>(&manifest, limits(), |_| bail!("unexpected blob read"))
+            .is_err()
+    );
 }
 
 #[test]
