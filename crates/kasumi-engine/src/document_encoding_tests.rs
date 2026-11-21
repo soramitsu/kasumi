@@ -205,6 +205,27 @@ fn alternate_binary_spellings_are_preserved_as_opaque_json() {
 }
 
 #[test]
+fn base64_physical_selection_matches_the_exact_logical_spelling() {
+    // Cross a physical chunk boundary. A padding symbol is valid only in the
+    // last quartet, and any unused low bits in that quartet must be zero.
+    let prefix = "++//".repeat(BLOB_CHUNK_BYTES / 3 + 1);
+    for byte in 0u8..=127 {
+        let ch = char::from(byte);
+        for s in [
+            format!("{prefix}A{ch}=="),
+            format!("{prefix}AA{ch}="),
+            format!("{prefix}A/+{ch}"),
+            format!("AA{ch}A{prefix}AAAA"),
+        ] {
+            let canonical = STANDARD
+                .decode(&s)
+                .is_ok_and(|raw| STANDARD.encode(raw) == s);
+            assert_eq!(classify(&s) == Encoding::Base64, canonical);
+        }
+    }
+}
+
+#[test]
 fn byte_fragment_blob_and_depth_limits_fail_closed() {
     let body = json!({"proof": "a".repeat(STRING_THRESHOLD * 3)});
     let mut called = 0;

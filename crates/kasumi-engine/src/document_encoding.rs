@@ -349,14 +349,15 @@ fn classify(string: &str) -> Encoding {
             return Encoding::UpperHex;
         }
     }
+    // Complete quartets of alphabet symbols encode exactly three bytes. Only
+    // the final quartet can have padding or unused bits. The standard decoder
+    // requires their canonical spelling before we choose the binary codec.
     if bytes.len().is_multiple_of(4)
-        && !bytes[..bytes.len().saturating_sub(2)].contains(&b'=')
-        && bytes.chunks(BLOB_CHUNK_BYTES / 3 * 4).all(|chunk| {
-            // Exact round trip rejects non-zero trailing bits and alternate spellings.
-            STANDARD
-                .decode(chunk)
-                .is_ok_and(|raw| STANDARD.encode(raw).as_bytes() == chunk)
-        })
+        && let Some((prefix, last)) = bytes.split_last_chunk::<4>()
+        && prefix
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/'))
+        && STANDARD.decode_slice(last, &mut [0; 3]).is_ok()
     {
         return Encoding::Base64;
     }
