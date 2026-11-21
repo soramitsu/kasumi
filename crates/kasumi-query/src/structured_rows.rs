@@ -270,15 +270,30 @@ impl QueryIndexes {
         &self,
         mut emit: impl FnMut(&str, usize, &[u8], &str) -> Result<bool, E>,
     ) -> Result<bool, E> {
-        for (name, collection) in &self.collections {
-            if !compound_rows(collection, &mut |row| match row {
-                StructuredRow::Compound { index, key, id } => emit(name, index, key, id),
-                _ => unreachable!("compound row producer"),
-            })? {
+        for name in self.collections.keys() {
+            if !self
+                .visit_collection_compound_rows(name, |index, key, id| emit(name, index, key, id))?
+            {
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// Enumerate just the fallback for a collection without a selected
+    /// directory. Other collections can stream their physical rows.
+    pub fn visit_collection_compound_rows<E>(
+        &self,
+        name: &str,
+        mut emit: impl FnMut(usize, &[u8], &str) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let Some(collection) = self.collections.get(name) else {
+            return Ok(true);
+        };
+        compound_rows(collection, &mut |row| match row {
+            StructuredRow::Compound { index, key, id } => emit(index, key, id),
+            _ => unreachable!("compound row producer"),
+        })
     }
 
     pub fn compound_ordinal(&self, collection: &str, name: &str) -> Option<usize> {

@@ -1624,6 +1624,23 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 .collect::<Vec<_>>(),
             ["alpha"]
         );
+        let mut native_rows = Vec::new();
+        let selected =
+            crate::application_structured::visit_checkpoint_compounds(&ordinary, |key, value| {
+                native_rows.push((key.to_vec(), value.to_vec()));
+                Ok(())
+            })?;
+        assert_eq!(selected, 1);
+        let mut independent = Vec::new();
+        crate::application_structured::visit_compound_rows(
+            &ordinary.indexes,
+            &mut |key, value| {
+                independent.push((key.to_vec(), value.to_vec()));
+                Ok(())
+            },
+        )?;
+        assert!(!independent.is_empty());
+        assert_eq!(native_rows, independent);
         let applied = kasumi_store::structured_manifest::StructuredManifest::load(
             source.stores.application(),
         )?

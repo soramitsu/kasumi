@@ -363,6 +363,86 @@ pub(crate) fn visit_compound_rows(
     Ok(())
 }
 
+/// Stage from the producer's selected tuple rows when available. Release
+/// each read before passing rows to a possibly writing checkpoint sink.
+/// An unselected collection follows its independent generation fallback.
+pub(crate) fn visit_checkpoint_compounds(
+    generation: &crate::Generation,
+    mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<usize> {
+    let Some(selected) = generation.application_selection.get() else {
+        visit_compound_rows(&generation.indexes, &mut emit)?;
+        return Ok(0);
+    };
+    let layout = std::cell::OnceCell::new();
+    let mut selected_collections = 0;
+    for name in generation.state.collections.keys() {
+        let count = generation.indexes.compound_count(name);
+        if count == 0 {
+            continue;
+        }
+        let mut physical = false;
+        for index in 0..count {
+            let prefix = field_prefix(COMPOUND, name, index);
+            let mut after: Option<Vec<u8>> = None;
+            loop {
+                let window = selected.with_ordered_tuples(
+                    None,
+                    &generation.state,
+                    || *layout.get_or_init(|| generation.indexes.structured_layout_sha256()),
+                    std::iter::once(name.as_str()),
+                    |reader, _| {
+                        ordered_unique_window(
+                            reader,
+                            name,
+                            index,
+                            after.as_deref().map_or(Bound::Unbounded, Bound::Excluded),
+                            Bound::Unbounded,
+                            false,
+                            || true,
+                        )
+                    },
+                )?;
+                let Some(rows) = window else {
+                    ensure!(
+                        !physical,
+                        "selected compound directory disappeared during checkpoint"
+                    );
+                    break;
+                };
+                physical = true;
+                let continued = rows.len() == kasumi_query::ORDERED_TUPLE_WINDOW;
+                for (key, id) in rows {
+                    let mut native = prefix.clone();
+                    native.extend_from_slice(&key);
+                    emit(&checked_key(native)?, id.as_bytes())?;
+                    after = Some(key);
+                }
+                if !continued {
+                    break;
+                }
+            }
+            if !physical {
+                break;
+            }
+        }
+        if physical {
+            selected_collections += 1;
+        } else {
+            generation.indexes.visit_collection_compound_rows(
+                name,
+                |index, key, id| -> Result<bool> {
+                    let mut native = field_prefix(COMPOUND, name, index);
+                    native.extend_from_slice(key);
+                    emit(&checked_key(native)?, id.as_bytes())?;
+                    Ok(true)
+                },
+            )?;
+        }
+    }
+    Ok(selected_collections)
+}
+
 /// Every row of `indexes` in strictly increasing key order.
 pub(crate) fn visit_rows(
     indexes: &QueryIndexes,

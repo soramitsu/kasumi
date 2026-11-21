@@ -413,6 +413,7 @@ type RecordVisitor<'a> = dyn FnMut(Vec<u8>, DurableRecord<'_>) -> Result<()> + '
 pub(crate) fn visit_all(
     generation: &crate::Generation,
     layout: u32,
+    selected_compounds: bool,
     bindings: &BTreeMap<&'static str, &[u8]>,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
@@ -625,7 +626,13 @@ pub(crate) fn visit_all(
         }
     }
     if layout >= kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT {
-        crate::application_structured::visit_compound_rows(&generation.indexes, &mut emit)?;
+        if selected_compounds {
+            crate::application_structured::visit_checkpoint_compounds(generation, &mut emit)?;
+        } else {
+            // Restore verification derives the expected bytes independently
+            // of the selected checkpoint it is about to authenticate.
+            crate::application_structured::visit_compound_rows(&generation.indexes, &mut emit)?;
+        }
     }
     Ok(())
 }

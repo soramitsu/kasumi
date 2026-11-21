@@ -69,6 +69,7 @@ pub(crate) fn stage(
         application_records::visit_all(
             generation,
             kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT,
+            true,
             &bindings,
             store.plaintext_memory_owner(),
             |key, value| builder.push(key, value),
@@ -136,6 +137,7 @@ pub(crate) fn verify(
         application_records::visit_all(
             generation,
             manifest.layout_epoch,
+            false,
             &bindings,
             store.plaintext_memory_owner(),
             |key, value| {
