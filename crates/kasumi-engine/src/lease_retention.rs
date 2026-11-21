@@ -896,7 +896,7 @@ impl LeaseManager {
                 }
                 selected.archived_document_bytes = selected
                     .archived_document_bytes
-                    .checked_add(crate::history_state::metadata_entry(&key.id, reference)?)
+                    .checked_add(super::history::metadata_entry(&key.id, reference)?)
                     .ok_or_else(|| {
                         Error::new(ErrorCode::Corruption, "archive metadata overflow")
                     })?;
