@@ -357,12 +357,34 @@ pub(crate) fn live_version(collection: &CollectionState, id: &str) -> Option<u64
     collection.documents.get(id).map(|slot| slot.version())
 }
 
-fn live_documents(collection: &CollectionState) -> u64 {
-    collection
-        .documents
-        .keys()
-        .filter(|id| !collection.archived_documents.contains_key(*id))
-        .count() as u64
+/// Hydrated archived rows can occur in both maps. Their intersection is
+/// needed only when these cardinality bounds leave the decision ambiguous.
+fn has_live_documents(collection: &CollectionState, required: u64) -> bool {
+    let Ok(required) = usize::try_from(required) else {
+        return false;
+    };
+    let documents = &collection.documents;
+    let archived = &collection.archived_documents;
+    if documents.len() < required {
+        return false;
+    }
+    if documents.len().saturating_sub(archived.len()) >= required {
+        return true;
+    }
+    if documents.len() <= archived.len() {
+        documents
+            .keys()
+            .filter(|id| !archived.contains_key(*id))
+            .nth(required - 1)
+            .is_some()
+    } else {
+        let allowed_hydrated = documents.len() - required;
+        archived
+            .keys()
+            .filter(|id| documents.contains_key(*id))
+            .nth(allowed_hydrated)
+            .is_none()
+    }
 }
 
 fn has_text(state: &TenantState) -> bool {
@@ -907,7 +929,7 @@ fn edit(
                     .is_none_or(|old| old.layout != layout.sha256()) =>
             {
                 // A new text collection, or a changed text definition.
-                if live_documents(collection.expect("layout has a collection")) > 0 {
+                if has_live_documents(collection.expect("layout has a collection"), 1) {
                     return Ok(None);
                 }
                 if let Some(old) = &existing
@@ -1107,20 +1129,25 @@ impl CollectionEdit<'_, '_> {
             let mut group: Vec<u64> = group;
             group.sort_unstable();
             group.truncate(FANIN);
-            let opened = group
-                .iter()
-                .map(|seq| self.open(*seq, &members))
-                .collect::<Result<Vec<_>>>()?;
+            let mut opened = Vec::new();
             let mut survivors = 0u64;
             let mut bytes = 0u64;
-            for (shard, seq) in opened.iter().zip(&group) {
+            for seq in &group {
+                let (shard, size) = self.open(*seq, &members)?;
+                bytes += size;
                 shard.visit_rows(|id, version| {
                     survivors += u64::from(keep(id, version)?);
                     Ok(true)
                 })?;
-                bytes += self.member_bytes(*seq, &members)?;
+                // Once a group cannot merge, release its previous readers.
+                // Still authenticate and visit every remaining shard and row.
+                if survivors <= u64::from(MAX_SHARD_DOCUMENTS) && bytes <= MAX_SHARD_BYTES {
+                    opened.push(shard);
+                } else {
+                    opened.clear();
+                }
             }
-            if survivors <= u64::from(MAX_SHARD_DOCUMENTS) && bytes <= MAX_SHARD_BYTES {
+            if !opened.is_empty() {
                 let merged =
                     merge_text_shards(self.layout, &opened.iter().collect::<Vec<_>>(), keep)?;
                 drop(opened);
@@ -1148,8 +1175,11 @@ impl CollectionEdit<'_, '_> {
             }
         }
         // One bounded compaction step while superseded rows dominate.
-        let live = live_documents(self.collection);
-        if descriptor.documents > live.saturating_mul(2).saturating_add(COMPACTION_SLACK) {
+        let required_live = descriptor
+            .documents
+            .saturating_sub(COMPACTION_SLACK)
+            .div_ceil(2);
+        if !has_live_documents(self.collection, required_live) {
             let sealed: Vec<u64> = stored_levels
                 .iter()
                 .filter(|(_, level)| **level == SEALED)
@@ -1162,7 +1192,7 @@ impl CollectionEdit<'_, '_> {
                 .copied();
             if let Some(seq) = next {
                 descriptor.compaction = seq + 1;
-                let shard = self.open(seq, &members)?;
+                let (shard, _) = self.open(seq, &members)?;
                 let mut survivors = 0u32;
                 shard.visit_rows(|id, version| {
                     survivors += u32::from(keep(id, version)?);
@@ -1207,29 +1237,22 @@ impl CollectionEdit<'_, '_> {
         Ok(())
     }
 
-    fn open(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<TextShard> {
+    fn open(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<(TextShard, u64)> {
         match members.get(&seq) {
-            Some((_, Member::Pending(built))) => Ok(TextShard::open(
-                self.layout,
-                built.files.clone(),
-                built.documents,
-            )?),
+            Some((_, Member::Pending(built))) => Ok((
+                TextShard::open(self.layout, built.files.clone(), built.documents)?,
+                built.bytes(),
+            )),
             Some((_, Member::Stored(_))) => unreachable!("stored shards are not members"),
             None => {
                 let descriptor: ShardDescriptor = read(self.tree, &shard_key(self.name, seq))?
                     .context("text shard descriptor missing")?;
-                open_shard(self.tree, self.layout, self.name, seq, &descriptor)
+                Ok((
+                    open_shard(self.tree, self.layout, self.name, seq, &descriptor)?,
+                    descriptor.bytes(),
+                ))
             }
         }
-    }
-
-    fn member_bytes(&self, seq: u64, members: &BTreeMap<u64, (u8, Member)>) -> Result<u64> {
-        Ok(match members.get(&seq) {
-            Some((_, member)) => member.bytes(),
-            None => read::<ShardDescriptor>(self.tree, &shard_key(self.name, seq))?
-                .context("text shard descriptor missing")?
-                .bytes(),
-        })
     }
 
     /// Remove one shard: a new one is dropped, a stored one deleted.
@@ -1424,7 +1447,7 @@ struct DirectoryShards<'r, 't> {
     shard_count: usize,
     // Last visited (ordinal, level, sequence) on this immutable selected view.
     cursor: std::cell::Cell<Option<(usize, u8, u64)>>,
-    collection: &'r CollectionState,
+    current: &'r dyn Fn(&str, u64) -> Result<bool>,
     admission: &'r Arc<NodeAdmission>,
     failure: RefCell<Option<anyhow::Error>>,
 }
@@ -1594,7 +1617,7 @@ impl TextShardSet for DirectoryShards<'_, '_> {
         self.descriptor.tokens.get(field).copied().unwrap_or(0)
     }
     fn current(&self, id: &str, version: u64) -> kasumi_types::Result<bool> {
-        Ok(live_version(self.collection, id) == Some(version))
+        (self.current)(id, version).map_err(|error| self.fail(error))
     }
 }
 
@@ -1605,12 +1628,13 @@ pub(crate) fn search_collection<T>(
     tree: &TreeReader<'_>,
     source: &dyn PageSource,
     manifest: &TextManifest,
-    name: &str,
-    collection: &CollectionState,
+    definition: &kasumi_types::CollectionDefinition,
+    current: impl Fn(&str, u64) -> Result<bool>,
     admission: &Arc<NodeAdmission>,
     search: impl FnOnce(&dyn TextShardSet) -> kasumi_types::Result<T>,
 ) -> Result<kasumi_types::Result<T>> {
-    let layout = TextShardLayout::for_definition(&collection.definition)
+    let name = definition.name.as_str();
+    let layout = TextShardLayout::for_definition(definition)
         .context("searched collection has no text layout")?;
     let descriptor: CollectionDescriptor = read(tree, &collection_key(name))?
         .context("current text directory lacks an indexed collection")?;
@@ -1639,7 +1663,7 @@ pub(crate) fn search_collection<T>(
         descriptor,
         shard_count,
         cursor: std::cell::Cell::new(None),
-        collection,
+        current: &current,
         admission,
         failure: RefCell::new(None),
     };

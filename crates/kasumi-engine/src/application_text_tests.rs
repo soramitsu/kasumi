@@ -131,8 +131,8 @@ fn search_at(
         &tree,
         view,
         &manifest,
-        "docs",
-        &state.collections["docs"],
+        &state.collections["docs"].definition,
+        |id, version| Ok(live_version(&state.collections["docs"], id) == Some(version)),
         admission,
         |shards| {
             search_text_shards(
@@ -407,6 +407,55 @@ async fn publications_index_supersede_merge_and_drop_documents() {
     assert!(collection_keys(&tree, "docs").unwrap().is_empty());
     drop(tree);
     fixture.close().await;
+}
+
+#[test]
+fn live_text_threshold_counts_only_unarchived_resident_rows() {
+    let state = genesis();
+    let (mut candidate, _) = next(
+        &state,
+        &[("a", "aa"), ("b", "bb"), ("c", "cc"), ("d", "dd")],
+        &[],
+    );
+    let collection = candidate.collections.get_mut("docs").unwrap();
+    for names in [
+        &[][..],
+        &["e"],
+        &["a", "b"],
+        &["a", "b", "e", "f"],
+        &["a", "b", "c", "d", "e"],
+    ] {
+        collection.archived_documents.clear();
+        for name in names {
+            collection.archived_documents.insert(
+                (*name).into(),
+                Arc::new(kasumi_types::ArchivedDocument {
+                    version: 1,
+                    archive_id: "archive".into(),
+                    chunk_index: 0,
+                    document_sha256: "00".repeat(32),
+                    document_bytes: 0,
+                    indexed_fields: BTreeMap::new(),
+                }),
+            );
+        }
+        let live = collection
+            .documents
+            .keys()
+            .filter(|id| !names.contains(&id.as_str()))
+            .count() as u64;
+        for threshold in 0..=5 {
+            assert_eq!(has_live_documents(collection, threshold), live >= threshold);
+        }
+        for indexed in COMPACTION_SLACK..=COMPACTION_SLACK + 11 {
+            let required = indexed.saturating_sub(COMPACTION_SLACK).div_ceil(2);
+            assert_eq!(
+                !has_live_documents(collection, required),
+                indexed > 2 * live + COMPACTION_SLACK
+            );
+        }
+        assert!(!has_live_documents(collection, u64::MAX));
+    }
 }
 
 #[tokio::test]

@@ -632,12 +632,35 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                 self.directory_reader(),
                 state,
                 |tree, source, manifest, memory| {
+                    let primary = selection.current_primary_manifest(source, state)?;
+                    let primary = primary
+                        .as_ref()
+                        .map(|manifest| {
+                            kasumi_store::ordered_pages::TreeReader::new(
+                                source,
+                                &manifest.page_space,
+                                manifest.records,
+                                None,
+                            )
+                        })
+                        .transpose()?;
+                    let collection = self.collection();
                     crate::application_text::search_collection(
                         tree,
                         source,
                         manifest,
-                        &self.collection,
-                        self.collection(),
+                        &collection.definition,
+                        |id, version| match &primary {
+                            Some(primary) => crate::application_records::current_text_row(
+                                primary,
+                                &self.collection,
+                                id,
+                                version,
+                                state.revision,
+                            ),
+                            None => Ok(crate::application_text::live_version(collection, id)
+                                == Some(version)),
+                        },
                         memory,
                         search,
                     )

@@ -151,6 +151,43 @@ pub(super) fn has_primary_header(
     tree.with_value(&key, 9, |value| Ok(value.is_some()))
 }
 
+fn decode_header(bytes: &[u8], revision: u64) -> Result<(u64, kasumi_query::RecordKind)> {
+    ensure!(bytes.len() == 9, "invalid document header length");
+    let kind = match bytes[0] {
+        0 => kasumi_query::RecordKind::Live,
+        1 => kasumi_query::RecordKind::Archived,
+        _ => anyhow::bail!("unknown document header kind"),
+    };
+    let version = u64::from_be_bytes(bytes[1..].try_into()?);
+    ensure!(
+        version <= revision,
+        "document header exceeds selected revision"
+    );
+    Ok((version, kind))
+}
+
+/// Text shards exclude hydrated archive versions as well as absent and
+/// superseded rows. Their full document and archive values remain on disk.
+pub(crate) fn current_text_row(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    id: &str,
+    version: u64,
+    revision: u64,
+) -> Result<bool> {
+    let mut key = header_prefix(collection);
+    key.extend_from_slice(id.as_bytes());
+    let header = tree.with_value(&key, 9, |value| {
+        value
+            .map(|bytes| decode_header(bytes, revision))
+            .transpose()
+    })?;
+    if header != Some((version, kasumi_query::RecordKind::Live)) {
+        return Ok(false);
+    }
+    Ok(!tree.contains_key(&archive_key(collection, id))?)
+}
+
 pub(crate) fn visit_snapshot_headers(
     tree: &kasumi_store::ordered_pages::TreeReader<'_>,
     collection: &str,
@@ -178,17 +215,7 @@ pub(crate) fn visit_snapshot_headers(
             let ValueRef::Inline(bytes) = value else {
                 anyhow::bail!("overflow document header")
             };
-            ensure!(bytes.len() == 9, "invalid document header length");
-            let kind = match bytes[0] {
-                0 => kasumi_query::RecordKind::Live,
-                1 => kasumi_query::RecordKind::Archived,
-                _ => anyhow::bail!("unknown document header kind"),
-            };
-            let version = u64::from_be_bytes(bytes[1..].try_into()?);
-            ensure!(
-                version <= revision,
-                "document header exceeds selected revision"
-            );
+            let (version, kind) = decode_header(bytes, revision)?;
             return visit(id, version, kind);
         }
         Ok(false)
