@@ -105,7 +105,6 @@ async fn check_bodies(db: &Database, names: &[String]) {
 }
 
 #[tokio::test]
-#[ignore = "maximum installed schema capacity workload"]
 async fn default_budget_replaces_the_maximum_bundle_and_reopens_it() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.kv");
