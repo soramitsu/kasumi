@@ -44,14 +44,18 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })
 }
-fn require_key_scope(profile: &ClientProfile, scope: &KeyRetentionScope) -> Result<()> {
+fn require_key_scope(
+    resource: &CredentialResource,
+    tenant: &str,
+    scope: &KeyRetentionScope,
+) -> Result<()> {
     ensure!(
-        matches!((scope, &profile.resource),
-            (KeyRetentionScope::Tenant { tenant }, CredentialResource::Database { .. }) if tenant == &profile.tenant)
+        matches!((scope, resource),
+            (KeyRetentionScope::Tenant { tenant: selected }, CredentialResource::Database { .. }) if selected == tenant)
             || matches!(
-                (scope, &profile.resource),
+                (scope, resource),
                 (
-                    KeyRetentionScope::Control {},
+                    KeyRetentionScope::Control {} | KeyRetentionScope::TargetJournal {},
                     CredentialResource::Control { .. }
                 )
             ),
@@ -83,7 +87,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                             "independent key inventory requires a Control profile"
                         );
                     } else {
-                        require_key_scope(&profile, &request.scope)?;
+                        require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
                     }
                     serde_json::to_string_pretty(
                         &client.read_key_retention(&bearer, &request).await?,
@@ -91,14 +95,14 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 }
                 "status" => {
                     let request: KeyRetirementStatusRequest = serde_json::from_slice(&input)?;
-                    require_key_scope(&profile, &request.scope)?;
+                    require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
                     serde_json::to_string_pretty(
                         &client.key_retirement_status(&bearer, &request).await?,
                     )?
                 }
                 "retire" | "abort" => {
                     let request: RetireKeyVersionsRequest = serde_json::from_slice(&input)?;
-                    require_key_scope(&profile, &request.scope)?;
+                    require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
                     let status = if action == "retire" {
                         client.retire_key_versions(&bearer, &request).await?
                     } else {
@@ -447,4 +451,27 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
     );
     private_files::publish(output, &bytes)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_journal_retirement_uses_the_control_profile() {
+        let incarnation = Uuid::new_v4();
+        let control = CredentialResource::Control { incarnation };
+        let database = CredentialResource::Database { incarnation };
+        let tenant = crate::runtime::CONTROL_TENANT;
+        let journal = KeyRetentionScope::TargetJournal {};
+        assert!(require_key_scope(&control, tenant, &journal).is_ok());
+        assert!(require_key_scope(&database, "application", &journal).is_err());
+        for independent in [
+            KeyRetentionScope::Signer {},
+            KeyRetentionScope::SecurityAudit {},
+            KeyRetentionScope::LocalRecovery {},
+        ] {
+            assert!(require_key_scope(&control, tenant, &independent).is_err());
+        }
+    }
 }

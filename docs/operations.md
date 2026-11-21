@@ -699,7 +699,9 @@ Use `key-retention status` with the scope and a decimal `retirement_id` to
 read the last accepted ordinal. On a fresh installation it is zero. For
 `key-retention retire`, use the next ordinal as a decimal string, the exact
 coverage digest, the provider and key reference, and the first version to
-keep. Retain the request until the decision is known. After an interrupted
+keep. Use the application profile for its tenant scope. A Control
+administrator handles the Control scope and the `target_journal` scope
+owned by the enrolled lifecycle Control. Retain the request until the decision is known. After an interrupted
 request, repeat the identical request or read its status. To cancel an
 undecided fence, submit the identical request with `key-retention abort`.
 The replicated floor rejects later writes that depend on an older version.
