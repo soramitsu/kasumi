@@ -500,6 +500,72 @@ async fn compaction_rewrites_a_sealed_shard_dominated_by_superseded_rows() {
 }
 
 #[tokio::test]
+async fn later_text_body_failure_reclaims_staged_files_and_keeps_the_pinned_root() {
+    use std::fmt::Write as _;
+    let fixture = Fixture::new().await;
+    let s0 = genesis();
+    let (mut s1, changed) = next(&s0, &[("seed", "original")], &[]);
+    let mut last = s1.collections["docs"].clone();
+    Arc::make_mut(&mut last.definition).name = "last".into();
+    s1.collections.insert("last".into(), last);
+    let base = fixture.publish(&s0, &s1, &changed).unwrap();
+    fixture.owner.settle(&fixture.store).unwrap();
+    let pinned = fixture.store.read_view().unwrap();
+    let count_pages = || {
+        let view = fixture.store.read_view().unwrap();
+        let mut count = 0;
+        view.visit(&base.page_space, 1 << 20, |_, _| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        view.close().unwrap();
+        count
+    };
+    let original = count_pages();
+    let mut title = String::from("published ");
+    for term in 0..60_000u32 {
+        write!(&mut title, "word{term:05x} ").unwrap();
+    }
+    let (mut s2, mut changed) = next(&s1, &[("large", &title)], &[]);
+    let version = s2.revision - s2.revision_base;
+    s2.collections
+        .get_mut("last")
+        .unwrap()
+        .documents
+        .insert("unavailable".into(), stored("unavailable", version));
+    changed
+        .entry("last".into())
+        .or_default()
+        .insert("unavailable".into());
+    let stale = fixture.publish(&s1, &s2, &changed).unwrap();
+    assert!(!stale.is_current());
+    assert_eq!(stale.records, base.records);
+    assert!(
+        count_pages() > original,
+        "first collection's unpublished files were never staged"
+    );
+    assert_eq!(
+        search_at(&fixture.storage.admission, &pinned, &s1, "original"),
+        ["seed"]
+    );
+    fixture.owner.settle(&fixture.store).unwrap();
+    assert_eq!(count_pages(), original);
+    let (mut s3, changed) = next(&s2, &[], &[]);
+    s3.collections
+        .get_mut("last")
+        .unwrap()
+        .documents
+        .remove("unavailable");
+    let rebuilt = fixture.publish(&s2, &s3, &changed).unwrap();
+    assert!(rebuilt.is_current());
+    assert_eq!(fixture.search(&s3, "published"), ["large"]);
+    assert!(search_at(&fixture.storage.admission, &pinned, &s1, "published").is_empty());
+    pinned.close().unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn a_failed_edit_goes_stale_and_the_next_publication_rebuilds() {
     let fixture = Fixture::new().await;
     let s0 = genesis();
