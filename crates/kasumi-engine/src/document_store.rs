@@ -45,8 +45,8 @@ pub(crate) fn limits(bytes: usize) -> Result<BodyLimits> {
 }
 
 /// Measurements borrow the admitted input through encoding. One canonical
-/// body pass supplies its size, work and independent hash; one document pass
-/// supplies its complete size and work. Neither retains another payload copy.
+/// body pass supplies its size, work and independent hash. The authenticated
+/// document's framing contributes its own size and work.
 pub(crate) struct DocumentMeasurement<'a> {
     document: &'a Document,
     limits: BodyLimits,
@@ -59,13 +59,9 @@ pub(crate) struct DocumentMeasurement<'a> {
 impl<'a> DocumentMeasurement<'a> {
     pub(crate) fn new(document: &'a Document) -> Result<Self> {
         let mut digest = Sha256::new();
-        let (body_bytes, body_work) = crate::snapshot_codec::measure_typed_json(
-            &kasumi_types::CanonicalJsonValue(&document.body),
-            |bytes| digest.update(bytes),
-        )?;
+        let ((body_bytes, body_work), (document_bytes, document_work)) =
+            crate::snapshot_codec::measure_document_json(document, |bytes| digest.update(bytes))?;
         let limits = limits(usize::try_from(body_bytes)?)?;
-        let (document_bytes, document_work) =
-            crate::snapshot_codec::measure_typed_json(document, |_| {})?;
         Ok(Self {
             document,
             limits,

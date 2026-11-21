@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn document_measurement_preserves_exact_work_hash_and_enclosing_depth() {
+    let mut nested = serde_json::Value::Null;
+    for _ in 0..127 {
+        nested = serde_json::Value::Array(vec![nested]);
+    }
+    for body in [
+        serde_json::Value::Null,
+        serde_json::json!(false),
+        serde_json::json!(-12345.125),
+        serde_json::json!({"escaped\"\\":"安全\r\n", "values":vec![0u8; 500]}),
+        serde_json::json!("a".repeat(65536)),
+        nested.clone(),
+    ] {
+        let doc = Document {
+            id: "quoted\"\\名".into(),
+            version: u64::MAX,
+            body,
+        };
+        let wire = serde_json::to_vec(&CanonicalJsonValue(&doc.body)).unwrap();
+        let frame = serde_json::to_vec(&doc).unwrap();
+        let mut digest = Sha256::new();
+        let (body, document) = measure_document_json(&doc, |bytes| digest.update(bytes)).unwrap();
+        assert_eq!(
+            body,
+            (wire.len() as u64, record_work::measure(&wire).unwrap())
+        );
+        assert_eq!(
+            document,
+            (frame.len() as u64, record_work::measure(&frame).unwrap())
+        );
+        assert_eq!(digest.finalize(), Sha256::digest(&wire));
+    }
+    let too_deep = Document {
+        id: "boundary".into(),
+        version: 0,
+        body: serde_json::Value::Array(vec![nested]),
+    };
+    assert!(measure_typed_json(&too_deep, |_| {}).is_err());
+    assert!(measure_document_json(&too_deep, |_| {}).is_err());
+}
+
 fn raw(records: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     for (kind, record) in records {

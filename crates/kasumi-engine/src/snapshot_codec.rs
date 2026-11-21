@@ -44,6 +44,44 @@ pub(crate) fn measure_typed_json(
     value: &impl Serialize,
     observe: impl FnMut(&[u8]),
 ) -> anyhow::Result<(u64, u64)> {
+    measure_with_meter(value, observe, record_work::Meter::default())
+}
+
+/// The structural charge is additive in sites, scalar bytes and wire bytes.
+/// Replace the exact charge and length of a null body in the real DTO with
+/// those of the measured body. Preserve the depth consumed by the DTO itself.
+pub(crate) fn measure_document_json(
+    document: &Document,
+    observe_body: impl FnMut(&[u8]),
+) -> anyhow::Result<((u64, u64), (u64, u64))> {
+    validate_name(&document.id)?;
+    let body = measure_with_meter(
+        &CanonicalJsonValue(&document.body),
+        observe_body,
+        record_work::Meter::document_body(),
+    )?;
+    let frame = Document {
+        id: document.id.clone(),
+        version: document.version,
+        body: serde_json::Value::Null,
+    };
+    let (frame_bytes, frame_work) = measure_typed_json(&frame, |_| {})?;
+    let replace = |frame: u64, placeholder, actual| {
+        frame
+            .checked_sub(placeholder)
+            .and_then(|n| n.checked_add(actual))
+            .ok_or_else(|| anyhow::anyhow!("document measurement overflow"))
+    };
+    let bytes = replace(frame_bytes, 4, body.0)?;
+    let work = replace(frame_work, record_work::measure(b"null")?, body.1)?;
+    Ok((body, (bytes, work)))
+}
+
+fn measure_with_meter(
+    value: &impl Serialize,
+    observe: impl FnMut(&[u8]),
+    meter: record_work::Meter,
+) -> anyhow::Result<(u64, u64)> {
     struct Writer<F> {
         meter: record_work::Meter,
         observe: F,
@@ -58,10 +96,7 @@ pub(crate) fn measure_typed_json(
             Ok(())
         }
     }
-    let mut writer = Writer {
-        meter: record_work::Meter::default(),
-        observe,
-    };
+    let mut writer = Writer { meter, observe };
     serde_json::to_writer(&mut writer, value)?;
     let bytes = writer.meter.wire_bytes();
     Ok((bytes, writer.meter.finish()?))

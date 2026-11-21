@@ -41,6 +41,7 @@ pub(super) struct Meter {
     scalar_bytes: u64,
     sites: u64,
     stack: [u8; MAX_DEPTH],
+    depth_limit: usize,
     depth: usize,
     quoted: bool,
     escaped: bool,
@@ -53,6 +54,7 @@ impl Default for Meter {
             scalar_bytes: 0,
             sites: 0,
             stack: [0; MAX_DEPTH],
+            depth_limit: MAX_DEPTH,
             depth: 0,
             quoted: false,
             escaped: false,
@@ -61,6 +63,14 @@ impl Default for Meter {
     }
 }
 impl Meter {
+    /// A measured document body already has its enclosing DTO on the stack.
+    pub(super) fn document_body() -> Self {
+        Self {
+            depth_limit: MAX_DEPTH - 1,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn wire_bytes(&self) -> u64 {
         self.wire_bytes
     }
@@ -112,7 +122,7 @@ impl Meter {
                 b'{' | b'[' => {
                     self.site()?;
                     ensure!(
-                        self.depth < MAX_DEPTH,
+                        self.depth < self.depth_limit,
                         "snapshot JSON nesting exceeds limit"
                     );
                     self.stack[self.depth] = byte;
