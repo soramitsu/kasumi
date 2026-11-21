@@ -2090,10 +2090,10 @@ fn stat_leaf(parent: &File, name: &std::ffi::CStr, device: u64) -> io::Result<li
     }
     // SAFETY: successful fstatat initializes the complete native structure.
     let stat = unsafe { stat.assume_init() };
-    let observed_device = u64::try_from(stat.st_dev).map_err(|_| io::ErrorKind::InvalidData)?;
+    // dev_t is signed on Darwin and unsigned on Linux.
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG
         || stat.st_nlink != 1
-        || observed_device != device
+        || i128::from(stat.st_dev) != i128::from(device)
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
