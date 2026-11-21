@@ -576,8 +576,9 @@ fn payload_changes_keep_verified_short_and_overflow_unique_roots() {
         update(&next, Changes::new(&changed, &conflict, &next, &["a", "b"])),
         Err(ReadFailure::Query(error)) if error.code == ErrorCode::Conflict
     ));
+    let wrong_previous = rows(1, [2, 1]);
     assert!(matches!(
-        update(&indexes, Changes::new(&swapped, &swapped, &indexes, &["a", "b"])),
+        update(&indexes, Changes::new(&wrong_previous, &swapped, &indexes, &["a", "b"])),
         Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption
     ));
 }
