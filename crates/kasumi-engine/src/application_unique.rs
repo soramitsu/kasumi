@@ -304,9 +304,6 @@ fn probe(
             owner,
         });
     }
-    if !source.fields {
-        return Ok(Probe::Inconclusive);
-    }
     let mut prefixes = Vec::with_capacity(index.fields.len());
     let mut absent = false;
     for field in &index.fields {
@@ -320,12 +317,31 @@ fn probe(
             hash.update([component.tag]);
             hash_part(&mut hash, &component.bytes);
         }
+        if absent {
+            continue;
+        }
         let ordinal = indexes
             .structured_field_ordinal(collection, &field.path)
             .context("unique field absent from selected layout")?;
+        if !source.fields {
+            use crate::application_records::{RankedPosting, claim_posting};
+            match claim_posting(
+                reader,
+                collection,
+                ordinal,
+                component,
+                &mut budget.reads,
+                &mut budget.bytes,
+            )? {
+                RankedPosting::Budget => return Ok(Probe::Inconclusive),
+                RankedPosting::Absent => absent = true,
+                RankedPosting::Prefix(prefix) => prefixes.push(prefix),
+            }
+            continue;
+        }
         let mut prefix = field_prefix(POSTING, collection, ordinal);
         let base = prefix.len();
-        if push_value(&mut prefix, &component)? && !absent {
+        if push_value(&mut prefix, &component)? {
             if !budget.read() {
                 return Ok(Probe::Inconclusive);
             }

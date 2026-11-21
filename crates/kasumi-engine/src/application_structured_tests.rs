@@ -1581,6 +1581,44 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
         .unwrap();
     let view = fixture.store.read_view().unwrap();
     let checkpoint_reader = TreeReader::new(&view, stage.namespace(), checkpoint, None).unwrap();
+    // Exceeding a private probe budget hands the decision back to ordinary
+    // validation. A missing authenticated dictionary remains a source error.
+    use crate::application_records::{RankedPosting, claim_posting};
+    let scalar = body(7, 5);
+    let component = || FieldValue::predicate(&scalar["group"], ScalarType::String).unwrap();
+    let ordinal = initial
+        .indexes
+        .structured_field_ordinal("docs", "/group")
+        .unwrap();
+    for (mut reads, mut bytes) in [(0, usize::MAX), (512, 0)] {
+        assert!(matches!(
+            claim_posting(
+                &checkpoint_reader,
+                "docs",
+                ordinal,
+                component(),
+                &mut reads,
+                &mut bytes
+            )
+            .unwrap(),
+            RankedPosting::Budget
+        ));
+    }
+    let (mut reads, mut bytes) = (512, 4 << 20);
+    assert!(
+        claim_posting(
+            &checkpoint_reader,
+            "docs",
+            usize::MAX,
+            component(),
+            &mut reads,
+            &mut bytes
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("missing field dictionary")
+    );
     let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
     assert!(
         ordered_unique_window(

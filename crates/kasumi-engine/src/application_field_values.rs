@@ -51,7 +51,8 @@ fn lookup(
     count: u64,
     target: FieldValue<'_>,
     mut check: impl FnMut() -> Result<()>,
-) -> Result<(u64, bool)> {
+    mut compare: impl FnMut(&[u8], &[u8]) -> Result<Option<Ordering>>,
+) -> Result<Option<(u64, bool)>> {
     let (mut start, mut end) = (0, count);
     while start < end {
         check()?;
@@ -64,21 +65,97 @@ fn lookup(
         })?;
         let order = match tag.cmp(&target.tag) {
             Ordering::Equal if tag >= 4 => {
-                reader.with_value(&ranked(field, mid, 1), MAX_VALUE_BYTES, |value| {
-                    Ok(value
-                        .context("missing field dictionary payload")?
-                        .cmp(target.bytes.as_ref()))
-                })?
+                let Some(order) = compare(&ranked(field, mid, 1), &target.bytes)? else {
+                    return Ok(None);
+                };
+                order
             }
             order => order,
         };
         match order {
             Ordering::Less => start = mid + 1,
             Ordering::Greater => end = mid,
-            Ordering::Equal => return Ok((mid, true)),
+            Ordering::Equal => return Ok(Some((mid, true))),
         }
     }
-    Ok((start, false))
+    Ok(Some((start, false)))
+}
+
+pub(crate) enum RankedPosting {
+    Budget,
+    Absent,
+    Prefix(Vec<u8>),
+}
+
+fn count(reader: &TreeReader<'_>, field: &[u8]) -> Result<u64> {
+    reader.with_value(field, 8, |value| {
+        Ok(u64::from_be_bytes(
+            value.context("missing field dictionary")?.try_into()?,
+        ))
+    })
+}
+
+/// Resolve a checkpoint's sorted posting without expanding its dictionary.
+/// Reserve the worst-case number of tree probes. Charge the actual stored
+/// scalar length before opening its authenticated overflow chunks.
+pub(crate) fn claim_posting(
+    reader: &TreeReader<'_>,
+    collection: &str,
+    ordinal: usize,
+    value: FieldValue<'_>,
+    reads: &mut usize,
+    bytes: &mut usize,
+) -> Result<RankedPosting> {
+    let Some(left) = reads.checked_sub(1) else {
+        return Ok(RankedPosting::Budget);
+    };
+    *reads = left;
+    let field = field_key(collection, ordinal);
+    let rows = count(reader, &field)?;
+    let levels = (u64::BITS - rows.leading_zeros()) as usize;
+    let Some(left) = reads.checked_sub(3 * levels) else {
+        return Ok(RankedPosting::Budget);
+    };
+    *reads = left;
+    let rank = lookup(
+        reader,
+        &field,
+        rows,
+        value,
+        || Ok(()),
+        |key, target| {
+            let mut length = None;
+            reader.scan(
+                Bound::Included(key),
+                Direction::Forward,
+                &mut |stored, value| {
+                    if stored == key {
+                        length = Some(value.len());
+                    }
+                    Ok(false)
+                },
+            )?;
+            let length = usize::try_from(length.context("missing field dictionary payload")?)?;
+            ensure!(
+                length <= MAX_VALUE_BYTES,
+                "field dictionary payload exceeds storage limit"
+            );
+            let Some(left) = bytes.checked_sub(length) else {
+                return Ok(None);
+            };
+            *bytes = left;
+            Ok(Some(
+                reader
+                    .compare_value_at(key, target, length)?
+                    .context("missing field dictionary payload")?,
+            ))
+        },
+    )?;
+    Ok(match rank {
+        None => RankedPosting::Budget,
+        Some((_, false)) => RankedPosting::Absent,
+        Some((rank, true)) => RankedPosting::Prefix(ranked(&field, rank, 2)),
+    })
 }
 
 pub(crate) fn visit_value_ids(
@@ -90,11 +167,7 @@ pub(crate) fn visit_value_ids(
     mut visit: impl FnMut(&str) -> Result<bool>,
 ) -> Result<()> {
     let field = field_key(collection, ordinal);
-    let count = reader.with_value(&field, 8, |value| {
-        Ok(u64::from_be_bytes(
-            value.context("missing field dictionary")?.try_into()?,
-        ))
-    })?;
+    let count = count(reader, &field)?;
     let mut find = |value, kind| {
         lookup(
             reader,
@@ -102,7 +175,15 @@ pub(crate) fn visit_value_ids(
             count,
             FieldValue::predicate(value, kind)?,
             &mut check,
-        )
+            |key, target| {
+                Ok(Some(
+                    reader
+                        .compare_value_at(key, target, MAX_VALUE_BYTES)?
+                        .context("missing field dictionary payload")?,
+                ))
+            },
+        )?
+        .context("unbounded field lookup ended without a rank")
     };
     let (start, end) = match predicate {
         FieldPredicate::Equals { value, kind } => {
