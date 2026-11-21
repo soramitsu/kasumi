@@ -155,6 +155,12 @@ pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Val
     }
 }
 impl UniqueIndex {
+    fn same_fields(&self, old: Record<'_>, new: Record<'_>) -> bool {
+        self.fields
+            .iter()
+            .all(|field| record_value(old, &field.path) == record_value(new, &field.path))
+    }
+
     fn key(&self, record: Record<'_>) -> Result<Option<Vec<Scalar>>> {
         let key = self
             .fields
@@ -375,6 +381,8 @@ impl Structured {
             if let Some(old) = delta.old {
                 for (name, index) in &mut unique {
                     if let Some(mut key) = index.key(old)? {
+                        // Always verify the old owner, including a payload-only edit.
+                        let unchanged = delta.new.is_some_and(|new| index.same_fields(old, new));
                         if index.entries.is_some() {
                             let entries = index.owned_entries(&key);
                             if entries
@@ -383,7 +391,9 @@ impl Structured {
                             {
                                 return Err(old_owner_mismatch());
                             }
-                            entries.remove(&key);
+                            if !unchanged {
+                                entries.remove(&key);
+                            }
                         } else {
                             let scalar = key.pop().expect("one-field unique key");
                             let entries = singles.get_mut(name).expect("shared unique posting");
@@ -391,7 +401,9 @@ impl Structured {
                             if ids.len() != 1 || !ids.contains(delta.id) {
                                 return Err(old_owner_mismatch());
                             }
-                            entries.remove(&scalar);
+                            if !unchanged {
+                                entries.remove(&scalar);
+                            }
                         }
                     }
                 }
@@ -402,6 +414,9 @@ impl Structured {
             if let Some(new) = delta.new {
                 let owner = LazyCell::new(|| document_owner(delta.id, delta.old.is_none()));
                 for (name, index) in &mut unique {
+                    if delta.old.is_some_and(|old| index.same_fields(old, new)) {
+                        continue;
+                    }
                     if index.entries.is_some() {
                         index.insert_tuple(name, || Arc::clone(&owner), new, Some(&self.fields))?;
                     } else if let Some(mut key) = index.key(new)? {

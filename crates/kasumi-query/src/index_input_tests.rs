@@ -513,6 +513,76 @@ fn paired_delta_loans_allow_atomic_swaps_and_match_full_rebuild() {
 }
 
 #[test]
+fn payload_changes_keep_verified_short_and_overflow_unique_roots() {
+    fn rows(payload: u32, keys: [u32; 2]) -> Rows {
+        let mut rows = Rows::new(
+            "docs",
+            &[
+                (
+                    "a",
+                    serde_json::json!({"scope":"s","key":keys[0],"payload":payload}),
+                ),
+                (
+                    "b",
+                    serde_json::json!({"scope":"z".repeat(4096),"key":keys[1],"payload":payload}),
+                ),
+            ],
+            true,
+            false,
+        );
+        let mut compound = rows.definition.indexes[0].clone();
+        compound.name = "compound".into();
+        compound.fields.insert(
+            0,
+            IndexField {
+                path: "/scope".into(),
+                kind: ScalarType::String,
+            },
+        );
+        rows.definition.indexes.push(compound);
+        rows
+    }
+    let original = rows(1, [1, 2]);
+    let changed = rows(2, [1, 2]);
+    let indexes = QueryIndexes::build([&original]).unwrap();
+    let next = update(
+        &indexes,
+        Changes::new(&original, &changed, &indexes, &["a", "b"]),
+    )
+    .unwrap();
+    let roots = |generation: &QueryIndexes| {
+        generation.collections["docs"].structured.unique["compound"].clone()
+    };
+    let previous = roots(&indexes);
+    let current = roots(&next);
+    let previous_entries = previous.entries.as_ref().unwrap();
+    assert_eq!((previous_entries.len(), previous.overflow.len()), (1, 1));
+    assert!(previous_entries.ptr_eq(current.entries.as_ref().unwrap()));
+    assert!(previous.overflow.ptr_eq(&current.overflow));
+
+    let swapped = rows(3, [2, 1]);
+    let changed_again =
+        update(&next, Changes::new(&changed, &swapped, &next, &["a", "b"])).unwrap();
+    let rebuilt = QueryIndexes::build([&swapped]).unwrap();
+    assert_eq!(roots(&changed_again).entries, roots(&rebuilt).entries);
+    assert_eq!(roots(&changed_again).overflow, roots(&rebuilt).overflow);
+    assert_eq!(
+        unique_entries(&changed_again, "docs"),
+        unique_entries(&rebuilt, "docs")
+    );
+
+    let conflict = rows(3, [1, 1]);
+    assert!(matches!(
+        update(&next, Changes::new(&changed, &conflict, &next, &["a", "b"])),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::Conflict
+    ));
+    assert!(matches!(
+        update(&indexes, Changes::new(&swapped, &swapped, &indexes, &["a", "b"])),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption
+    ));
+}
+
+#[test]
 fn archived_rows_preserve_unique_keys_and_logical_ids_during_transition() {
     let old = Rows::new("docs", &[("a", serde_json::json!({"key":1}))], true, false);
     let mut new = Rows::new("docs", &[], true, false);
