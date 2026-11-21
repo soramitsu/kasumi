@@ -205,15 +205,35 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
         request: Request<ControlJsonRequest>,
     ) -> Result<Response<ControlJsonResponse>, Status> {
         let context = self.context(&request).await?;
+        let peer = callback_peer(&request)?;
         let input: RecoveryPhaseRequest =
             decode_json(&request.into_inner().request_json).map_err(status)?;
+        let callback = self
+            .auth
+            .audit_result(
+                &context,
+                phase_reader(
+                    Some(&self.runtime),
+                    &context,
+                    &peer,
+                    Observation::Phase {
+                        operation: input.operation_id,
+                        phase: input.phase_id,
+                    },
+                ),
+            )
+            .await
+            .map_err(status)?;
+        let original = callback
+            .as_ref()
+            .map_or(&context, |active| active.original());
         let proof = self
             .auth
             .audit_result(
                 &context,
                 self.runtime
                     .database
-                    .recovery_phase(context.clone(), input.operation_id, input.phase_id)
+                    .recovery_phase(original.clone(), input.operation_id, input.phase_id)
                     .await,
             )
             .await
@@ -226,6 +246,11 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             .await
             .map_err(status)?;
         proof.release().await.map_err(status)?;
+        if let Some(active) = callback {
+            active
+                .check(&context, &self.runtime.database)
+                .map_err(status)?;
+        }
         Ok(Response::new(response))
     }
 }

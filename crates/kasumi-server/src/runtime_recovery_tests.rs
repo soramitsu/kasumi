@@ -1021,6 +1021,7 @@ impl Fixture {
                     control_root: self.root.clone(),
                     control_endpoints: control_endpoints.clone(),
                     writer_observation_bearer_file: None,
+            phase_observation_bearer_file: None,
                     control_tls: self.files[index].clone(),
                     control_ca: self.ca.clone(),
                     node,

@@ -19,6 +19,18 @@ challenge while that administrator's request is active. If a target credential
 is unavailable after the fence commits, restore it at its installed path and
 retry the same retirement request.
 
+For distributed recovery with separate Control and target TLS identities, set
+`target_recovery.phase_observation_bearer_file` to a credential issued for
+the target's enrolled principal, its `control_tls` certificate and the installed
+Control incarnation. Grant its single `kasumi:read` scope read access to
+`target_recovery_observations` in the Control policy. The original dispatcher
+holds the administrator's authorization while the target reads the exact
+committed intent, membership evidence or journal writer for that dispatch.
+The callback closes when the dispatch returns or its deadline expires. Each
+target uses its own certificate and credential. A target with both observation
+grants can use the same read-scoped credential for journal retirement and
+phase observation.
+
 Every `target_recovery.tenants[tenant]` template requires its own
 `audit_placement`, using the tagged local replica only or nested external choice
 in the [tenant audit retention guide](tenant-audit-retention.md). The ordinary

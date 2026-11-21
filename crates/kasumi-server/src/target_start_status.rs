@@ -39,6 +39,7 @@ impl TargetRecoveryRuntime {
         bearer: Zeroizing<String>,
         query: TargetInitialStartRequest,
     ) -> Result<TargetInitialStartReply> {
+        let bearer = self.phase_observation_credential(bearer)?;
         query.validate_for_node(self.installed.node.node_id)?;
         let admission = TargetRequestAdmission::capture_until(
             context.clone(),

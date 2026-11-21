@@ -1058,6 +1058,17 @@ impl TargetRecoveryRuntime {
         Ok(())
     }
 
+    // The incoming Admin context stays with the admitted operation. Its
+    // sender-constrained token can only be presented by the original TLS peer.
+    fn phase_observation_credential(
+        &self,
+        incoming: Zeroizing<String>,
+    ) -> Result<Zeroizing<String>> {
+        match &self.installed.phase_observation_bearer_file {
+            Some(path) => (self.credential)(path),
+            None => Ok(incoming),
+        }
+    }
     async fn observe_current_writer(
         &self,
         context: &RequestContext,
@@ -1263,6 +1274,7 @@ impl TargetRecoveryRuntime {
         admission: TargetRequestAdmission,
         failure: TargetCallSeat,
     ) -> TargetTaskResult<TargetRuntimeReply> {
+        let bearer = self.phase_observation_credential(bearer)?;
         let TargetExecuteRequest {
             request,
             initial_dispatch,

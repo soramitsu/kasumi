@@ -380,9 +380,12 @@ impl RecoveryRoute {
         Ok(())
     }
 }
+#[path = "recovery_phase_callbacks.rs"]
+pub(crate) mod phase_callbacks;
 #[path = "recovery_writer_callbacks.rs"]
 pub(crate) mod writer_callbacks;
 pub(crate) struct ControlRecoveryCoordinator {
+    pub(crate) phase_callbacks: phase_callbacks::PhaseCallbacks,
     pub(crate) writer_callbacks: writer_callbacks::WriterCallbacks,
     pub(crate) database: Arc<Database>,
     signer: Arc<LifecycleSigner>,
@@ -517,6 +520,7 @@ impl ControlRecoveryCoordinator {
             authorities: runtime.serving_authorities.clone(),
             trusts,
             installed_digests,
+            phase_callbacks: Default::default(),
             writer_callbacks: Default::default(),
         }))
     }
@@ -987,6 +991,14 @@ impl ControlRecoveryCoordinator {
                 let remaining = prepared.dispatch_remaining().await?;
                 let wait =
                     target_route_wait(head.phase, &request.step, duration, duration.min(remaining));
+                let _phase_callback = self.phase_callbacks.open(
+                    &self.database,
+                    context,
+                    &target.node,
+                    request,
+                    (prepared.record().operation_id, prepared.record().phase_id),
+                    tokio::time::Instant::now() + wait,
+                )?;
                 let acknowledgement = tokio::time::timeout(wait, async {
                     let mut client =
                         KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)

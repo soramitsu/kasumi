@@ -11,8 +11,42 @@ use kasumi_types::{Operation, RequestContext, validate_name};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::recovery_runtime::{
+    ControlRecoveryCoordinator,
+    phase_callbacks::{Observation, PhaseCallback},
+};
 pub use kasumi_client::proto;
 use proto::*;
+
+fn callback_peer<T>(request: &Request<T>) -> Result<[u8; 32], Status> {
+    request
+        .extensions()
+        .get::<crate::tls::AuthenticatedTlsPeer>()
+        .and_then(|peer| peer.certificate_pin())
+        .ok_or_else(|| Status::unauthenticated("target observation requires authenticated TLS"))
+}
+
+fn phase_reader(
+    coordinator: Option<&ControlRecoveryCoordinator>,
+    reader: &RequestContext,
+    peer: &[u8; 32],
+    observation: Observation,
+) -> kasumi_types::Result<Option<Arc<PhaseCallback>>> {
+    if reader.scopes.contains(&kasumi_types::Action::Admin) {
+        return Ok(None);
+    }
+    let coordinator = coordinator.ok_or_else(|| {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "target observation coordinator unavailable",
+        )
+    })?;
+    coordinator
+        .phase_callbacks
+        .resolve(reader, peer, observation, &coordinator.database)
+        .map(Some)
+}
+
 #[path = "rpc_lifecycle.rs"]
 mod lifecycle;
 #[path = "rpc_recovery.rs"]

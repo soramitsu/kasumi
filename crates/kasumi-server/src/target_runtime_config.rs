@@ -63,6 +63,9 @@ pub struct TargetRecoveryConfig {
     /// Read-scoped Control credential bound to this physical target's outbound TLS leaf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer_observation_bearer_file: Option<String>,
+    /// Credential for reads made while Control is dispatching an enrolled target phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_observation_bearer_file: Option<String>,
     pub control_ca: PathBuf,
     pub node: NodeIdentity,
     pub attestation_key: PathBuf,
@@ -85,12 +88,16 @@ impl TargetRecoveryConfig {
             "target physical verifier differs from runtime installation"
         );
         self.control_tls.validate()?;
-        if let Some(path) = &self.writer_observation_bearer_file {
+        for path in self
+            .writer_observation_bearer_file
+            .iter()
+            .chain(&self.phase_observation_bearer_file)
+        {
             credential_path(path)?;
             ensure!(
                 hex::encode(self.control_tls.load()?.certificate_pin())
                     == self.node.certificate_sha256,
-                "writer observation TLS differs from the enrolled physical target"
+                "observation TLS differs from the enrolled physical target"
             );
         }
         self.limits.validate()?;

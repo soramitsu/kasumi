@@ -201,6 +201,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
                 },
             )]),
             writer_observation_bearer_file: None,
+            phase_observation_bearer_file: None,
             control_tls: config.native.tls.clone(),
             control_ca: directory.path().join("ca.pem"),
             node: identity.clone(),

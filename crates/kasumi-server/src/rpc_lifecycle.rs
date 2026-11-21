@@ -135,7 +135,33 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .audit_result(&actor, callback)
             .await
             .map_err(status)?;
-        let original = callback.as_ref().map_or(&actor, |active| active.original());
+        let phase = if nonce.is_none()
+            && let Some(command) = challenge.challenge.lifecycle_command
+        {
+            let observed = phase_reader(
+                self.coordinator.as_deref(),
+                &actor,
+                &peer,
+                Observation::Writer(command),
+            )
+            .and_then(|active| {
+                if let Some(active) = &active {
+                    active.verify_writer(&challenge)?;
+                }
+                Ok(active)
+            });
+            self.auth
+                .audit_result(&actor, observed)
+                .await
+                .map_err(status)?
+        } else {
+            None
+        };
+        let original = callback
+            .as_ref()
+            .map(|active| active.original())
+            .or_else(|| phase.as_ref().map(|active| active.original()))
+            .unwrap_or(&actor);
         let result = self
             .signer
             .observe_target_writer(&self.database, original, &challenge)
@@ -169,6 +195,9 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .release(&self.auth, &actor)
             .await?;
         if let Some(active) = &callback {
+            active.check(&actor, &self.database).map_err(status)?;
+        }
+        if let Some(active) = phase {
             active.check(&actor, &self.database).map_err(status)?;
         }
         Ok(reply)
@@ -233,14 +262,31 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
         request: Request<ControlIntentReference>,
     ) -> Result<Response<ControlJsonResponse>, Status> {
         let context = self.context(&request).await?;
+        let peer = callback_peer(&request)?;
         let id = uuid::Uuid::parse_str(&request.into_inner().command_id)
             .map_err(|_| Status::invalid_argument("invalid control intent identity"))?;
+        let callback = self
+            .auth
+            .audit_result(
+                &context,
+                phase_reader(
+                    self.coordinator.as_deref(),
+                    &context,
+                    &peer,
+                    Observation::Intent(id),
+                ),
+            )
+            .await
+            .map_err(status)?;
+        let original = callback
+            .as_ref()
+            .map_or(&context, |active| active.original());
         let proof = self
             .auth
             .audit_result(
                 &context,
                 self.database
-                    .observe_lifecycle_intent(context.clone(), id)
+                    .observe_lifecycle_intent(original.clone(), id)
                     .await,
             )
             .await
@@ -258,6 +304,9 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .await
             .map_err(status)?;
         proof.release().await.map_err(status)?;
+        if let Some(active) = callback {
+            active.check(&context, &self.database).map_err(status)?;
+        }
         Ok(Response::new(response))
     }
     async fn observe_change(
