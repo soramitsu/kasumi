@@ -9,6 +9,15 @@ import systemd_evidence as sd
 
 
 class SystemdCustody(unittest.TestCase):
+    def test_service_inventory_checks_exact_unit_names_including_inactive_units(self):
+        runner.require_units_absent("example.service enabled enabled\n")
+        runner.require_units_absent("  helper.service loaded active running watches kasumid.service\n")
+        for listing in ("kasumid.service masked disabled",
+                        "  kasumi-authority.service loaded inactive dead Authority",
+                        "● kasumid.service loaded failed failed Kasumi"):
+            with self.subTest(listing=listing), self.assertRaises(ValueError):
+                runner.require_units_absent(listing)
+
     def observations(self):
         role = "data"
         values = dict.fromkeys(sd.PROPERTIES,"")

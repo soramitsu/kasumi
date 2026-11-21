@@ -96,11 +96,20 @@ def cmd_map(tools, root, plan):
     helper = [tools["python"], "-I","-B","-S",str(Path(tools["source"]) / RUNNER),"helper"]
     units = [sd.unit(role) for role in sd.ROLES]
     return {"manager":systemctl,"helper":helper,"units":units,
-            "preflight":[*systemctl,"list-unit-files","--no-legend",*units],
-            "transient":[*systemctl,"list-units","--all","--no-legend",*units],
+            "preflight":[*systemctl,"list-unit-files","--type=service","--full","--no-legend"],
+            "transient":[*systemctl,"list-units","--all","--type=service","--full","--plain","--no-legend"],
             "reload":[*systemctl,"daemon-reload"],
             "lint":[tools["systemd-analyze"],"verify",*[str(sd.UNIT_ROOT / u) for u in units]],
             "configuration-request":str(Path(root) / "configuration.json")}
+
+
+def require_units_absent(listing):
+    """Check the unit-name column in a successful full service listing."""
+    units = {sd.unit(role) for role in sd.ROLES}
+    for line in listing.splitlines():
+        columns = line.strip().removeprefix("●").split()
+        if columns:
+            require(columns[0] not in units, "manager still owns published unit " + columns[0])
 
 
 def manager_command(c, role, op):
@@ -189,6 +198,11 @@ def execute(run, pack, units, plan_file):
     require(owned.sha256(Path(tools["kasumictl"])) == run.report["binaries"]["kasumictl"],"installed operator executable differs")
     details["artifacts"] = {"package:"+target:owned.sha256(pack), **{"systemd-"+k:owned.sha256(v) for k,v in units.items()}}
     package_inputs(pack,details["artifacts"],run.report["binaries"])
+    exercise_units(run, units, configs, clients, tools, plan, details)
+    run.passed(details)
+
+
+def exercise_units(run, units, configs, clients, tools, plan, details):
     q = run.output / "configuration.json"
     domain_run.durable_json(q,{"kind":"configuration"})
     c = cmd_map(tools,run.output,plan)
@@ -197,8 +211,7 @@ def execute(run, pack, units, plan_file):
     with Path("/run/kasumi-release-systemd-smoke.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for name in ("preflight","transient"):
-            require(not run.command(name,c[name],60).read_bytes().strip(),
-                    "host already owns or has loaded a service with the published unit name")
+            require_units_absent(run.command(name,c[name],60).read_text())
         try:
             for role, file in units.items():
                 step = "install-"+role
@@ -252,8 +265,8 @@ def execute(run, pack, units, plan_file):
             if details["installed"]:
                 run.command("reload-clean",c["reload"],60)
             require(not clean,"service cleanup failed: "+repr(clean))
-        require(not run.command("postflight",c["preflight"],60).read_bytes().strip(),"temporary units still installed")
-    run.passed(details)
+        require_units_absent(run.command("postflight",c["preflight"],60).read_text())
+        require_units_absent(run.command("postflight-loaded",c["transient"],60).read_text())
 
 
 def verify_domain(root, domain, files, configs, artifacts, candidates):
@@ -305,8 +318,8 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
         return output.read_text()
     def value(*args,**kwargs):
         return json.loads(raw(*args,**kwargs))
-    require(not raw("preflight",c["preflight"]).strip() and not raw("transient",c["transient"]).strip(),
-            "the manager had existing installed or transient units")
+    require_units_absent(raw("preflight",c["preflight"]))
+    require_units_absent(raw("transient",c["transient"]))
     require(owned.read(custody / "configuration.json") == {"kind":"configuration"}, "wrong authority maintenance probe")
     require(set(details["installed"]) == set(details["certificates"]) == set(sd.ROLES), "missing installed service")
     for role in sd.ROLES:
@@ -370,7 +383,9 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
         require(value("unlink-"+role,[*c["helper"],"unlink",role,json.dumps(created,sort_keys=True)]) == {"removed":created},
                 "temporary unit cleanup omitted or changed an installation")
     raw("reload-clean",c["reload"])
-    require(not raw("postflight",c["preflight"]).strip() and next(steps,None) is None
+    require_units_absent(raw("postflight",c["preflight"]))
+    require_units_absent(raw("postflight-loaded",c["transient"]))
+    require(next(steps,None) is None
             and set(details["polls"]) == {f"{r}-{i}" for r in sd.ROLES for i in (1,2)}
             and scenarios == {k:[r["step"] for r in v] for k,v in facts["scenarios"].items()},
             "omitted manager operations, stable cleanup or original scenario observations")
