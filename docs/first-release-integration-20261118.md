@@ -867,9 +867,9 @@ The owner still needs to identify the reserved native Linux x86-64 and ARM64 hos
 
 ### Native recovery, Raft and capacity evidence
 
-Local integration reached `ab54eff5`. The three-platform source already in
-qualification is `2d4adade`. These measurements identify the source that
-actually ran. All fourteen release gates remain open.
+All fourteen release gates remain open. The frozen three-platform source
+`2d4adade` has reproducible workspace failures. The qualification record keeps
+its original runs alongside the results from subsequent integration commits.
 
 | Gates | Source and result |
 | --- | --- |
@@ -879,3 +879,27 @@ actually ran. All fourteen release gates remain open.
 | G03, G07, G09 | On `2d4adade` the awake macOS filesystem restore exhausted its original 600-second verification deadline during snapshot decode. Cold status retained the error. Same-operation resume refused an absent deployment binding. This follows step 4 of the [local recovery preparation contract](explicit-catalog-lifecycle.md). The original installation was preserved and checked across 454 files. Stop, cold status, repeated stop and final cold status each succeeded and the target directory was absent. The cleanup receipt has SHA-256 `d34430ad6e1255f0b8c0c7c830e8aa7380b1a6427c59dd671fe9cebb9a66ced0`. |
 | G07, G11, G12 | The original Linux ARM64 Raft custody binary failed 21 of 48 isolated repetitions. `359ab42f` removed a competing warm-up read and observed both voters' application of the concurrent write before teardown. Each ARM64 platform then passed 192 repetitions and the entire 23-case lifecycle suite. The macOS run took 12.81 s and the Linux run took 28.93 s after compilation. |
 | G10, G11, G13 | `ab54eff5` keeps the Control and operator families current during the installed capacity workloads and starts Control renewal before protected readiness after standalone restore. All 30 capacity adapter tests passed in 8.45 s. The full capacity and soak workloads remain open. |
+
+On `04b272e5`, the same restored MinIO target accepted a certificate-bound
+read-only credential issued through its installed Control. It returned all
+98,400 documents, totaling 3,224,371,200 logical bytes in 399.89 seconds.
+All 12,300 eight-document batches matched the source ledger, with SHA-256
+`e764a42370a033dfebbfb4326704017e948dfea2111437f032f61fef47de536e`.
+The initial renewal failure and refusal of an unbound replacement were retained.
+
+On frozen `2d4adade`, native Linux ARM64 Cargo built the KV, Store and Server
+test executables from the candidate source. Four KV and four Store
+deployed-format cases passed. The fixture generator was skipped. The Server
+harness opened the clean and killed first-revision installations and the
+second-revision installation. Cancelled shutdown passed in 0.28 seconds and
+the independent Authority journal recovered its encrypted stop record in 1.73
+seconds. The pinned OpenBao and MinIO interoperability probes passed in 2.94
+and 2.23 seconds, respectively. Each probe recorded two provider processes.
+The guest had two CPUs and 16 GiB RAM on a shared ARM64 workstation.
+
+The same frozen Linux history executable reproduced an archived snapshot page
+failure and a cold restore memory admission failure individually in 1.09 and
+2.41 seconds. Lease selection retained the archived references while recording
+zero bytes in the selected collection. Commit `42551dc3` carries the selected
+entries' encoded sizes, and `9d1f84ec` corrects the module path after the first
+native build failed. The regression covers both leased point reads and scans.
