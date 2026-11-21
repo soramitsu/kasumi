@@ -1,5 +1,6 @@
 //! Exclusive stopped-installation ownership shared by every local operator.
 use super::*;
+use crate::administration::original_serving_runtime::RecoverStage;
 use crate::startup_resources::Resources;
 
 #[derive(Debug)]
@@ -160,6 +161,15 @@ impl OperatorState {
         participant: &str,
         work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
     ) -> Result<T> {
+        self.snapshot_at(participant, RecoverStage::EngineOpen, work)
+            .await
+    }
+    pub(crate) async fn snapshot_at<T>(
+        &self,
+        participant: &str,
+        stage: RecoverStage,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> Result<T> {
         let index =
             crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
                 &self.config,
@@ -172,7 +182,7 @@ impl OperatorState {
             .expect("operator owns the original recovery inventory");
         let mut seat = inventory.claim(index).await;
         Ok(seat
-            .run_snapshot_operation(work)
+            .run_snapshot_operation_at(Some(stage), work)
             .await
             .map_err(snapshot_marker)??)
     }

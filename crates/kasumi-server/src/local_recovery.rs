@@ -1285,7 +1285,7 @@ impl Operator {
                 timeout_ms: request.phase_timeout_ms,
             };
             self.prepare_stage(journal, TargetPreparation::MaterializationDispatched)?;
-            self.snapshot(&request.tenant, kasumi_engine::restore_local(
+            self.snapshot_at(&request.tenant, crate::administration::original_serving_runtime::RecoverStage::RestoreSnapshot, kasumi_engine::restore_local(
                 &source,
                 stores.clone(),
                 kasumi_engine::LocalRestoreRequest {

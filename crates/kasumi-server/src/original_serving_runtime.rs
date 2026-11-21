@@ -17,6 +17,7 @@ pub(crate) enum RecoverStage {
     StorageOpen,
     AdmissionReserve,
     EngineOpen,
+    RestoreSnapshot,
     RouteRegister,
     SetupRouteChanged,
     Publish,
@@ -35,6 +36,7 @@ impl RecoverStage {
             Self::StorageOpen => "storage_open",
             Self::AdmissionReserve => "admission_reserve",
             Self::EngineOpen => "engine_open",
+            Self::RestoreSnapshot => "restore_snapshot",
             Self::RouteRegister => "route_register",
             Self::SetupRouteChanged => "setup_route_changed",
             Self::Publish => "publish",
@@ -1246,13 +1248,24 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
         &mut self,
         work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
     ) -> std::result::Result<T, OriginalRecoveryObservation> {
+        self.run_snapshot_at(None, work).await
+    }
+    async fn run_snapshot_at<T>(
+        &mut self,
+        stage: Option<RecoverStage>,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> std::result::Result<T, OriginalRecoveryObservation> {
         if !self.seat.empty() {
             return Err(self.observation());
         }
         match work.await {
             Ok(value) => Ok(value),
             Err(original) => {
-                self.seat.failure = Some(original.into());
+                let mut failure = OriginalRecoveryFailure::from(original);
+                if failure.source_stage().is_none() {
+                    failure.stage = stage;
+                }
+                self.seat.failure = Some(failure);
                 Err(self.observation())
             }
         }
@@ -1264,7 +1277,14 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
         &mut self,
         work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
     ) -> std::result::Result<kasumi_types::Result<T>, OriginalRecoveryObservation> {
-        self.run_snapshot(async {
+        self.run_snapshot_operation_at(None, work).await
+    }
+    pub(crate) async fn run_snapshot_operation_at<T>(
+        &mut self,
+        stage: Option<RecoverStage>,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> std::result::Result<kasumi_types::Result<T>, OriginalRecoveryObservation> {
+        self.run_snapshot_at(stage, async {
             match work.await {
                 Ok(value) => Ok(Ok(value)),
                 Err(kasumi_engine::SnapshotFailure::Operation(original)) => Ok(Err(original)),
