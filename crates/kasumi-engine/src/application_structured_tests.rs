@@ -1580,7 +1580,7 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
         .unwrap()
         .is_empty()
     );
-    let changed = ChangedIds::from([("docs".into(), BTreeSet::from(["new".into()]))]);
+    let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["new".into()]))]);
     for (serial, decision) in [
         (5, unique::Decision::Conflict("group_serial".into())),
         (13, unique::Decision::Accepted),
@@ -1610,7 +1610,6 @@ async fn broad_native_postings_resolve_oversized_compound_owners_and_missing_int
             decision
         );
     }
-    drop(reader);
     view.close().unwrap();
     fixture.close().await;
 }
