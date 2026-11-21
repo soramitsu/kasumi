@@ -265,6 +265,42 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
+    fn rows(last: Value) -> Rows {
+        let mut rows = Rows::new(
+            "docs",
+            &[
+                ("a", serde_json::json!({"key": [7]})),
+                ("b", serde_json::json!({"key": last})),
+            ],
+            true,
+            false,
+        );
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::NumberArray;
+        rows
+    }
+    fn check(indexes: &QueryIndexes, ids: &[&str], all: bool) {
+        let structured = &indexes.collections["docs"].structured;
+        let entries = &structured.fields["/key"].entries;
+        assert_eq!(entries.len(), 1);
+        let (_, posting) = entries.get_min().unwrap();
+        assert_eq!(posting.iter().map(String::as_str).collect::<Vec<_>>(), ids);
+        assert_eq!(posting.ptr_eq(&structured.ids), all);
+    }
+    let uniform = rows(serde_json::json!([7]));
+    let hole = rows(serde_json::json!([]));
+    let restored = rows(serde_json::json!([7, 7]));
+    let first = QueryIndexes::build([&uniform]).unwrap();
+    let second = update(&first, Changes::new(&uniform, &hole, &first, &["b"])).unwrap();
+    let third = update(&second, Changes::new(&hole, &restored, &second, &["b"])).unwrap();
+    check(&first, &["a", "b"], true);
+    check(&second, &["a"], false);
+    check(&third, &["a", "b"], true);
+    check(&QueryIndexes::build([&hole]).unwrap(), &["a"], false);
+}
+
+#[test]
 fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
     fn rows(values: &[(&str, Value)]) -> Rows {
         let mut rows = Rows::new("docs", values, true, false);
