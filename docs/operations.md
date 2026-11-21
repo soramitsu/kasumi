@@ -708,3 +708,14 @@ The replicated floor rejects later writes that depend on an older version.
 The operator controls key removal at the provider. A completed scope record
 covers only that scope. Check all other installations and scopes that use the
 same provider key before changing it.
+
+For the file provider, a format-1 keyring ordinarily retains every generation
+from one through `active`. After confirming the completed retirement in every
+scope sharing that provider, an operator can install a canonical keyring with
+the same `id`, `domain` and `active`. Keep every original key from the approved
+first retained generation through `active` and append the numeric field
+`first_retained_version` after `versions`. For example, with `active` equal to
+3 and a completed floor of 2, keep versions 2 and 3 and set
+`first_retained_version` to 2. Install using the existing private-file
+permissions and an atomic replacement. Subsequent rotations preserve this
+floor. Existing rings that retain generation 1 use their original encoding.

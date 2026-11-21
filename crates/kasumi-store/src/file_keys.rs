@@ -57,6 +57,9 @@ struct Keyring {
     domain: String,
     active: u64,
     versions: BTreeMap<u64, String>,
+    // Original format-1 files start at one and retain their exact writer bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_retained_version: Option<u64>,
 }
 impl Drop for Keyring {
     fn drop(&mut self) {
@@ -75,13 +78,18 @@ impl Keyring {
             self.active > 0 && self.versions.contains_key(&self.active),
             "missing active wrapping key"
         );
+        let first = self.first_retained_version.unwrap_or(1);
         ensure!(
-            u64::try_from(self.versions.len())? == self.active,
+            self.first_retained_version.is_none() || (2..=self.active).contains(&first),
+            "invalid first retained wrapping generation"
+        );
+        ensure!(
+            u64::try_from(self.versions.len())? == self.active - first + 1,
             "file keyring generations are not contiguous"
         );
         for (version, key) in &self.versions {
             ensure!(
-                *version > 0 && *version <= self.active,
+                (first..=self.active).contains(version),
                 "invalid wrapping key generation"
             );
             ensure!(
@@ -161,6 +169,7 @@ impl FileKeyProvider {
             id: Uuid::new_v4(),
             domain: domain.into(),
             active: 1,
+            first_retained_version: None,
             versions: BTreeMap::from([(1, STANDARD.encode(SecretKey::random()?.as_bytes()))]),
         };
         private_files::create(path, &ring.encode()?)?;
@@ -436,6 +445,7 @@ mod tests {
             id: Uuid::new_v4(),
             domain: "application".into(),
             active: 40,
+            first_retained_version: None,
             versions: (1..=40u8)
                 .map(|version| (u64::from(version), STANDARD.encode([version; 32])))
                 .collect(),
@@ -510,6 +520,47 @@ mod tests {
             FileKeyProvider::open(&path)?.generations()?,
             (2, vec![1, 2])
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_retired_prefix_survives_cold_open_and_rotation() -> Result<()> {
+        use zeroize::Zeroize;
+        let root = crate::test_utils::private_tempdir()?;
+        let path = root.path().join("keys.json");
+        let provider = FileKeyProvider::initialize(&path, "application")?;
+        let old = provider.generate_key("original").await?;
+        provider.rotate()?;
+        let kept = provider.rewrap_key("original", &old.wrapped).await?;
+        provider.rotate()?;
+
+        let mut ring = FileKeyProvider::read(&path)?;
+        assert!(ring.first_retained_version.is_none());
+        ring.versions.remove(&1).unwrap().zeroize();
+        ring.first_retained_version = Some(2);
+        private_files::replace(&path, &ring.encode()?)?;
+        let reopened = FileKeyProvider::open(&path)?;
+        assert_eq!(reopened.key_ref(), provider.key_ref());
+        assert_eq!(reopened.generations()?, (3, vec![2, 3]));
+        assert!(reopened.unwrap_key("original", &old.wrapped).await.is_err());
+        assert_eq!(
+            reopened.unwrap_key("original", &kept).await?.as_bytes(),
+            old.plaintext.as_bytes()
+        );
+        assert_eq!(reopened.rotate()?, 4);
+        let mut rotated = FileKeyProvider::read(&path)?;
+        assert_eq!(rotated.first_retained_version, Some(2));
+        assert_eq!(provider.generations()?, (4, vec![2, 3, 4]));
+
+        for invalid in [None, Some(0), Some(1), Some(3), Some(5)] {
+            rotated.first_retained_version = invalid;
+            assert!(rotated.validate().is_err());
+        }
+        rotated.first_retained_version = Some(2);
+        let interior = rotated.versions.remove(&3).unwrap();
+        assert!(rotated.validate().is_err());
+        rotated.versions.insert(1, interior);
+        assert!(rotated.validate().is_err());
         Ok(())
     }
 
