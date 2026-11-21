@@ -1686,6 +1686,7 @@ impl TenantEngine {
             // and can refuse small records that the actual publication fits.
             let mut typed = match &command.operation {
                 Operation::Mutate(batch) => document_work(batch.operations.iter())?,
+                Operation::ActivateSchema(request) => schema::publication_work(command, request)?,
                 _ => crate::snapshot_codec::inspect_typed_json_work(command)?,
             };
             let staged = if let Operation::FinalizeStaged(reference) = &command.operation {
