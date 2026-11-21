@@ -72,6 +72,7 @@ impl Walk {
         range: &KeyRange,
         descending: bool,
         cancel: &QueryCancellation,
+        selected: impl FnOnce() -> Result<()>,
     ) -> ReadResult<Option<Self>, S::Failure> {
         let Some(count) = source.ranked_compound_count(index, cancel)? else {
             return Ok(None);
@@ -79,6 +80,9 @@ impl Walk {
         if count == 0 {
             return Err(corrupt().into());
         }
+        // The count identifies a complete ranked index in this immutable view.
+        // Any later missing owner or unreadable body fails the original walk.
+        selected()?;
         let start = partition(
             source,
             index,

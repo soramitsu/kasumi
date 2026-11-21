@@ -42,6 +42,24 @@ pub(crate) struct Projection {
     wide_indexes: Vec<bool>,
 }
 
+fn take_worker_roots(roots: &std::sync::Mutex<Option<Vec<TupleMap>>>) -> Result<Vec<TupleMap>> {
+    roots
+        .lock()
+        .map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "captured wide seek fallback poisoned",
+            )
+        })?
+        .take()
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "registered seek worker already consumed its page",
+            )
+        })
+}
+
 impl QueryIndexes {
     /// Retain only the fallback rows needed by a registered seek worker after
     /// its first successful physical tuple window for this collection.
@@ -255,6 +273,24 @@ impl QueryIndexes {
                             &range,
                             descending,
                             cancellation,
+                            || {
+                                if let (Some(projection), Some(roots)) =
+                                    (&self.seek_projection, worker_wide)
+                                {
+                                    drop(take_worker_roots(roots)?);
+                                    projection
+                                        .fallback
+                                        .lock()
+                                        .map_err(|_| {
+                                            Error::new(
+                                                ErrorCode::Unavailable,
+                                                "captured seek fallback poisoned",
+                                            )
+                                        })?
+                                        .take();
+                                }
+                                Ok(())
+                            },
                         )?;
                     }
                     if ranked.is_none() {
@@ -378,22 +414,8 @@ impl QueryIndexes {
                 })
                 .peekable();
                 let mut overflow_charge = 0;
-                let selected_wide = if let Some(captured) = worker_wide {
-                    let mut roots = captured
-                        .lock()
-                        .map_err(|_| {
-                            Error::new(
-                                ErrorCode::Unavailable,
-                                "captured wide seek fallback poisoned",
-                            )
-                        })?
-                        .take()
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorCode::Unavailable,
-                                "registered seek worker already consumed its page",
-                            )
-                        })?;
+                let selected_wide = if let Some(captured) = worker_wide.filter(|_| !ranked_order) {
+                    let mut roots = take_worker_roots(captured)?;
                     let selected = indexes
                         .structured
                         .unique
@@ -402,7 +424,7 @@ impl QueryIndexes {
                         .position(|u| std::ptr::eq(u, index))
                         .map(|ordinal| roots.swap_remove(ordinal));
                     drop(roots);
-                    if let Some(root) = selected.filter(|_| !ranked_order) {
+                    if let Some(root) = selected {
                         let (rows, charge) = WideRows::for_page(
                             root,
                             &range,

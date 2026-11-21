@@ -674,8 +674,14 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
                 && let Some(roots) = &projection.worker_wide
             {
                 assert!(self.rank_reads.get() > 0);
-                assert!(roots.lock().unwrap().is_none(), "ranked document retained wide tuples");
-                assert!(projection.fallback.lock().unwrap().is_none(), "ranked document retained short tuples");
+                assert!(
+                    roots.lock().unwrap().is_none(),
+                    "ranked document retained wide tuples"
+                );
+                assert!(
+                    projection.fallback.lock().unwrap().is_none(),
+                    "ranked document retained short tuples"
+                );
             }
             self.source.with_record(id, version, cancellation, lend)
         }
