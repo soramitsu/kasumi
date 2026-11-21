@@ -25,7 +25,9 @@ pub(crate) fn validate_ordinary(
     candidate: &TenantState,
     changed: &ChangedIds,
     roots: Option<&crate::application_sources::SourceRootsRef>,
+    group: Option<(&crate::Generation, &ChangedIds)>,
 ) -> SourceResult<()> {
+    let base = group.map_or(previous, |(base, _)| base);
     let old = &previous.state;
     let resolver = previous.document_resolver();
     let any_unique = changed.keys().any(|name| {
@@ -35,17 +37,41 @@ pub(crate) fn validate_ordinary(
     });
     if any_unique
         && changed.values().map(|ids| ids.len()).sum::<usize>() <= DOCUMENTS
-        && let Some((roots, selection)) = roots.zip(previous.application_selection.get())
+        && let Some((roots, selection)) = roots.zip(base.application_selection.get())
     {
         let proved = selection
             .with_structured_records_since(
                 None,
-                old,
-                || previous.indexes.structured_layout_sha256(),
+                &base.state,
+                || base.indexes.structured_layout_sha256(),
                 kasumi_store::structured_manifest::ORDERED_TUPLE_FORMAT,
                 |reader| {
-                    let _workspace = roots.memory_owner().clone().reserve_installed(WORKSPACE)?;
-                    prove(reader, &previous.indexes, old, candidate, changed, resolver)
+                    let _workspace = roots.memory_owner().clone().reserve_installed(
+                        if group.is_some_and(|(_, ids)| !ids.is_empty()) {
+                            2 * WORKSPACE
+                        } else {
+                            WORKSPACE
+                        },
+                    )?;
+                    let overlay = if let Some((_, touched)) = group {
+                        let Some(overlay) =
+                            group_overlay(&base.state, old, touched, changed, resolver)?
+                        else {
+                            return Ok(Decision::Inconclusive);
+                        };
+                        overlay
+                    } else {
+                        BTreeMap::new()
+                    };
+                    prove_with_overlay(
+                        reader,
+                        &previous.indexes,
+                        old,
+                        candidate,
+                        changed,
+                        resolver,
+                        &overlay,
+                    )
                 },
             )
             .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
@@ -83,6 +109,101 @@ impl Budget {
     }
 }
 
+type GroupOverlay = BTreeMap<Vec<u8>, Option<String>>;
+fn scoped_tuple(collection: &str, index: &str, tuple: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(4 + collection.len() + index.len() + tuple.len());
+    for name in [collection, index] {
+        key.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        key.extend_from_slice(name.as_bytes());
+    }
+    key.extend_from_slice(tuple);
+    key
+}
+fn value_at<'a>(record: Record<'a>, path: &str) -> Option<&'a serde_json::Value> {
+    match record {
+        Record::Live(doc) => doc.body.pointer(path),
+        Record::Archived(doc) => doc.indexed_fields.get(path),
+    }
+}
+
+/// Fold the admitted prior members into a bounded set of point overrides
+/// relative to the last physically published directory. All its old owners
+/// leave before any of the group's current owners are installed.
+pub(super) fn group_overlay(
+    base: &TenantState,
+    current: &TenantState,
+    touched: &ChangedIds,
+    changed: &ChangedIds,
+    resolver: Option<&dyn DocumentResolver>,
+) -> Result<Option<GroupOverlay>> {
+    ensure!(
+        base.tenant == current.tenant && base.incarnation == current.incarnation,
+        "grouped unique source differs"
+    );
+    let mut rows = GroupOverlay::new();
+    let mut work = 0;
+    let mut documents = DOCUMENTS;
+    for name in changed.keys() {
+        let Some(prior) = touched.get(name) else {
+            continue;
+        };
+        let original = base
+            .collections
+            .get(name)
+            .context("group base collection absent")?;
+        let logical = current
+            .collections
+            .get(name)
+            .context("group collection absent")?;
+        ensure!(
+            original.definition == logical.definition,
+            "group changed a unique definition"
+        );
+        if !original.definition.indexes.iter().any(|i| i.unique) {
+            continue;
+        }
+        let Some(remaining) = documents.checked_sub(prior.len()) else {
+            return Ok(None);
+        };
+        documents = remaining;
+        for (state, collection, removing) in [(base, original, true), (current, logical, false)] {
+            for id in prior {
+                let loan = index_source::record(collection, id, state.revision, resolver)
+                    .map_err(index_source::into_anyhow)?;
+                let Some(loan) = loan else { continue };
+                let record = loan.as_record();
+                for index in collection.definition.indexes.iter().filter(|i| i.unique) {
+                    work += 1;
+                    if work > TUPLES {
+                        return Ok(None);
+                    }
+                    if index
+                        .fields
+                        .iter()
+                        .any(|f| value_at(record, &f.path).is_none())
+                    {
+                        continue;
+                    }
+                    let Some(key) = kasumi_query::ordered_record_tuple(&index.fields, record)?
+                    else {
+                        return Ok(None);
+                    };
+                    let key = scoped_tuple(name, &index.name, &key);
+                    if removing {
+                        rows.insert(key, None);
+                    } else {
+                        ensure!(
+                            rows.insert(key, Some(id.clone())).flatten().is_none(),
+                            "accepted group tuple has two logical owners"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(rows))
+}
+
 enum Probe {
     Sparse,
     Inconclusive,
@@ -107,15 +228,12 @@ fn probe(
     index: &IndexDefinition,
     record: Record<'_>,
     budget: &mut Budget,
+    overlay: &GroupOverlay,
 ) -> Result<Probe> {
-    let value_at = |path: &str| match record {
-        Record::Live(doc) => doc.body.pointer(path),
-        Record::Archived(doc) => doc.indexed_fields.get(path),
-    };
     if index
         .fields
         .iter()
-        .any(|field| value_at(&field.path).is_none())
+        .any(|field| value_at(record, &field.path).is_none())
     {
         return Ok(Probe::Sparse);
     }
@@ -127,6 +245,19 @@ fn probe(
     hash_part(&mut hash, collection.as_bytes());
     hash_part(&mut hash, index.name.as_bytes());
     let exact = kasumi_query::ordered_record_tuple(&index.fields, record)?;
+    if let Some(key) = &exact {
+        hash_part(&mut hash, key);
+    }
+    if let Some(key) = &exact
+        && !overlay.is_empty()
+        && let Some(owner) = overlay.get(&scoped_tuple(collection, &index.name, key))
+    {
+        return Ok(Probe::Known {
+            fingerprint: hash.finalize().into(),
+            exact,
+            owner: owner.clone(),
+        });
+    }
     if index.fields.len() > 1
         && let Some(key) = &exact
     {
@@ -136,7 +267,6 @@ fn probe(
         let ordinal = indexes
             .compound_ordinal(collection, &index.name)
             .context("compound absent from selected layout")?;
-        hash_part(&mut hash, key);
         let mut native = field_prefix(super::COMPOUND, collection, ordinal);
         native.extend_from_slice(key);
         let owner = reader.with_value(&native, 256, |v| {
@@ -153,14 +283,16 @@ fn probe(
     let mut prefixes = Vec::with_capacity(index.fields.len());
     let mut absent = false;
     for field in &index.fields {
-        let value = value_at(&field.path).context("complete unique tuple lost a field")?;
+        let value = value_at(record, &field.path).context("complete unique tuple lost a field")?;
         let component = FieldValue::predicate(value, field.kind)?;
         let Some(left) = budget.bytes.checked_sub(component.bytes.len()) else {
             return Ok(Probe::Inconclusive);
         };
         budget.bytes = left;
-        hash.update([component.tag]);
-        hash_part(&mut hash, &component.bytes);
+        if exact.is_none() {
+            hash.update([component.tag]);
+            hash_part(&mut hash, &component.bytes);
+        }
         let ordinal = indexes
             .structured_field_ordinal(collection, &field.path)
             .context("unique field absent from selected layout")?;
@@ -249,6 +381,7 @@ pub(super) enum Decision {
     Inconclusive,
 }
 
+#[cfg(test)]
 pub(super) fn prove(
     reader: &TreeReader<'_>,
     indexes: &QueryIndexes,
@@ -256,6 +389,25 @@ pub(super) fn prove(
     new: &TenantState,
     changed: &ChangedIds,
     resolver: Option<&dyn DocumentResolver>,
+) -> Result<Decision> {
+    prove_with_overlay(
+        reader,
+        indexes,
+        old,
+        new,
+        changed,
+        resolver,
+        &GroupOverlay::new(),
+    )
+}
+pub(super) fn prove_with_overlay(
+    reader: &TreeReader<'_>,
+    indexes: &QueryIndexes,
+    old: &TenantState,
+    new: &TenantState,
+    changed: &ChangedIds,
+    resolver: Option<&dyn DocumentResolver>,
+    overlay: &GroupOverlay,
 ) -> Result<Decision> {
     ensure!(
         old.tenant == new.tenant && old.incarnation == new.incarnation,
@@ -312,16 +464,23 @@ pub(super) fn prove(
                     continue;
                 };
                 for index in &unique {
-                    let (key, exact, owner) =
-                        match probe(reader, indexes, name, index, loan.as_record(), &mut budget)? {
-                            Probe::Sparse => continue,
-                            Probe::Inconclusive => return Ok(Decision::Inconclusive),
-                            Probe::Known {
-                                fingerprint,
-                                exact,
-                                owner,
-                            } => (fingerprint, exact, owner),
-                        };
+                    let (key, exact, owner) = match probe(
+                        reader,
+                        indexes,
+                        name,
+                        index,
+                        loan.as_record(),
+                        &mut budget,
+                        overlay,
+                    )? {
+                        Probe::Sparse => continue,
+                        Probe::Inconclusive => return Ok(Decision::Inconclusive),
+                        Probe::Known {
+                            fingerprint,
+                            exact,
+                            owner,
+                        } => (fingerprint, exact, owner),
+                    };
                     if removing {
                         ensure!(
                             owner.as_deref() == Some(id.as_str()),

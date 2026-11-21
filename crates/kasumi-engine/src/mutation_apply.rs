@@ -289,6 +289,7 @@ impl TenantEngine {
                     &next,
                     &changed,
                     self.application_sources.get(),
+                    apply.prior_group_claims(),
                 )?;
                 crate::change_feed_state::append(state, &mut next, &changed)?;
                 Ok(receipt)

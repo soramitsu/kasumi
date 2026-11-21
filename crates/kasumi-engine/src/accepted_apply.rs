@@ -12,6 +12,9 @@ pub(super) struct ApplyOwner<'engine> {
     // A standalone group's last unpublished candidate, which its next member
     // applies to as it would to that candidate published.
     chained: Option<Arc<Generation>>,
+    // Only accepted members contribute IDs. The same union travels to the
+    // group's durable publication and identifies prior unpublished claims.
+    group_changes: ChangedIds,
     // This inline slot receives the same original input/budget alias BEFORE
     // the known tree factory allocates. It is unset for early/idempotent exits.
     _mutation_change_tree: std::sync::OnceLock<kasumi_raft::MutationChangeTreeRetention>,
@@ -40,6 +43,7 @@ impl<'engine> ApplyOwner<'engine> {
             engine,
             previous,
             chained: None,
+            group_changes: ChangedIds::new(),
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
@@ -58,6 +62,7 @@ impl<'engine> ApplyOwner<'engine> {
             engine,
             previous,
             chained: None,
+            group_changes: ChangedIds::new(),
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
@@ -99,6 +104,22 @@ impl<'engine> ApplyOwner<'engine> {
         }
         self.chained = Some(candidate);
         Ok(())
+    }
+
+    pub(super) fn extend_group_changes(&mut self, changed: ChangedIds) {
+        for (name, ids) in changed {
+            self.group_changes.entry(name).or_default().extend(ids);
+        }
+    }
+
+    pub(super) fn take_group_changes(&mut self) -> ChangedIds {
+        std::mem::take(&mut self.group_changes)
+    }
+
+    pub(super) fn prior_group_claims(&self) -> Option<(&Generation, &ChangedIds)> {
+        self.chained
+            .as_ref()
+            .map(|_| (self.previous.as_ref(), &self.group_changes))
     }
 
     /// The last chained candidate, which the group publishes.

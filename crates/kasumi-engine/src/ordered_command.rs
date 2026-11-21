@@ -349,7 +349,6 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
         })?;
         let mut positions = Vec::with_capacity(inputs.len());
         let mut responses = Vec::with_capacity(inputs.len());
-        let mut changed = ChangedIds::new();
         let mut receipts = Vec::new();
         let mut frozen = 0usize;
         for (input, retention) in inputs.into_iter().zip(retained) {
@@ -399,9 +398,7 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                         frozen += 1;
                     }
                     Some(mut candidate) => {
-                        for (name, ids) in prepared.changed {
-                            changed.entry(name).or_default().extend(ids);
-                        }
+                        apply.extend_group_changes(prepared.changed);
                         if let Some(mut publication) = prepared.receipt_publication {
                             // Later members read this pair before it is durable.
                             let view = publication.chained_view()?;
@@ -424,6 +421,7 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                     frozen == 0,
                     "a standalone group mixes frozen and applied members"
                 );
+                let changed = apply.take_group_changes();
                 let mut candidate = apply.take_chained()?;
                 let last = Arc::get_mut(&mut candidate)
                     .ok_or_else(|| anyhow::anyhow!("group candidate escaped"))?;

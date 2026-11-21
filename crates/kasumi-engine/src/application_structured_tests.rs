@@ -828,6 +828,46 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         false,
     );
 
+    // The original native root still names d000 as owner of tuple zero.
+    // The first unpublished member moved it. The next member must see the
+    // release and the newly held tuple in that same logical view.
+    let logical = first.next(vec![("d000".to_owned(), body(55))], &[], None);
+    let touched = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["d000".to_owned()]))]);
+    let changed = BTreeMap::from([("docs".to_owned(), BTreeSet::from(["later".to_owned()]))]);
+    let override_rows =
+        unique::group_overlay(&first.state, &logical.state, &touched, &changed, None)
+            .unwrap()
+            .unwrap();
+    assert_eq!(override_rows.len(), 4);
+    for (value, expected) in [
+        (0, unique::Decision::Accepted),
+        (55, unique::Decision::Conflict("aaa_serial_group".into())),
+    ] {
+        let mut next = logical.state.clone();
+        next.revision += 1;
+        next.collections.get_mut("docs").unwrap().documents.insert(
+            "later".into(),
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
+                id: "later".into(),
+                version: next.revision,
+                body: body(value),
+            }))),
+        );
+        assert_eq!(
+            unique::prove_with_overlay(
+                &reader,
+                &logical.indexes,
+                &logical.state,
+                &next,
+                &changed,
+                None,
+                &override_rows
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
     // A matching digest for oversized tuples forces canonical comparison.
     let long = "x".repeat(kasumi_query::MAX_ORDERED_TUPLE_BYTES + 1);
     let over = json!({"group":long,"serial":100});

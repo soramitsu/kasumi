@@ -307,10 +307,7 @@ async fn standalone_group_commit_validates_unique_indexes_against_prior_members(
                 schema: json!({"type":"object"}),
                 indexes: vec![IndexDefinition {
                     name: "value".into(),
-                    fields: vec![IndexField {
-                        path: "/value".into(),
-                        kind: ScalarType::String,
-                    }],
+                    fields:["/domain","/value"].into_iter().map(|path|IndexField{path:path.into(),kind:ScalarType::String}).collect(),
                     unique: true,
                     text: None,
                 }],
@@ -319,34 +316,32 @@ async fn standalone_group_commit_validates_unique_indexes_against_prior_members(
         )
         .await
         .unwrap();
-    let batches = ["a", "b"].map(|id| MutationBatch {
-        idempotency_key: id.into(),
-        read_set: vec![],
-        operations: vec![Mutation::Put {
-            collection: "unique".into(),
-            id: id.into(),
-            body: json!({"value":"same"}),
-            expected: Precondition::Absent,
+    // The snapshot deliberately precedes the group. Recovery must reapply
+    // the same original commands individually after the native store closes.
+    fixture.db.group.snapshot().await.unwrap();
+    let policy=fixture.db.engine.generation().unwrap().state.policy.as_ref().clone();
+    let put=|key:&str,id:&str,value:&str| MutationBatch {
+        idempotency_key:key.into(),read_set:vec![],operations:vec![Mutation::Put {
+            collection:"unique".into(),id:id.into(),body:json!({"domain":"same","value":value}),expected:Precondition::Any,
         }],
-    });
-    let before = fixture.db.group.fixture_local_joined_appends().unwrap();
-    let responses = queued_group(&fixture, batches.into(), None).await;
-    assert!(responses[0].is_ok());
-    assert_eq!(responses[1].as_ref().unwrap_err().code, ErrorCode::Conflict);
-    assert_eq!(
-        fixture
-            .db
-            .group
-            .fixture_local_joined_appends()
-            .unwrap()
-            .groups,
-        before.groups + 1
-    );
-    assert_eq!(
-        fixture.db.engine.generation().unwrap().state.document_count,
-        1
-    );
-    fixture.close().await;
+    };
+    let batches=vec![put("a-first","a","x"),put("b-conflict","b","x"),put("a-move","a","y"),put("b-after-release","b","x"),put("c-conflict","c","y")];
+    let before=fixture.db.group.fixture_local_joined_appends().unwrap();
+    let responses=queued_group(&fixture,batches.clone(),None).await;
+    assert_eq!(responses.iter().map(Result::is_ok).collect::<Vec<_>>(),[true,false,true,true,false]);
+    for index in [1,4] {assert_eq!(responses[index].as_ref().unwrap_err(),&kasumi_query::unique_conflict("value"));}
+    assert_eq!(fixture.db.group.fixture_local_joined_appends().unwrap().groups,before.groups+1);
+    assert_eq!(fixture.db.engine.generation().unwrap().state.document_count,2);
+    let reopened=reopen_group_fixture(fixture,policy,false).await;
+    for (batch,response) in batches.into_iter().zip(responses) {
+        assert_eq!(reopened.db.mutate(reopened.context.clone(),batch).await,response);
+    }
+    let generation=reopened.db.engine.generation().unwrap();
+    let source=generation.document_source("unique").unwrap();
+    let rows=kasumi_query::DocumentSource::ordered_unique_window(&source,0,std::ops::Bound::Unbounded,std::ops::Bound::Unbounded,false,&kasumi_query::QueryCancellation::default()).unwrap().expect("reopened ordered group root");
+    assert_eq!(rows.iter().map(|(_,id)|id.as_str()).collect::<Vec<_>>(),["b","a"]);
+    drop(source);drop(generation);
+    reopened.close().await;
 }
 
 fn group_feed_bytes(generation: &crate::Generation) -> Vec<u8> {
