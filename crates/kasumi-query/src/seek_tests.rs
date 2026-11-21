@@ -669,6 +669,14 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
             cancellation: &QueryCancellation,
             lend: impl for<'a> FnOnce(Option<Record<'a>>) -> Result<T>,
         ) -> ReadResult<T, Self::Failure> {
+            if self.ranked.is_some()
+                && let Some(projection) = &self.source.indexes.seek_projection
+                && let Some(roots) = &projection.worker_wide
+            {
+                assert!(self.rank_reads.get() > 0);
+                assert!(roots.lock().unwrap().is_none(), "ranked document retained wide tuples");
+                assert!(projection.fallback.lock().unwrap().is_none(), "ranked document retained short tuples");
+            }
             self.source.with_record(id, version, cancellation, lend)
         }
         fn header_after<T>(
