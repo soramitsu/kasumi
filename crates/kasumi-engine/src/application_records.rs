@@ -636,6 +636,9 @@ pub(crate) fn visit_all(
             crate::application_structured::visit_compound_rows(&generation.indexes, &mut emit)?;
         }
     }
+    if layout >= kasumi_store::application_manifest::RANKED_COMPOUND_LAYOUT {
+        crate::application_structured::ranked::publish(&generation.indexes, &mut emit)?;
+    }
     Ok(())
 }
 

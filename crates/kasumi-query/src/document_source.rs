@@ -157,6 +157,27 @@ pub trait DocumentSource: crate::CollectionRecords {
     fn has_ordered_unique_source(&self) -> bool {
         false
     }
+    /// A selected checkpoint with every compound tuple in complete order.
+    fn ranked_compound_count(
+        &self,
+        _index: usize,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<u64>, Self::Failure> {
+        Ok(None)
+    }
+    /// Read up to `ORDERED_TUPLE_WINDOW` consecutive owners from `[start, end)`.
+    /// Begin at `start` when ascending and `end - 1` when descending. A
+    /// nonempty interval in a selected ranked index must return an owner.
+    fn ranked_compound_window(
+        &self,
+        _index: usize,
+        _start: u64,
+        _end: u64,
+        _descending: bool,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+        Ok(None)
+    }
     /// Return at most one window of representable compound tuples in native order.
     /// The planner merges longer keys from the same generation into that order.
     /// None means the directory is absent at this generation before any row
@@ -262,6 +283,50 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     }
     fn has_ordered_unique_source(&self) -> bool {
         self.source.has_ordered_unique_source()
+    }
+    fn ranked_compound_count(
+        &self,
+        index: usize,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<u64>, Self::Failure> {
+        self.check()?;
+        let count = self.source.ranked_compound_count(index, cancel)?;
+        self.check()?;
+        Ok(count)
+    }
+    fn ranked_compound_window(
+        &self,
+        index: usize,
+        start: u64,
+        end: u64,
+        descending: bool,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+        self.check()?;
+        let rows = self
+            .source
+            .ranked_compound_window(index, start, end, descending, cancel)?;
+        self.check()?;
+        if let Some(rows) = &rows {
+            let length = end
+                .checked_sub(start)
+                .map(|n| n.min(crate::ORDERED_TUPLE_WINDOW as u64));
+            if length != Some(rows.len() as u64)
+                || rows.iter().enumerate().any(|(offset, row)| {
+                    let expected = if descending {
+                        end - 1 - offset as u64
+                    } else {
+                        start + offset as u64
+                    };
+                    row.rank != expected || kasumi_types::validate_name(&row.id).is_err()
+                })
+            {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "invalid ranked compound window").into(),
+                );
+            }
+        }
+        Ok(rows)
     }
     fn ordered_unique_window(
         &self,

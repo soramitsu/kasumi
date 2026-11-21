@@ -488,12 +488,29 @@ impl SelectedApplication {
         collections: impl ExactSizeIterator<Item = &'n str>,
         read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
     ) -> Result<Option<T>> {
+        self.with_checkpoint_tuples_since(
+            shared,
+            state,
+            collections,
+            kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT,
+            read,
+        )
+    }
+
+    pub(crate) fn with_checkpoint_tuples_since<'n, T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &kasumi_types::TenantState,
+        collections: impl ExactSizeIterator<Item = &'n str>,
+        minimum: u32,
+        read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
         if self.serving_revision(state.revision_base) != Some(state.revision) {
             return Ok(None);
         }
         let exact = self.has_exact_snapshot(state.revision_base, state.revision);
         self.with_base_snapshot_records(shared, state, |tree, memory, layout, revision| {
-            if layout < kasumi_store::application_manifest::ORDERED_TUPLE_LAYOUT {
+            if layout < minimum {
                 return Ok(None);
             }
             if !exact {

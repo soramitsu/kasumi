@@ -43,6 +43,9 @@ pub(crate) use incremental::seed as seed_for_test;
 #[path = "application_compound_delta.rs"]
 pub(crate) mod compound_delta;
 
+#[path = "application_ranked_compounds.rs"]
+pub(crate) mod ranked;
+
 #[path = "application_unique.rs"]
 pub(crate) mod unique;
 
