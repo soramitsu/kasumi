@@ -1039,3 +1039,33 @@ The three native targets share this selection. Release acceptance remains open.
 | G09, G10 | One original Linux Control quorum reopened the same Prepare phase at revision 9. The Authority quorum returned the original enrollment receipt and no PrepareTarget receipt. Missing, wrong and subsequently corrected target readers in a separate trial all left materialization unresolved at revision 21. With the enrolled readers present at startup, a fresh 12-process trial confirmed materialization on all three targets by revision 27 and Start on all three by revision 38. Its Initialize became unresolved. The inspection replica needed the original three Start records and the Initialize record. `903e297b` registers this exact history when starting the inspection replica. With the original Linux request bytes, both versions of the native callback registry were exercised on an encrypted store. The earlier version withheld the four records in the startup path. The fix authorized them and rejected a foreign operation, principal and certificate. Original native observations `947c06f1ef143348213ee529806ae9e7f4bf99bbf39a726777a9903941085832`. Callback comparison `95c3e7af7f8d48b4a8ac971b32408bfa2c6f1658db2d4323491552c5e122ba5b`. Distributed completion, original-document readback and physical deletion after cold reopen still require native evidence. |
 | G11 | `fc6a1798` declares the two stdio-only MCP test targets. All 520 product cases and 12 dedicated stdio cases passed on the corrected MCP tree. `1ae9cbf8` verifies merged and standalone Rustdoc groups from the same launch. `b489f39b` restores the bounded OpenRaft tests' crate-private access to the sealed storage trait. Native macOS strict workspace Clippy passed on that tree, and its Python suite ran 520 cases with three skips. On Linux ARM64 the production Server compiler received SIGKILL after 1,129.65 s in the build step. Peak child RSS was 6,470,772 KiB. That attempt produced no accepted binaries. The first-release inventory continues to require all 19 domains and 27 target-specific results. |
 | G12–G14 | Two source-package assemblies of `903e297b` produced 37,841,877 bytes apiece, SHA-256 `ca88c9fb097bc895032b491500b7d51fa300ef8f74ed5636da9be3d963c0be29`. Native Linux x86-64, reserved ARM64 capacity, the uninterrupted 86,400-second soak, final interoperability and independently reproduced native deliverables remain open. The BOI environment owner controls live installation. |
+
+
+### November 21 frozen source and native storage incident
+
+The common qualification source is `0fea5408909db77751b39cea74a9db505f126a4b`,
+tree `e8961347684cea0ce1852c434122bb71b24e5164`. Its 2,395-file Git archive
+is 72,570,880 bytes with SHA-256
+`ce243e92a99f574af639712917e02d9e2be6ad685e09c537b88f6c4c5ad573a1`.
+The complete acceptance manifest remains open.
+
+| Gates | Observed result | Outstanding proof |
+| --- | --- | --- |
+| G01 | The candidate passed eight native KV and Store deployed-format cases. KV compacted, wrote and reopened the encrypted fixtures. Store checked the envelopes, keyrings, archive chain and backup marker. | Run both deployed revisions through the candidate Server lifecycle and verify cold restart. |
+| G02 | Commits `184c7f4e` and `f32fc1e2` retain unchanged unique keys across pinned generations. A 1,024-document edit with 16 unchanged indexes reduced measured live overhead from 4,295,788 to 9,964 bytes. All 124 enabled Query tests passed. Four independent processes read and wrote the same encrypted database using the predecessor and updated binaries. | Complete remaining applying-generation ownership and reference capacity workloads. |
+| G03, G07 | The earlier ceb83a1b MinIO restore required 3,129,344 scratch bytes with 2,797,568 available after reservations. A retained drain timed out after 3,601.424 seconds. Cold status reopened the same operation in materialization. | Recover the original operation and verify restored documents on the final products. |
+| G05, G13 | The Linux run resolved ordinal 17,531 to the original durable aborted outcome. Its journal reached 17,650 rows before a fresh virtual disk I/O failure. Btrfs became read-only. The externally preserved journal is 7,916,635 bytes. The copy mounted without tree-log replay contains 17,647 rows and is 1,345 bytes shorter. | Compare normal log replay against the external witness on a private writable copy. Complete 100,001 sessions, both crash cuts and independent cleanup enumeration. |
+| G09 | Three enrolled targets materialized and started on 1d133448. Control reached Initialize revision 149. The attempt ended when a protected status read expired. Both native Engine regressions for the shortened issuer dispatch ticket passed. Commit `0fea5408` acquires the source response before the restart fixture starts the actual recovery. | Complete stopped-target cleanup, fresh membership inspection, fault cases and terminal readback on the combined candidate. |
+| G11 | The candidate dependency scan checked 483 packages with zero vulnerabilities and one reviewed LRU maintenance warning. The fresh Linux run passed 12 dependency, 11 scanner and two socket-partition cases. The applicable 23 cases passed on macOS. The upstream 33-command suite passed on b489f39b. A later upstream link failed with ENOSPC. The candidate passed fmt. Its initial Python attempt exited 1. | Finish exact-candidate strict Clippy, focused and full workspace runs, and the installed receipts across 19 domains and 27 target results. |
+| G12, G14 | All three macOS ARM64 production binaries compiled from the frozen source. Two source-package assemblies independently produced 37,844,262 bytes at SHA-256 `7d949645aea2f9babaef3b4020c72fd81d0fec980ce262d082a59dd91ac15ffb` on the same host. | Complete native Linux x86-64, reserved Linux ARM64, independent builds, the 24-hour soak and release artifacts. |
+
+The failed development guest had two CPUs, 16 GiB RAM and a 200 GiB virtual disk.
+An atomic copy preserves all 214,748,364,800 bytes of the virtual device. A
+separate rescue guest mounted the copied ext4 partition and nested Btrfs
+read-only with journal replay disabled. The original disk and the independent
+17,650-row journal remain available for comparison.
+
+The macOS ARM64 `kasumid`, `kasumictl` and `kasumi-authority` SHA-256 hashes
+are `3977ed130f4a300d3f476f61e8cb3e74cd1c2783c1b31fbb93e6330299fa158c`,
+`4953dcf6b15d96973d3ce767f052c0d5a10e57a97402c12d269b6c66fb13a3ce`
+and `587cb607f896707092d4a6a184d07dbe750a1658cd8df1997f71817f9e6dd8f6`.
