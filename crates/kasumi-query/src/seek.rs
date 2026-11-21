@@ -34,6 +34,9 @@ pub(crate) struct Projection {
     // The worker exclusively owns this projection. Keep the original captured
     // fallback until its actual planned native read has returned successfully.
     fallback: std::sync::Mutex<Option<Vec<TupleMap>>>,
+    // A registered Engine worker executes exactly one page. Move its wide
+    // fallback into that page only after the request has resolved its range.
+    worker_wide: Option<std::sync::Mutex<Option<Vec<TupleMap>>>>,
 }
 
 impl QueryIndexes {
@@ -43,6 +46,20 @@ impl QueryIndexes {
     /// postings and oversized tuples keep their canonical fallback.
     #[doc(hidden)]
     pub fn published_seek_projection(&self, collection: &str) -> Option<Self> {
+        self.seek_projection_for(collection, false)
+    }
+
+    /// A registered worker serves exactly one request, including its decoded
+    /// continuation. Oversized keys outside its page can be released.
+    #[doc(hidden)]
+    pub fn published_seek_worker_projection(&self, collection: &str) -> Option<Self> {
+        self.seek_projection_for(collection, true)
+    }
+
+    fn seek_projection_for(&self, collection: &str, worker: bool) -> Option<Self> {
+        if self.seek_projection.is_some() {
+            return None;
+        }
         let source = self.collections.get(collection)?;
         let mut selected = crate::CollectionIndexes::clone(source);
         selected.text = None;
@@ -64,11 +81,22 @@ impl QueryIndexes {
             .filter(|index| index.fields.len() > 1)
             .map(|index| std::mem::take(index.entries.as_mut().expect("compound tuple root")))
             .collect();
+        let worker_wide = worker.then(|| {
+            let roots = selected
+                .structured
+                .unique
+                .values_mut()
+                .filter(|index| index.fields.len() > 1)
+                .map(|index| std::mem::take(&mut index.overflow))
+                .collect();
+            std::sync::Mutex::new(Some(roots))
+        });
         Some(Self {
             collections: BTreeMap::from([(collection.to_owned(), std::sync::Arc::new(selected))]),
             text_residency: crate::TextResidency::Directory,
             seek_projection: Some(Projection {
                 fallback: std::sync::Mutex::new(Some(fallback)),
+                worker_wide,
             }),
             structured_layout: std::sync::OnceLock::from(self.structured_layout_sha256()),
         })
@@ -171,7 +199,11 @@ impl QueryIndexes {
         let mut more = false;
         if !empty(&range.lower, &range.upper) {
             let iterator_bytes = crate::workspace::imbl_iterator_bytes()?;
-            let iterator_bytes = if index.overflow.is_empty() {
+            let worker_wide = self
+                .seek_projection
+                .as_ref()
+                .and_then(|r| r.worker_wide.as_ref());
+            let iterator_bytes = if index.overflow.is_empty() && worker_wide.is_none() {
                 iterator_bytes
             } else {
                 allocation::add(iterator_bytes, iterator_bytes)?
@@ -306,13 +338,67 @@ impl QueryIndexes {
                     }
                 })
                 .peekable();
-                let mut wide = (!index.overflow.is_empty()).then(|| {
-                    index
-                        .overflow
-                        .range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
+                let mut overflow_charge = 0;
+                let selected_wide = if let Some(captured) = worker_wide {
+                    let mut roots = captured
+                        .lock()
+                        .map_err(|_| {
+                            Error::new(
+                                ErrorCode::Unavailable,
+                                "captured wide seek fallback poisoned",
+                            )
+                        })?
+                        .take()
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorCode::Unavailable,
+                                "registered seek worker already consumed its page",
+                            )
+                        })?;
+                    let selected = indexes
+                        .structured
+                        .unique
+                        .values()
+                        .filter(|u| u.fields.len() > 1)
+                        .position(|u| std::ptr::eq(u, index))
+                        .map(|ordinal| roots.swap_remove(ordinal));
+                    drop(roots);
+                    if let Some(root) = selected {
+                        let (rows, charge) = WideRows::for_page(
+                            root,
+                            &range,
+                            descending,
+                            bound.rows,
+                            cancellation,
+                            memory,
+                        )?;
+                        overflow_charge = charge;
+                        Some(rows)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let root = match &selected_wide {
+                    Some(WideRows::Page(_)) => None,
+                    Some(WideRows::Full(root)) => Some(root),
+                    None => Some(&index.overflow),
+                };
+                let mut tree = root.filter(|root| !root.is_empty()).map(|root| {
+                    root.range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()))
                 });
-                let mut wide =
-                    std::iter::from_fn(|| directed_next(wide.as_mut()?, descending)).peekable();
+                let mut selected = match &selected_wide {
+                    Some(WideRows::Page(rows)) => Some(rows.iter()),
+                    _ => None,
+                };
+                let mut wide = std::iter::from_fn(|| {
+                    if let Some(rows) = &mut selected {
+                        return rows.next().map(|(key, id)| (key, id));
+                    }
+                    directed_next(tree.as_mut()?, descending)
+                })
+                .peekable();
                 let mut entries = std::iter::from_fn(|| {
                     let Some((key, _)) = wide.peek() else {
                         return ordinary.next();
@@ -395,6 +481,9 @@ impl QueryIndexes {
                         memory.release(bytes)?;
                     }
                 }
+                drop(entries);
+                drop(selected_wide);
+                memory.release(overflow_charge)?;
                 memory.release(native_workspace)?;
             }
             memory.release(iterator_bytes)?;
@@ -416,6 +505,69 @@ impl QueryIndexes {
         }
         cancellation.check()?;
         Ok((SeekPage { rows, last_key }, retained))
+    }
+}
+
+enum WideRows {
+    Full(TupleMap),
+    Page(Vec<(Vec<Scalar>, String)>),
+}
+
+impl WideRows {
+    fn for_page<W: QueryWorkspace>(
+        root: TupleMap,
+        range: &KeyRange,
+        descending: bool,
+        rows: usize,
+        cancel: &QueryCancellation,
+        memory: &mut QueryMemory<W>,
+    ) -> Result<(Self, u64)> {
+        // One lookahead decides whether a continuation is needed. Limit
+        // optional copying even when a request asks for a very large page.
+        let limit = rows.saturating_add(1);
+        if limit > 256 || root.len() <= limit {
+            return Ok((Self::Full(root), 0));
+        }
+        let window = || {
+            let mut entries =
+                root.range::<_, Vec<Scalar>>((range.lower.as_ref(), range.upper.as_ref()));
+            std::iter::from_fn(move || directed_next(&mut entries, descending)).take(limit)
+        };
+        let mut bytes = 0;
+        let mut count = 0usize;
+        for (key, id) in window() {
+            cancel.check()?;
+            count += 1;
+            bytes = allocation::add(bytes, allocation::vec_bytes::<Scalar>(key.len())?)?;
+            bytes = allocation::add(bytes, allocation::string_clone_bytes(id)?)?;
+            for part in key {
+                let part_bytes = match part {
+                    Scalar::String(value) => allocation::string_clone_bytes(value)?,
+                    Scalar::Number(_) => crate::scalar::PROVISIONAL_DECIMAL_KEY_BYTES,
+                    _ => 0,
+                };
+                bytes = allocation::add(bytes, part_bytes)?;
+            }
+        }
+        bytes = allocation::add(
+            bytes,
+            allocation::vec_bytes::<(Vec<Scalar>, String)>(count)?,
+        )?;
+        if bytes > 1 << 20 {
+            return Ok((Self::Full(root), 0));
+        }
+        if let Err(error) = memory.reserve(bytes) {
+            if error.code == ErrorCode::ResourceExhausted {
+                return Ok((Self::Full(root), 0));
+            }
+            return Err(error);
+        }
+        let mut rows = Vec::with_capacity(count);
+        for (key, id) in window() {
+            cancel.check()?;
+            rows.push((key.clone(), id.clone()));
+        }
+        Ok((Self::Page(rows), bytes))
     }
 }
 

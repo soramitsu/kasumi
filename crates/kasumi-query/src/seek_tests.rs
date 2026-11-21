@@ -665,7 +665,8 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         })
         .unwrap();
     assert_eq!(compact.len(), 48);
-    let indexes = indexes.published_seek_projection("ordered").unwrap();
+    let original = indexes;
+    let indexes = original.published_seek_projection("ordered").unwrap();
     let capture = indexes.seek_projection.as_ref().unwrap();
     assert_eq!(
         capture.fallback.lock().unwrap().as_ref().unwrap()[0].len(),
@@ -752,6 +753,67 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
             .len(),
         8
     );
+    // Each production page has its own registered worker. Verify an actual
+    // continuation after a bounded wide slice in both traversal directions.
+    for descending in [false, true] {
+        let req = QueryRequest::new("ordered")
+            .filter(Filter::new().eq("/scope", "g"))
+            .limit(3)
+            .paging(Paging::Seek);
+        let req = if descending {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let worker = original
+                .published_seek_worker_projection("ordered")
+                .unwrap();
+            let root = worker
+                .seek_projection
+                .as_ref()
+                .unwrap()
+                .worker_wide
+                .as_ref()
+                .unwrap();
+            assert_eq!(root.lock().unwrap().as_ref().unwrap()[0].len(), 8);
+            let registered = Mixed {
+                source: ResidentSource {
+                    collection: &collections["ordered"],
+                    indexes: &worker,
+                },
+                compact: source.compact.clone(),
+                reads: Default::default(),
+            };
+            let page = worker
+                .seek_page(
+                    &registered,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert!(root.lock().unwrap().is_none());
+            seen.extend(
+                page.rows
+                    .into_iter()
+                    .map(|row| row.body["key"].as_str().unwrap().to_owned()),
+            );
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if descending {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected);
+    }
 }
 
 #[test]
