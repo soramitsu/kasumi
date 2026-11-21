@@ -1117,7 +1117,7 @@ pub(crate) fn ordered_unique_window(
     lower: Bound<&[u8]>,
     upper: Bound<&[u8]>,
     descending: bool,
-    mut check: impl FnMut() -> Result<()>,
+    mut keep_reading: impl FnMut() -> bool,
 ) -> Result<kasumi_query::OrderedTupleWindow> {
     let prefix = field_prefix(COMPOUND, collection, index);
     let mut start_key = prefix.clone();
@@ -1148,7 +1148,9 @@ pub(crate) fn ordered_unique_window(
         Direction::Forward
     };
     reader.scan(start, direction, &mut |key, value| {
-        check()?;
+        if !keep_reading() {
+            return Ok(false);
+        }
         let Some(key) = key.strip_prefix(prefix.as_slice()) else {
             return Ok(false);
         };

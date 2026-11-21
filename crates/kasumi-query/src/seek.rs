@@ -231,12 +231,10 @@ impl QueryIndexes {
                         more = true;
                         break;
                     }
-                    if entries.peek().is_some_and(|r| r.is_err()) {
-                        return Err(entries
-                            .next()
-                            .expect("peeked error")
-                            .err()
-                            .expect("peeked error"));
+                    if matches!(entries.peek(), Some(Err(_)))
+                        && let Some(Err(failure)) = entries.next()
+                    {
+                        return Err(failure);
                     }
                     let has_more = entries.peek().is_some();
                     let copied =

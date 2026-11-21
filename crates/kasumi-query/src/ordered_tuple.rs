@@ -51,7 +51,7 @@ fn part(out: &mut Vec<u8>, value: FieldValue<'_>) -> bool {
     if payload.len() > MAX_ORDERED_TUPLE_BYTES.saturating_sub(out.len()) {
         return false;
     }
-    let size = if value.tag < 4 || value.tag > 5 {
+    let size = if !matches!(value.tag, 4 | 5) {
         1
     } else {
         3 + payload.len() + payload.iter().filter(|b| **b == 0).count()

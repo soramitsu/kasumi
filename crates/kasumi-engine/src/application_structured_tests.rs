@@ -723,7 +723,7 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     let view = fixture.store.read_view().unwrap();
     let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
     let read = |lower, upper, descending| {
-        ordered_unique_window(&reader, "docs", 0, lower, upper, descending, || Ok(())).unwrap()
+        ordered_unique_window(&reader, "docs", 0, lower, upper, descending, || true).unwrap()
     };
     let page = read(Bound::Unbounded, Bound::Unbounded, false);
     assert_eq!(
@@ -751,6 +751,21 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
             .collect::<Vec<_>>(),
         ["d017", "d016", "d015", "d014", "d013"]
     );
+    let mut visits = 0;
+    let canceled = ordered_unique_window(
+        &reader,
+        "docs",
+        0,
+        Bound::Unbounded,
+        Bound::Unbounded,
+        false,
+        || {
+            visits += 1;
+            visits <= 2
+        },
+    )
+    .unwrap();
+    assert_eq!((visits, canceled.len()), (3, 2));
     let candidate = |rows: Vec<(&str, Value)>| {
         let mut next = first.state.clone();
         next.revision += 1;
@@ -847,6 +862,20 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
     }
     let failed = Failing(&view);
     let broken = TreeReader::new(&failed, &manifest.page_space, manifest.records, None).unwrap();
+    let page_error = ordered_unique_window(
+        &broken,
+        "docs",
+        0,
+        Bound::Unbounded,
+        Bound::Unbounded,
+        false,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        page_error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
     let (next, changed) = candidate(vec![("same", body(1))]);
     let error =
         unique::prove(&broken, &first.indexes, &first.state, &next, &changed, None).unwrap_err();

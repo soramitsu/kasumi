@@ -449,21 +449,21 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                     upper,
                     descending,
                     || {
-                        if let Err(error) =
-                            cancellation.check().and_then(|()| self.check_deadline())
-                        {
-                            interrupted = Some(error);
-                            anyhow::bail!("ordered tuple read interrupted");
-                        }
-                        Ok(())
+                        interrupted = cancellation
+                            .check()
+                            .and_then(|()| self.check_deadline())
+                            .err();
+                        interrupted.is_none()
                     },
                 )
             },
         );
+        let result =
+            result.map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
         if let Some(error) = interrupted {
             return Err(error.into());
         }
-        result.map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))
+        Ok(result)
     }
 
     fn visit_field_posting(
