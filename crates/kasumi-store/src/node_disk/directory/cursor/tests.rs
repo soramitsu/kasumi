@@ -274,7 +274,7 @@ fn fd_names_inode(fd: i32, identity: Identity) -> bool {
         return false;
     }
     let result = unsafe { result.assume_init() };
-    (result.st_dev as u64, result.st_ino) == (identity.0, identity.1)
+    i128::from(result.st_dev) == i128::from(identity.0) && result.st_ino == identity.1
 }
 #[test]
 fn stream_fd_and_buffer_close_before_cursor_credit_and_before_directory_owner_drain() {
