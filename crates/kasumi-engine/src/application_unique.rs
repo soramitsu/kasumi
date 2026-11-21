@@ -63,7 +63,7 @@ pub(crate) fn validate_ordinary(
                         };
                         overlay
                     } else {
-                        BTreeMap::new()
+                        GroupOverlay::default()
                     };
                     prove_with_overlay(
                         ClaimTree { reader, fields },
@@ -111,7 +111,52 @@ impl Budget {
     }
 }
 
-type GroupOverlay = BTreeMap<Vec<u8>, Option<String>>;
+struct WideOverride {
+    collection: String,
+    index: String,
+    id: String,
+    removing: bool,
+}
+
+#[derive(Default)]
+pub(super) struct GroupOverlay<'a> {
+    points: BTreeMap<Vec<u8>, Option<String>>,
+    wide: BTreeMap<[u8; 32], Vec<WideOverride>>,
+    // Reopen the recorded participant's immutable projected value on a
+    // digest match. No document or arbitrarily wide tuple is kept here.
+    base: Option<&'a TenantState>,
+    current: Option<&'a TenantState>,
+    resolver: Option<&'a dyn DocumentResolver>,
+}
+
+#[cfg(test)]
+impl GroupOverlay<'_> {
+    pub(super) fn len(&self) -> usize {
+        self.points.len() + self.wide.values().map(Vec::len).sum::<usize>()
+    }
+}
+
+fn wide_fingerprint(
+    collection: &str,
+    index: &IndexDefinition,
+    record: Record<'_>,
+    bytes: &mut usize,
+) -> Result<Option<[u8; 32]>> {
+    let mut hash = Sha256::new();
+    hash_part(&mut hash, collection.as_bytes());
+    hash_part(&mut hash, index.name.as_bytes());
+    for field in &index.fields {
+        let raw = value_at(record, &field.path).context("complete group tuple lost a field")?;
+        let value = FieldValue::predicate(raw, field.kind)?;
+        let Some(left) = bytes.checked_sub(value.bytes.len()) else {
+            return Ok(None);
+        };
+        *bytes = left;
+        hash.update([value.tag]);
+        hash_part(&mut hash, &value.bytes);
+    }
+    Ok(Some(hash.finalize().into()))
+}
 fn scoped_tuple(collection: &str, index: &str, tuple: &[u8]) -> Vec<u8> {
     let mut key = Vec::with_capacity(4 + collection.len() + index.len() + tuple.len());
     for name in [collection, index] {
@@ -131,18 +176,24 @@ fn value_at<'a>(record: Record<'a>, path: &str) -> Option<&'a serde_json::Value>
 /// Fold the admitted prior members into a bounded set of point overrides
 /// relative to the last physically published directory. All its old owners
 /// leave before any of the group's current owners are installed.
-pub(super) fn group_overlay(
-    base: &TenantState,
-    current: &TenantState,
+pub(super) fn group_overlay<'a>(
+    base: &'a TenantState,
+    current: &'a TenantState,
     touched: &ChangedIds,
     changed: &ChangedIds,
-    resolver: Option<&dyn DocumentResolver>,
-) -> Result<Option<GroupOverlay>> {
+    resolver: Option<&'a dyn DocumentResolver>,
+) -> Result<Option<GroupOverlay<'a>>> {
     ensure!(
         base.tenant == current.tenant && base.incarnation == current.incarnation,
         "grouped unique source differs"
     );
-    let mut rows = GroupOverlay::new();
+    let mut rows = GroupOverlay {
+        base: Some(base),
+        current: Some(current),
+        resolver,
+        ..Default::default()
+    };
+    let mut bytes = SCALAR_BYTES;
     let mut work = 0;
     let mut documents = DOCUMENTS;
     for name in changed.keys() {
@@ -188,14 +239,26 @@ pub(super) fn group_overlay(
                     }
                     let Some(key) = kasumi_query::ordered_record_tuple(&index.fields, record)?
                     else {
-                        return Ok(None);
+                        let Some(key) = wide_fingerprint(name, index, record, &mut bytes)? else {
+                            return Ok(None);
+                        };
+                        rows.wide.entry(key).or_default().push(WideOverride {
+                            collection: name.clone(),
+                            index: index.name.clone(),
+                            id: id.clone(),
+                            removing,
+                        });
+                        continue;
                     };
                     let key = scoped_tuple(name, &index.name, &key);
                     if removing {
-                        rows.insert(key, None);
+                        rows.points.insert(key, None);
                     } else {
                         ensure!(
-                            rows.insert(key, Some(id.clone())).flatten().is_none(),
+                            rows.points
+                                .insert(key, Some(id.clone()))
+                                .flatten()
+                                .is_none(),
                             "accepted group tuple has two logical owners"
                         );
                     }
@@ -251,7 +314,7 @@ fn probe(
     index: &IndexDefinition,
     record: Record<'_>,
     budget: &mut Budget,
-    overlay: &GroupOverlay,
+    overlay: &GroupOverlay<'_>,
 ) -> Result<Probe> {
     let reader = source.reader;
     if index
@@ -273,14 +336,62 @@ fn probe(
         hash_part(&mut hash, key);
     }
     if let Some(key) = &exact
-        && !overlay.is_empty()
-        && let Some(owner) = overlay.get(&scoped_tuple(collection, &index.name, key))
+        && !overlay.points.is_empty()
+        && let Some(owner) = overlay
+            .points
+            .get(&scoped_tuple(collection, &index.name, key))
     {
         return Ok(Probe::Known {
             fingerprint: hash.finalize().into(),
             exact,
             owner: owner.clone(),
         });
+    }
+    if exact.is_none() && !overlay.wide.is_empty() {
+        let Some(key) = wide_fingerprint(collection, index, record, &mut budget.bytes)? else {
+            return Ok(Probe::Inconclusive);
+        };
+        if let Some(claims) = overlay.wide.get(&key) {
+            let mut matched = false;
+            let mut owner = None;
+            for claim in claims
+                .iter()
+                .filter(|c| c.collection == collection && c.index == index.name)
+            {
+                let state = if claim.removing {
+                    overlay.base
+                } else {
+                    overlay.current
+                }
+                .context("group tuple lost its source")?;
+                let collection = state
+                    .collections
+                    .get(collection)
+                    .context("group tuple collection absent")?;
+                let prior =
+                    index_source::record(collection, &claim.id, state.revision, overlay.resolver)
+                        .map_err(index_source::into_anyhow)?
+                        .context("group tuple owner absent")?;
+                match same_oversized(index, prior.as_record(), record, budget)? {
+                    None => return Ok(Probe::Inconclusive),
+                    Some(false) => continue,
+                    Some(true) => matched = true,
+                }
+                if !claim.removing {
+                    ensure!(
+                        owner.replace(claim.id.clone()).is_none(),
+                        "accepted group tuple has two logical owners"
+                    );
+                }
+            }
+            if matched {
+                return Ok(Probe::Known {
+                    fingerprint: key,
+                    exact,
+                    owner,
+                });
+            }
+        }
     }
     if index.fields.len() > 1
         && let Some(key) = &exact
@@ -523,7 +634,7 @@ pub(super) fn prove(
         new,
         changed,
         resolver,
-        &GroupOverlay::new(),
+        &GroupOverlay::default(),
     )
 }
 pub(super) fn prove_with_overlay(
@@ -533,7 +644,7 @@ pub(super) fn prove_with_overlay(
     new: &TenantState,
     changed: &ChangedIds,
     resolver: Option<&dyn DocumentResolver>,
-    overlay: &GroupOverlay,
+    overlay: &GroupOverlay<'_>,
 ) -> Result<Decision> {
     ensure!(
         old.tenant == new.tenant && old.incarnation == new.incarnation,
