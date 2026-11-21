@@ -127,8 +127,7 @@ impl CoreDisposal {
             };
             // The disk's own reference retires with it, before the grant,
             // and so does the commit gate's control.
-            drop(maintenance);
-            drop(gate);
+            drop((maintenance, gate));
             // Stage the exact authority before any owned field can be dropped.
             self.authority = shared._authority.take();
             self.state = shared.state.take();
