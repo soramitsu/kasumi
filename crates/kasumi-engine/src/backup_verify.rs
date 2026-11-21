@@ -899,82 +899,48 @@ pub(crate) async fn verify(
                 let semantic_admission = admission.clone();
                 let retained_workspace = state.verification_workspace()?;
                 deadline
-                .blocking(reservation.clone(), ownership.clone(), move || -> anyhow::Result<_> {
-                    let mut check = || -> anyhow::Result<()> {
-                        deadline.check()?;
-                        if let Some(token) = &semantic_cancellation {
-                            token.check()?;
-                        }
-                        if let Some(work) = &semantic_work {
-                            work.check()?;
-                        }
-                        Ok(())
-                    };
-                    check()?;
-                    let chunk = &semantic_archive.manifest.chunks[index];
-                    let archive = semantic_archive.as_ref();
-                    anyhow::ensure!(
-                        contents.source_purpose == semantic_purpose
-                            && contents.snapshot.len() == chunk.plaintext_bytes
-                            && hex::encode(Sha256::digest(&contents.snapshot))
-                                == chunk.plaintext_sha256,
-                        "full backup history chunk plaintext differs"
-                    );
-                    history_work::verify_body(
-                        contents.snapshot,
-                        &semantic_reservation,
-                        &semantic_admission,
-                        retained_workspace,
-                        &mut check,
-                        |body, check| {
-                            anyhow::ensure!(
-                                body.archive_id == archive.manifest.archive_id
-                                    && body.collection == archive.manifest.collection
-                                    && body.source_incarnation
-                                        == archive.manifest.source_incarnation
-                                    && body.index == index
-                                    && body.documents.len() == chunk.document_count
-                                    && body
-                                        .documents
-                                        .first()
-                                        .is_some_and(|doc| doc.id == chunk.first_id)
-                                    && body
-                                        .documents
-                                        .last()
-                                        .is_some_and(|doc| doc.id == chunk.last_id)
-                                    && body
-                                        .documents
-                                        .windows(2)
-                                        .all(|pair| pair[0].id < pair[1].id),
-                                "full backup history chunk identity differs"
-                            );
-                            let collection =
-                                semantic_state.collection(&archive.manifest.collection)?;
-                            for doc in &body.documents {
-                                check()?;
-                                let reference = semantic_state
-                                    .archived(&archive.manifest.collection, &doc.id)?;
-                                anyhow::ensure!(
-                                    reference.archive_id == archive.manifest.archive_id
-                                        && reference.chunk_index == index
-                                        && reference.version == doc.version
-                                        && reference.document_sha256 == staged_digest(doc)?.0
-                                        && reference.document_bytes
-                                            == crate::accounting::encoded_len(doc)?
-                                        && reference.indexed_fields
-                                            == crate::state::history::index_fields(
-                                                &collection.definition,
-                                                doc
-                                            ),
-                                    "full backup archived document differs from retained metadata"
-                                );
-                            }
+                    .blocking(
+                        reservation.clone(),
+                        ownership.clone(),
+                        move || -> anyhow::Result<_> {
+                            let mut check = || -> anyhow::Result<()> {
+                                deadline.check()?;
+                                if let Some(token) = &semantic_cancellation {
+                                    token.check()?;
+                                }
+                                if let Some(work) = &semantic_work {
+                                    work.check()?;
+                                }
+                                Ok(())
+                            };
                             check()?;
-                            Ok(())
+                            let chunk = &semantic_archive.manifest.chunks[index];
+                            let archive = semantic_archive.as_ref();
+                            anyhow::ensure!(
+                                contents.source_purpose == semantic_purpose
+                                    && contents.snapshot.len() == chunk.plaintext_bytes
+                                    && hex::encode(Sha256::digest(&contents.snapshot))
+                                        == chunk.plaintext_sha256,
+                                "full backup history chunk plaintext differs"
+                            );
+                            history_work::verify_body(
+                                contents.snapshot,
+                                &semantic_reservation,
+                                &semantic_admission,
+                                retained_workspace,
+                                &mut check,
+                                |body, check| {
+                                    body.verify_against(
+                                        &semantic_state,
+                                        &archive.manifest,
+                                        index,
+                                        check,
+                                    )
+                                },
+                            )
                         },
                     )
-                })
-                .await?;
+                    .await?;
             }
         }
         phase.complete();

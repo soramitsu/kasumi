@@ -19,7 +19,7 @@ kasumi-serving.workspace = true
 ring = "0.17"
 anyhow.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 kasumi-types.workspace = true
 kasumi-query.workspace = true
 kasumi-raft.workspace = true
