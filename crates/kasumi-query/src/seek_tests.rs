@@ -1087,13 +1087,20 @@ fn compound_indexes_share_the_document_owner_across_short_and_oversized_tuples()
                 .sort_asc(path)
                 .limit(2)
                 .paging(Paging::Seek);
-            let first = seek(fixture, &request, None, &Limits::default(), &budget()).unwrap();
+            let first = seek(
+                fixture,
+                &request,
+                None,
+                &Limits::default(),
+                &QueryCancellation::default(),
+            )
+            .unwrap();
             let second = seek(
                 fixture,
                 &request,
                 first.last_key.as_deref(),
                 &Limits::default(),
-                &budget(),
+                &QueryCancellation::default(),
             )
             .unwrap();
             assert!(second.last_key.is_none());
