@@ -2632,36 +2632,17 @@ fn test_name(leaf: &str) -> String {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advances()
--> anyhow::Result<()> {
-    let temp = kasumi_store::test_utils::private_tempdir()?;
-    let root = temp.path().join("installation");
-    std::fs::create_dir(&root)?;
-    let plan = Plan {
-        schema: SCHEMA.into(),
-        cohort: "regression".into(),
-        sessions: 24,
-        failure_stride: 3,
-        profile: None,
-        kill_reserve: 2,
-        nonce: uuid::Uuid::new_v4(),
-        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
-        source_hot_audit_bytes: 128 << 10,
-        control_hot_audit_bytes: 1 << 20,
-        cleanup_objects: 300,
-        page_limit: 8,
-    };
-    let ordinal = 5;
-    let inst = Installation::open(&root, &plan).await?;
-    claim_and_publish(&inst, &plan, ordinal).await?;
-    let previous = interrupted_abort_status(&inst, &plan, ordinal)
+async fn prepare_interrupted_claim(root: &Path, plan: &Plan, ordinal: u64) -> anyhow::Result<()> {
+    let inst = Installation::open(root, plan).await?;
+    claim_and_publish(&inst, plan, ordinal).await?;
+    let previous = interrupted_abort_status(&inst, plan, ordinal)
         .await?
         .context("original claim absent")?;
     anyhow::ensure!(
         previous.outcome.is_none(),
         "original claim already terminal"
     );
+    write_json(&root.join("original-claim.json"), &previous)?;
     inst.source
         .administer(
             inst.context(ordinal + 1),
@@ -2676,7 +2657,46 @@ async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advanc
         )
         .await
         .native("advance source after original claim")?;
-    inst.close().await?;
+    inst.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advances()
+-> anyhow::Result<()> {
+    let ordinal = 5;
+    if std::env::var(STAGE).as_deref() == Ok("prepare-interrupted-claim") {
+        let root = PathBuf::from(std::env::var(ROOT)?);
+        return prepare_interrupted_claim(&root, &plan_of(&root)?, ordinal).await;
+    }
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = Plan {
+        schema: SCHEMA.into(),
+        cohort: "regression".into(),
+        sessions: 24,
+        failure_stride: 3,
+        profile: None,
+        kill_reserve: 2,
+        nonce: uuid::Uuid::new_v4(),
+        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
+        source_hot_audit_bytes: 128 << 10,
+        control_hot_audit_bytes: 1 << 20,
+        cleanup_objects: 300,
+        page_limit: 8,
+    };
+    write_json(&root.join("plan.json"), &plan)?;
+    // The persistent disk registry owns its admission until process exit.
+    Parent {
+        root: root.clone(),
+        test: test_name(
+            "interrupted_population_reuses_a_cold_claim_after_source_revision_advances",
+        ),
+        exe: std::env::current_exe()?,
+        processes: Vec::new(),
+    }
+    .run("prepare-interrupted-claim")?;
+    let previous: BackupSessionStatus = read_json(&root.join("original-claim.json"))?;
     let reopened = Installation::open(&root, &plan).await?;
     anyhow::ensure!(
         reopened.source.engine.generation()?.state.revision > previous.intent.revision,
@@ -2694,7 +2714,9 @@ async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advanc
         .await?
         .context("cold terminal absent")?;
     anyhow::ensure!(
-        after.intent == previous.intent && after.outcome == result.outcome,
+        after.intent == previous.intent
+            && after.source_purpose_sha256 == previous.source_purpose_sha256
+            && after.outcome == result.outcome,
         "original cold claim changed"
     );
     let replay = run_session(&reopened, &plan, ordinal, "populate", true).await?;
