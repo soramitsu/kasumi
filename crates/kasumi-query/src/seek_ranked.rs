@@ -18,6 +18,38 @@ fn corrupt() -> Error {
     )
 }
 
+/// Keep the cursor inside the original half-open range on every source, including
+/// when a bounded reader returns a shorter page than the physical implementation.
+fn window<S: DocumentSource + ?Sized>(
+    source: &S,
+    index: usize,
+    start: u64,
+    end: u64,
+    descending: bool,
+    cancel: &QueryCancellation,
+) -> ReadResult<Vec<RankedOwner>, S::Failure> {
+    let rows = source
+        .ranked_compound_window(index, start, end, descending, cancel)?
+        .ok_or_else(corrupt)?;
+    if rows.is_empty()
+        || rows.len() > crate::ORDERED_TUPLE_WINDOW
+        || rows.len() as u64 > end - start
+    {
+        return Err(corrupt().into());
+    }
+    for (offset, row) in rows.iter().enumerate() {
+        let rank = if descending {
+            end - 1 - offset as u64
+        } else {
+            start + offset as u64
+        };
+        if row.rank != rank || kasumi_types::validate_name(&row.id).is_err() {
+            return Err(corrupt().into());
+        }
+    }
+    Ok(rows)
+}
+
 fn partition<S: DocumentSource + ?Sized>(
     source: &S,
     index: usize,
@@ -44,10 +76,8 @@ fn partition<S: DocumentSource + ?Sized>(
     while start < end {
         cancel.check()?;
         let mid = start + (end - start) / 2;
-        let point = source
-            .ranked_compound_window(index, mid, mid + 1, false, cancel)?
-            .and_then(|mut rows| rows.pop())
-            .ok_or_else(corrupt)?;
+        let mut row = window(source, index, mid, mid + 1, false, cancel)?;
+        let point = row.pop().expect("validated one ranked owner");
         let order = source.with_record(&point.id, None, cancel, |record| {
             let record = record.ok_or_else(corrupt)?;
             if ordered_tuple::ranked_record_digest(fields, record)? != point.digest {
@@ -123,12 +153,14 @@ impl Walk {
         if self.start == self.end {
             return Ok(());
         }
-        let rows = source
-            .ranked_compound_window(self.index, self.start, self.end, self.descending, cancel)?
-            .ok_or_else(corrupt)?;
-        if rows.is_empty() {
-            return Err(corrupt().into());
-        }
+        let rows = window(
+            source,
+            self.index,
+            self.start,
+            self.end,
+            self.descending,
+            cancel,
+        )?;
         if self.descending {
             self.end -= rows.len() as u64;
         } else {

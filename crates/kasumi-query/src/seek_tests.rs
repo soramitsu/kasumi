@@ -582,6 +582,7 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         reads: std::cell::Cell<usize>,
         ranked: Option<&'a [([u8; 32], String)]>,
         damage: bool,
+        displaced_rank: bool,
         rank_reads: std::cell::Cell<usize>,
     }
     impl CollectionRecords for Mixed<'_> {
@@ -635,7 +636,11 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
                         if self.damage {
                             digest[0] ^= 1;
                         }
-                        crate::RankedOwner { rank, digest, id }
+                        crate::RankedOwner {
+                            rank: if self.displaced_rank { rank + 1 } else { rank },
+                            digest,
+                            id,
+                        }
                     })
                     .collect(),
             ))
@@ -754,6 +759,7 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         reads: Default::default(),
         ranked: None,
         damage: false,
+        displaced_rank: false,
         rank_reads: Default::default(),
     };
     for desc in [false, true] {
@@ -842,6 +848,7 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
                 reads: Default::default(),
                 ranked: None,
                 damage: false,
+                displaced_rank: false,
                 rank_reads: Default::default(),
             };
             let page = worker
@@ -914,6 +921,7 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
                 reads: Default::default(),
                 ranked: Some(&ranked_rows),
                 damage: false,
+                displaced_rank: false,
                 rank_reads: Default::default(),
             };
             let page = worker
@@ -954,6 +962,7 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         reads: Default::default(),
         ranked: Some(&ranked_rows),
         damage: true,
+        displaced_rank: false,
         rank_reads: Default::default(),
     };
     let all = QueryRequest::new("ordered")
@@ -974,6 +983,34 @@ fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
         .unwrap_err();
     assert!(matches!(failure,crate::ReadFailure::Query(ref e) if e.code==ErrorCode::Corruption));
     assert_eq!(damaged.rank_reads.get(), 1);
+    let shifted = Mixed {
+        damage: false,
+        displaced_rank: true,
+        rank_reads: Default::default(),
+        ..damaged
+    };
+    for cursor in [
+        None,
+        Some(vec![
+            serde_json::json!("s"),
+            serde_json::json!(expected[12]),
+        ]),
+    ] {
+        let failure = original
+            .seek_page(
+                &shifted,
+                &all,
+                cursor.as_deref(),
+                &Limits::default(),
+                &|_| Ok(32),
+                &Default::default(),
+                &mut query_memory(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(failure, crate::ReadFailure::Query(ref e) if e.code == ErrorCode::Corruption)
+        );
+    }
 }
 
 #[test]
