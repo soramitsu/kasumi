@@ -1223,23 +1223,31 @@ fn long_order(
 ) -> Result<Option<std::cmp::Ordering>> {
     let mut key = field_prefix(LONG, collection, field);
     key.extend_from_slice(component);
-    reader.with_value(&key, MAX_VALUE_BYTES, |value| {
-        Ok(value.map(|stored| stored.cmp(target)))
-    })
+    reader.compare_value_at(&key, target, MAX_VALUE_BYTES)
 }
 
 /// One range bound as key positions.
-struct Edge {
+struct Edge<'a> {
     /// The scalar component, without the digest for a long scalar.
     component: Vec<u8>,
     /// A long scalar's complete bytes: postings in its bucket compare them.
-    long: Option<Vec<u8>>,
+    long: Option<std::borrow::Cow<'a, [u8]>>,
     inclusive: bool,
 }
 
-impl Edge {
+impl<'a> Edge<'a> {
+    fn from_bound(
+        bound: Bound<&'a serde_json::Value>,
+        kind: kasumi_types::ScalarType,
+    ) -> Result<Option<Self>> {
+        match bound {
+            Bound::Unbounded => Ok(None),
+            Bound::Included(value) => Self::new(value, kind, true).map(Some),
+            Bound::Excluded(value) => Self::new(value, kind, false).map(Some),
+        }
+    }
     fn new(
-        value: &serde_json::Value,
+        value: &'a serde_json::Value,
         kind: kasumi_types::ScalarType,
         inclusive: bool,
     ) -> Result<Self> {
@@ -1255,14 +1263,14 @@ impl Edge {
         }
         Ok(Self {
             component,
-            long: long.then(|| value.bytes.to_vec()),
+            long: long.then_some(value.bytes),
             inclusive,
         })
     }
 }
 
 /// The bound whose long scalar shares `bucket`, the first bytes of a row's.
-fn in_bucket<'e>(edge: &'e Option<Edge>, bucket: &[u8]) -> Option<&'e Edge> {
+fn in_bucket<'e, 'a>(edge: &'e Option<Edge<'a>>, bucket: &[u8]) -> Option<&'e Edge<'a>> {
     edge.as_ref()
         .filter(|edge| edge.long.is_some() && edge.component == bucket)
 }
@@ -1338,14 +1346,10 @@ pub(crate) fn visit_posting(
             }
         }
         FieldPredicate::Range { lower, upper, kind } => {
-            let edge = |bound: Bound<&serde_json::Value>| -> Result<Option<Edge>> {
-                Ok(match bound {
-                    Bound::Unbounded => None,
-                    Bound::Included(value) => Some(Edge::new(value, kind, true)?),
-                    Bound::Excluded(value) => Some(Edge::new(value, kind, false)?),
-                })
-            };
-            let (lower, upper) = (edge(lower)?, edge(upper)?);
+            let (lower, upper) = (
+                Edge::from_bound(lower, kind)?,
+                Edge::from_bound(upper, kind)?,
+            );
             let key = |component: &[u8]| {
                 let mut key = base.clone();
                 key.extend_from_slice(component);

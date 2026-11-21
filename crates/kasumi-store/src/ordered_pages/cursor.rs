@@ -138,6 +138,46 @@ impl<'s> TreeReader<'s> {
         Ok(result)
     }
 
+    /// Compare a stored value in byte order, authenticating every overflow
+    /// chunk even when its first bytes already determine the ordering.
+    pub fn compare_value_at(
+        &self,
+        key: &[u8],
+        target: &[u8],
+        max: usize,
+    ) -> Result<Option<std::cmp::Ordering>> {
+        use std::cmp::Ordering;
+        let result = self.find(key, |value| {
+            let Some(value) = value else { return Ok(None) };
+            ensure!(
+                value.len() <= max as u64,
+                "ordered point exceeds caller's value bound"
+            );
+            match value {
+                ValueRef::Inline(bytes) => Ok(Some(bytes.cmp(target))),
+                ValueRef::Overflow(overflow) => {
+                    let mut order = Ordering::Equal;
+                    let mut remaining = target;
+                    visit_overflow(self.source, self.space, &overflow, |chunk| {
+                        if order == Ordering::Equal {
+                            let common = chunk.len().min(remaining.len());
+                            order = chunk[..common].cmp(&remaining[..common]);
+                            if order == Ordering::Equal && common < chunk.len() {
+                                order = Ordering::Greater;
+                            }
+                            remaining = &remaining[common..];
+                        }
+                    })?;
+                    Ok(Some(
+                        order.then_with(|| overflow.len.cmp(&(target.len() as u64))),
+                    ))
+                }
+            }
+        })?;
+        self.source.check_access()?;
+        Ok(result)
+    }
+
     fn find<T>(
         &self,
         key: &[u8],

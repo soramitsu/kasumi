@@ -868,13 +868,21 @@ async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves
         );
     }
 
-    // A matching digest for oversized tuples forces canonical comparison.
-    let long = "x".repeat(kasumi_query::MAX_ORDERED_TUPLE_BYTES + 1);
+    // A matching digest triggers complete typed values from the two loans.
+    let long = "x".repeat(300 << 10);
+    check(
+        vec![
+            ("aa", json!({"group":format!("{long}a"),"serial":100})),
+            ("zz", json!({"group":format!("{long}b"),"serial":100})),
+        ],
+        true,
+        true,
+    );
     let over = json!({"group":long,"serial":100});
     let (next, changed) = candidate(vec![("aa", over.clone()), ("zz", over)]);
     assert_eq!(
         unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
-        unique::Decision::Inconclusive
+        unique::Decision::Conflict("aaa_serial_group".into())
     );
     assert!(
         matches!(crate::index_source::validate_changes(&first.indexes,&first.state,&next,&changed),

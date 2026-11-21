@@ -341,6 +341,64 @@ fn an_edit_rewrites_only_changed_paths_and_shares_the_rest() {
 }
 
 #[test]
+fn overflow_point_order_authenticates_the_tail_after_an_early_difference() {
+    use std::cmp::Ordering;
+    let source = MemorySource::new();
+    let k = key(3);
+    let large = vec![7; OVERFLOW_CHUNK_BYTES * 3 + 11];
+    let edit = edit_tree(
+        &source,
+        SPACE,
+        &TreeRoot::new_tree(),
+        &[Edit::Put(&k, &large)],
+    )
+    .unwrap();
+    source.apply(edit.writes());
+    let reader = TreeReader::new(&source, SPACE, edit.root, None).unwrap();
+    for (other, expected) in [
+        (&large[..], Ordering::Equal),
+        (&large[..OVERFLOW_CHUNK_BYTES], Ordering::Greater),
+        (&[8][..], Ordering::Less),
+        (&[6][..], Ordering::Greater),
+    ] {
+        assert_eq!(
+            reader.compare_value_at(&k, other, large.len()).unwrap(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        reader
+            .compare_value_at(b"absent", &large, large.len())
+            .unwrap(),
+        None
+    );
+    assert!(
+        reader
+            .compare_value_at(&k, &large, large.len() - 1)
+            .is_err()
+    );
+    let mut longer = large.clone();
+    longer.push(0);
+    assert_eq!(
+        reader.compare_value_at(&k, &longer, large.len()).unwrap(),
+        Some(Ordering::Less)
+    );
+    let tail = source
+        .keys()
+        .into_iter()
+        .rfind(|key| key[0] == CHUNK_ROW)
+        .unwrap();
+    source.rows.lock().remove(&tail);
+    assert!(
+        reader
+            .compare_value_at(&k, &[8], large.len())
+            .unwrap_err()
+            .to_string()
+            .contains("missing")
+    );
+}
+
+#[test]
 fn overflow_values_are_shared_until_replaced_and_deleted_with_their_entry() {
     let source = MemorySource::new();
     let mut model = Model::new();

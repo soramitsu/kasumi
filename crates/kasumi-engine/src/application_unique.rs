@@ -15,7 +15,9 @@ const DOCUMENTS: usize = 32;
 const TUPLES: usize = 32;
 const ANCHOR_IDS: usize = 16;
 const READS: usize = 512;
-const SCALAR_BYTES: usize = 256 << 10;
+// Total canonical scalar bytes hashed or compared per attempt. Overflow
+// comparison holds one authenticated chunk at a time.
+const SCALAR_BYTES: usize = 4 << 20;
 // At most eight prefixes, 16 IDs, one candidate and 32 exact bounded keys
 // and digests are retained. Physical pages and overflow own their grants.
 const WORKSPACE: u64 = 64 << 10;
@@ -323,15 +325,13 @@ fn probe(
             // Check actual overflow bytes before using its hashed posting.
             let mut key = field_prefix(super::LONG, collection, ordinal);
             key.extend_from_slice(&prefix[base..]);
-            absent = reader.with_value(&key, component.bytes.len(), |stored| {
-                if let Some(bytes) = stored {
-                    ensure!(
-                        bytes == component.bytes.as_ref(),
-                        "distinct unique scalars share a native digest"
-                    );
-                }
-                Ok(stored.is_none())
-            })?;
+            let compared =
+                reader.compare_value_at(&key, &component.bytes, component.bytes.len())?;
+            ensure!(
+                compared.is_none_or(|o| o.is_eq()),
+                "distinct unique scalars share a native digest"
+            );
+            absent = compared.is_none();
         }
         prefixes.push(prefix);
     }
@@ -390,6 +390,41 @@ fn probe(
         });
     }
     Ok(Probe::Inconclusive)
+}
+
+struct Inserted<'a> {
+    collection: &'a str,
+    index: &'a str,
+    id: &'a str,
+    exact: Option<Vec<u8>>,
+}
+
+/// Repeat the original proposed document's complete typed comparison only
+/// on an equal digest. Oversized strings borrow both document loans.
+fn same_oversized(
+    index: &IndexDefinition,
+    previous: Record<'_>,
+    current: Record<'_>,
+    budget: &mut Budget,
+) -> Result<Option<bool>> {
+    for field in &index.fields {
+        let left =
+            value_at(previous, &field.path).context("earlier candidate tuple became sparse")?;
+        let right = value_at(current, &field.path).context("candidate tuple became sparse")?;
+        let left = FieldValue::predicate(left, field.kind)?;
+        let right = FieldValue::predicate(right, field.kind)?;
+        if left.tag != right.tag || left.bytes.len() != right.bytes.len() {
+            return Ok(Some(false));
+        }
+        let Some(remaining) = budget.bytes.checked_sub(left.bytes.len()) else {
+            return Ok(None);
+        };
+        budget.bytes = remaining;
+        if left.bytes != right.bytes {
+            return Ok(Some(false));
+        }
+    }
+    Ok(Some(true))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -509,13 +544,41 @@ pub(super) fn prove_with_overlay(
                     if owner.as_ref().is_some_and(|id| !ids.contains(id)) {
                         return Ok(Decision::Conflict(index.name.clone()));
                     }
-                    let scope = exact.map(|bytes| (name.as_str(), index.name.as_str(), bytes));
                     match inserted.entry(key) {
                         std::collections::btree_map::Entry::Vacant(v) => {
-                            v.insert(scope);
+                            v.insert(Inserted {
+                                collection: name,
+                                index: &index.name,
+                                id,
+                                exact,
+                            });
                         }
                         std::collections::btree_map::Entry::Occupied(o) => {
-                            if scope.is_some() && scope.as_ref() == o.get().as_ref() {
+                            let prior = o.get();
+                            if prior.collection != name || prior.index != index.name {
+                                return Ok(Decision::Inconclusive);
+                            }
+                            let equal = match (prior.exact.as_ref(), exact.as_ref()) {
+                                (Some(left), Some(right)) => left == right,
+                                (None, None) => {
+                                    let previous = index_source::record(
+                                        candidate,
+                                        prior.id,
+                                        new.revision,
+                                        resolver,
+                                    )
+                                    .map_err(index_source::into_anyhow)?
+                                    .context("earlier candidate tuple lost its document")?;
+                                    same_oversized(
+                                        index,
+                                        previous.as_record(),
+                                        loan.as_record(),
+                                        &mut budget,
+                                    )? == Some(true)
+                                }
+                                _ => false,
+                            };
+                            if equal {
                                 return Ok(Decision::Conflict(index.name.clone()));
                             }
                             return Ok(Decision::Inconclusive);
