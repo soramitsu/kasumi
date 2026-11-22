@@ -514,10 +514,11 @@ impl AccountedFile {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AccountedDirectory {
     binding: NamespaceBinding,
-    parent: Option<Identity>,
+    /// Parent and child belong to the same enrolled filesystem. The device
+    /// is already part of the child identity used to look up this entry.
+    parent_inode: Option<u64>,
     /// Charged total, including the unused admitted namespace promise.
     bytes: u64,
-    pending: u64,
     allocation: census::DirectoryAllocation,
     settled: bool,
     len: u64,
@@ -531,11 +532,18 @@ struct AccountedDirectory {
 }
 
 impl AccountedDirectory {
+    fn parent(&self, identity: Identity) -> Option<Identity> {
+        self.parent_inode.map(|inode| Identity(identity.0, inode))
+    }
+
+    fn pending(&self) -> io::Result<u64> {
+        self.bytes
+            .checked_sub(self.allocation.backed())
+            .ok_or_else(|| io::ErrorKind::InvalidData.into())
+    }
+
     fn matches_allocation(&self, metadata: &std::fs::Metadata) -> io::Result<bool> {
-        Ok(
-            self.bytes.checked_sub(self.pending) == Some(self.allocation.backed())
-                && self.allocation.matches(metadata, self.bytes)?,
-        )
+        self.allocation.matches(metadata, self.bytes)
     }
 }
 
@@ -1467,7 +1475,7 @@ impl NodeDisk {
                 .get(&identity)
                 .and_then(AccountedInode::directory)
                 .ok_or(io::ErrorKind::InvalidData)?;
-            match entry.parent {
+            match entry.parent(identity) {
                 Some(parent) => identity = parent,
                 None => {
                     return self

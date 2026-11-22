@@ -62,12 +62,11 @@ fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_pro
         .directory()
         .unwrap();
     assert_eq!(root.children, 1);
-    let child = state.accounted[&Identity::of(&child.metadata().unwrap())]
-        .directory()
-        .unwrap();
+    let identity = Identity::of(&child.metadata().unwrap());
+    let child = state.accounted[&identity].directory().unwrap();
     assert_eq!(child.children, 1);
     assert_eq!(
-        child.parent,
+        child.parent(identity),
         Some(Identity::of(&directory.path().metadata().unwrap()))
     );
 }

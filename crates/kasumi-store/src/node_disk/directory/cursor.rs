@@ -164,9 +164,14 @@ impl NodeDiskDirectory {
             libc::O_RDONLY | libc::O_DIRECTORY,
         )
         .inspect_err(|_| disk.fail_locked(&mut state))?;
-        checked_entry(&state, &file, entry.binding, entry.parent)
-            .map(|_| ())
-            .inspect_err(|_| disk.fail_locked(&mut state))?;
+        checked_entry(
+            &state,
+            &file,
+            entry.binding,
+            entry.parent(self.owner().identity),
+        )
+        .map(|_| ())
+        .inspect_err(|_| disk.fail_locked(&mut state))?;
         let fd = file.into_raw_fd();
         // SAFETY: fdopendir takes sole fd ownership only on success.
         let pointer = unsafe { libc::fdopendir(fd) };
