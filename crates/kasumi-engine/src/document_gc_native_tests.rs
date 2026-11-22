@@ -316,6 +316,36 @@ fn eager_budgets() -> Budgets {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::result_large_err,
+    reason = "The replica fixture preserves original native failures."
+)]
+async fn document_gc_native_yields_during_a_selected_primary_walk()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let mut replica = Replica::new().await?;
+    replica
+        .commit(Operation::CreateCollection(definition()))
+        .await?;
+    let documents = (0..96).map(|n| (format!("row-{n:03}"), n.to_string()));
+    replica.commit(put_all("seed-rows", documents)).await?;
+    assert!(replica.gc().idle());
+    replica.snapshot().await?;
+
+    // The old after-image remains in the feed. Its collection cycle must
+    // yield on the primary rows before reaching that feed on a later step.
+    replica
+        .commit(put("overwrite", "row-000", "new".into()))
+        .await?;
+    assert!(!replica.gc().idle());
+    assert_eq!(replica.gc().awaiting_snapshot(), None);
+    replica.fixture.engine.object_gc_step();
+    assert!(!replica.gc().idle());
+    replica.collect();
+    assert!(replica.gc().idle());
+    replica.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
     reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
 )]
 async fn document_gc_native_keeps_shared_chunks_until_their_last_manifest_is_collected()
