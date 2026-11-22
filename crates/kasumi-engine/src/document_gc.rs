@@ -272,7 +272,7 @@ struct Walk {
     disk_documents: Option<Box<DiskDocuments>>,
     _collection_roots: Option<Reservation>,
     feed: Feed,
-    disk_feed: Option<DiskFeed>,
+    disk_feed: Option<Box<DiskFeed>>,
     collection: usize,
     after_document: Option<String>,
     after_commit: Option<u64>,
@@ -397,7 +397,7 @@ impl Walk {
                     next: first,
                     end: after,
                 };
-                (tail, Some(disk))
+                (tail, Some(Box::new(disk)))
             }
             None => (retained.commits.clone(), None),
         };
