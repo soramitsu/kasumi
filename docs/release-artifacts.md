@@ -44,9 +44,9 @@ terminal census at the output root. Its child produces `assembly/attempt.json`
 and the two original outputs, `assembly/assembly-a-output` and
 `assembly/assembly-b-output`; the first contains the candidate package and OCI
 build context. Both complete outputs, process transcripts, native probes and
-original failed attempts remain under the exclusive output directory. The final
-domain registry remains disabled
-until native runner validation and its acceptance integration are complete.
+original failed attempts remain under the exclusive output directory. The
+registered `repeatable-assembly` adapter checks those two outputs against the
+selected candidate on each native target.
 The assembly transport command runs only after the owned launcher verifies its
 original child graph and two outputs. It inventories every retained file and
 directory, writes a bounded raw PAX tar preserving file and directory modes,

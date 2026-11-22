@@ -1069,3 +1069,12 @@ The macOS ARM64 `kasumid`, `kasumictl` and `kasumi-authority` SHA-256 hashes
 are `3977ed130f4a300d3f476f61e8cb3e74cd1c2783c1b31fbb93e6330299fa158c`,
 `4953dcf6b15d96973d3ce767f052c0d5a10e57a97402c12d269b6c66fb13a3ce`
 and `587cb607f896707092d4a6a184d07dbe750a1658cd8df1997f71817f9e6dd8f6`.
+
+### Original storage recovery and native assembly inputs
+
+| Goals | Observed result | Qualification still open |
+| --- | --- | --- |
+| G03, G07, G09 | On a writable clone booted with the original disk identity, the interrupted MinIO restore reopened its operation and detected the incomplete deployment binding. Two stop requests and a cold status read returned the same persisted cleanup proof, `be60d8d114651882c76b7703a13dfd17b86f05dd842f9727cbc5b8b4dfebd2ab`. A separate read verified all 815 encrypted backup files and the original node-group directory inode. The preserved 200 GiB virtual disk has SHA-256 `bd5f3c80fb6b4376df48650415533040c09d159197e6d80139a4a9d4d2258a91`. | Start a fresh restore from that checkpoint and verify every document on the final candidate. |
+| G05, G13 | The original 520-session macOS installation resumed after a disk-space refusal. The driver killed processes at the claim and terminal-write boundaries. Across three cleanup pages, the 259 completed and 261 aborted records had the same SHA-256 before restart, after restart and after replay, `521f3e723a903853dbeab0e9c01e00c5d8bc8c550cef95de49e5a2c98eeed08e`. Cold verification took 1,033.4 seconds. | Resolve the three disputed rows in the separate Linux installation and complete its 100,001-session qualification. |
+| G01, G08, G11, G12 | On `0fea5408`, macOS ARM64 passed strict workspace Clippy with all targets and features in 3,468.5 seconds. Its Python suite ran 531 cases with one Linux-only skip. The installed executables passed 16 lifecycle scenarios across 64 processes in 173.772 seconds. | Finish the focused and full Rust suites, including the original shutdown and cold-reopen cases, on the release revision. |
+| G11, G14 | The first native macOS notice audit rejected two OpenRaft workspace members. Packaging fix `5280dee4` verified the reviewed Git-vendored license files for both. A replay verified all 407 compiled packages, including 390 registry packages, with 709 notice records and 269 distinct texts. The native assembly declaration separately verified 21,499 input files and bound the 17,081 files consumed by package metadata and Python imports. | Run both owned assemblies with passing functional evidence on each native target. |

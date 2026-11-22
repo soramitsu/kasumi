@@ -11,8 +11,10 @@ probes, verifies unchanged source and dependency observations, follows each
 packager's original metadata child, binds actual imported Python modules and
 metadata package roots, and compares the resulting source and native package
 archives. Arbitrary copied archives and a report claiming success are insufficient.
-The acceptance bridge is implemented as `repeatable_assembly.domain_adapter`;
-its registry entry remains disabled pending reviewed native runner validation.
+The release verifier registers `repeatable-assembly` for each of the three
+native targets. Its adapter checks both assemblies and binds the selected inputs
+to that target's functional candidate. Acceptance also requires the host
+reservation and the original attempt in the release journal.
 The owned launcher also reconstructs the exact seven nested spawns from their
 original receipts: three probes and two packagers belong to the runner, and each
 metadata command belongs to its own packager. The registered ledger must match
