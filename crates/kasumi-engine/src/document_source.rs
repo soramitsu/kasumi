@@ -181,6 +181,13 @@ impl kasumi_query::PrimaryIdPages for NativeIdPages {
     }
 }
 
+fn primary_read_failure(error: anyhow::Error) -> kasumi_query::ReadFailure<DocumentSourceFailure> {
+    match error.downcast::<kasumi_query::ReadFailure<std::convert::Infallible>>() {
+        Ok(query) => query.into_query_error().into(),
+        Err(storage) => kasumi_query::ReadFailure::Source(DocumentSourceFailure(storage)),
+    }
+}
+
 impl GenerationDocumentSource<'_> {
     fn with_ranked_compounds<T>(
         &self,
@@ -229,6 +236,17 @@ impl GenerationDocumentSource<'_> {
         self.reads.map_or(Ok(()), DocumentReads::check_deadline)
     }
 
+    // A selected tree also reports storage errors through anyhow. Mark the
+    // local operation check so the caller can return its original query error.
+    fn check_primary_read(&self, cancellation: &QueryCancellation) -> anyhow::Result<()> {
+        cancellation
+            .check()
+            .and_then(|()| self.check_deadline())
+            .map_err(|error| {
+                kasumi_query::ReadFailure::<std::convert::Infallible>::Query(error).into()
+            })
+    }
+
     /// The selected directory owns both point records. Only an archived row
     /// may be replaced by the verified hydration overlay of this read.
     fn with_primary_point<T>(
@@ -248,14 +266,10 @@ impl GenerationDocumentSource<'_> {
                         &self.collection,
                         id,
                         state.revision,
-                        || {
-                            cancellation.check()?;
-                            self.check_deadline()?;
-                            Ok(())
-                        },
+                        || self.check_primary_read(cancellation),
                     )
                 })
-                .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+                .map_err(primary_read_failure)?;
             if let Some((mut point, _leases, retained)) = selected {
                 if let PrimaryPoint::Archived(reference) = &point
                     && let Some(hydrated) = self.collection().documents.get(id)
@@ -377,14 +391,14 @@ impl GenerationDocumentSource<'_> {
                             after,
                             state.revision,
                             |id, version, _| {
-                                self.check_deadline()?;
+                                self.check_primary_read(cancellation)?;
                                 page.push((id.to_owned(), version));
                                 Ok(page.len() < ROWS)
                             },
                         )?;
                         Ok(Some((page, grant)))
                     })
-                    .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+                    .map_err(primary_read_failure)?;
                 let Some((page, _grant)) = selected.flatten() else {
                     if length != 0 {
                         return Err(corruption(
