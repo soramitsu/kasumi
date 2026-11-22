@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import export_functional_evidence as exporter
-from release_gate import inventory, record_compiled_package, sha256, write_json
+from release_gate import generated_output_paths, inventory, record_compiled_package, sha256, write_json
 import verify_release_acceptance as acceptance
 
 
@@ -35,7 +35,7 @@ class FunctionalExportTests(unittest.TestCase):
         self.write_source_tar()
         self.file("tools/python", b"synthetic Python executable", executable=True)
         gates = []
-        for name in ("toolchain", "workspace", "production"):
+        for name in ("toolchain", "workspace", "production", "openraft-integration"):
             self.file(name + ".log", b"synthetic original log\n")
             self.file(name + "-process.json", (json.dumps({"working_directory": str(self.source.resolve())}) + "\n").encode())
             self.file(name + "-resources.json", b"{}\n")
@@ -218,6 +218,22 @@ class FunctionalExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             exporter.export(self.run, self.root / "missing-process", 1 << 20)
         self.assertFalse((self.root / "missing-process").exists())
+
+    def test_declared_upstream_output_survives_export_and_reverification(self):
+        gate = next(gate for gate in self.record["gates"] if gate["name"] == "openraft-integration")
+        paths = generated_output_paths(gate["name"])
+        self.file(paths["path"] + "/nested/trace.log", b"original upstream trace\n")
+        files = self.run / paths["files"]
+        write_json(files, inventory(self.run / paths["path"]))
+        gate["generated_outputs"] = [{**paths, "files_sha256": sha256(files)}]
+        write_json(self.run / "evidence.json", self.record)
+
+        destination = self.root / "generated-export"
+        exporter.export(self.run, destination, 1 << 20)
+        exporter.package.verify_generated_outputs(destination / "run", gate)
+        (destination / "run" / paths["path"] / "nested/trace.log").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "differs from its inventory"):
+            exporter.package.verify_generated_outputs(destination / "run", gate)
 
     def test_budget_and_failed_original_run_cannot_produce_passing_export(self):
         with self.assertRaisesRegex(ValueError, "byte budget"):

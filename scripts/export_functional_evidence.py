@@ -65,6 +65,12 @@ def roster(evidence):
         previous = files.setdefault(relative, value)
         require(previous == value, "conflicting functional file identity: " + relative)
 
+    def add_inventory(directory, entries):
+        for name, entry in entries.items():
+            relative = acceptance.relative_path(name)
+            acceptance.exact(entry, {"sha256", "bytes", "executable"}, "functional inventory entry")
+            add(directory + "/" + relative, entry["sha256"], entry["bytes"], entry["executable"])
+
     add("evidence.json")
     add("source-files.json", record["source_files_sha256"])
     add("source.tar", record["source_archive_sha256"])
@@ -84,10 +90,11 @@ def roster(evidence):
             relative = acceptance.relative_path(relative)
             require(isinstance(executable, dict), "functional executable identity is malformed")
             add("target/" + relative, executable["sha256"], executable["bytes"], True)
-    for relative, value in source_files.items():
-        relative = acceptance.relative_path(relative)
-        acceptance.exact(value, {"sha256", "bytes", "executable"}, "functional source file")
-        add("source/" + relative, value["sha256"], value["bytes"], value["executable"])
+        for output in gate.get("generated_outputs", []):
+            add(output["files"], output["files_sha256"])
+            entries = acceptance.read_json(package.owned_file(evidence, output["files"]))
+            add_inventory(output["path"], entries)
+    add_inventory("source", source_files)
     require(acceptance.archive_inventory(package.owned_file(evidence, "source.tar"), strip_root=False) == source_files,
             "original source archive differs from original source inventory")
     require(inventory(evidence / "source") == source_files,
