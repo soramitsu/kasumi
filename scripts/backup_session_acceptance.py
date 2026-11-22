@@ -97,6 +97,13 @@ def index_originals(db, root, plan, summary, minimum_failed=257):
     return failed, resolutions
 
 
+def check_full_cohort(total, reserve, population):
+    """Bind every pre-kill session to the qualifying runner's original population."""
+    require(population["resumed"] is False and
+            uint(population["written"], "populated sessions") == total - reserve,
+            "full cohort population was resumed or did not write every planned session")
+
+
 # Both terminal formats reserve the whole envelope before the session starts.
 SLOT_CAPACITY = (64 << 10) + (2 << 20) + 84
 SLOT_HEADER = 72
@@ -494,6 +501,9 @@ def replay_installation(installation, witness, cohort):
                 failed, resolutions = index_originals(db, root, plan, independent, minimum_failed)
                 require(failed == uint(witness["failed_terminal_outcomes"], "retained failures", minimum_failed),
                         "reported retained failures differ")
+                if cohort == "full":
+                    check_full_cohort(total, uint(plan["kill_reserve"], "kill targets", 2),
+                                      witness["populate"])
                 for label in LABELS:
                     obs = document(root, f"streams/{label}.observation.json")
                     name = f"streams/{label}.jsonl"

@@ -299,6 +299,11 @@ def drain(process, grace_seconds=10):
     return record
 
 
+# Most gates finish within a day. The permanent backup-session cohort is one
+# owned process that measured several days on the native reference guests.
+MAX_TIMEOUT_SECONDS = 14 * 86400
+
+
 def run(command, source, environment, stream, timeout_seconds, observe, *, stderr,
         before_cleanup=None, after_cleanup=None):
     """Record original command ownership before waiting; never raise in a handler.
@@ -308,8 +313,8 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
     SIGKILL of this runner cannot execute cleanup; its running record retains
     the process group for explicit inspection by the enclosing environment.
     """
-    if not 0 < timeout_seconds <= 86400:
-        raise ValueError("gate timeout must be in (0, 86400] seconds")
+    if not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"gate timeout must be in (0, {MAX_TIMEOUT_SECONDS}] seconds")
     if stderr != subprocess.STDOUT and (not hasattr(stderr, "fileno") or not hasattr(stderr, "flush")):
         raise ValueError("gate stderr requires an explicit owned file or STDOUT")
     received = []

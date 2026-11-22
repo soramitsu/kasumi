@@ -38,7 +38,10 @@ MODULES = {"scripts/audit_domain_evidence.py", "scripts/backup_session_acceptanc
 SESSIONS = "session-full"
 SESSION_TEST = "backup_session_floor_full_cohort"
 SESSION_PREFIX = "KASUMI_BACKUP_SESSION_FLOOR "
-SESSION_TIMEOUT = 86400
+# One owned process populates the whole cohort, kills two writes and replays
+# it cold. Native ARM64 population alone projected to between 31 and 176 hours
+# at its measured rates, so a one-day bound ends every attempt below the floor.
+SESSION_TIMEOUT = 14 * 86400
 
 
 def session_command(original, evidence, functional, custody, rows):

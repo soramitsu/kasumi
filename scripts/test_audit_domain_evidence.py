@@ -97,6 +97,19 @@ class ComposedAuditEvidence(unittest.TestCase):
 
 
 class SessionProcessBinding(unittest.TestCase):
+    def test_owned_launcher_admits_the_multi_day_session_cohort_bound(self):
+        import gate_process
+        import run_audit_retention as runner
+
+        self.assertGreater(runner.SESSION_TIMEOUT, 86400)
+        self.assertLessEqual(runner.SESSION_TIMEOUT, gate_process.MAX_TIMEOUT_SECONDS)
+        for seconds in (0, gate_process.MAX_TIMEOUT_SECONDS + 1):
+            with self.subTest(seconds=seconds), self.assertRaisesRegex(ValueError, "gate timeout"):
+                gate_process.run(["/usr/bin/true"], ".", {}, None, seconds, None, stderr=None)
+        # An admitted bound reaches the next precondition instead.
+        with self.assertRaisesRegex(ValueError, "gate stderr"):
+            gate_process.run(["/usr/bin/true"], ".", {}, None, runner.SESSION_TIMEOUT, None, stderr=None)
+
     def test_relocates_witness_by_original_parent_pid_and_pins_native_full_cohort(self):
         import hashlib
         import json

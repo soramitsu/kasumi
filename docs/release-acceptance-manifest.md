@@ -282,7 +282,13 @@ mutation receipts and 10,000 lifecycle intents. Each count must exceed its
 own limit. The backup-session entry carries `acceptance_floor: 100001`,
 the observed distinct count and its original log reference. Its count must
 meet or exceed that floor. The full gate requires the cold-kill, reopen,
-authenticated replay and pagination evidence specified in G11. The combined
+authenticated replay and pagination evidence specified in G11. The floor counts
+permanent sessions of both outcomes, including at least 257 failed or aborted
+sessions. The prospective workload profile sets the mix. The current qualifying
+runner owns a fresh installation and records the entire initial population before
+its planned kills. A cold continuation of an interrupted development attempt
+provides separate recovery evidence. Allow up to 14 days for the complete
+session process on the measured ARM64 deployment. The combined
 report retains `qualification: component` until all five witnesses qualify.
 
 The concurrency producer runs all nine separately enrolled processes on native
