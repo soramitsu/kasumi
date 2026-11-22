@@ -269,6 +269,9 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     );
     let node = fixture.db.admission().clone();
     fixture.db.proposals.prepare(&node).unwrap();
+    // Background reclamation reads the same store and holds real workspace.
+    // Keep its next iteration outside the two exact ownership measurements.
+    let monitor = fixture.db.worker_test_hooks.monitor_iteration.lock().await;
     let quiescent = fixture.audit.quiescent_jobs_for_test().await;
     let baseline = node.snapshot();
     let baseline_bytes = without_cache(&fixture);
@@ -351,5 +354,6 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     assert_eq!(event.outcome, "authorized_release");
     drop(generation);
     drop(quiescent);
+    drop(monitor);
     fixture.close().await;
 }

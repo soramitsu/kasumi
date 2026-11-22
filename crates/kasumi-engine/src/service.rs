@@ -2010,6 +2010,8 @@ impl Database {
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {},
                     }
                     let Some(db) = weak.upgrade() else { break };
+                    #[cfg(test)]
+                    let _iteration = db.worker_test_hooks.monitor_iteration.lock().await;
                     // Explicit shutdown stops the idle loop and joins this actual
                     // blocking child before discarding the monitor handle. The work
                     // registration also retains roots if an external actor aborts it.
