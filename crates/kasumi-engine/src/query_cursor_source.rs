@@ -62,6 +62,77 @@ impl CursorDocuments {
         }
     }
 
+    pub(super) fn visit_versions(
+        &self,
+        collection: &str,
+        remaining: kasumi_query::RemainingRows<'_>,
+        reads: &DocumentReads,
+        cancellation: &QueryCancellation,
+        mut visit: impl FnMut(&str, Option<f32>, u64, u64) -> Result<()>,
+    ) -> Result<()> {
+        let check = || {
+            cancellation.check()?;
+            reads.check_deadline()
+        };
+        let unavailable = || {
+            Error::new(
+                ErrorCode::Unavailable,
+                "selected archived content requires bounded hydration",
+            )
+        };
+        check()?;
+        match self {
+            Self::Generation(generation) => {
+                let documents = &generation.state.collections[collection].documents;
+                for (id, score) in remaining {
+                    check()?;
+                    let slot = documents.get(id).ok_or_else(unavailable)?;
+                    visit(id, score, slot.version(), pinned_slot_bytes(slot)?)?;
+                }
+            }
+            Self::Disk(disk) => {
+                let visit_headers =
+                    |tree: &kasumi_store::ordered_pages::TreeReader<'_>| -> Result<()> {
+                        for (id, score) in remaining {
+                            check()?;
+                            let header = crate::application_records::primary_header(
+                                tree,
+                                collection,
+                                id,
+                                disk.boundary.revision,
+                            )
+                            .map_err(document_load_error)?;
+                            let Some((version, kasumi_query::RecordKind::Live)) = header else {
+                                return Err(unavailable());
+                            };
+                            visit(id, score, version, 0)?;
+                        }
+                        Ok(())
+                    };
+                disk.selection
+                    .with_primary_boundary(
+                        reads.shared().map(SharedRead::selected),
+                        &disk.boundary,
+                        |tree, memory, _| {
+                            let _workspace =
+                                crate::document_restore::ReadAdmissionFailure::reserve(
+                                    memory, 2048,
+                                )?;
+                            Ok(visit_headers(tree))
+                        },
+                    )
+                    .map_err(document_load_error)?
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Corruption,
+                            "cursor lost its verified primary directory",
+                        )
+                    })??;
+            }
+        }
+        check()
+    }
+
     pub(super) fn copy_page(
         &self,
         request: &QueryRequest,

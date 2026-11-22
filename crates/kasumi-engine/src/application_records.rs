@@ -166,6 +166,21 @@ fn decode_header(bytes: &[u8], revision: u64) -> Result<(u64, kasumi_query::Reco
     Ok((version, kind))
 }
 
+pub(crate) fn primary_header(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    id: &str,
+    revision: u64,
+) -> Result<Option<(u64, kasumi_query::RecordKind)>> {
+    let mut key = header_prefix(collection);
+    key.extend_from_slice(id.as_bytes());
+    tree.with_value(&key, 9, |value| {
+        value
+            .map(|bytes| decode_header(bytes, revision))
+            .transpose()
+    })
+}
+
 /// Text shards exclude hydrated archive versions as well as absent and
 /// superseded rows. Their full document and archive values remain on disk.
 pub(crate) fn current_text_row(
@@ -175,13 +190,7 @@ pub(crate) fn current_text_row(
     version: u64,
     revision: u64,
 ) -> Result<bool> {
-    let mut key = header_prefix(collection);
-    key.extend_from_slice(id.as_bytes());
-    let header = tree.with_value(&key, 9, |value| {
-        value
-            .map(|bytes| decode_header(bytes, revision))
-            .transpose()
-    })?;
+    let header = primary_header(tree, collection, id, revision)?;
     if header != Some((version, kasumi_query::RecordKind::Live)) {
         return Ok(false);
     }

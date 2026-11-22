@@ -204,6 +204,7 @@ fn pin_rows(
     remaining: kasumi_query::RemainingRows<'_>,
     generation: &Arc<crate::Generation>,
     collection: &str,
+    reads: &DocumentReads,
     max_cursor_bytes: usize,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<Reservation>,
@@ -221,24 +222,16 @@ fn pin_rows(
     )?;
     charged += source_bytes;
     let mut rows = Vec::with_capacity(remaining.len());
-    for (id, score) in remaining {
-        cancellation.check()?;
-        let document = generation.state.collections[collection]
-            .documents
-            .get(id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Unavailable,
-                    "selected archived content requires bounded hydration",
-                )
-            })?;
-        let mut bytes = id.len() as u64 + 32;
-        if matches!(source, CursorDocuments::Generation(_)) {
-            bytes = bytes
-                .checked_add(pinned_slot_bytes(document)?)
+    source.visit_versions(
+        collection,
+        remaining,
+        reads,
+        cancellation,
+        |id, score, version, slot_bytes| {
+            let bytes = (id.len() as u64 + 32)
+                .checked_add(slot_bytes)
                 .ok_or_else(query_workspace_overflow)?;
-        }
-        charged = charged
+            charged = charged
             .checked_add(bytes)
             .filter(|charged| *charged <= max_cursor_bytes as u64)
             .ok_or_else(|| {
@@ -247,13 +240,15 @@ fn pin_rows(
                     "query result exceeds max_cursor_bytes; narrow the filter or use seek paging",
                 )
             })?;
-        memory.reserve(bytes)?;
-        rows.push(PinnedRow {
-            id: id.into(),
-            version: document.version(),
-            score,
-        });
-    }
+            memory.reserve(bytes)?;
+            rows.push(PinnedRow {
+                id: id.into(),
+                version,
+                score,
+            });
+            Ok(())
+        },
+    )?;
     let bytes = usize::try_from(charged).map_err(|_| query_workspace_overflow())?;
     Ok((
         PinnedRows {
@@ -867,6 +862,7 @@ impl QueryWork {
                             remaining,
                             generation,
                             &self.request.collection,
+                            reads,
                             limits.max_cursor_bytes,
                             cancellation,
                             memory,
