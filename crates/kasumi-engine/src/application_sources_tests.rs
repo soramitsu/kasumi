@@ -2996,6 +2996,15 @@ async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling(
 )]
 async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
 -> crate::test_fixture_failure::FixtureResult<()> {
+    for grant_cache in [false, true] {
+        ordinary_primary_round_trip(grant_cache).await?;
+    }
+    Ok(())
+}
+
+async fn ordinary_primary_round_trip(
+    grant_cache: bool,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::primary_manifest::{self, PrimaryManifest};
 
     async fn audit(
@@ -3117,7 +3126,15 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
         Ok(())
     }
 
-    let mut fixture = Fixture::new().await?;
+    let mut fixture = Fixture::with_admission(1, None, |mut config| {
+        // The original 256 MiB payload budget protects required work and the
+        // installed audit ledger. Leave those protections in place in both runs.
+        if grant_cache {
+            config.max_inflight_bytes = config.max_inflight_bytes.map(|cap| cap + (256 << 20));
+        }
+        NodeAdmission::with_fixed_memory(config, 2 << 30, 0)
+    })
+    .await?;
     let group = format!(
         "selected-sources/{}",
         TenantEngine::from_bootstrap("selected-sources", &fixture.image)?
@@ -3257,7 +3274,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     // The earlier generation reads its own rows from its pinned root, after
     // the later edit deleted the pages it uses; the current one reads its own.
     let latest = engine.generation()?;
-    let versions = |generation: &crate::Generation| -> Result<Vec<Option<u64>>> {
+    let versions = |generation: &crate::Generation| -> Result<_> {
         let selection = generation
             .application_selection
             .get()
@@ -3284,9 +3301,12 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
                 Ok(read.selected().directory_pages(memory).stats())
             })?
             .context("selected generation has no primary directory")?;
-        assert!(stats.hits > 0 && stats.charged > 0 && stats.leased <= stats.budget);
+        assert!(
+            stats.leased <= stats.budget && stats.charged <= stats.leased,
+            "{stats:?}"
+        );
         read.finish()?;
-        Ok(versions)
+        Ok((versions, stats))
     };
     let resident = |generation: &crate::Generation| -> Vec<Option<u64>> {
         ["a", "b", "c"]
@@ -3299,8 +3319,15 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             })
             .collect()
     };
-    assert_eq!(versions(&pinned)?, resident(&pinned));
-    assert_eq!(versions(&latest)?, resident(&latest));
+    for generation in [&pinned, &latest] {
+        let (actual, stats) = versions(generation)?;
+        assert_eq!(actual, resident(generation));
+        if grant_cache {
+            assert!(stats.hits > 0 && stats.charged > 0, "{stats:?}");
+        } else {
+            assert!(stats.refusals > 0 && stats.charged == 0, "{stats:?}");
+        }
+    }
     assert!(resident(&pinned)[1].is_some());
     assert_eq!(resident(&latest)[1], None);
     drop((pinned, latest));
@@ -3388,7 +3415,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     // An old physical root claims the same revision from a different log
     // history. The serving reader and next ordinary writer must reject it.
     // The monitor recovers at the new committed position while idle.
-    let old_versions = versions(&generation)?;
+    let (old_versions, _) = versions(&generation)?;
     engine.select_wrong_primary_history_for_test()?;
     db.mutate(
         context,
@@ -3418,7 +3445,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
                 .is_some()
             {
                 ensure!(
-                    versions(&now)? == resident(&now),
+                    versions(&now)?.0 == resident(&now),
                     "idle primary rows differ"
                 );
                 break Ok::<_, anyhow::Error>(());
@@ -3433,7 +3460,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .with_primary_records(None, &incomplete.state, |_, _| Ok(()))?
             .is_none()
     );
-    assert_eq!(versions(&generation)?, old_versions);
+    assert_eq!(versions(&generation)?.0, old_versions);
     drop(incomplete);
     drop(generation);
     db.shutdown().await?;
