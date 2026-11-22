@@ -1913,12 +1913,15 @@ mod tests {
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
         let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
         let mut source = state();
-        let documents = ["a", "b", "c"]
+        source.revision = 2;
+        source.schema_epoch = 1;
+        source.policy_epoch = 1;
+        let documents: imbl::OrdMap<_, _> = ["a", "b", "c"]
             .into_iter()
             .map(|id| {
                 let document = Document {
                     id: id.into(),
-                    version: 0,
+                    version: source.revision,
                     body: serde_json::json!({"id": id}),
                 };
                 (
@@ -1927,6 +1930,11 @@ mod tests {
                 )
             })
             .collect();
+        source.document_count = documents.len() as u64;
+        source.logical_bytes = documents
+            .values()
+            .map(|slot| slot.body_bytes().unwrap())
+            .sum();
         source.collections.insert(
             "docs".into(),
             CollectionState {
@@ -1938,7 +1946,7 @@ mod tests {
                     retention_class: CollectionRetentionClass::Operational,
                     write_mode: CollectionWriteMode::Mutable,
                 }),
-                data_epoch: 0,
+                data_epoch: source.revision,
                 documents,
                 archived_documents: Default::default(),
                 archived_document_bytes: 0,
@@ -1956,6 +1964,7 @@ mod tests {
         .into_records();
         let decoded =
             super::read_verified_target(&records, &source.tenant, "restored", &|| Ok(())).unwrap();
+        assert_eq!(decoded.state.collections["docs"].documents.len(), 3);
         for (id, slot) in &decoded.state.collections["docs"].documents {
             let DocumentSlot::Stored(descriptor) = slot.as_ref() else {
                 panic!("authenticated restore retained a pending body");
