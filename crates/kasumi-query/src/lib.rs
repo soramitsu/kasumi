@@ -152,6 +152,18 @@ impl SchemaValidator {
 }
 
 impl QueryIndexes {
+    /// Share the requested collection's planner and its original layout identity.
+    /// A worker reading one collection need not pin indexes for other collections.
+    pub fn for_query_collection(&self, collection: &str) -> Option<Self> {
+        let indexes = self.collections.get(collection)?;
+        Some(Self {
+            collections: BTreeMap::from([(collection.to_owned(), Arc::clone(indexes))]),
+            text_residency: self.text_residency,
+            seek_projection: None,
+            structured_layout: std::sync::OnceLock::from(self.structured_layout_sha256()),
+        })
+    }
+
     /// Reuse this generation's validator only for the exact compiled schema.
     /// A missing collection or changed schema takes the fully checked compiler
     /// path. Index and text constraints always use the supplied definition.
