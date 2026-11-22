@@ -2440,7 +2440,8 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 tree,
                 memory,
                 reopened.state.revision,
-                &reopened.state,
+                reopened.state.revision,
+                reopened.state.change_feed.next_sequence,
             )?
             .unwrap();
             snapshot_feed.visit(
@@ -2583,7 +2584,8 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 tree,
                 memory,
                 revision,
-                &latest.state,
+                latest.state.revision,
+                latest.state.change_feed.next_sequence,
             )?
             .context("older directory lost its feed prefix")?;
             Ok((revision, prefix.end_sequence))

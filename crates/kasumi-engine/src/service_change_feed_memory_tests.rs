@@ -70,8 +70,8 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
     assert_eq!(
         change_feed::build_change_feed_page(
-            &generation.state,
-            generation.document_resolver(),
+            &crate::application_sources::SnapshotBoundary::<String>::from(&generation.state),
+            &change_feed::FeedPageSource::capture(&generation),
             &context,
             &request,
             &cancellation,
@@ -104,9 +104,14 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
+    let boundary = crate::application_sources::SnapshotBoundary::<String>::from(&generation.state);
+    let input = change_feed::FeedPageSource::capture(&generation);
+    let parent = Arc::downgrade(&generation);
+    drop(generation);
+    assert!(parent.upgrade().is_none());
     let page = change_feed::build_change_feed_page(
-        &generation.state,
-        generation.document_resolver(),
+        &boundary,
+        &input,
         &context,
         &request,
         &cancellation,
@@ -118,7 +123,7 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let mut reservation = memory.into_workspace();
     reservation.retain_workspace();
     let output = AdmittedOutput::new(page, Arc::new(reservation));
-    drop(generation);
+    drop(input);
     assert!(
         source.upgrade().is_none(),
         "public after-image must not retain an internal Arc"
