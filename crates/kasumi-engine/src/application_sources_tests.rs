@@ -3221,6 +3221,25 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
         pinned.document_sources.get().is_some(),
         "ordinary apply did not bind the body resolver"
     );
+    {
+        use kasumi_query::DocumentSource;
+        let reads = crate::document_source::DocumentReads::new(&pinned, std::time::Instant::now())?;
+        let source = reads.source("docs")?;
+        let original = source
+            .visit_primary_ids(&Default::default(), |_| panic!("expired header was lent"))
+            .expect_err("deadline elapsed inside the selected header visitor");
+        match original {
+            kasumi_query::ReadFailure::Query(error) => {
+                assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted);
+                assert_eq!(error.message, "document read deadline exceeded");
+            }
+            kasumi_query::ReadFailure::Source(error) => {
+                let mapped = crate::service::document_load_error(error.0);
+                panic!("primary visitor turned the original deadline into {mapped:?}");
+            }
+        }
+        reads.finish()?;
+    }
     let worker = pinned
         .query_worker_view(&request, |_| Ok(true))?
         .context("ordinary page should use the authenticated primary")?;
