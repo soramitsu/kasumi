@@ -3182,7 +3182,13 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .paging(kasumi_types::Paging::Seek);
         let first = db.query(&context, seek.clone()).await?;
         assert_eq!(first.rows[0].id, "b");
-        seek.cursor = Some(first.cursor.context("expected scalar seek continuation")?);
+        seek.cursor = Some(
+            first
+                .cursor
+                .clone()
+                .context("expected scalar seek continuation")?,
+        );
+        drop(first);
         let last = db.query(&context, seek).await?;
         assert_eq!(last.rows[0].id, "a");
         assert!(last.cursor.is_none());
