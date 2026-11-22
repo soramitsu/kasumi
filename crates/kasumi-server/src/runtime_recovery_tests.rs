@@ -2292,7 +2292,18 @@ impl Fixture {
                 .await
                 .is_err()
         );
-        let started = client.start(request, Duration::from_secs(5)).await.unwrap();
+        let started = match client.start(request, Duration::from_secs(5)).await {
+            Ok(record) => record,
+            Err(error) if error.grpc_code() == tonic::Code::DeadlineExceeded
+                || error.code() == Some(ErrorCode::UnknownOutcome) =>
+            {
+                let context = format!("resolving original Start: {}", recovery_step_error(&error));
+                eprintln!("{context}");
+                self.status(&mut client, &context).await
+            }
+            Err(error) => panic!("Control Start failed: {}; {}",
+                recovery_step_error(&error), self.control_failure_context()),
+        };
         assert_eq!(started.request, *request);
         if resumed_initial_inspection {
             assert_eq!(started.phase, RecoveryPhase::Complete);
@@ -2548,10 +2559,38 @@ impl Fixture {
             cursor: None,
             limit: 64,
         };
-        let before = control
-            .read_key_retention(&operator, request.clone())
-            .await
-            .unwrap();
+        // A read barrier proves leadership only at that instant. Peer journal
+        // installation and checkpoint routing can span a new Control term.
+        async fn on_inventory_leader<T, F, Fut>(
+            controls: &[Arc<kasumi_engine::Database>],
+            phase: &str,
+            mut operation: F,
+        ) -> (usize, kasumi_types::Result<T>)
+        where
+            F: FnMut(usize) -> Fut,
+            Fut: std::future::Future<Output = kasumi_types::Result<T>>,
+        {
+            on_quorum_leader(controls, phase, |index| {
+                let response = operation(index);
+                async move {
+                    match response.await {
+                        Err(error) if error.code == ErrorCode::Unavailable
+                            && error.message == "read quorum unavailable"
+                            && !error.has_physical_source()
+                            && controls[index].raft_group().metrics().current_leader
+                                .is_some_and(|id| id != controls[index].raft_group().node_id()) =>
+                        {
+                            Err(error)
+                        }
+                        result => Ok(result),
+                    }
+                }
+            }).await
+        }
+        let (_, before) = on_inventory_leader(controls, "unreported journals", |i| {
+            controls[i].read_key_retention(&operator, request.clone())
+        }).await;
+        let before = before.unwrap();
         let KeyRetentionCoverage::Incomplete { missing, .. } = &before.coverage else {
             panic!("absent peer journals returned complete coverage")
         };
@@ -2570,7 +2609,7 @@ impl Fixture {
         }
         drop(before);
         async fn pages(
-            control: &kasumi_engine::Database,
+            controls: &[Arc<kasumi_engine::Database>],
             operator: &RequestContext,
             initial: &ReadKeyRetentionRequest,
             phase: &str,
@@ -2592,7 +2631,10 @@ impl Fixture {
                 let mut entries = BTreeSet::new();
                 let mut first_continuation = None;
                 loop {
-                    let page = match control.read_key_retention(operator, next.clone()).with_subscriber(diagnostics.clone()).await {
+                    let (_, response) = on_inventory_leader(controls, phase, |i| {
+                        controls[i].read_key_retention(operator, next.clone())
+                    }).with_subscriber(diagnostics.clone()).await;
+                    let page = match response {
                         Ok(page) => page,
                         Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired
                             && next.cursor.is_some() => {
@@ -2625,7 +2667,7 @@ impl Fixture {
             let runtime = self.targets.iter().find(|target| target.node_id() == db.raft_group().node_id()).unwrap();
             runtime.check_checkpoint_route_under_generation_lock(db, self.target, checkpoint).await.unwrap();
         }
-        let (entries, coverage, held_cursor) = pages(control, &operator, &request, "installed").await.unwrap();
+        let (entries, coverage, held_cursor) = pages(controls, &operator, &request, "installed").await.unwrap();
         let held_cursor = held_cursor.expect("three installed journals need a second two-row page");
         assert!(
             matches!(coverage, KeyRetentionCoverage::Complete { .. }),
@@ -2670,8 +2712,10 @@ impl Fixture {
         let identity = original.identity().unwrap();
         let held = disk.publish_file(original, held_root, held_name).unwrap();
         let held_request = ReadKeyRetentionRequest {cursor:Some(held_cursor.clone()),limit:2,..request.clone()};
-        let rejected = control.read_key_retention(&operator,held_request).await;
-        let unavailable = pages(control, &operator, &request, "withheld").await;
+        let (_, rejected) = on_inventory_leader(controls, "withheld checkpoint cursor", |i| {
+            controls[i].read_key_retention(&operator, held_request.clone())
+        }).await;
+        let unavailable = pages(controls, &operator, &request, "withheld").await;
         let restored = disk.publish_file(held, root, name).unwrap();
         assert_eq!(restored.identity().unwrap(), identity);
         drop(restored);
@@ -2682,7 +2726,7 @@ impl Fixture {
         assert!(
             matches!(&unavailable.1,KeyRetentionCoverage::Incomplete{missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable{record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
         );
-        let restored = pages(control, &operator, &request, "restored").await.unwrap();
+        let restored = pages(controls, &operator, &request, "restored").await.unwrap();
         assert!(
             matches!(restored.1, KeyRetentionCoverage::Complete { .. })
                 && has_checkpoint(&restored.0)
@@ -2706,35 +2750,32 @@ impl Fixture {
         let writer_token = self.path("control.jwt");
         let withheld = self.directory.join("withheld-writer-credential");
         std::fs::rename(&writer_token, &withheld).unwrap();
-        let failed = control
-            .retire_key_versions(&operator, retirement.clone())
-            .await;
+        let (_, failed) = on_inventory_leader(controls, "withheld writer credential", |i| {
+            controls[i].retire_key_versions(&operator, retirement.clone())
+        }).await;
         std::fs::rename(&withheld, &writer_token).unwrap();
         assert!(
             matches!(failed,Err(ref error) if error.code==kasumi_types::ErrorCode::Unavailable && error.has_physical_source()),
             "withholding the writer credential did not return the original physical failure: {failed:?}"
         );
-        let held = control
-            .key_retirement_status(
-                &operator,
-                kasumi_types::KeyRetirementStatusRequest {
-                    scope: request.scope.clone(),
-                    retirement_id: "1".into(),
-                },
-            )
-            .await
-            .unwrap();
+        let (_, held) = on_inventory_leader(controls, "read retirement fence", |i| {
+            controls[i].key_retirement_status(&operator, kasumi_types::KeyRetirementStatusRequest {
+                scope: request.scope.clone(),
+                retirement_id: "1".into(),
+            })
+        }).await;
+        let held = held.unwrap();
         assert!(
             matches!(held.status.as_ref(),Some(kasumi_types::KeyRetirementStatus::Fenced{fence}) if fence.request==retirement)
         );
-        let completed = control
-            .retire_key_versions(&operator, retirement.clone())
-            .await
-            .unwrap();
+        let (writer, completed) = on_inventory_leader(controls, "complete retirement", |i| {
+            controls[i].retire_key_versions(&operator, retirement.clone())
+        }).await;
+        let completed = completed.unwrap();
         assert!(
             matches!(completed.as_ref(),kasumi_types::KeyRetirementStatus::Completed{record} if record.fence.request==retirement)
         );
-        let generation = control.engine().generation().unwrap();
+        let generation = controls[writer].engine().generation().unwrap();
         assert_eq!(
             generation
                 .state
@@ -2745,13 +2786,13 @@ impl Fixture {
             catalogs
         );
         drop(generation);
-        let replay = control
-            .retire_key_versions(&operator, retirement)
-            .await
-            .unwrap();
+        let (_, replay) = on_inventory_leader(controls, "replay retirement", |i| {
+            controls[i].retire_key_versions(&operator, retirement.clone())
+        }).await;
+        let replay = replay.unwrap();
         assert_eq!(replay.as_ref(), completed.as_ref());
         assert!(matches!(
-            pages(control, &operator, &request, "retired").await.unwrap().1,
+            pages(controls, &operator, &request, "retired").await.unwrap().1,
             KeyRetentionCoverage::Complete { .. }
         ));
     }
