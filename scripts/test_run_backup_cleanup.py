@@ -1,6 +1,9 @@
 import json
+import sys
+import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 import uuid
 
 import run_backup_cleanup as cleanup
@@ -18,6 +21,19 @@ class BackupCleanup(unittest.TestCase):
                                   "source_incarnation": "original"},
                        "outcome": {"outcome": "complete", "checkpoint": self.saved, "intent_ciphertext_sha256": "4" * 64},
                        "source_purpose_sha256": "5" * 64}
+
+    def test_runner_records_the_same_interpreter_path_as_the_functional_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            interpreter = Path(directory) / "python3"
+            interpreter.symlink_to(sys.executable)
+            argv = ["run_backup_cleanup.py", "--evidence", directory, "--journal", directory,
+                    "--output", directory, "--attempt-id", "cleanup", "--base-port", "21830"]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(sys, "executable", str(interpreter)),
+                  mock.patch.object(cleanup.domain_run, "Run") as run,
+                  mock.patch.object(cleanup, "execute")):
+                cleanup.main()
+            self.assertEqual(str(interpreter), run.call_args.args[7]["python"])
 
     def test_original_completed_checkpoint_must_match_both_reads(self):
         cleanup.validate_checkpoints(self.created, self.saved, self.status, self.saved, self.root)
