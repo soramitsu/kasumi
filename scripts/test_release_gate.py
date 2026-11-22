@@ -835,6 +835,104 @@ class JournaledFunctionalRunTests(unittest.TestCase):
         self.assertEqual(release_gate.sha256(output / "evidence.json"), before)
 
 
+class GroupLedgerSpawnTests(unittest.TestCase):
+    """A ledgered spawn stays atomic without handing the child a blocked signal mask.
+
+    Every child here is a real, benign Python process; nothing is mocked
+    between the owner and the kernel except where a signal is injected.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.ledger = self.root / "groups.jsonl"
+        self.ledger.touch()
+
+    def mask(self):
+        return {int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, [])}
+
+    def run_ledgered(self, program, timeout):
+        before = self.mask()
+        log = self.root / "child.log"
+        with patch.dict(os.environ, {release_gate.gate_process.GROUP_LEDGER_ENV: str(self.ledger)}), \
+                log.open("wb") as stream:
+            record = release_gate.gate_process.run([sys.executable, "-c", program], self.root, dict(os.environ),
+                                                   stream, timeout, lambda value: None,
+                                                   stderr=subprocess.STDOUT)
+        self.assertEqual(self.mask(), before)
+        rows, closed = release_gate.gate_process.read_group_ledger(self.ledger)
+        self.assertFalse(closed)
+        self.assertEqual([(row["group"], row["leader_birth"]) for row in rows],
+                         [(record["process_group"], record["leader_birth"])])
+        self.assertTrue(record["cleanup"]["drained"])
+        self.assertEqual(record["cleanup"]["after"], [])
+        return record, log.read_text()
+
+    def test_ledgered_child_receives_sigint_and_sigterm_through_its_own_handlers(self):
+        program = ("import os, signal, sys, time\n"
+                   "blocked = sorted(int(s) for s in signal.pthread_sigmask(signal.SIG_BLOCK, []))\n"
+                   "print('blocked', blocked, flush=True)\n"
+                   "seen = []\n"
+                   "for number in (signal.SIGINT, signal.SIGTERM):\n"
+                   "    signal.signal(number, lambda n, _f: seen.append(n))\n"
+                   "    os.kill(os.getpid(), number)\n"
+                   "deadline = time.monotonic() + 5\n"
+                   "while len(seen) < 2 and time.monotonic() < deadline:\n"
+                   "    time.sleep(.01)\n"
+                   "print('seen', sorted(seen), flush=True)\n"
+                   "sys.exit(0 if sorted(seen) == [2, 15] else 9)\n")
+        record, log = self.run_ledgered(program, 30)
+        self.assertEqual((record["exit_code"], record["status"]), (0, "passed"), log)
+        blocked = json.loads(log.splitlines()[0].split(" ", 1)[1])
+        self.assertNotIn(signal.SIGINT, blocked)
+        self.assertNotIn(signal.SIGTERM, blocked)
+        self.assertIn("seen [2, 15]", log)
+        self.assertEqual(record["cleanup"]["signals"], [])
+
+    def test_ledgered_child_is_stopped_by_sigterm_alone(self):
+        record, _ = self.run_ledgered("import time\ntime.sleep(30)\n", 1)
+        self.assertTrue(record["timed_out"])
+        # A blocked SIGTERM would wait out drain's grace and need SIGKILL.
+        self.assertEqual(record["cleanup"]["signals"], ["SIGTERM"])
+        self.assertEqual(record["cleanup"]["process_returncode"], -signal.SIGTERM)
+        self.assertLess(record["duration_seconds"], 1 + 8)
+
+    def test_signal_during_ledgered_admission_still_registers_and_drains_the_group(self):
+        identity = release_gate.gate_process.leader_identity
+        injected = []
+
+        def interrupted_admission(pid, **options):
+            # Between Popen and the group row, under the ledger lock.
+            witness = identity(pid, **options)
+            if not injected:
+                injected.append(pid)
+                signal.raise_signal(signal.SIGTERM)
+            return witness
+
+        previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+        with patch.object(release_gate.gate_process, "leader_identity", interrupted_admission):
+            record, _ = self.run_ledgered("import time\ntime.sleep(30)\n", 30)
+        self.assertEqual(previous, {number: signal.getsignal(number) for number in previous})
+        self.assertEqual(injected, [record["process_group"]])
+        self.assertEqual(record["received_signals"], [signal.SIGTERM])
+        self.assertEqual(record["exit_code"], 128 + signal.SIGTERM)
+        self.assertEqual(record["cleanup"]["signals"], ["SIGTERM"])
+        self.assertEqual(record["cleanup"]["process_returncode"], -signal.SIGTERM)
+
+    def test_sealed_ledger_still_refuses_the_spawn(self):
+        release_gate.gate_process.seal_group_ledger(self.ledger)
+        with patch.dict(os.environ, {release_gate.gate_process.GROUP_LEDGER_ENV: str(self.ledger)}), \
+                (self.root / "late.log").open("wb") as stream:
+            record = release_gate.gate_process.run([sys.executable, "-c", "open('spawned', 'w').close()"],
+                                                   self.root, dict(os.environ), stream, 30, lambda value: None,
+                                                   stderr=subprocess.STDOUT)
+        self.assertIsNone(record["process_group"])
+        self.assertIn("admission is closed", record["error"])
+        self.assertFalse((self.root / "spawned").exists())
+        self.assertEqual(release_gate.gate_process.read_group_ledger(self.ledger), ([{"schema": 1, "kind": "closed"}], True))
+
+
 class GateGroupCensusTests(unittest.TestCase):
     def orphan(self):
         """A sleeping new-session process whose parent has exited, as after a killed runner."""
