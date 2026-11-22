@@ -509,6 +509,8 @@ def capture_metadata(source, directory, target, expected_source_files, native_in
         if before != expected_source_files:
             raise ValueError("metadata source differs before dispatch")
         environment = assembly_inputs.environment(native_inputs, directory)
+        # Cargo metadata can cache its rustc probe even with --locked --offline.
+        environment["CARGO_TARGET_DIR"] = str(directory / "target")
         executable = gate_process.executable_identity([native_inputs["tools"]["cargo"]["path"]], source, environment)
         command = metadata_command(executable["path"], target)
         record["command"] = command
