@@ -111,14 +111,15 @@ The platform identifiers are exactly:
 - `aarch64-unknown-linux-gnu`
 - `aarch64-apple-darwin`
 
-Each primary build reuses `package_release.verify_evidence`. Its complete
-19-gate roster and commands come from frozen `release_gate.functional_gates`:
+Each primary build reuses `package_release.verify_evidence`. The frozen
+`release_gate.functional_gates` defines its 22 commands, covering
 toolchain, formatting, Python checks, patch provenance, all retained patched
 dependency variants, full workspace/all features/all targets, doctests,
 strict Clippy, network feature isolation/build, and fixture-free production
-feature isolation/build. All 57 native functional gates must pass. Native
-executable headers and actual `kasumid`, `kasumictl`, and `kasumi-authority`
-hashes are checked.
+feature isolation/build. All 66 native functional gate results must pass.
+The acceptance manifest also requires 27 target results across 19 domains.
+The verifier checks native executable headers and the actual `kasumid`,
+`kasumictl` and `kasumi-authority` hashes.
 
 The rmcp gates include all new terminal-ownership regressions and six upstream
 protocol/header/JSON/discovery suites. This minimum functional roster does not
