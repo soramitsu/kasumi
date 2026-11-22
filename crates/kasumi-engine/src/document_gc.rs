@@ -114,12 +114,74 @@ pub(crate) struct Stats {
     pub failures: u64,
 }
 
+/// The exact authenticated feed prefix owned by the snapshot directory.
+struct DiskFeed {
+    selection: crate::application_sources::SelectedApplication,
+    boundary: crate::application_sources::SnapshotBoundary<String>,
+    first: u64,
+    next: u64,
+    end: u64,
+}
+
+impl DiskFeed {
+    /// Close each native record reader before a census callback opens the
+    /// manifest store. The page keeps its own admitted descriptor memory.
+    fn advance(
+        &mut self,
+        budget: &mut usize,
+        visit: &mut impl FnMut(&kasumi_types::StoredDocument) -> Result<bool>,
+    ) -> Result<bool> {
+        const PAGE: usize = 32;
+        while self.next < self.end && *budget > 0 {
+            let limit = PAGE.min(*budget);
+            let (rows, _grant) = self
+                .selection
+                .with_base_snapshot_boundary(None, &self.boundary, |tree, memory, _, revision| {
+                    let grant = crate::document_restore::ReadAdmissionFailure::reserve(
+                        memory,
+                        1024 + (limit as u64) * 1024,
+                    )?;
+                    let feed = crate::application_records::SnapshotFeed {
+                        tree,
+                        memory,
+                        revision,
+                        end_sequence: self.end,
+                    };
+                    let mut rows = Vec::with_capacity(limit);
+                    feed.visit(self.first, self.next, |_, _, _, _, record| {
+                        rows.push(record.document.clone());
+                        Ok(rows.len() < limit)
+                    })?;
+                    anyhow::ensure!(!rows.is_empty(), "verified GC feed made no progress");
+                    Ok((rows, grant))
+                })?
+                .context("GC snapshot feed directory disappeared")?;
+            for row in rows {
+                let proceed = match row.as_deref() {
+                    Some(DocumentSlot::Stored(descriptor)) => visit(descriptor)?,
+                    Some(DocumentSlot::Pending(_)) => {
+                        anyhow::bail!("pending descriptor in persisted GC feed")
+                    }
+                    None => true,
+                };
+                self.next += 1;
+                *budget -= 1;
+                if !proceed {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
 /// A resumable position in a frozen copy of the document and feed roots.
 /// The persistent maps share their nodes with the published state.
 struct Walk {
     documents: Vec<Documents>,
     _collection_roots: Option<Reservation>,
     feed: Feed,
+    disk_feed: Option<DiskFeed>,
     collection: usize,
     after_document: Option<String>,
     after_commit: Option<u64>,
@@ -128,33 +190,108 @@ struct Walk {
     done: bool,
 }
 impl Walk {
-    fn freeze(state: &TenantState, admission: &Arc<NodeAdmission>) -> Option<Self> {
-        let count = state.collections.len();
-        let bytes = count.checked_mul(std::mem::size_of::<Documents>())?;
+    fn freeze(
+        state: &TenantState,
+        selection: &crate::application_sources::SelectedApplication,
+        admission: &Arc<NodeAdmission>,
+    ) -> Result<Option<Self>> {
+        // A sparse log tail can share its original commit allocations. Bound the
+        // number of freshly allocated map slots independently of the prefix.
+        const MAX_TAIL: usize = 32;
+        let retained = &state.change_feed;
+        let end = retained.next_sequence;
+        let first = end
+            .checked_sub(u64::try_from(retained.event_count)?)
+            .context("GC feed bounds overflow")?;
+        let prefix = if retained.commits.is_empty() {
+            None
+        } else {
+            selection
+                .with_base_snapshot_records(None, state, |tree, memory, _, revision| {
+                    Ok(crate::application_records::SnapshotFeed::open(
+                        tree,
+                        memory,
+                        revision,
+                        state.revision,
+                        end,
+                    )?
+                    .map(|feed| feed.end_sequence))
+                })?
+                .flatten()
+        };
+        let disk_end = prefix.filter(|&after| {
+            after > first && retained.commits.range(after..).take(MAX_TAIL + 1).count() <= MAX_TAIL
+        });
+        if let Some(after) = disk_end {
+            anyhow::ensure!(
+                retained.first_available_sequence() == first
+                    && (after == end || retained.commits.contains_key(&after)),
+                "GC retained feed and snapshot boundary differ"
+            );
+        }
+        let roots_bytes = state
+            .collections
+            .len()
+            .checked_mul(std::mem::size_of::<Documents>())
+            .context("GC collection root size overflow")?;
+        let bytes = roots_bytes
+            .checked_add(if disk_end.is_some() {
+                4096 + MAX_TAIL * 256
+            } else {
+                0
+            })
+            .context("GC feed root size overflow")?;
         let grant = if bytes == 0 {
             None
         } else {
-            Some(admission.reserve_resident(bytes.try_into().ok()?).ok()?)
+            let Ok(reserved) = admission.reserve_resident(u64::try_from(bytes)?) else {
+                return Ok(None);
+            };
+            Some(reserved)
         };
         let mut documents = Vec::new();
-        documents.try_reserve_exact(count).ok()?;
+        if documents
+            .try_reserve_exact(state.collections.len())
+            .is_err()
+        {
+            return Ok(None);
+        }
         documents.extend(
             state
                 .collections
                 .values()
                 .map(|collection| collection.documents.clone()),
         );
-        Some(Self {
+        let (feed, disk_feed) = match disk_end {
+            Some(after) => {
+                let tail = retained
+                    .commits
+                    .range(after..)
+                    .map(|(&sequence, commit)| (sequence, commit.clone()))
+                    .collect();
+                let disk = DiskFeed {
+                    selection: selection.clone(),
+                    boundary: state.into(),
+                    first,
+                    next: first,
+                    end: after,
+                };
+                (tail, Some(disk))
+            }
+            None => (retained.commits.clone(), None),
+        };
+        Ok(Some(Self {
             documents,
             _collection_roots: grant,
-            feed: state.change_feed.commits.clone(),
+            feed,
+            disk_feed,
             collection: 0,
             after_document: None,
             after_commit: None,
             next_record: 0,
             documents_done: false,
             done: false,
-        })
+        }))
     }
 
     /// Visit up to `budget` further stored slots. `visit` returns whether to
@@ -210,6 +347,12 @@ impl Walk {
                 return Ok(());
             }
         }
+        if let Some(disk) = &mut self.disk_feed {
+            if !disk.advance(&mut budget, &mut visit)? || disk.next < disk.end {
+                return Ok(());
+            }
+            self.disk_feed = None;
+        }
         while !self.done && budget > 0 {
             let after = self.after_commit;
             let lower: Bound<&u64> = match &after {
@@ -253,6 +396,54 @@ impl Walk {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn check_snapshot_feed_walk(
+    generation: &crate::Generation,
+    admission: &Arc<NodeAdmission>,
+    expect_log_tail: bool,
+) -> Result<()> {
+    let state = &generation.state;
+    let selection = generation
+        .application_selection
+        .get()
+        .context("no selected source")?;
+    let mut walk = Walk::freeze(state, selection, admission)?.context("GC walk admission")?;
+    let disk = walk
+        .disk_feed
+        .as_ref()
+        .context("native snapshot must own this feed prefix")?;
+    assert!(walk.feed.keys().all(|first| *first >= disk.end));
+    assert_eq!(!walk.feed.is_empty(), expect_log_tail);
+    let expected: Vec<_> = state
+        .change_feed
+        .commits
+        .values()
+        .flat_map(|commit| &commit.records)
+        .filter_map(|record| match record.document.as_deref() {
+            Some(DocumentSlot::Stored(stored)) => Some((stored.version, stored.body_object)),
+            _ => None,
+        })
+        .collect();
+    assert!(expected.len() >= 2);
+    // Isolate the feed phase of the real cursor and interrupt its first object.
+    walk.documents_done = true;
+    let checkpoint = disk.next;
+    let error = walk
+        .advance(1, |_| anyhow::bail!("first manifest unavailable"))
+        .unwrap_err();
+    assert_eq!(error.to_string(), "first manifest unavailable");
+    assert_eq!(walk.disk_feed.as_ref().unwrap().next, checkpoint);
+    let mut seen = Vec::new();
+    while !walk.done {
+        walk.advance(1, |stored| {
+            seen.push((stored.version, stored.body_object));
+            Ok(false)
+        })?;
+    }
+    assert_eq!(seen, expected);
+    Ok(())
 }
 
 enum Phase {
@@ -309,6 +500,7 @@ struct State {
 /// is outside any committed apply's native escrow.
 pub(crate) struct Step<'a> {
     pub state: &'a TenantState,
+    pub selection: &'a crate::application_sources::SelectedApplication,
     /// Logical revision of the selected durable snapshot, when there is one.
     pub snapshot_revision: &'a dyn Fn() -> Result<Option<u64>>,
     pub store: &'a Arc<TenantStore>,
@@ -724,7 +916,7 @@ impl State {
             if self.pending.is_empty() {
                 return Ok(());
             }
-            self.begin(step, admission);
+            self.begin(step, admission)?;
             if self.cycle.is_none() {
                 return Ok(());
             }
@@ -771,9 +963,9 @@ impl State {
         Ok(())
     }
 
-    fn begin(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) {
-        let Some(walk) = Walk::freeze(step.state, admission) else {
-            return;
+    fn begin(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) -> Result<()> {
+        let Some(walk) = Walk::freeze(step.state, step.selection, admission)? else {
+            return Ok(());
         };
         let candidates = std::mem::take(&mut self.pending);
         self.cycle = Some(Cycle {
@@ -782,6 +974,7 @@ impl State {
             phase: Phase::Walk(walk),
         });
         self.stats.cycles += 1;
+        Ok(())
     }
 
     /// Queue the registration of every live manifest that can name a chunk.
@@ -789,7 +982,7 @@ impl State {
     /// after-image staged after the census began is queued by its own apply.
     fn take_census(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) -> Result<()> {
         if matches!(self.census, Census::Idle) {
-            let Some(walk) = Walk::freeze(step.state, admission) else {
+            let Some(walk) = Walk::freeze(step.state, step.selection, admission)? else {
                 return Ok(());
             };
             self.census = Census::Walking(walk);
@@ -1124,6 +1317,7 @@ mod tests {
             .collect();
         let mut walk = Walk {
             documents: vec![documents],
+            disk_feed: None,
             _collection_roots: None,
             feed,
             collection: 0,

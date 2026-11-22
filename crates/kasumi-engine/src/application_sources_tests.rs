@@ -2433,6 +2433,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         }
     }
     let mut visited = Vec::new();
+    crate::document_gc::check_snapshot_feed_walk(&reopened, &target.storage.admission, false)?;
     let feed = &reopened.state.change_feed;
     selection
         .with_snapshot_records(None, &reopened.state, |tree, memory, _| {
@@ -2592,6 +2593,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         })?
         .context("new log entry lost its selected base snapshot")?;
     assert!(base.0 < latest.state.revision);
+    crate::document_gc::check_snapshot_feed_walk(&latest, &source.storage.admission, true)?;
     assert_eq!(base.1, 3);
     drop(latest);
     let request = |start, limit| kasumi_types::ReadChangeFeed {

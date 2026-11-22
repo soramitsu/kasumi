@@ -1199,6 +1199,7 @@ impl TenantEngine {
             return;
         };
         self.object_gc.step(&crate::document_gc::Step {
+            selection,
             state: &current.state,
             snapshot_revision: &|| {
                 selection.with_base_snapshot_records(None, &current.state, |_, _, _, revision| {
@@ -1501,6 +1502,8 @@ impl TenantEngine {
         Ok(())
     }
     pub(crate) fn seal_application_source_consumers(&self) {
+        // An idle collector can be between pages on an older native pin.
+        self.object_gc.suspend();
         if let Some(sources) = self.application_sources.get() {
             kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
         }
@@ -2716,6 +2719,7 @@ impl TenantEngine {
                 .unwrap_or_else(|p| p.into_inner()) =
                 Some(generation.state.pending_restore.clone());
         }
+        self.object_gc.suspend();
         self.publish_generation(None);
         self.audit_maintenance
             .lock()
