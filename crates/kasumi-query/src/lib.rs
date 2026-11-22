@@ -135,9 +135,44 @@ impl CollectionIndexes {
 
     fn prepare<R: CollectionRecords>(
         source: &index_input::CheckedRecords<'_, R>,
+        installed: bool,
     ) -> ReadResult<Self, R::Failure> {
         let mut indexes = Self::empty(source.definition())?;
-        indexes.structured.build(source, &indexes.validator)?;
+        if installed
+            && indexes.structured.fields.is_empty()
+            && let Some(rows) = source.identity().collection_state()
+        {
+            if !std::ptr::eq(rows.definition.as_ref(), source.definition()) {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "installed row definition differs").into(),
+                );
+            }
+            let mut expected = ordered_union(rows.documents.keys(), rows.archived_documents.keys());
+            source.visit_records(|id, record| {
+                if expected.next().map(String::as_str) != Some(id) {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "installed document ID differs",
+                    ));
+                }
+                if let Record::Live(document) = record {
+                    validation::validate_document_with_validator(
+                        source.definition(),
+                        &document.body,
+                        &indexes.validator,
+                    )?;
+                }
+                Ok(())
+            })?;
+            if expected.next().is_some() {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "installed document ID is missing").into(),
+                );
+            }
+            indexes.logical_ids = Some(LogicalIds::rows(rows));
+        } else {
+            indexes.structured.build(source, &indexes.validator)?;
+        }
         Ok(indexes)
     }
 }
@@ -425,6 +460,24 @@ impl QueryIndexes {
         sources: impl IntoIterator<Item = R>,
         residency: TextResidency,
     ) -> ReadResult<Self, R::Failure> {
+        Self::prepare_sources(sources, residency, false)
+    }
+
+    /// Build an installed generation from the canonical collection owners.
+    /// Standalone inputs with independent IDs keep the normal build path.
+    #[doc(hidden)]
+    pub fn build_installed_with_residency<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure> {
+        Self::prepare_sources(sources, residency, true)
+    }
+
+    fn prepare_sources<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+        installed: bool,
+    ) -> ReadResult<Self, R::Failure> {
         let sources: Vec<_> = sources.into_iter().collect();
         let mut prepared = Vec::with_capacity(sources.len());
         let mut names = BTreeSet::new();
@@ -436,7 +489,7 @@ impl QueryIndexes {
             if !names.insert(name.clone()) {
                 return Err(invalid("duplicate index collection source").into());
             }
-            let indexes = CollectionIndexes::prepare(&source)?;
+            let indexes = CollectionIndexes::prepare(&source, installed)?;
             prepared.push((name, source, indexes));
         }
         let mut collections = BTreeMap::new();
@@ -537,7 +590,7 @@ impl QueryIndexes {
                     };
                     let indexes = match shared {
                         Some(indexes) => indexes,
-                        None => CollectionIndexes::prepare(&source)?,
+                        None => CollectionIndexes::prepare(&source, false)?,
                     };
                     prepared.push(PreparedIndexCollection {
                         name,
