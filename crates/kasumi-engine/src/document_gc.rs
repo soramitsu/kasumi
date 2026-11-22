@@ -61,6 +61,9 @@ const MAX_PENDING: usize = 1 << 18;
 const CANDIDATE_BYTES: u64 = 72;
 const MAX_REGISTRATION_SLOTS: usize = 1 << 18;
 const MAX_FAILURES: u32 = 3;
+/// Each selected disk slot requires authenticated native reads. A walk yields
+/// after at most one page of those reads before the foreground apply returns.
+const DISK_WALK_PAGE: usize = 32;
 
 type Digest = [u8; 32];
 type Documents = imbl::OrdMap<String, Arc<DocumentSlot>>;
@@ -131,9 +134,8 @@ impl DiskFeed {
         budget: &mut usize,
         visit: &mut impl FnMut(&kasumi_types::StoredDocument) -> Result<bool>,
     ) -> Result<bool> {
-        const PAGE: usize = 32;
         while self.next < self.end && *budget > 0 {
-            let limit = PAGE.min(*budget);
+            let limit = DISK_WALK_PAGE.min(*budget);
             let (rows, _grant) = self
                 .selection
                 .with_base_snapshot_boundary(None, &self.boundary, |tree, memory, _, revision| {
@@ -196,7 +198,7 @@ impl DiskDocuments {
             let Some((collection, expected)) = self.collections.get(self.collection) else {
                 return Ok(true);
             };
-            let limit = (*budget).min(32);
+            let limit = (*budget).min(DISK_WALK_PAGE);
             let (rows, _grant) = self
                 .selection
                 .with_primary_boundary(None, &self.boundary, |tree, memory, _| {
@@ -428,6 +430,7 @@ impl Walk {
         if !self.documents_done
             && let Some(disk) = &mut self.disk_documents
         {
+            budget = budget.min(DISK_WALK_PAGE);
             if !disk.advance(&mut budget, &mut visit)? {
                 return Ok(());
             }
@@ -479,6 +482,7 @@ impl Walk {
             }
         }
         if let Some(disk) = &mut self.disk_feed {
+            budget = budget.min(DISK_WALK_PAGE);
             if !disk.advance(&mut budget, &mut visit)? || disk.next < disk.end {
                 return Ok(());
             }
