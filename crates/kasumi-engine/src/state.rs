@@ -211,12 +211,21 @@ impl Generation {
         if !self._read_reservations.is_empty() {
             return Ok(None);
         }
-        if self.indexes.compound_count(name) == 0 {
-            return Ok(None);
-        }
         let Some(collection) = self.state.collections.get(name) else {
             return Ok(None);
         };
+        let disk_primary =
+            selection.served_primary_at(self.state.revision_base, self.state.revision);
+        // A scalar unique seek keeps its ordered posting fallback, but reads
+        // live rows from the same selected primary as a compound seek.
+        if !collection
+            .definition
+            .indexes
+            .iter()
+            .any(|index| index.unique && (index.fields.len() > 1 || disk_primary))
+        {
+            return Ok(None);
+        }
         // Upper bound on the scoped field/name metadata and its private map
         // slots. Document and posting roots stay shared and no body is copied.
         let mut bytes = 16_384u64;
@@ -233,7 +242,7 @@ impl Generation {
             return Ok(None);
         };
         let mut collection = collection.clone();
-        if selection.served_primary_at(self.state.revision_base, self.state.revision) {
+        if disk_primary {
             collection.documents.clear();
             collection.archived_documents.clear();
         }

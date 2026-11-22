@@ -3145,7 +3145,15 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
             retention_class: kasumi_types::CollectionRetentionClass::Operational,
             schema: serde_json::json!({"type": "object"}),
-            indexes: vec![],
+            indexes: vec![kasumi_types::IndexDefinition {
+                name: "value".into(),
+                fields: vec![kasumi_types::IndexField {
+                    path: "/value".into(),
+                    kind: kasumi_types::ScalarType::Number,
+                }],
+                unique: true,
+                text: None,
+            }],
             strict_read_audit: false,
         }),
     )
@@ -3161,6 +3169,24 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .upsert("docs", "b", serde_json::json!({"value": 2})),
     )
     .await?;
+    {
+        let original = engine.generation()?;
+        let scoped = original
+            .physical_seek_view("docs", |_| Ok(true))?
+            .expect("single-field worker of a verified primary");
+        assert!(scoped.state.collections["docs"].documents.is_empty());
+        assert_eq!(original.state.collections["docs"].documents.len(), 2);
+        let mut seek = kasumi_types::QueryRequest::new("docs")
+            .sort_desc("/value")
+            .limit(1)
+            .paging(kasumi_types::Paging::Seek);
+        let first = db.query(&context, seek.clone()).await?;
+        assert_eq!(first.rows[0].id, "b");
+        seek.cursor = Some(first.cursor.context("expected scalar seek continuation")?);
+        let last = db.query(&context, seek).await?;
+        assert_eq!(last.rows[0].id, "a");
+        assert!(last.cursor.is_none());
+    }
     let limits = engine.generation()?.state.limits.clone();
     let mut limited = limits.clone();
     limited.max_cursor_bytes = 1;
