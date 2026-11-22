@@ -841,6 +841,13 @@ impl LeaseManager {
         let mut state = crate::snapshot_codec::metadata(original);
         let mut retained_bytes = root.metadata_bytes;
         let mut charged_bytes = initial;
+        let disk_primary = root
+            .generation
+            .application_selection
+            .get()
+            .is_some_and(|selection| {
+                selection.served_primary_at(original.revision_base, original.revision)
+            });
         for key in &keys {
             cancellation.check()?;
             authorize_state(&current.state, context, Some(&key.collection), Action::Read)?;
@@ -858,6 +865,11 @@ impl LeaseManager {
                     archived_documents: Default::default(),
                     archived_document_bytes: 0,
                 });
+            // The page worker reads live points from this exact pin. A collection
+            // with history still needs its selected archive manifests for hydration.
+            if disk_primary && source.archived_documents.is_empty() {
+                continue;
+            }
             if let Some(document) = source.documents.get(&key.id) {
                 add(
                     &mut retained_bytes,

@@ -241,16 +241,28 @@ impl SelectedApplication {
             u32,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
-        if self.has_exact_snapshot(state.revision_base, state.revision) {
-            return self.with_snapshot_records(shared, state, read);
+        use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
+        let mut has_headers = true;
+        let result = if self.has_exact_snapshot(state.revision_base, state.revision) {
+            self.with_snapshot_records(shared, state, |tree, memory, layout| {
+                has_headers = layout >= DOCUMENT_HEADERS_LAYOUT;
+                read(tree, memory, layout)
+            })
+        } else {
+            self.with_primary_records(shared, state, |tree, memory| {
+                read(tree, memory, DOCUMENT_HEADERS_LAYOUT)
+            })
+        }?;
+        if result.is_some() && has_headers {
+            self.cell
+                .verified_primary
+                .get_or_init(|| (state.revision_base, state.revision));
         }
-        self.with_primary_records(shared, state, |tree, memory| {
-            read(
-                tree,
-                memory,
-                kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT,
-            )
-        })
+        Ok(result)
+    }
+
+    pub(crate) fn served_primary_at(&self, base: u64, revision: u64) -> bool {
+        self.cell.verified_primary.get() == Some(&(base, revision))
     }
 
     /// Lend the ordinary primary directory this selection pinned, only when it

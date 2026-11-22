@@ -205,6 +205,8 @@ struct Cell {
     handles: AtomicUsize,
     state: Mutex<CellState>,
     position: OnceLock<Position>,
+    // This immutable cell served primary descriptors and headers at this boundary.
+    verified_primary: OnceLock<(u64, u64)>,
     replay_predecessor: OnceLock<ReplayPredecessor>,
     // Node evacuations finished before this cell's view selected its root.
     evacuations: OnceLock<u64>,
@@ -1191,6 +1193,7 @@ impl SourceRootsRef {
                     view: None,
                 }),
                 position: OnceLock::new(),
+                verified_primary: OnceLock::new(),
                 replay_predecessor: OnceLock::new(),
                 evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),

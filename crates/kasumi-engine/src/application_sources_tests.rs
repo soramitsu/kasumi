@@ -1570,7 +1570,20 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         let physical = ordinary
             .physical_seek_view("docs", |_| Ok(true))?
             .expect("physical seek worker projection");
+        assert!(!ordinary.state.collections["docs"].documents.is_empty());
+        assert!(physical.state.collections["docs"].documents.is_empty());
         compound_seek(&Arc::new(physical), &source.storage.admission)?;
+        let hydrated = ordinary.read_view(
+            ordinary.state.collections.clone(),
+            vec![source.storage.admission.reserve(4096, None)?],
+        );
+        assert!(
+            hydrated
+                .physical_seek_view("docs", |_| {
+                    panic!("a worker tried to replace the view that owns its body grants")
+                })?
+                .is_none()
+        );
         let selection = ordinary.application_selection.get().unwrap();
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
@@ -1906,6 +1919,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let physical = reopened
         .physical_seek_view("docs", |_| Ok(true))?
         .expect("reopened seek worker projection");
+    assert!(physical.state.collections["docs"].documents.is_empty());
     compound_seek(&Arc::new(physical), &target.storage.admission)?;
     {
         use kasumi_query::DocumentSource as _;
@@ -2051,6 +2065,22 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             assert!(Arc::ptr_eq(&handle, &page.handle));
             assert_eq!(page.scan_ids, [expected]);
             assert_eq!(page.scan_has_more, more);
+            assert!(
+                page.generation.state.collections["docs"]
+                    .documents
+                    .is_empty()
+            );
+            let reads = crate::document_source::DocumentReads::from_shared(
+                &page.generation,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                page.scan_reader,
+            );
+            use kasumi_query::DocumentSource as _;
+            reads.source("docs")?.with_record(expected, None, &cancellation, |record| {
+                assert!(matches!(record, Some(kasumi_query::Record::Live(doc)) if doc.id == expected));
+                Ok(())
+            })?;
+            reads.finish()?;
         }
         reopened_engine.leases.close(&context, &lease_id)?;
     }

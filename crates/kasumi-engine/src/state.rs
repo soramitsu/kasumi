@@ -185,7 +185,12 @@ impl Generation {
         name: &str,
         admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
     ) -> anyhow::Result<Option<Self>> {
-        if self.application_selection.get().is_none() {
+        let Some(selection) = self.application_selection.get() else {
+            return Ok(None);
+        };
+        // A hydrated view owns the grants for the archive bodies it lends.
+        // The worker must keep that view until its page finishes.
+        if !self._read_reservations.is_empty() {
             return Ok(None);
         }
         if self.indexes.compound_count(name) == 0 {
@@ -209,8 +214,13 @@ impl Generation {
         let Some(indexes) = self.indexes.published_seek_worker_projection(name) else {
             return Ok(None);
         };
+        let mut collection = collection.clone();
+        if selection.served_primary_at(self.state.revision_base, self.state.revision) {
+            collection.documents.clear();
+            collection.archived_documents.clear();
+        }
         Ok(Some(self.lease_with_collections(
-            std::iter::once((name.to_owned(), collection.clone())).collect(),
+            std::iter::once((name.to_owned(), collection)).collect(),
             Arc::new(indexes),
             false,
         )))
