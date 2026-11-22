@@ -3,6 +3,12 @@
 
 This does not certify capacity, recovery drills, external services or endurance.
 The output directory is exclusive and keeps failed/partial runs for inspection.
+
+With --attempt-root and --attempt-id the run is a native primary functional
+attempt: it is admitted to the host's append-only attempt journal before any
+output exists, checks its prerequisites before dispatch, runs its gates through
+one owned runner process, and always terminates the admission with the original
+evidence.json as its build evidence. Without them it is a development run.
 """
 from __future__ import annotations
 
@@ -13,12 +19,15 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
+import time
 
 import gate_process
 
@@ -63,6 +72,21 @@ VENDOR_SUITES = (
 # gate's process group drains, it is moved out of the frozen source; any other
 # gate that creates it, like any other write, invalidates the run.
 GENERATED_OUTPUTS = {"openraft-integration": "vendor/openraft-0.9.25/tests/_log"}
+
+PRODUCTION_BINARIES = ("kasumid", "kasumictl", "kasumi-authority")
+# A journaled attempt's products, relative to its admitted output. The
+# acceptance verifier selects evidence.json beside exactly these paths.
+FUNCTIONAL_PRODUCTS = {**{name: "target/release/" + name for name in PRODUCTION_BINARIES},
+                       "source-archive": "source.tar", "source-inventory": "source-files.json"}
+# The journaled launcher's one owned child: the frozen copy of this script.
+PREPARED_COMMAND = "run-prepared"
+RUNNER = "runner"
+# Names the attempt a runner was launched for; gates never inherit it.
+RUNNER_ENV = "KASUMI_FUNCTIONAL_RUNNER_ATTEMPT"
+RUNNER_TIMEOUT_SECONDS = 86400
+NATIVE_TARGETS = {("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+                  ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
+                  ("Darwin", "arm64"): "aarch64-apple-darwin"}
 
 
 def sha256(path):
@@ -464,18 +488,26 @@ def dispatch_gates(gates, source, output, environment, timeout_seconds, record, 
     record["status"] = "passed" if all(g["exit_code"] == 0 for g in record["gates"]) else "failed"
 
 
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def record_failure(record, error):
+    record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+    record["runner_error"] = str(error)
+    record["runner_error_notes"] = getattr(error, "__notes__", [])
+
+
 @contextlib.contextmanager
 def terminal_record(record, output):
     """Persist a failed or interrupted status for any error, then re-raise it."""
     try:
         yield record
     except BaseException as error:
-        record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
-        record["runner_error"] = str(error)
-        record["runner_error_notes"] = getattr(error, "__notes__", [])
+        record_failure(record, error)
         raise
     finally:
-        record["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        record["finished_at"] = now()
         write_json(Path(output) / "evidence.json", record)
 
 
@@ -492,15 +524,402 @@ def verify_runner_inputs(source):
     return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def verify_journal_inputs(source):
+    """The executing journal writer must be the archived first-release input.
+
+    Kept apart from runner_inputs, whose exact roster the candidate verifier pins.
+    """
+    import attempt_index
+
+    checksum = sha256(Path(attempt_index.__file__).resolve())
+    if checksum != sha256(Path(source) / "scripts/attempt_index.py"):
+        raise ValueError("executing attempt journal differs from frozen source: scripts/attempt_index.py")
+    return {"scripts/attempt_index.py": checksum}
+
+
+def prepare_source(record, repository, commit, output):
+    """Capture the interpreter and the frozen source. Nothing is dispatched here."""
+    (output / "tools").mkdir()
+    shutil.copyfile(sys.executable, output / record["python_executable"]["artifact"])
+    if sha256(output / record["python_executable"]["artifact"]) != record["python_executable"]["sha256"]:
+        raise ValueError("Python interpreter changed before evidence capture")
+    archive = output / "source.tar"
+    subprocess.run(["git", "-C", str(repository), "archive", "--format=tar", "--output=" + str(archive), commit], check=True)
+    record["source_archive_sha256"] = sha256(archive)
+    source = output / "source"
+    extract_source(archive, source)
+    record["runner_inputs"] = verify_runner_inputs(source)
+    write_json(output / "evidence.json", record)
+    original = inventory(source)
+    verify_export(repository, commit, source, original)
+    write_json(output / "source-files.json", original)
+    record["source_files_sha256"] = sha256(output / "source-files.json")
+    record["lockfile_sha256"] = sha256(source / "Cargo.lock")
+    epoch = subprocess.check_output(["git", "-C", str(repository), "show", "-s", "--format=%ct", commit],
+                                    text=True).strip()
+    environment = os.environ.copy()
+    environment.update(CARGO_TARGET_DIR=str(output / "target"), RUSTUP_TOOLCHAIN=TOOLCHAIN,
+                       PYTHONDONTWRITEBYTECODE="1", SOURCE_DATE_EPOCH=epoch)
+    record["build_environment"] = {name: environment.get(name) for name in
+                                   ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CC", "CXX", "AR", "SOURCE_DATE_EPOCH"]}
+    return source, original, environment
+
+
+def file_identity(root, path):
+    return {"path": Path(path).relative_to(root).as_posix(), "sha256": sha256(path),
+            "bytes": Path(path).stat().st_size}
+
+
+def census_gate_groups(output, path):
+    """Terminate any gate group its runner did not finish draining.
+
+    The runner retains each gate's process group and leader birth on disk
+    right after spawning it. A gate whose receipt shows a completed drain needs
+    nothing more; its numeric group may already belong to someone else. Any
+    other gate group that still has members, or cannot be inspected, makes the
+    census incomplete and fails the runner's receipt. Gate children are not
+    spawned under a group ledger, which would leave SIGINT and SIGTERM blocked.
+    """
+    groups = []
+    for receipt in sorted(Path(output).glob("*-process.json")):
+        item = {"receipt": receipt.name, "group": None, "leader_birth": None, "drained_by_runner": False,
+                "before": None, "after": None, "signals": [], "errors": []}
+        try:
+            process = json.loads(receipt.read_bytes())
+            item["group"], item["leader_birth"] = process["process_group"], process["leader_birth"]
+            cleanup = process.get("cleanup")
+            item["drained_by_runner"] = (isinstance(cleanup, dict) and cleanup.get("drained") is True
+                                         and cleanup.get("after") == [])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            item["errors"].append("gate receipt: " + repr(error))
+        group = item["group"]
+        if item["drained_by_runner"] or (group is None and not item["errors"]):
+            item["terminal"] = not item["errors"]
+            groups.append(item)
+            continue
+        if type(group) is not int or group <= 0 or group == os.getpgrp():
+            item["errors"].append("gate receipt names no separately owned process group")
+            item["terminal"] = False
+            groups.append(item)
+            continue
+        try:
+            item["before"] = gate_process.group_members(group)
+        except Exception as error:
+            item["errors"].append("before census: " + repr(error))
+        if item["before"]:
+            # Signal a numeric group only while its original leader is alive.
+            expected = {"group": group, "birth": item["leader_birth"]}
+            for number in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    if item["leader_birth"] is None or gate_process.leader_identity(group) != expected:
+                        item["errors"].append("gate group leader is unavailable or changed")
+                        break
+                    os.killpg(group, number)
+                    item["signals"].append(signal.Signals(number).name)
+                except ProcessLookupError:
+                    pass
+                except Exception as error:
+                    item["errors"].append(signal.Signals(number).name + ": " + repr(error))
+                    break
+                remaining = None
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        remaining = gate_process.group_members(group)
+                    except Exception as error:
+                        item["errors"].append("drain census: " + repr(error))
+                        break
+                    if remaining == []:
+                        break
+                    time.sleep(.05)
+                if remaining == []:
+                    break
+        try:
+            item["after"] = gate_process.group_members(group)
+        except Exception as error:
+            item["errors"].append("after census: " + repr(error))
+        item["terminal"] = item["after"] == [] and not item["errors"]
+        groups.append(item)
+    census = {"schema": 1, "groups": groups, "complete": all(item["terminal"] for item in groups)}
+    write_json(path, census)
+    if not census["complete"] or any(item["signals"] for item in groups):
+        raise RuntimeError("functional gate groups outlived their runner or could not be inspected")
+    return census
+
+
+def check_functional_products(record, output):
+    """A passed attempt's products are the production gate's own retained outputs."""
+    production = [gate for gate in record["gates"] if gate.get("name") == "production"]
+    executables = production[0].get("executables") if len(production) == 1 else None
+    if not isinstance(executables, dict):
+        raise ValueError("functional evidence has no single production gate")
+    for name in PRODUCTION_BINARIES:
+        artifact = executables.get("release/" + name)
+        if (not isinstance(artifact, dict) or artifact.get("target") != name or artifact.get("test") is not False
+                or artifact.get("sha256") != sha256(output / FUNCTIONAL_PRODUCTS[name])):
+            raise ValueError("functional product differs from its production gate output: " + name)
+    if (sha256(output / FUNCTIONAL_PRODUCTS["source-archive"]) != record["source_archive_sha256"]
+            or sha256(output / FUNCTIONAL_PRODUCTS["source-inventory"]) != record["source_files_sha256"]):
+        raise ValueError("functional source products differ from their evidence")
+
+
+def retained_product(output, relative):
+    """Name a failed attempt's product only if it is an owned regular file."""
+    path = Path(output)
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        if path.is_symlink():
+            return False
+    return path.is_file()
+
+
+def admission_preflight(parser, attempt_root, attempt_id, output):
+    """Static prerequisites; a refusal here admits nothing and writes nothing."""
+    import attempt_index
+
+    if gate_process.GROUP_LEDGER_ENV in os.environ:
+        parser.error("a journaled functional run cannot inherit a process group ledger")
+    if not attempt_root.is_absolute():
+        parser.error("attempt root must be absolute")
+    try:
+        root = attempt_index.custody(attempt_root)
+        attempt_index.name(attempt_id)
+        with attempt_index.locked_index(root, shared=True) as (_, _, _, journal):
+            head = attempt_index.journal_head(journal)
+            admitted = journal["entries"]
+    except (OSError, ValueError) as error:
+        parser.error("native attempt journal rejected: " + str(error))
+    if (output == root or not output.is_relative_to(root) or output.is_relative_to(root / "attempts")
+            or os.path.lexists(output)):
+        parser.error("journaled output must be a new directory inside the attempt root")
+    # The journal re-checks both under its lock; this only refuses early.
+    if attempt_id in admitted or not attempt_index.disjoint_output(
+            output.relative_to(root).as_posix(), (entry["begin"]["output"] for entry in admitted.values())):
+        parser.error("native attempt id or output was already admitted")
+    native = NATIVE_TARGETS.get((platform.system(), platform.machine()))
+    if head["target"] != native:
+        parser.error("attempt journal target " + head["target"] + " is not this native host ("
+                     + str(native) + ")")
+    return root, head
+
+
+def run_journaled(root, attempt_id, head, record, repository, commit, output):
+    """Admit, prepare and dispatch one primary functional attempt, then terminate it.
+
+    Before dispatch the launcher owns evidence.json. From dispatch on, the
+    frozen runner owns it and the launcher only reads its original bytes.
+    """
+    import attempt_index
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    previous = {number: signal.getsignal(number) for number in signals}
+    received = []
+
+    def interrupted(number, _frame):
+        received.append(number)
+        if len(received) == 1:
+            raise KeyboardInterrupt("functional launcher received signal " + str(number) + " before dispatch")
+
+    def recorded(number, _frame):
+        received.append(number)
+
+    blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set(signals))
+    try:
+        for number in signals:
+            signal.signal(number, interrupted)
+        # Admission precedes every output byte: an interruption after it is an
+        # unfinished admission, never an absent attempt.
+        attempt_index.begin(root, attempt_id, "functional", output, record["started_at"])
+        output.mkdir()
+        record["attempt"] = {"id": attempt_id, "kind": "functional", "custody_root": str(root),
+                             "output": output.relative_to(root).as_posix(), **{
+                                 key: head[key] for key in ("journal_id", "host", "target")}}
+        record["dispatch_started"] = False
+        write_json(output / "evidence.json", record)
+    except BaseException:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+        raise
+
+    evidence = output / "evidence.json"
+    runner = output / RUNNER
+    receipt, log, census_path = runner / "process.json", runner / "output.log", runner / "gate-census.json"
+    errors = []
+    dispatch_started = False
+    process = None
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+        source, _, environment = prepare_source(record, repository, commit, output)
+        record["journal_inputs"] = verify_journal_inputs(source)
+        command = [record["python_executable"]["path"], "-B", "-S", str(source / "scripts" / "release_gate.py"),
+                   PREPARED_COMMAND, "--output", str(output)]
+        runner_environment = {**environment, RUNNER_ENV: attempt_id}
+        selected = gate_process.executable_identity(command, source, runner_environment)
+        if selected != {"path": command[0], "sha256": record["python_executable"]["sha256"]}:
+            raise ValueError("functional runner interpreter differs from its retained bytes")
+        runner.mkdir()
+        # From here a signal is recorded, never raised mid-boundary; one that
+        # already arrived ends the attempt before dispatch.
+        for number in signals:
+            signal.signal(number, recorded)
+        if received:
+            raise KeyboardInterrupt("functional launcher received signal " + str(received[0]) + " before dispatch")
+        # Publish the boundary before any child can exist. A missing receipt
+        # after this point is uncertainty, never a pre-dispatch failure.
+        record["dispatch_started"] = True
+        write_json(evidence, record)
+        dispatch_started = True
+    except BaseException as error:
+        errors.append(repr(error))
+        record["dispatch_started"] = dispatch_started
+        record_failure(record, error)
+        record["finished_at"] = now()
+        try:
+            write_json(evidence, record)
+        except BaseException as write_error:
+            errors.append("pre-dispatch evidence was not written: " + repr(write_error))
+        for number in signals:
+            signal.signal(number, recorded)
+        if isinstance(error, KeyboardInterrupt) and not received:
+            received.append(signal.SIGINT)
+
+    if dispatch_started:
+        def census(value):
+            try:
+                census_gate_groups(output, census_path)
+            finally:
+                if census_path.is_file():
+                    value["gate_census"] = file_identity(output, census_path)
+
+        print("Functional runner log: " + str(log), flush=True)
+        try:
+            with log.open("xb") as stream:
+                process = gate_process.run(command, source, runner_environment, stream, RUNNER_TIMEOUT_SECONDS,
+                                           lambda value: write_json(receipt, value), stderr=subprocess.STDOUT,
+                                           after_cleanup=census)
+            process["outputs_stable"] = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
+            write_json(receipt, process)
+        except BaseException as error:
+            errors.append("functional runner dispatch: " + repr(error))
+
+    # The terminal decision reads the original evidence bytes and never
+    # rewrites them; the outcome binds exactly those bytes.
+    final = data = None
+    try:
+        if retained_product(output, "evidence.json"):
+            data = evidence.read_bytes()
+            final = json.loads(data, object_pairs_hook=_unique_cargo_object,
+                               parse_constant=_reject_nonfinite_cargo)
+    except (OSError, ValueError) as error:
+        errors.append("functional evidence is unreadable: " + repr(error))
+    final_status = final.get("status") if isinstance(final, dict) else None
+    runner_passed = (process is not None and process["status"] == "passed" and process["outputs_stable"]
+                     and process["exit_code"] == 0)
+    if process is not None and not runner_passed:
+        errors.append("functional runner did not pass with drained custody: exit "
+                      + str(process["exit_code"]) + ", error " + str(process["error"]))
+    if isinstance(final, dict) and dispatch_started:
+        for key, value in record.items():
+            if key not in {"gates", "status", "finished_at", "runner_error", "runner_error_notes"} \
+                    and final.get(key) != value:
+                errors.append("functional runner changed launcher-owned evidence: " + key)
+    if final_status != "passed":
+        errors.append("functional evidence status is " + str(final_status)
+                      + ("" if not isinstance(final, dict) or "runner_error" not in final
+                         else ": " + str(final["runner_error"])))
+    if not errors:
+        try:
+            check_functional_products(final, output)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            errors.append(str(error))
+    if received or (process is not None and process["received_signals"]) or final_status == "interrupted":
+        status = "interrupted"
+    else:
+        status = "failed" if errors else "passed"
+    products = {name: relative for name, relative in FUNCTIONAL_PRODUCTS.items()
+                if status == "passed" or retained_product(output, relative)}
+    processes = []
+    if process is not None and process.get("process_group") is not None:
+        processes.append({"id": RUNNER, "receipt": attempt_index.file_ref(root, receipt),
+                          "log": attempt_index.file_ref(root, log),
+                          "executable": attempt_index.file_ref(
+                              root, output / record["python_executable"]["artifact"])})
+    try:
+        attempt_index.finish_outcome(
+            root, attempt_id, status, now(), products=products, processes=processes,
+            dispatch_started=dispatch_started,
+            facts={"functional_status": final_status, "error": "; ".join(errors) or None},
+            build_evidence="evidence.json" if data is not None else None)
+        if data is not None:
+            outcome = json.loads((output / "outcome.json").read_bytes())
+            if outcome["build_evidence"]["sha256"] != hashlib.sha256(data).hexdigest():
+                raise RuntimeError("functional evidence changed while its attempt terminated")
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    print("Native functional attempt " + attempt_id + ": " + status, flush=True)
+    for error in errors:
+        print("  " + error, flush=True)
+    return 0 if status == "passed" else 130 if status == "interrupted" else 1
+
+
+def run_prepared(argv):
+    """The journaled launcher's owned runner: dispatch the gates of a prepared run."""
+    parser = argparse.ArgumentParser(prog="release_gate.py " + PREPARED_COMMAND,
+                                     description="Dispatch the gates of a journaled functional run.")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if not args.output.is_absolute():
+        parser.error("prepared output must be absolute")
+    output = args.output.resolve(strict=True)
+    source = output / "source"
+    record = json.loads((output / "evidence.json").read_bytes(), object_pairs_hook=_unique_cargo_object,
+                        parse_constant=_reject_nonfinite_cargo)
+    # Refuse anything but this launcher's prepared run without writing to it.
+    if (not isinstance(record, dict) or record.get("status") != "running"
+            or record.get("dispatch_started") is not True or not isinstance(record.get("attempt"), dict)
+            or os.environ.get(RUNNER_ENV) != record["attempt"].get("id")
+            or os.path.lexists(output / "outcome.json") or gate_process.GROUP_LEDGER_ENV in os.environ):
+        parser.error("functional run was not prepared for dispatch by a journaled launcher")
+    try:
+        with terminal_record(record, output):
+            if (Path(__file__).resolve() != (source / "scripts/release_gate.py").resolve()
+                    or verify_runner_inputs(source) != record["runner_inputs"]):
+                raise ValueError("prepared dispatch must execute the frozen runner inputs")
+            if sha256(output / "source-files.json") != record["source_files_sha256"]:
+                raise ValueError("frozen source inventory changed before dispatch")
+            original = json.loads((output / "source-files.json").read_bytes())
+            if inventory(source) != original:
+                raise ValueError("frozen source changed before dispatch")
+            environment = {key: value for key, value in os.environ.items() if key != RUNNER_ENV}
+            dispatch_gates(functional_gates(record["jobs"], record["python_executable"]["path"]), source,
+                           output, environment, record["gate_timeout_seconds"], record, original)
+    except KeyboardInterrupt as error:
+        print("Functional gate result: interrupted (" + str(error) + ")", flush=True)
+        return 130
+    except Exception as error:
+        print("Functional gate result: failed (" + repr(error) + ")", flush=True)
+        return 1
+    print("Functional gate result: " + record["status"], flush=True)
+    return 0 if record["status"] == "passed" else 1
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == [PREPARED_COMMAND]:
+        return run_prepared(argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--output", type=Path, required=True, help="new absolute evidence directory outside the checkout")
     parser.add_argument("--execution-description", required=True, help="actual host/VM and native or translated execution")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--gate-timeout-seconds", type=int, default=14400,
                         help="original timeout for each functional gate, in 1..86400 seconds")
-    args = parser.parse_args()
+    parser.add_argument("--attempt-root", type=Path,
+                        help="native attempt journal custody root; the output must be a new directory inside it")
+    parser.add_argument("--attempt-id", help="new attempt id admitted to that journal before dispatch")
+    args = parser.parse_args(argv)
     if sys.version_info < (3, 11):
         parser.error("release tooling requires Python 3.11 or newer")
     repository = args.repository.resolve()
@@ -514,12 +933,16 @@ def main():
         parser.error("jobs must be in 1..64")
     if not 1 <= args.gate_timeout_seconds <= 86400:
         parser.error("gate timeout must be in 1..86400 seconds")
+    if (args.attempt_root is None) != (args.attempt_id is None):
+        parser.error("--attempt-root and --attempt-id must be given together")
+    journal = None
+    if args.attempt_root is not None:
+        journal = admission_preflight(parser, args.attempt_root, args.attempt_id, output)
     def git(*arguments):
         return subprocess.check_output(["git", "-C", str(repository), *arguments], text=True).strip()
     if git("status", "--porcelain", "--untracked-files=no"):
         parser.error("commit tracked input changes before running release gates")
     commit = git("rev-parse", "HEAD")
-    output.mkdir(parents=False, exist_ok=False)
     record = {
         "schema": 1, "source_commit": commit, "source_tree": git("rev-parse", commit + "^{tree}"),
         "scope": "functional gates only; not final production release acceptance",
@@ -529,32 +952,16 @@ def main():
         "python_version": sys.version,
         "python_executable": {"path": os.path.abspath(sys.executable),
                               "sha256": sha256(sys.executable), "artifact": "tools/python"},
-        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "started_at": now(),
         "status": "running", "gates": [],
     }
+    if journal is not None:
+        root, head = journal
+        return run_journaled(root, args.attempt_id, head, record, repository, commit, output)
+    output.mkdir(parents=False, exist_ok=False)
     write_json(output / "evidence.json", record)
     with terminal_record(record, output):
-        (output / "tools").mkdir()
-        shutil.copyfile(sys.executable, output / record["python_executable"]["artifact"])
-        if sha256(output / record["python_executable"]["artifact"]) != record["python_executable"]["sha256"]:
-            raise ValueError("Python interpreter changed before evidence capture")
-        archive = output / "source.tar"
-        subprocess.run(["git", "-C", str(repository), "archive", "--format=tar", "--output=" + str(archive), commit], check=True)
-        record["source_archive_sha256"] = sha256(archive)
-        source = output / "source"
-        extract_source(archive, source)
-        record["runner_inputs"] = verify_runner_inputs(source)
-        write_json(output / "evidence.json", record)
-        original = inventory(source)
-        verify_export(repository, commit, source, original)
-        write_json(output / "source-files.json", original)
-        record["source_files_sha256"] = sha256(output / "source-files.json")
-        record["lockfile_sha256"] = sha256(source / "Cargo.lock")
-        environment = os.environ.copy()
-        environment.update(CARGO_TARGET_DIR=str(output / "target"), RUSTUP_TOOLCHAIN=TOOLCHAIN,
-                           PYTHONDONTWRITEBYTECODE="1", SOURCE_DATE_EPOCH=git("show", "-s", "--format=%ct", commit))
-        record["build_environment"] = {name: environment.get(name) for name in
-                                       ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CC", "CXX", "AR", "SOURCE_DATE_EPOCH"]}
+        source, original, environment = prepare_source(record, repository, commit, output)
         dispatch_gates(functional_gates(args.jobs, record["python_executable"]["path"]), source, output,
                        environment, args.gate_timeout_seconds, record, original)
     print("Functional gate result: " + record["status"], flush=True)
