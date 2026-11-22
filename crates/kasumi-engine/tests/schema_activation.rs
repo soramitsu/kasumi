@@ -2023,3 +2023,81 @@ fn first_release_schema_wire_requires_explicit_effect_and_lookup_dependencies() 
     lookup.as_object_mut().unwrap().remove("read_set");
     assert!(serde_json::from_value::<ReadSchemaActivation>(lookup).is_err());
 }
+
+#[tokio::test]
+async fn schema_only_replacement_preserves_indexed_reads_and_constraints_on_encrypted_reopen() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = root.path().join("node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let (db, audit, node) = open(&physical, &path, true).await;
+    let mut definition = unique(definition("docs"));
+    let create = request(
+        db.engine(),
+        "create",
+        vec![SchemaChange::Create {
+            definition: definition.clone(),
+        }],
+    );
+    db.activate_schema(context("owner"), create).await.unwrap();
+    let writes = |key: &str, operations| MutationBatch {
+        idempotency_key: key.into(),
+        read_set: vec![],
+        operations,
+    };
+    let seeded = db
+        .mutate(
+            context("owner"),
+            writes("seed", vec![put("docs", "a", 1), put("docs", "b", 2)]),
+        )
+        .await
+        .unwrap();
+    definition.schema = json!({"type":"object","required":["n","text"]});
+    let replace = request(
+        db.engine(),
+        "replace",
+        vec![SchemaChange::Replace {
+            definition,
+            expected_data_epoch: seeded.revision,
+        }],
+    );
+    let receipt = db
+        .activate_schema(context("owner"), replace.clone())
+        .await
+        .unwrap();
+    async fn check(db: &Database, key: &str) {
+        let query: QueryRequest = serde_json::from_value(json!({"collection":"docs"})).unwrap();
+        let response = db
+            .query(&context("owner"), query.filter(Filter::new().eq("/n", 2)))
+            .await
+            .unwrap();
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].id, "b");
+
+        let error = db
+            .mutate(
+                context("owner"),
+                MutationBatch {
+                    idempotency_key: key.into(),
+                    read_set: vec![],
+                    operations: vec![put("docs", "c", 2)],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+    }
+    check(&db, "duplicate-hot").await;
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop((db, audit, node));
+    let (db, audit, node) = open(&physical, &path, false).await;
+    assert_eq!(
+        db.activate_schema(context("owner"), replace).await.unwrap(),
+        receipt
+    );
+    check(&db, "duplicate-cold").await;
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}

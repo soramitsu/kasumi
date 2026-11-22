@@ -323,7 +323,10 @@ impl FixtureQueries for QueryIndexes {
             match previous.get(name) {
                 None => actions.push(IndexUpdate::Rebuild(FixtureRecords { collection })),
                 Some(old) if old.definition != collection.definition => {
-                    actions.push(IndexUpdate::Rebuild(FixtureRecords { collection }))
+                    actions.push(IndexUpdate::Replace {
+                        previous: old,
+                        source: FixtureRecords { collection },
+                    })
                 }
                 Some(old)
                     if old.documents.ptr_eq(&collection.documents)

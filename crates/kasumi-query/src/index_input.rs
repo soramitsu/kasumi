@@ -42,6 +42,12 @@ pub trait DocumentChanges {
 
 pub enum IndexUpdate<'a, R, D> {
     Rebuild(R),
+    /// Replace a definition on the named predecessor from this index generation.
+    /// Its immutable row roots may still serve the same indexed values.
+    Replace {
+        previous: &'a kasumi_types::CollectionState,
+        source: R,
+    },
     Delta(D),
     Remove(&'a str),
     Unchanged(&'a str),

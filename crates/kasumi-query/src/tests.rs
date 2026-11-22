@@ -2139,3 +2139,70 @@ fn selective_equality_checks_range_survivors_and_preserves_index_only_planning()
         );
     }
 }
+
+#[test]
+fn schema_only_replacement_shares_structured_owners_and_checks_changed_rows() {
+    let mut def = definition(&[("/key", ScalarType::String), ("/n", ScalarType::Number)]);
+    let second = def.indexes[1].fields[0].clone();
+    def.indexes[0].fields.push(second);
+    def.indexes[0].unique = true;
+    let previous = collection(
+        def,
+        vec![json!({"key":"a","n":1}), json!({"key":"b","n":1})],
+    );
+    let indexes = QueryIndexes::build_fixture(&previous).unwrap();
+    let mut next = previous.clone();
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["key"]});
+    let replaced = indexes
+        .update_fixture(&previous, &next, &BTreeMap::new())
+        .unwrap();
+    let old = &indexes.collections["docs"].structured;
+    let new = &replaced.collections["docs"].structured;
+    assert!(old.ids.ptr_eq(&new.ids), "rebuilt unchanged logical IDs");
+    assert!(
+        old.fields["/key"]
+            .entries
+            .ptr_eq(&new.fields["/key"].entries)
+    );
+    assert!(
+        old.unique["i0"]
+            .entries
+            .as_ref()
+            .unwrap()
+            .ptr_eq(new.unique["i0"].entries.as_ref().unwrap())
+    );
+    assert_ne!(
+        indexes.collections["docs"].definition_sha256,
+        replaced.collections["docs"].definition_sha256
+    );
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["missing"]});
+    assert!(
+        indexes
+            .update_fixture(&previous, &next, &BTreeMap::new())
+            .is_err()
+    );
+
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["key"]});
+    change_document(&mut next, "001").body["key"] = json!("a");
+    assert_eq!(
+        indexes
+            .update_fixture(&previous, &next, &BTreeMap::new())
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    change_document(&mut next, "001").body["key"] = json!("c");
+    let moved = indexes
+        .update_fixture(&previous, &next, &BTreeMap::new())
+        .unwrap();
+    let find = request().filter(Filter::new().eq("/key", "c"));
+    assert_eq!(
+        ids(moved
+            .execute_fixture(&next, &find, &Limits::default())
+            .unwrap()),
+        ["001"]
+    );
+}

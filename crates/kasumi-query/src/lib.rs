@@ -84,6 +84,48 @@ impl CollectionIndexes {
         })
     }
 
+    /// Only the original collection owners can prove that both encrypted document
+    /// descriptors and archived references survived a definition replacement.
+    /// The candidate still validates every body through its bound source.
+    fn revalidate<R: CollectionRecords>(
+        &self,
+        previous: &CollectionState,
+        source: &index_input::CheckedRecords<'_, R>,
+    ) -> ReadResult<Option<Self>, R::Failure> {
+        let definition = source.definition();
+        let Some(current) = source.identity().collection_state() else {
+            return Ok(None);
+        };
+        if !std::ptr::eq(current.definition.as_ref(), definition)
+            || previous.definition.indexes != definition.indexes
+            || !previous.documents.ptr_eq(&current.documents)
+            || !previous
+                .archived_documents
+                .ptr_eq(&current.archived_documents)
+            || self.definition_sha256 != index_input::definition_sha256(&previous.definition)?
+        {
+            return Ok(None);
+        }
+        let (validator, schema_sha256) = validation::validate_definition_and_compile(definition)?;
+        source.visit_records(|_, record| {
+            if let Record::Live(document) = record {
+                validation::validate_document_with_validator(
+                    definition,
+                    &document.body,
+                    &validator,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(Some(Self {
+            validator,
+            schema_sha256,
+            definition_sha256: index_input::definition_sha256(definition)?,
+            structured: self.structured.clone(),
+            text: None,
+        }))
+    }
+
     fn prepare<R: CollectionRecords>(
         source: &index_input::CheckedRecords<'_, R>,
     ) -> ReadResult<Self, R::Failure> {
@@ -396,7 +438,7 @@ impl QueryIndexes {
     }
 
     /// Explicit catalog actions. Omitted collections retain their captured
-    /// indexes; a changed definition requires Rebuild. No missing-delta fallback
+    /// indexes; a changed definition requires Rebuild or Replace. No missing-delta fallback
     /// can hide an incomplete mutation journal.
     pub fn update<'a, R, D>(
         &self,
@@ -467,10 +509,19 @@ impl QueryIndexes {
                         return Err(invalid("unchanged index collection absent").into());
                     }
                 }
-                IndexUpdate::Rebuild(source) => {
+                IndexUpdate::Rebuild(source) | IndexUpdate::Replace { source, .. } => {
                     let source = index_input::CheckedRecords::new(source)?;
                     let name = claim_name(&source.definition().name)?;
-                    let indexes = CollectionIndexes::prepare(&source)?;
+                    let shared = match (action, collections.get(&name)) {
+                        (IndexUpdate::Replace { previous, .. }, Some(prior)) => {
+                            prior.revalidate(previous, &source)?
+                        }
+                        _ => None,
+                    };
+                    let indexes = match shared {
+                        Some(indexes) => indexes,
+                        None => CollectionIndexes::prepare(&source)?,
+                    };
                     prepared.push(PreparedIndexCollection {
                         name,
                         indexes,

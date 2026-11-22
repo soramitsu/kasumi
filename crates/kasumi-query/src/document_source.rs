@@ -33,6 +33,9 @@ impl<'a> SourceIdentity<'a> {
             collection,
         }
     }
+    pub(crate) fn collection_state(self) -> Option<&'a kasumi_types::CollectionState> {
+        self.owner.downcast_ref()
+    }
     pub fn tenant(self) -> &'a str {
         self.tenant
     }
