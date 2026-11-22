@@ -437,6 +437,52 @@ fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
 }
 
 #[test]
+fn sparse_field_presence_shares_only_a_posting_that_covers_every_present_document() {
+    fn rows(last: Value) -> Rows {
+        let mut rows = Rows::new(
+            "docs",
+            &[
+                ("a", serde_json::json!({})),
+                ("b", serde_json::json!({"key": [7]})),
+                ("c", serde_json::json!({"key": last})),
+            ],
+            true,
+            false,
+        );
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::NumberArray;
+        rows
+    }
+
+    fn check(indexes: &QueryIndexes, matches: &[&str], shared: bool) {
+        let field = &indexes.collections["docs"].structured.fields["/key"];
+        let key =
+            scalar::scalar(Some(&serde_json::json!(7)), Some(ScalarType::NumberArray)).unwrap();
+        let posting = &field.entries[&key];
+        assert_eq!(
+            posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            matches
+        );
+        assert_eq!(
+            field.present.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+        assert_eq!(field.present.ptr_eq(posting), shared);
+    }
+
+    let repeated = rows(serde_json::json!([7, 7]));
+    let empty = rows(serde_json::json!([]));
+    let restored = rows(serde_json::json!([7]));
+    let first = QueryIndexes::build([&repeated]).unwrap();
+    let second = update(&first, Changes::new(&repeated, &empty, &first, &["c"])).unwrap();
+    let third = update(&second, Changes::new(&empty, &restored, &second, &["c"])).unwrap();
+    check(&first, &["b", "c"], true);
+    check(&second, &["b"], false);
+    check(&third, &["b", "c"], true);
+    check(&QueryIndexes::build([&empty]).unwrap(), &["b"], false);
+}
+
+#[test]
 fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
     fn rows(values: &[(&str, Value)]) -> Rows {
         let mut rows = Rows::new("docs", values, true, false);
