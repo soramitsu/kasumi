@@ -838,6 +838,33 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     absent.endpoint = absent_endpoint;
     let mut follower_config = config.clone();
     follower_config.endpoint = follower_endpoint;
+    // A pool that never receives a reply exhausts its own deadline.  The
+    // legacy API still returns the same transport status for that outcome.
+    let deadline_token = node_token.clone();
+    let mut unavailable = kasumi_client::KasumiAuthorityPool::new(
+        BTreeMap::from([(1, absent.clone())]),
+        trust.clone(),
+        Arc::new(move || Ok(zeroize::Zeroizing::new(deadline_token.clone()))),
+    )
+    .unwrap();
+    assert!(
+        unavailable
+            .discover_lease_before_deadline(&discovery, Duration::from_millis(80))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        unavailable
+            .acquire_lease_before_deadline(&attempt, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        unavailable.discover_lease(&discovery, Duration::ZERO).await,
+        Err(kasumi_client::ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded
+    ));
     let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
     let source = current_credential.clone();
     let credential_loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));

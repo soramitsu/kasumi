@@ -1793,7 +1793,9 @@ impl Administration {
             kasumi_serving::LeasePurpose::Serving,
         )
         .await
-        .context(RecoverStage::AccessLease)?;
+        .map_err(|original| {
+            OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::AccessLease)
+        })?;
         let provider = configured
             .keys
             .provider(self.credential.clone())
@@ -2102,6 +2104,34 @@ mod tests {
                 .source_error()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn local_authority_deadline_releases_only_the_completed_admission_attempt() {
+        let failure = |original: anyhow::Error| {
+            OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::AccessLease)
+        };
+        let mut seat = RecoverySeat {
+            failure: Some(failure(
+                crate::serving_runtime::lease_acquisition_deadline().into(),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(seat.stage(), "access_lease");
+        assert!(seat.native_free_failure());
+        seat.stores_observation.entry = CleanupEntry::Entered;
+        assert!(!seat.native_free_failure());
+        seat.stores_observation = CleanupObservation::default();
+
+        // A peer can send the same status text without proving local expiry.
+        let peer =
+            tonic::Status::deadline_exceeded("installed authority operation deadline elapsed");
+        seat.failure = Some(failure(kasumi_client::ClientError::Transport(peer).into()));
+        assert!(!seat.native_free_failure());
+        let held = crate::serving_runtime::lease_acquisition_deadline()
+            .with_physical_source(anyhow::anyhow!("retained physical source"));
+        seat.failure = Some(failure(held.into()));
+        assert!(!seat.native_free_failure());
     }
 
     #[test]
