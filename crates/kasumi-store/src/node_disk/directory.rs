@@ -318,12 +318,23 @@ impl NodeDiskDirectory {
         if state.phase == NodeDiskPhase::Failed || !self.owner().disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
-        self.verify(&state)
-            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
-        let entry = state.accounted[&self.owner().identity]
-            .directory()
-            .expect("verified directory enrollment");
-        Ok(entry.allocation.reported)
+        let physical = || {
+            self.verify(&state)?;
+            let owner = self.owner();
+            let metadata = owner
+                .file
+                .as_ref()
+                .expect("retained directory")
+                .metadata()?;
+            let entry = state.accounted[&owner.identity]
+                .directory()
+                .expect("verified directory");
+            if !entry.matches_allocation(&metadata)? || metadata.len() != entry.len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            census::directory_extent(&metadata)
+        };
+        physical().inspect_err(|_| self.owner().disk.fail_locked(&mut state))
     }
 
     /// Synchronize an unchanged enrolled directory through its retained FD.
