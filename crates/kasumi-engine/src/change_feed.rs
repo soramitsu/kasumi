@@ -1,6 +1,34 @@
 //! Pull-based durable change delivery. The caller controls page cadence; no
 //! unbounded server stream, subscriber queue or per-subscriber resident state.
 use super::*;
+use crate::application_sources::SnapshotBoundary;
+
+/// A page reads only the retained commit prefix and its own document resolver.
+pub(super) struct FeedPageSource {
+    feed: kasumi_types::ChangeFeedState,
+    max_result_bytes: usize,
+    resolver: Option<Arc<dyn DocumentResolver>>,
+}
+
+impl FeedPageSource {
+    pub(super) fn capture(generation: &crate::Generation) -> Self {
+        let resolver = generation
+            .document_sources
+            .get()
+            .map(|owner| owner.clone() as Arc<dyn DocumentResolver>)
+            .or_else(|| {
+                generation
+                    .staged_documents
+                    .as_ref()
+                    .map(|owner| Arc::new(owner.clone()) as Arc<dyn DocumentResolver>)
+            });
+        Self {
+            feed: generation.state.change_feed.clone(),
+            max_result_bytes: generation.state.limits.max_result_bytes,
+            resolver,
+        }
+    }
+}
 
 // Request, output and source precede every charge; the registration is last.
 // This owner retains its own Arc during all release checks, so a failed check
@@ -8,7 +36,6 @@ use super::*;
 struct FeedRead {
     request: ReadChangeFeed,
     page: Option<ChangeFeedPage>,
-    generation: Arc<crate::Generation>,
     _permit: tokio::sync::OwnedSemaphorePermit,
     memory: Option<QueryMemory<Reservation>>,
     charge: Option<Arc<Reservation>>,
@@ -17,13 +44,15 @@ struct FeedRead {
 impl FeedRead {
     fn build(
         &mut self,
+        boundary: &SnapshotBoundary<String>,
+        input: &FeedPageSource,
         actor: &RequestContext,
         token: &QueryCancellation,
         source: Option<crate::application_records::SnapshotFeed<'_, '_>>,
     ) -> Result<ChangeFeedPage> {
         build_change_feed_page(
-            &self.generation.state,
-            self.generation.document_resolver(),
+            boundary,
+            input,
             actor,
             &self.request,
             token,
@@ -117,7 +146,6 @@ impl Database {
         let mut read = FeedRead {
             request,
             page: None,
-            generation,
             _permit: permit,
             memory: Some(QueryMemory::empty(reservation)),
             charge: None,
@@ -129,20 +157,21 @@ impl Database {
             .as_mut()
             .expect("feed workspace present")
             .reserve(query_input_workspace(&read.request, 1)?)?;
-        let state = &read.generation.state;
-        for collection in &read.request.collections {
+        let mut strict = [false; 16];
+        let (revision, policy_epoch) = (state.revision, state.policy_epoch);
+        for (slot, collection) in strict.iter_mut().zip(&read.request.collections) {
             self.engine.authorize_release(
                 context,
                 Some(collection),
                 Action::Read,
                 state.policy_epoch,
             )?;
-            if !state.collections.contains_key(collection) {
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "change feed collection missing",
-                ));
-            }
+            let definition = &state
+                .collections
+                .get(collection)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "change feed collection missing"))?
+                .definition;
+            *slot = state.policy.strict_read_audit || definition.strict_read_audit;
         }
         // Resolving an after-image can enter the native store. Hold the page's
         // original workspace, source, registration and permit in the child.
@@ -151,52 +180,51 @@ impl Database {
             crate::snapshot_codec::inspect_typed_json_work(context)
                 .map_err(|e| Error::new(ErrorCode::ResourceExhausted, e.to_string()))?,
         )?;
+        memory.reserve(
+            (std::mem::size_of::<FeedPageSource>()
+                + std::mem::size_of::<SnapshotBoundary<String>>()
+                + state.tenant.len()
+                + state.incarnation.len()
+                + 128) as u64,
+        )?;
+        let boundary = SnapshotBoundary::<String>::from(state);
+        let selection = generation.application_selection.get().cloned();
+        let mut input = FeedPageSource::capture(&generation);
+        drop(generation);
         let actor = context.clone();
         let owner = memory.workspace().blocking_owner();
         let read = tokio::select! {
             result = owner.read_child(cancellation.clone(), None, move |token| {
-                let generation = read.generation.clone();
-                let state = &generation.state;
-                let result = if let Some(selection) = generation.application_selection.get() {
-                    selection.with_base_snapshot_records(None, state, |tree, memory, _, revision| {
-                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, revision, state)?;
-                        Ok(read.build(&actor, token, disk))
+                let result = if let Some(selection) = selection {
+                    selection.with_base_snapshot_boundary(None, &boundary, |tree, memory, _, disk_revision| {
+                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, disk_revision, boundary.revision, input.feed.next_sequence)?;
+                        if disk.as_ref().is_some_and(|prefix| prefix.end_sequence == input.feed.next_sequence) {
+                            input.feed.commits.clear();
+                        }
+                        Ok(read.build(&boundary, &input, &actor, token, disk))
                     }).map_err(document_load_error)?
                 } else { None };
-                read.page = Some(match result { Some(page) => page?, None => read.build(&actor, token, None)? });
+                read.page = Some(match result { Some(page) => page?, None => read.build(&boundary, &input, &actor, token, None)? });
+                drop(input);
                 read.prepare_release()?;
                 Ok(read)
             }) => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let state = &read.generation.state;
         let releases = read
             .request
             .collections
             .iter()
-            .map(|collection| {
-                let strict = state.policy.strict_read_audit
-                    || state.collections[collection].definition.strict_read_audit;
-                (collection.as_str(), strict)
-            })
+            .map(String::as_str)
+            .zip(strict)
             .collect::<Vec<_>>();
-        self.release_collections(
-            context,
-            &releases,
-            state.revision,
-            state.policy_epoch,
-            "change_feed",
-        )
-        .await?;
+        self.release_collections(context, &releases, revision, policy_epoch, "change_feed")
+            .await?;
         cancellation.check()?;
         self.admission().check_release(&cancellation)?;
         for collection in &read.request.collections {
-            self.engine.authorize_release(
-                context,
-                Some(collection),
-                Action::Read,
-                state.policy_epoch,
-            )?;
+            self.engine
+                .authorize_release(context, Some(collection), Action::Read, policy_epoch)?;
         }
         self.access()?;
         Ok(read.into_admitted())
@@ -227,8 +255,8 @@ struct BorrowedEnvelope<'a> {
 }
 
 pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
-    state: &TenantState,
-    resolver: Option<&dyn DocumentResolver>,
+    state: &SnapshotBoundary<String>,
+    input: &FeedPageSource,
     context: &RequestContext,
     request: &ReadChangeFeed,
     cancellation: &QueryCancellation,
@@ -238,7 +266,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
     memory.scope(|memory| {
         cancellation.check()?;
         let baseline = memory.live_bytes();
-        let feed = &state.change_feed;
+        let feed = &input.feed;
         let head_sequence = feed
             .next_sequence
             .checked_sub(1)
@@ -312,7 +340,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         })?
         .checked_add(32)
         .ok_or_else(query_workspace_overflow)?;
-        if bytes > state.limits.max_result_bytes {
+        if bytes > input.max_result_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "change feed cursor exceeds result budget",
@@ -336,7 +364,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     .map(|slot| match slot.as_ref() {
                         DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
                         DocumentSlot::Stored(document) => {
-                            let resolver = resolver.ok_or_else(|| {
+                            let resolver = input.resolver.as_deref().ok_or_else(|| {
                                 Error::new(
                                     ErrorCode::Unavailable,
                                     "change feed document resolver is unavailable",
@@ -364,7 +392,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     .ok_or_else(query_workspace_overflow)?;
                 if bytes
                     .checked_add(event_bytes)
-                    .is_none_or(|total| total > state.limits.max_result_bytes)
+                    .is_none_or(|total| total > input.max_result_bytes)
                 {
                     if events.is_empty() {
                         return Err(Error::new(

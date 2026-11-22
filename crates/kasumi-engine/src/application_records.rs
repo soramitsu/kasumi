@@ -288,7 +288,7 @@ pub(crate) fn snapshot_ids_after(
 
 /// Walk just the keys of one primary namespace, including on older layouts
 /// without the separate header directory. Overflow values are never loaded.
-fn visit_primary_ids(
+pub(super) fn visit_primary_ids(
     reader: &kasumi_store::ordered_pages::TreeReader<'_>,
     collection: &str,
     kind: u8,

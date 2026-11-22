@@ -2016,3 +2016,25 @@ pub(crate) mod tests;
 #[path = "application_source_reader.rs"]
 mod reader;
 pub(crate) use reader::DocumentReader;
+/// Identity and totals needed to bind a native snapshot directory to its generation.
+pub(crate) struct SnapshotBoundary<S> {
+    tenant: S,
+    pub(crate) incarnation: S,
+    pub(crate) revision: u64,
+    revision_base: u64,
+    document_count: u64,
+    logical_bytes: u64,
+}
+
+impl<'a, S: From<&'a str>> From<&'a kasumi_types::TenantState> for SnapshotBoundary<S> {
+    fn from(state: &'a kasumi_types::TenantState) -> Self {
+        Self {
+            tenant: state.tenant.as_str().into(),
+            incarnation: state.incarnation.as_str().into(),
+            revision: state.revision,
+            revision_base: state.revision_base,
+            document_count: state.document_count,
+            logical_bytes: state.logical_bytes,
+        }
+    }
+}
