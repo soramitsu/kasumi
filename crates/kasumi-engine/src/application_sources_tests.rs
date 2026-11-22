@@ -3170,18 +3170,20 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     )
     .await?;
     {
-        let original = engine.generation()?;
-        let scoped = original
-            .physical_seek_view("docs", |_| Ok(true))?
-            .expect("single-field worker of a verified primary");
-        assert!(scoped.state.collections["docs"].documents.is_empty());
-        assert_eq!(original.state.collections["docs"].documents.len(), 2);
         let mut seek = kasumi_types::QueryRequest::new("docs")
             .sort_desc("/value")
             .limit(1)
             .paging(kasumi_types::Paging::Seek);
         let first = db.query(&context, seek.clone()).await?;
         assert_eq!(first.rows[0].id, "b");
+        // The first public seek authenticates the selected primary. Its
+        // continuation can now release the original descriptor maps.
+        let original = engine.generation()?;
+        let scoped = original
+            .physical_seek_view("docs", |_| Ok(true))?
+            .expect("single-field worker of a verified primary");
+        assert!(scoped.state.collections["docs"].documents.is_empty());
+        assert_eq!(original.state.collections["docs"].documents.len(), 2);
         seek.cursor = Some(
             first
                 .cursor
