@@ -517,7 +517,24 @@ impl ObjectBatch {
     }
     fn flush(&mut self) -> Result<()> {
         if let Some(batch) = self.batch.take() {
-            batch.commit()?;
+            batch.commit().map_err(|error| {
+                // Only the returned commit itself proves an aborted batch. A
+                // retirement failure can carry that same rejection as its cause
+                // while still owning the scratch table and its grants.
+                let outer: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+                if outer
+                    .downcast_ref::<kasumi_kv::CommitError>()
+                    .is_some_and(|commit| commit.0.is_capacity_denied())
+                {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::ResourceExhausted,
+                        "document restore scratch transaction exceeded available capacity",
+                    )
+                    .into()
+                } else {
+                    error
+                }
+            })?;
         }
         Ok(())
     }
@@ -1287,6 +1304,50 @@ impl StagedDocuments {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn restore_batch_capacity_refusal_returns_an_operation_error_and_drains() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 4096);
+        let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory);
+        let table = EncryptedTable::new(&disk, 64 << 20, disk.native_cache_config()).unwrap();
+        table.insert(b"original", b"committed").unwrap();
+        let value = vec![0x5a; 64 << 10];
+        let mut batch = ObjectBatch::new();
+        let mut rejected = false;
+        for generation in 0..64_u32 {
+            let key = |row: u32| {
+                let mut key = [0; 64];
+                key[..4].copy_from_slice(&generation.to_be_bytes());
+                key[4..8].copy_from_slice(&row.to_be_bytes());
+                key
+            };
+            for row in 0..EncryptedTableBatch::MAX_ENTRIES as u32 {
+                batch.put(&table, disk.memory(), key(row), &value).unwrap();
+            }
+            if let Err(error) = batch.flush() {
+                let failure = crate::SnapshotFailure::from(error);
+                assert_eq!(
+                    failure.operation_error().unwrap().code,
+                    kasumi_types::ErrorCode::ResourceExhausted
+                );
+                assert!(table.get(&key(0)).unwrap().is_none());
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected);
+        assert_eq!(
+            table.get(b"original").unwrap().unwrap().as_bytes(),
+            b"committed"
+        );
+        drop(batch);
+        table.close().unwrap();
+        let totals = disk.snapshot();
+        assert_eq!(totals.live_files, 0);
+        assert_eq!(totals.charged_bytes, 0);
+        assert_eq!(totals.filesystem_pending_bytes, 0);
+    }
 
     #[test]
     fn reopened_name_index_keeps_a_fixed_resident_prefix_across_native_batches() {
