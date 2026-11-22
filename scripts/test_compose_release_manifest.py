@@ -53,13 +53,13 @@ class ComposerTests(unittest.TestCase):
             self.write()
 
     def test_checksum_artifact_covers_each_selected_file(self):
+        artifacts = []
         for index, key in enumerate(sorted(acceptance.required_artifacts() - {"checksums"})):
             name = str(index) + ".bin"
             (self.root / name).write_bytes(key.encode())
-            self.inputs["artifacts"][key] = name
-        self.write()
-        manifest = acceptance.read_json(self.root / "manifest.json")
-        recorded = {row["id"]: row["file"] for row in manifest["artifacts"]}
+            artifacts.append({"id": key, "file": composer.attempt_index.file_ref(self.root, self.root / name)})
+        composer.write_checksums(self.root, artifacts)
+        recorded = {row["id"]: row["file"] for row in artifacts}
         lines = acceptance.reference(self.root, recorded.pop("checksums")).read_text().splitlines()
         self.assertEqual(lines, [f"{ref['sha256']}  {ref['path']}" for ref in recorded.values()])
 

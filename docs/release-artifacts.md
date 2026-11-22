@@ -69,7 +69,12 @@ inventory. Use JSON objects mapping IDs to bundle-relative paths for
 A gate path selects its original domain evidence. A candidate path selects a
 JSON object containing its native `platform`, `primary` and `independent`
 records in the acceptance schema. A journal path selects its indexed bytes.
-The composer generates `SHA256SUMS` when all 24 other deliverables are present.
+Once both capacity gates, concurrency, the benchmark matrix and the full HA
+soak are present, the composer derives `operating-limits.md` from their original
+measurements. The report records the reservations, elapsed time, sampled
+resource peaks, configured budgets, workload counts, latency and soak results.
+The final verifier independently recomputes its bytes. The composer generates
+`SHA256SUMS` when all 24 other deliverables are present.
 
 ```sh
 python3 -B scripts/compose_release_manifest.py /evidence/selections.json \

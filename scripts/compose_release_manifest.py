@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 
 import attempt_index
+import operating_limits
 import verify_release_acceptance as acceptance
 
 
@@ -89,12 +90,28 @@ def compose(root, inputs, repository):
             "artifacts": artifacts, "gates": gates, "candidates": candidates, "attempts": journals}
 
 
+def write_checksums(root, artifacts):
+    checksums = root / "SHA256SUMS"
+    publish(checksums, "".join(f"{a['file']['sha256']}  {a['file']['path']}\n" for a in artifacts).encode())
+    artifacts.append({"id": "checksums", "file": attempt_index.file_ref(root, checksums)})
+
+
 def write_bundle(selection, output, repository, *, draft=False, journal_heads=None):
     root = selection.parent.resolve(strict=True)
     acceptance.require(output.parent.resolve(strict=True) == root and output.name not in (selection.name, "SHA256SUMS"),
                        "manifest must have its own name in the selections directory")
     manifest = compose(root, acceptance.read_json(attempt_index.owned_file(root, selection.name)), repository)
     artifacts = manifest["artifacts"]
+    gates = {g["id"]: g for g in manifest["gates"]}
+    reported = next((a for a in artifacts if a["id"] == "operating-limits"), None)
+    if operating_limits.GATES <= gates.keys():
+        path = root / (reported["file"]["path"] if reported else "operating-limits.md")
+        publish(path, operating_limits.render(root, gates, manifest["source"], report_dir=path.parent))
+        if reported is None:
+            artifacts.append({"id": "operating-limits", "file": attempt_index.file_ref(root, path)})
+            artifacts.sort(key=lambda row: row["id"])
+    elif reported is not None:
+        raise ValueError("selected operating limits lack original reference measurements")
     remaining = {"artifacts": sorted(acceptance.required_artifacts() - {"checksums"} - {a['id'] for a in artifacts}),
                  "gates": sorted(acceptance.required_gates() - {g['id'] for g in manifest['gates']}),
                  "platforms": sorted(set(acceptance.PLATFORMS) - {c['platform'] for c in manifest['candidates']})}
@@ -102,9 +119,7 @@ def write_bundle(selection, output, repository, *, draft=False, journal_heads=No
         acceptance.require(not any(remaining.values()), "release selections incomplete: " + json.dumps(remaining))
         acceptance.require(journal_heads is not None, "final verification requires the operator's journal heads")
     if not remaining["artifacts"]:
-        checksums = root / "SHA256SUMS"
-        publish(checksums, "".join(f"{a['file']['sha256']}  {a['file']['path']}\n" for a in artifacts).encode())
-        artifacts.append({"id": "checksums", "file": attempt_index.file_ref(root, checksums)})
+        write_checksums(root, artifacts)
     data = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
     if not draft:
         verifier_name = "scripts/verify_release_acceptance.py"

@@ -913,6 +913,12 @@ def verify_artifacts(root, manifest, source_files, candidates, binaries):
     expected = {artifact["file"]["sha256"] + "  " + artifact["file"]["path"]
                 for key, artifact in artifacts.items() if key != "checksums"}
     require(len(checksums) == len(expected) and set(checksums) == expected, "checksums are incomplete or duplicated")
+    import operating_limits
+    report = reference(root, artifacts["operating-limits"]["file"])
+    gates = unique(manifest["gates"], "id", "operating limits gate inputs")
+    expected_limits = operating_limits.render(root, gates, manifest["source"], report_dir=report.parent)
+    require(hashlib.sha256(expected_limits).hexdigest() == artifacts["operating-limits"]["file"]["sha256"],
+            "operating limits differ from selected measurements")
     return artifacts
 
 
