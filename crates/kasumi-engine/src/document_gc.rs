@@ -175,10 +175,101 @@ impl DiskFeed {
     }
 }
 
+/// Walk only the live namespace of the exact primary directory. Each page
+/// releases its native view before the visitor enters the manifest store.
+struct DiskDocuments {
+    selection: crate::application_sources::SelectedApplication,
+    boundary: crate::application_sources::SnapshotBoundary<String>,
+    collections: Vec<(String, usize)>,
+    collection: usize,
+    visited: usize,
+    after: Option<String>,
+}
+
+impl DiskDocuments {
+    fn advance(
+        &mut self,
+        budget: &mut usize,
+        visit: &mut impl FnMut(&kasumi_types::StoredDocument) -> Result<bool>,
+    ) -> Result<bool> {
+        while *budget > 0 {
+            let Some((collection, expected)) = self.collections.get(self.collection) else {
+                return Ok(true);
+            };
+            let limit = (*budget).min(32);
+            let (rows, _grant) = self
+                .selection
+                .with_primary_boundary(None, &self.boundary, |tree, memory, _| {
+                    let grant = crate::document_restore::ReadAdmissionFailure::reserve(
+                        memory,
+                        1024 + limit as u64 * 1024,
+                    )?;
+                    let mut ids = Vec::with_capacity(limit);
+                    crate::application_records::visit_primary_ids(
+                        tree,
+                        collection,
+                        3,
+                        self.after.as_deref(),
+                        |id| {
+                            ids.push(id.to_owned());
+                            Ok(ids.len() < limit)
+                        },
+                    )?;
+                    let mut rows = Vec::with_capacity(ids.len());
+                    for id in ids {
+                        let (point, _decode, _) =
+                            crate::application_records::admitted_snapshot_point(
+                                tree,
+                                memory,
+                                collection,
+                                &id,
+                                self.boundary.revision,
+                                || Ok(()),
+                            )?;
+                        let crate::application_records::PrimaryPoint::Live(slot) = point else {
+                            anyhow::bail!("GC live primary key has no live descriptor")
+                        };
+                        rows.push(slot);
+                    }
+                    Ok((rows, grant))
+                })?
+                .context("GC selected primary directory disappeared")?;
+            anyhow::ensure!(
+                self.visited
+                    .checked_add(rows.len())
+                    .is_some_and(|n| n <= *expected),
+                "GC primary exceeded the selected live count"
+            );
+            let exhausted = rows.len() < limit;
+            for row in rows {
+                let DocumentSlot::Stored(descriptor) = row.as_ref() else {
+                    anyhow::bail!("pending descriptor in persisted GC primary");
+                };
+                let proceed = visit(descriptor)?;
+                self.after = Some(descriptor.id.clone());
+                self.visited += 1;
+                *budget -= 1;
+                if !proceed {
+                    return Ok(false);
+                }
+            }
+            if exhausted {
+                anyhow::ensure!(self.visited == *expected, "GC primary live count differs");
+                *budget = budget.saturating_sub(1);
+                self.collection += 1;
+                self.after = None;
+                self.visited = 0;
+            }
+        }
+        Ok(self.collection == self.collections.len())
+    }
+}
+
 /// A resumable position in a frozen copy of the document and feed roots.
 /// The persistent maps share their nodes with the published state.
 struct Walk {
     documents: Vec<Documents>,
+    disk_documents: Option<Box<DiskDocuments>>,
     _collection_roots: Option<Reservation>,
     feed: Feed,
     disk_feed: Option<DiskFeed>,
@@ -229,11 +320,21 @@ impl Walk {
                 "GC retained feed and snapshot boundary differ"
             );
         }
-        let roots_bytes = state
-            .collections
-            .len()
-            .checked_mul(std::mem::size_of::<Documents>())
-            .context("GC collection root size overflow")?;
+        let use_primary = state.collections.values().any(|c| !c.documents.is_empty())
+            && selection
+                .with_serving_primary(None, state, |_, _, _| Ok(()))?
+                .is_some();
+        let roots_bytes = if use_primary {
+            state.collections.keys().try_fold(1536usize, |bytes, name| {
+                bytes.checked_add(std::mem::size_of::<(String, usize)>() + name.len())
+            })
+        } else {
+            state
+                .collections
+                .len()
+                .checked_mul(std::mem::size_of::<Documents>())
+        }
+        .context("GC collection root size overflow")?;
         let bytes = roots_bytes
             .checked_add(if disk_end.is_some() {
                 4096 + MAX_TAIL * 256
@@ -250,18 +351,38 @@ impl Walk {
             Some(reserved)
         };
         let mut documents = Vec::new();
-        if documents
-            .try_reserve_exact(state.collections.len())
-            .is_err()
-        {
-            return Ok(None);
-        }
-        documents.extend(
-            state
-                .collections
-                .values()
-                .map(|collection| collection.documents.clone()),
-        );
+        let disk_documents = if use_primary {
+            let mut collections = Vec::new();
+            if collections
+                .try_reserve_exact(state.collections.len())
+                .is_err()
+            {
+                return Ok(None);
+            }
+            collections.extend(
+                state
+                    .collections
+                    .iter()
+                    .map(|(name, c)| (name.clone(), c.documents.len())),
+            );
+            Some(Box::new(DiskDocuments {
+                selection: selection.clone(),
+                boundary: state.into(),
+                collections,
+                collection: 0,
+                visited: 0,
+                after: None,
+            }))
+        } else {
+            if documents
+                .try_reserve_exact(state.collections.len())
+                .is_err()
+            {
+                return Ok(None);
+            }
+            documents.extend(state.collections.values().map(|c| c.documents.clone()));
+            None
+        };
         let (feed, disk_feed) = match disk_end {
             Some(after) => {
                 let tail = retained
@@ -282,6 +403,7 @@ impl Walk {
         };
         Ok(Some(Self {
             documents,
+            disk_documents,
             _collection_roots: grant,
             feed,
             disk_feed,
@@ -303,6 +425,15 @@ impl Walk {
         mut budget: usize,
         mut visit: impl FnMut(&kasumi_types::StoredDocument) -> Result<bool>,
     ) -> Result<()> {
+        if !self.documents_done
+            && let Some(disk) = &mut self.disk_documents
+        {
+            if !disk.advance(&mut budget, &mut visit)? {
+                return Ok(());
+            }
+            self.documents_done = true;
+            self.disk_documents = None;
+        }
         while !self.documents_done && budget > 0 {
             let Some(documents) = self.documents.get(self.collection) else {
                 self.documents_done = true;
@@ -410,6 +541,35 @@ pub(crate) fn check_snapshot_feed_walk(
         .get()
         .context("no selected source")?;
     let mut walk = Walk::freeze(state, selection, admission)?.context("GC walk admission")?;
+    anyhow::ensure!(
+        walk.documents.is_empty() && walk.disk_documents.is_some(),
+        "physical test requires a primary GC cursor"
+    );
+    let expected_documents: Vec<_> = state
+        .collections
+        .values()
+        .flat_map(|c| c.documents.values())
+        .map(|slot| match slot.as_ref() {
+            DocumentSlot::Stored(stored) => (stored.id.clone(), stored.version, stored.body_object),
+            DocumentSlot::Pending(_) => panic!("published GC test document is pending"),
+        })
+        .collect();
+    assert!(!expected_documents.is_empty());
+    let documents = walk.disk_documents.as_mut().unwrap();
+    let mut budget = usize::MAX;
+    let failure = documents
+        .advance(&mut budget, &mut |_| {
+            anyhow::bail!("first primary unavailable")
+        })
+        .unwrap_err();
+    assert_eq!(failure.to_string(), "first primary unavailable");
+    assert!(documents.after.is_none());
+    let mut observed = Vec::new();
+    while !documents.advance(&mut 1, &mut |row| {
+        observed.push((row.id.clone(), row.version, row.body_object));
+        Ok(false)
+    })? {}
+    assert_eq!(observed, expected_documents);
     let disk = walk
         .disk_feed
         .as_ref()
@@ -1316,6 +1476,7 @@ mod tests {
             .map(|record| (record.id.clone(), record.document.clone().unwrap()))
             .collect();
         let mut walk = Walk {
+            disk_documents: None,
             documents: vec![documents],
             disk_feed: None,
             _collection_roots: None,

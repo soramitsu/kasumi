@@ -255,15 +255,28 @@ impl SelectedApplication {
             u32,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
+        self.with_primary_boundary(shared, &SnapshotBoundary::<&str>::from(state), read)
+    }
+
+    pub(crate) fn with_primary_boundary<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &SnapshotBoundary<impl AsRef<str>>,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
         use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
         let mut has_headers = true;
         let result = if self.has_exact_snapshot(state.revision_base, state.revision) {
-            self.with_snapshot_records(shared, state, |tree, memory, layout| {
+            self.with_base_snapshot_boundary(shared, state, |tree, memory, layout, _| {
                 has_headers = layout >= DOCUMENT_HEADERS_LAYOUT;
                 read(tree, memory, layout)
             })
         } else {
-            self.with_primary_records(shared, state, |tree, memory| {
+            self.with_current_primary(shared, state, |tree, memory| {
                 read(tree, memory, DOCUMENT_HEADERS_LAYOUT)
             })
         }?;
@@ -289,6 +302,18 @@ impl SelectedApplication {
         &self,
         shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.with_current_primary(shared, &SnapshotBoundary::<&str>::from(state), read)
+    }
+
+    fn with_current_primary<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &SnapshotBoundary<impl AsRef<str>>,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
             &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
@@ -338,7 +363,7 @@ impl SelectedApplication {
     fn current_primary_manifest(
         &self,
         view: &kasumi_store::TenantStorageReadView,
-        state: &kasumi_types::TenantState,
+        state: &SnapshotBoundary<impl AsRef<str>>,
     ) -> Result<Option<kasumi_store::primary_manifest::PrimaryManifest>> {
         use kasumi_store::primary_manifest::PrimaryManifest;
         let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
@@ -351,7 +376,7 @@ impl SelectedApplication {
             return Ok(None);
         }
         ensure!(
-            manifest.incarnation == state.incarnation
+            manifest.incarnation == state.incarnation.as_ref()
                 && manifest.revision_base == state.revision_base
                 && manifest.document_count == state.document_count
                 && manifest.logical_bytes == state.logical_bytes,
@@ -370,7 +395,8 @@ impl SelectedApplication {
     ) -> Result<Option<(String, kasumi_store::ordered_pages::TreeRoot)>> {
         use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
         use kasumi_store::ordered_pages::{PageSource, TreeReader};
-        if let Some(primary) = self.current_primary_manifest(view, state)? {
+        let boundary = SnapshotBoundary::<&str>::from(state);
+        if let Some(primary) = self.current_primary_manifest(view, &boundary)? {
             return Ok(Some((primary.page_space, primary.records)));
         }
         let Some(position) = self.serving_position() else {
@@ -381,7 +407,6 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected text installation absent")?;
-        let boundary = SnapshotBoundary::<&str>::from(state);
         let Some(base) = Self::base_snapshot_manifest_at(position, view, &boundary, &roots)? else {
             return Ok(None);
         };
