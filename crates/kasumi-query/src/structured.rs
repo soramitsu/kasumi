@@ -140,8 +140,7 @@ pub(crate) struct Structured {
 pub(crate) struct UniqueIndex {
     pub(crate) fields: Vec<IndexField>,
     // A one-field generation uses its already selected scalar posting tree
-    // for both uniqueness and ordered seek. A standalone validation pass
-    // has no field tree and therefore builds its temporary tuple map.
+    // for both uniqueness and ordered seek.
     pub(crate) entries: Option<TupleMap>,
     // Only keys longer than a native page key live here. A mixed index can
     // walk the published directory and merge these exceptions in tuple order.
@@ -154,6 +153,17 @@ pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Val
         Record::Archived(document) => document.indexed_fields.get(path),
     }
 }
+pub(crate) fn unique_tuple(
+    fields: &[IndexField],
+    record: Record<'_>,
+) -> Result<Option<Vec<Scalar>>> {
+    let key = fields
+        .iter()
+        .map(|field| scalar(record_value(record, &field.path), Some(field.kind)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((!key.contains(&Scalar::Missing)).then_some(key))
+}
+
 impl UniqueIndex {
     fn same_fields(&self, old: Record<'_>, new: Record<'_>) -> bool {
         self.fields
@@ -162,12 +172,7 @@ impl UniqueIndex {
     }
 
     fn key(&self, record: Record<'_>) -> Result<Option<Vec<Scalar>>> {
-        let key = self
-            .fields
-            .iter()
-            .map(|field| scalar(record_value(record, &field.path), Some(field.kind)))
-            .collect::<Result<Vec<_>>>()?;
-        Ok((!key.contains(&Scalar::Missing)).then_some(key))
+        unique_tuple(&self.fields, record)
     }
     fn owned_entries(&mut self, key: &[Scalar]) -> &mut TupleMap {
         if self.fields.len() > 1 && crate::ordered_tuple::encode(key).is_none() {
@@ -193,12 +198,10 @@ impl UniqueIndex {
         name: &str,
         owner: impl FnOnce() -> Arc<str>,
         record: Record<'_>,
-        fields: Option<&BTreeMap<String, FieldIndex>>,
+        fields: &BTreeMap<String, FieldIndex>,
     ) -> Result<()> {
         if let Some(mut key) = self.key(record)? {
-            if let Some(fields) = fields
-                && self.fields.len() > 1
-            {
+            if self.fields.len() > 1 {
                 self.share_components(&mut key, fields);
             }
             if self.owned_entries(&key).insert(key, owner()).is_some() {
@@ -418,7 +421,7 @@ impl Structured {
                         continue;
                     }
                     if index.entries.is_some() {
-                        index.insert_tuple(name, || Arc::clone(&owner), new, Some(&self.fields))?;
+                        index.insert_tuple(name, || Arc::clone(&owner), new, &self.fields)?;
                     } else if let Some(mut key) = index.key(new)? {
                         let entries = singles.get_mut(name).expect("shared unique posting");
                         let scalar = key.pop().expect("one-field unique key");
@@ -444,10 +447,7 @@ impl Structured {
         .map(|_| ())
     }
 
-    fn empty_unique(
-        definition: &CollectionDefinition,
-        share_fields: bool,
-    ) -> BTreeMap<String, UniqueIndex> {
+    fn empty_unique(definition: &CollectionDefinition) -> BTreeMap<String, UniqueIndex> {
         definition
             .indexes
             .iter()
@@ -458,27 +458,11 @@ impl Structured {
                     UniqueIndex {
                         fields: index.fields.clone(),
                         overflow: OrdMap::new(),
-                        entries: (!share_fields || index.fields.len() != 1).then(OrdMap::new),
+                        entries: (index.fields.len() != 1).then(OrdMap::new),
                     },
                 )
             })
             .collect()
-    }
-    pub(crate) fn build_unique<R: CollectionRecords + ?Sized>(
-        source: &R,
-    ) -> ReadResult<BTreeMap<String, UniqueIndex>, R::Failure> {
-        let mut unique = Self::empty_unique(source.definition(), false);
-        if unique.is_empty() {
-            return Ok(unique);
-        }
-        source.visit_records(|id, record| {
-            let owner = LazyCell::new(|| Arc::<str>::from(id));
-            for (name, index) in &mut unique {
-                index.insert_tuple(name, || Arc::clone(&owner), record, None)?;
-            }
-            Ok(())
-        })?;
-        Ok(unique)
     }
     pub(crate) fn empty(definition: &CollectionDefinition) -> Self {
         let mut fields = BTreeMap::new();
@@ -498,7 +482,7 @@ impl Structured {
         }
         Self {
             ids: IdSet::new(),
-            unique: Self::empty_unique(definition, true),
+            unique: Self::empty_unique(definition),
             fields,
         }
     }
@@ -597,7 +581,7 @@ impl Structured {
         self.ids.insert(Arc::clone(&owner));
         for (name, index) in &mut self.unique {
             if index.entries.is_some() {
-                index.insert_tuple(name, || Arc::clone(&owner), record, Some(&self.fields))?;
+                index.insert_tuple(name, || Arc::clone(&owner), record, &self.fields)?;
             } else if let Some(mut key) = index.key(record)? {
                 let scalar = key.pop().expect("one-field unique key");
                 if self.fields[&index.fields[0].path].entries[&scalar].len() != 1 {

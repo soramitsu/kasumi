@@ -30,7 +30,7 @@ pub(crate) mod snapshot_validation;
 use crate::SnapshotFailure;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
-use kasumi_query::{QueryIndexes, check_unique, validate_collection};
+use kasumi_query::{QueryIndexes, validate_collection};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 pub use snapshot_api::PreparedSnapshotRestore;

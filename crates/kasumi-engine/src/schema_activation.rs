@@ -365,7 +365,6 @@ pub(crate) fn prepare_collection(
         resolver,
     );
     validate_collection(&source)?;
-    check_unique(&source)?;
     Ok(collection)
 }
 

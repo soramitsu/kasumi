@@ -395,3 +395,62 @@ fn stored_headers_do_not_decode_and_missing_selected_source_is_local_failure() {
         Err(ReadFailure::Source(_))
     ));
 }
+
+#[test]
+fn schema_replacement_reads_each_stored_body_once_for_schema_and_once_for_unique_keys() {
+    use kasumi_types::{AdmittedDocumentOwner, SharedDocument};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Owner(Arc<Document>);
+    impl AdmittedDocumentOwner for Owner {
+        fn document(&self) -> &Document {
+            &self.0
+        }
+    }
+    struct CountingResolver {
+        document: SharedDocument,
+        reads: AtomicUsize,
+    }
+    impl DocumentResolver for CountingResolver {
+        fn load(&self, _: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(self.document.clone())
+        }
+    }
+
+    let mut state = state();
+    let collection = state.collections.get_mut("docs").unwrap();
+    let DocumentSlot::Pending(selected) = collection.documents["a"].as_ref() else {
+        panic!("expected pending fixture")
+    };
+    let descriptor = StoredDocument::from_document(selected, [7; 32], 128, 1 << 20, 4096).unwrap();
+    let resolver = CountingResolver {
+        document: SharedDocument::from_admitted_owner(Arc::new(Owner(selected.clone()))),
+        reads: AtomicUsize::new(0),
+    };
+    collection
+        .documents
+        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    let prepare = |state: &TenantState| {
+        let collection = &state.collections["docs"];
+        crate::state::schema::prepare_collection(
+            state,
+            Some(collection),
+            &collection.definition,
+            false,
+            Some(&resolver),
+        )
+    };
+
+    prepare(&state).unwrap();
+    assert_eq!(resolver.reads.swap(0, Ordering::Relaxed), 2);
+    state
+        .collections
+        .get_mut("docs")
+        .unwrap()
+        .documents
+        .insert("c".into(), document("c", 3, "alpha"));
+    let failure = prepare(&state).err().expect("duplicate index value");
+    assert_eq!(query_error(failure).code, ErrorCode::Conflict);
+    assert_eq!(resolver.reads.load(Ordering::Relaxed), 2);
+}
