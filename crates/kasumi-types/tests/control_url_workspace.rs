@@ -189,6 +189,12 @@ fn endpoint_quote_covers_first_use_valid_invalid_and_growth_paths() {
     for count in [255, 256, 511, 512, 1023, 1024, 4095, 4096, 65535, 262144] {
         check(&format!("https://{}.invalid/", "a".repeat(count)), true, 0);
         if count <= 65535 {
+            // The URL parser percent-encodes each caret in the path.
+            check(
+                &format!("https://node.invalid/{}", "^".repeat(count)),
+                true,
+                0,
+            );
             let input = format!(
                 "https://node.invalid/{}?{}#{}",
                 "東京".repeat(count),

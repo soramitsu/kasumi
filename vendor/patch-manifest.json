@@ -534,7 +534,7 @@
         "Cargo.lock": {
           "bytes": 79882,
           "mode": "0o644",
-          "sha256": "ddb5a20a91a74a11aea95a75edc448071fadb5cb3d0a2a8f001c42410f2cb99e"
+          "sha256": "bd90fa7995ac4d91c0944d59aaa8239d558fce2cc2848e5723dd5dd79017988e"
         },
         "Cargo.toml": {
           "bytes": 21462,
