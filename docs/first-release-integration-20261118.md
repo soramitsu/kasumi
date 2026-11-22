@@ -1078,3 +1078,32 @@ and `587cb607f896707092d4a6a184d07dbe750a1658cd8df1997f71817f9e6dd8f6`.
 | G05, G13 | The original 520-session macOS installation resumed after a disk-space refusal. The driver killed processes at the claim and terminal-write boundaries. Across three cleanup pages, the 259 completed and 261 aborted records had the same SHA-256 before restart, after restart and after replay, `521f3e723a903853dbeab0e9c01e00c5d8bc8c550cef95de49e5a2c98eeed08e`. Cold verification took 1,033.4 seconds. | Resolve the three disputed rows in the separate Linux installation and complete its 100,001-session qualification. |
 | G01, G08, G11, G12 | On `0fea5408`, macOS ARM64 passed strict workspace Clippy with all targets and features in 3,468.5 seconds. Its Python suite ran 531 cases with one Linux-only skip. The installed executables passed 16 lifecycle scenarios across 64 processes in 173.772 seconds. | Finish the focused and full Rust suites, including the original shutdown and cold-reopen cases, on the release revision. |
 | G11, G14 | The first native macOS notice audit rejected two OpenRaft workspace members. Packaging fix `5280dee4` verified the reviewed Git-vendored license files for both. A replay verified all 407 compiled packages, including 390 registry packages, with 709 notice records and 269 distinct texts. The native assembly declaration separately verified 21,499 input files and bound the 17,081 files consumed by package metadata and Python imports. | Run both owned assemblies with passing functional evidence on each native target. |
+
+### November 21 cold recovery and native qualification
+
+The common qualification source is `17a327a4a53b1c5e4bcea28d2e08a5992fef9baa`.
+Its 72,591,360-byte Git archive has SHA-256
+`cb1aec082582b47a491d1e0996df4dc4979470ce9b84ec55bda40a2aebe84d78`.
+
+| Check | Observed result |
+| --- | --- |
+| macOS ARM64 installed lifecycle | The three native products passed all 16 installed scenarios across 64 processes in 54.026 seconds on a 16-core, 128 GiB host. |
+| Compatibility | The clean and interrupted 12140939 images and the cf9959f1 image passed eight KV and Store fixture checks on macOS ARM64. |
+| Dependencies | Strict workspace Clippy passed in 2,162 seconds. After an initial OpenRaft membership timeout, all 33 upstream commands passed on the same source, covering 4,199 tests. Independent macOS ARM64 and Linux ARM64 scans checked 483 packages and reported zero vulnerabilities. The LRU maintenance warning has a reviewed source patch. Both scanners completed their yank checks. |
+| Backup replay | Separate native Linux ARM64 processes cold-opened the original installation and recovered the six original public outcome fields for ordinals 17,647 through 17,649. The three API calls took 0.436, 0.331 and 0.114 seconds after cold reopens of 3,276, 2,308 and 1,968 seconds respectively. The repaired caller in `8133f770` resumed the original population across the interrupted witness journal. |
+| Record and cleanup boundaries | The restored original and two independent Linux trees matched all eight boundary-evidence files. A 65,536-byte record was accepted and a 65,537-byte record was rejected. The 300-object cleanup returned 256 objects, 44 objects and then zero. |
+| Local checkpoint verification | `9fde8161` verifies the restored backup rows and their point lookup through one pinned view. The combined Engine tree passed 14 focused selectors. |
+| Stopped-target recovery | The Linux ARM64 development run on `0fea5408` ended after 12 observations could not find the target journal. Six native processes on an isolated clone reopened the same installation. The direct Control leader call returned Unavailable in 0.154 seconds. End-to-end recovery remains open. |
+| Packaging | Two independent source-package builds produced 37,849,462 bytes each at SHA-256 `a39e24291fc8f41d58782e9580ff77bb5493ab5fb746d30912e77670e160847d`. The macOS notice inventory verified all 407 compiled packages. |
+
+| Native macOS ARM64 binary | Bytes | SHA-256 |
+| --- | ---: | --- |
+| kasumid | 133,498,016 | `2f9b7424b577e60a52ae5c86f14ac40bb70ad41bd8d854265bc7bf34c641c0e4` |
+| kasumictl | 9,024,608 | `460ae6b6813f8c281b0243028db52e8e427ce9b50129c8736a5e4cbf9d9a5546` |
+| kasumi-authority | 93,720,432 | `b6d32f2df9eca2f720e086b7435a140453a7665567e705225d7fa9155580f9e0` |
+
+Qualification still needs a reserved native Linux x86-64 runner, an uninterrupted
+reservation on the 2-CPU, 16-GiB, 200-GiB ARM64 reference or its replacement,
+the 24-hour soak, native assembly comparisons and final release authorization.
+The original fixture blob is on origin/master. The BOI environment owner conducts
+the live installation.
