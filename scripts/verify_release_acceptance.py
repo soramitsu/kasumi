@@ -61,6 +61,9 @@ if __name__ == "__main__":
                                  environment=os.environ, loaded=sys.modules,
                                  importers=sys.meta_path)
     sys.path.insert(0, str(_scripts))
+    # Frozen domain adapters import this name. Keep their observed inputs in
+    # the same verification context as the command that performs the final seal.
+    sys.modules["verify_release_acceptance"] = sys.modules[__name__]
     _CLEAN_SOURCE_EXECUTION = True
 
 import assembly_inputs

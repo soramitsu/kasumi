@@ -8,6 +8,8 @@ from pathlib import Path
 import py_compile
 import shutil
 import struct
+import subprocess
+import sys
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -1132,6 +1134,26 @@ class AcceptanceTests(unittest.TestCase):
         wrong = {**args, "original_root": str(dest)}
         with self.assertRaisesRegex(ValueError, "differs from original outcome"):
             acceptance.verify_attempts(dest, retained, {}, **wrong)
+
+    def test_isolated_cli_shares_observations_with_imported_domain_adapters(self):
+        scripts = Path(acceptance.__file__).resolve().parent
+        program = """import runpy, sys
+path = sys.argv[1]
+sys.argv = [path, '--help']
+try:
+    runpy.run_path(path, run_name='__main__')
+except SystemExit as exit:
+    assert exit.code == 0
+import verify_release_acceptance as verifier
+import run_benchmark_matrix_owned as benchmark
+assert verifier._CLEAN_SOURCE_EXECUTION and benchmark.acceptance is verifier
+"""
+        # CLI acceptance requires a source tree without bytecode. Development
+        # test discovery may have populated the checkout's scripts directory.
+        frozen = self.root / "source/scripts"
+        shutil.copytree(scripts, frozen, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        subprocess.run([sys.executable, "-I", "-B", "-S", "-c", program,
+                        frozen / "verify_release_acceptance.py"], check=True, capture_output=True)
 
     def test_rebased_reference_preserves_original_observation(self):
         ref = self.value("custody/evidence.json", {"result": 1})
