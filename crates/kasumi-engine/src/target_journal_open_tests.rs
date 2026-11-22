@@ -2508,7 +2508,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         journal.target_cleanup(&tenant, incarnation)?,
         Some(cleanup.clone())
     );
-    let observed = journal.deletion_status(&query, &verified, &marked)?;
+    let observed = journal.deletion_status(&query, Some(&verified), &marked)?;
     assert_eq!(
         observed.progress,
         kasumi_types::TargetDeletionProgress::Deleting
@@ -2519,14 +2519,49 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     );
     let mut other = query.clone();
     other.phase_id = Uuid::new_v4();
-    assert!(journal.deletion_status(&other, &verified, &marked).is_err());
+    assert!(
+        journal
+            .deletion_status(&other, Some(&verified), &marked)
+            .is_err()
+    );
     let mut no_attempt = marked.clone();
     no_attempt.effect_attempts.clear();
     assert!(
         journal
-            .deletion_status(&query, &verified, &no_attempt)
+            .deletion_status(&query, Some(&verified), &no_attempt)
             .is_err()
     );
+    assert!(journal.deletion_status(&query, None, &marked).is_err());
+    let fact = kasumi_types::LocalTargetCleanupFact {
+        intent: committed.clone(),
+        node_id: query.node_id,
+        stopped: stop.stopped.clone(),
+        stop_receipt_sha256: stop.stopped.observation.stop.digest()?,
+        observed_at_ms: committed.accepted_at_ms + 1,
+    };
+    let signature = crate::target_completion_machine::tests::sign(
+        &fact,
+        "kasumi.local-target-cleanup.v1",
+        query.node_id,
+    );
+    let mut completed = marked.clone();
+    completed.resolved_revision = Some(completed.prepared_revision + 1);
+    let terminal_outcome = |signature| {
+        kasumi_types::RecoveryDispatchOutcome::Target(Box::new(
+            kasumi_types::TargetRuntimeResponse {
+                command_id: committed.request.command_id,
+                node_id: query.node_id,
+                outcome: kasumi_types::TargetRuntimeOutcome::Stopped(Box::new(
+                    kasumi_types::SignedLocalTargetCleanup {
+                        fact: fact.clone(),
+                        signature,
+                    },
+                )),
+            },
+        ))
+    };
+    completed.outcome = Some(terminal_outcome(signature));
+    assert!(journal.deletion_status(&query, None, &completed).is_err());
     drop(journal);
     let mut terminal = cleanup;
     for (stage, expected) in [
@@ -2549,7 +2584,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
             key.clone(),
             serde_json::to_vec(&terminal)?,
         )])?;
-        let next = reopen()?.deletion_status(&query, &verified, &marked)?;
+        let next = reopen()?.deletion_status(&query, Some(&verified), &marked)?;
         assert_eq!(next.progress, expected);
         assert_eq!(next.binding_sha256, observed.binding_sha256);
         assert_eq!(next.attempt_id, observed.attempt_id);
@@ -2558,6 +2593,15 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         reopen()?.target_cleanup(&tenant, incarnation)?,
         Some(terminal.clone())
     );
+    let historical = reopen()?.deletion_status(&query, None, &completed)?;
+    assert_eq!(
+        historical.progress,
+        kasumi_types::TargetDeletionProgress::Deleted
+    );
+    assert_eq!(historical.binding_sha256, observed.binding_sha256);
+    assert_eq!(historical.attempt_id, observed.attempt_id);
+    completed.outcome = Some(terminal_outcome("00".repeat(64)));
+    assert!(reopen()?.deletion_status(&query, None, &completed).is_err());
     for replacement in [
         None,
         Some(TargetFileBinding {

@@ -107,15 +107,28 @@ impl TargetRecoveryRuntime {
             *node_id == query.node_id && matches!(request.step, TargetRuntimeStep::Stop(_)),
             "deletion observation is not this target's StopLocal"
         );
-        let credential = bearer.clone();
-        let trust = kasumi_serving::ControlTrust::install(self.installed.control_root.clone())?;
-        let mut control =
-            KasumiLifecyclePool::new(connections, trust, Arc::new(move || Ok(credential.clone())))?;
-        let original = control
-            .observe_intent(request.command_id, admission.remaining_response()?)
-            .await?;
+        // A completed StopLocal already carries the target and issuer signatures.
+        // Read that history under the current observer's grant after cold restart.
+        let original = if phase.outcome.is_some() {
+            None
+        } else {
+            let credential = bearer.clone();
+            let trust = kasumi_serving::ControlTrust::install(self.installed.control_root.clone())?;
+            let mut control = KasumiLifecyclePool::new(
+                connections,
+                trust,
+                Arc::new(move || Ok(credential.clone())),
+            )?;
+            Some(
+                control
+                    .observe_intent(request.command_id, admission.remaining_response()?)
+                    .await?,
+            )
+        };
         admission.check()?;
-        let status = self.journal.deletion_status(query, &original, &phase)?;
+        let status = self
+            .journal
+            .deletion_status(query, original.as_ref(), &phase)?;
         ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
