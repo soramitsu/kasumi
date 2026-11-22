@@ -340,10 +340,15 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
             observe(record)
             ledger_path = os.environ.get(GROUP_LEDGER_ENV)
             ledger = None
-            prior_mask = None
             try:
                 if ledger_path is not None:
-                    prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+                    # One exclusive lock covers admission, Popen and the fsynced
+                    # group row, so an enclosing seal waits for an in-flight
+                    # spawn and can never miss its group. The handlers installed
+                    # above only record a signal and cannot interrupt this block.
+                    # Signals stay unblocked: a mask held across Popen is
+                    # inherited through exec, and the child could then only be
+                    # stopped by SIGKILL.
                     ledger = _group_ledger_open(ledger_path)
                     fcntl.flock(ledger, fcntl.LOCK_EX)
                     _, closed = _group_ledger_rows(ledger)
@@ -368,8 +373,6 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
                 if ledger is not None:
                     fcntl.flock(ledger, fcntl.LOCK_UN)
                     os.close(ledger)
-                if prior_mask is not None:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
             observe(record)
             while True:
                 if received:

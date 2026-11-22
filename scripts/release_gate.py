@@ -577,8 +577,8 @@ def census_gate_groups(output, path):
     right after spawning it. A gate whose receipt shows a completed drain needs
     nothing more; its numeric group may already belong to someone else. Any
     other gate group that still has members, or cannot be inspected, makes the
-    census incomplete and fails the runner's receipt. Gate children are not
-    spawned under a group ledger, which would leave SIGINT and SIGTERM blocked.
+    census incomplete and fails the runner's receipt. The runner's own gate
+    receipts name every group, so gates need no enclosing group ledger.
     """
     groups = []
     for receipt in sorted(Path(output).glob("*-process.json")):
