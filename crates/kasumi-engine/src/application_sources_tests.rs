@@ -3179,6 +3179,14 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     let mut request = kasumi_types::QueryRequest::new("docs");
     request.limit = Some(1);
     let first = db.query(&context, request.clone()).await?;
+    assert!(
+        pinned.cursor_primary().is_some(),
+        "ordinary apply did not verify its pinned primary"
+    );
+    assert!(
+        pinned.document_sources.get().is_some(),
+        "ordinary apply did not bind the body resolver"
+    );
     assert_eq!(first.rows[0].id, "a");
     request.cursor = Some(first.cursor.clone().context("expected ordinary cursor")?);
     assert_eq!(first.revision, pinned.state.revision);

@@ -77,12 +77,12 @@ pub struct Generation {
 impl Generation {
     /// A hydration overlay owns its body reservations. Only an unmodified
     /// generation with a proven native primary can lend a detached cursor.
+    /// Its installed document resolver owns any staged bootstrap source.
     pub(crate) fn cursor_primary(
         &self,
     ) -> Option<&crate::application_sources::SelectedApplication> {
         self.application_selection.get().filter(|selection| {
             self._read_reservations.is_empty()
-                && self.staged_documents.is_none()
                 && selection.served_primary_at(self.state.revision_base, self.state.revision)
         })
     }
