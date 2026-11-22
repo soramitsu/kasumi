@@ -714,6 +714,32 @@ mod tests {
     }
 
     #[test]
+    fn query_worker_releases_other_collections_and_keeps_the_published_layout() {
+        use std::sync::Arc;
+
+        let mut docs = collection("docs", &[("/n", ScalarType::Number)]);
+        put(&mut docs, "first", 1, json!({"n": 1}));
+        let mut other = collection("other", &[("/s", ScalarType::String)]);
+        put(&mut other, "second", 1, json!({"s": "value"}));
+        let state = [("docs".to_owned(), docs), ("other".to_owned(), other)].into();
+        let indexes = QueryIndexes::build_fixture(&state).unwrap();
+        let layout = indexes.structured_layout_sha256();
+        let unselected = Arc::downgrade(&indexes.collections["other"]);
+        assert!(indexes.for_query_collection("missing").is_none());
+
+        let page = indexes.for_query_collection("docs").unwrap();
+        assert!(Arc::ptr_eq(
+            &indexes.collections["docs"],
+            &page.collections["docs"]
+        ));
+        drop(indexes);
+        assert!(unselected.upgrade().is_none());
+        assert_eq!(page.structured_field_count("docs"), Some(1));
+        assert_eq!(page.structured_field_count("other"), None);
+        assert_eq!(page.structured_layout_sha256(), layout);
+    }
+
+    #[test]
     fn the_change_set_is_exactly_the_difference_between_two_generations() {
         const PATHS: [(&str, ScalarType); 3] = [
             ("/n", ScalarType::Number),
