@@ -2017,6 +2017,7 @@ pub(crate) mod tests;
 mod reader;
 pub(crate) use reader::DocumentReader;
 /// Identity and totals needed to bind a native snapshot directory to its generation.
+#[derive(Debug)]
 pub(crate) struct SnapshotBoundary<S> {
     tenant: S,
     pub(crate) incarnation: S,

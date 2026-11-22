@@ -83,6 +83,7 @@ impl QueryIndexes {
         let mut selected = crate::CollectionIndexes::clone(source);
         selected.text = None;
         selected.structured.ids.clear();
+        selected.logical_ids = None;
         selected.structured.fields.retain(|path, _| {
             selected
                 .structured

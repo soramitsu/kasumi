@@ -8,6 +8,10 @@
 //! fields). `count` is a JSON integer; missing/null inputs are ignored, except
 //! `count` of `*` counts rows.
 
+mod logical_ids;
+use logical_ids::LogicalIds;
+#[doc(hidden)]
+pub use logical_ids::{PrimaryIdPages, ordered_union};
 mod index_input;
 pub use index_input::{CollectionRecords, DocumentChanges, DocumentDelta, IndexUpdate};
 mod document_source;
@@ -69,6 +73,7 @@ struct CollectionIndexes {
     schema_sha256: [u8; 32],
     definition_sha256: [u8; 32],
     structured: Structured,
+    logical_ids: Option<LogicalIds>,
     text: Option<Arc<TextSnapshot>>,
 }
 
@@ -80,6 +85,7 @@ impl CollectionIndexes {
             schema_sha256,
             definition_sha256: index_input::definition_sha256(definition)?,
             structured: Structured::empty(definition),
+            logical_ids: None,
             text: None,
         })
     }
@@ -122,6 +128,7 @@ impl CollectionIndexes {
             schema_sha256,
             definition_sha256: index_input::definition_sha256(definition)?,
             structured: self.structured.clone(),
+            logical_ids: self.logical_ids.clone(),
             text: None,
         }))
     }
@@ -301,7 +308,7 @@ impl QueryIndexes {
             let baseline = memory.live_bytes();
             let mut ids = Vec::<String>::new();
             let mut slots = 0usize;
-            let available = source.visit_primary_ids(cancellation, |id| {
+            let mut append = |id: &str| {
                 cancellation.check()?;
                 if ids.last().is_some_and(|previous| previous.as_str() >= id) {
                     return Err(Error::new(
@@ -324,7 +331,13 @@ impl QueryIndexes {
                 memory.reserve(allocation::string_clone_bytes(id)?)?;
                 ids.push(id.to_owned());
                 Ok(())
-            })?;
+            };
+            let available = if let Some(logical) = &indexes.logical_ids {
+                logical.visit_selected(source, cancellation, &mut append)?;
+                true
+            } else {
+                source.visit_primary_ids(cancellation, append)?
+            };
             if available {
                 return Ok((ids, memory.live_bytes() - baseline));
             }
@@ -340,14 +353,15 @@ impl QueryIndexes {
             memory,
         )? {
             Some(ids) => ids,
-            None => indexes.structured.candidates(
+            None => indexes.fallback_candidates(
                 source,
                 &filter,
-                &indexes.structured.ids,
+                None,
                 false,
                 false,
                 limits.max_query_candidates,
                 cancellation,
+                memory,
             )?,
         };
         let mut retained = allocation::vec_bytes::<String>(candidates.len())?;
@@ -381,6 +395,9 @@ impl QueryIndexes {
             .collections
             .get(collection)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
+        if let Some(ids) = &indexes.logical_ids {
+            return ids.page(after, limit);
+        }
         let start = after.map_or(Bound::Unbounded, Bound::Excluded);
         Ok(indexes
             .structured
@@ -542,7 +559,31 @@ impl QueryIndexes {
                         }
                         Ok(())
                     })?;
-                    let structured = previous.structured.update(&source)?;
+                    let (structured, logical_ids) = match (
+                        &previous.logical_ids,
+                        source.new_identity().collection_state(),
+                    ) {
+                        (None, _) => (previous.structured.update(&source)?, None),
+                        (Some(_), Some(collection)) => {
+                            // Keep the complete checked delta replay without constructing
+                            // another ID set. The typed collection already owns every key.
+                            source.visit_changes(|_| Ok(()))?;
+                            (
+                                previous.structured.clone(),
+                                Some(LogicalIds::rows(collection)),
+                            )
+                        }
+                        (Some(ids), None) => {
+                            // A standalone adapter can update this index without lending
+                            // canonical row roots. Restore its normal resident ID owner.
+                            let mut resident = previous.structured.clone();
+                            ids.visit(|id| {
+                                resident.ids.insert(Arc::from(id));
+                                Ok(())
+                            })?;
+                            (resident.update(&source)?, None)
+                        }
+                    };
                     let text_changed = match &previous.text {
                         Some(text) if resident => text.fields_changed(&source)?,
                         _ => false,
@@ -552,6 +593,7 @@ impl QueryIndexes {
                         schema_sha256: previous.schema_sha256,
                         definition_sha256: previous.definition_sha256,
                         structured,
+                        logical_ids,
                         text: if resident {
                             previous.text.clone()
                         } else {
@@ -884,7 +926,6 @@ impl QueryIndexes {
                 Ok(ids)
             })
             .transpose()?;
-        let universe = text_ids.as_ref().unwrap_or(&structured.ids);
         let disk_ids = if text_ids.is_none() {
             structured.stored_posting(
                 source,
@@ -898,14 +939,15 @@ impl QueryIndexes {
         };
         let candidates = match disk_ids {
             Some(ids) => ids,
-            None => structured.candidates(
+            None => indexes.fallback_candidates(
                 source,
                 &filter,
-                universe,
+                text_ids.as_ref(),
                 request.allow_scan,
                 true,
                 limits.max_query_candidates,
                 cancellation,
+                memory,
             )?,
         };
         if request.is_aggregate() {

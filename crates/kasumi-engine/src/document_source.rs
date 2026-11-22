@@ -131,6 +131,56 @@ fn corruption(message: &'static str) -> Error {
     Error::new(ErrorCode::Corruption, message)
 }
 
+#[derive(Debug)]
+pub(crate) struct NativeIdPages {
+    selection: crate::application_sources::SelectedApplication,
+    boundary: crate::application_sources::SnapshotBoundary<String>,
+    collection: String,
+}
+
+impl NativeIdPages {
+    pub(crate) fn new(generation: &Generation, collection: &str) -> Self {
+        Self {
+            selection: generation
+                .cursor_primary()
+                .expect("worker verified its primary")
+                .clone(),
+            boundary: (&generation.state).into(),
+            collection: collection.into(),
+        }
+    }
+}
+
+impl kasumi_query::PrimaryIdPages for NativeIdPages {
+    fn ids_after(&self, after: Option<&str>, limit: usize) -> Result<Vec<String>> {
+        self.selection
+            .with_primary_boundary(None, &self.boundary, |tree, memory, layout| {
+                anyhow::ensure!(
+                    layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT,
+                    "verified directory lost its document headers"
+                );
+                let _workspace = crate::document_restore::ReadAdmissionFailure::reserve(
+                    memory,
+                    (2048 + limit * (256 + std::mem::size_of::<String>())) as u64,
+                )?;
+                let mut ids = Vec::new();
+                crate::application_records::visit_snapshot_headers(
+                    tree,
+                    &self.collection,
+                    after,
+                    self.boundary.revision,
+                    |id, _, _| {
+                        ids.push(id.to_owned());
+                        Ok(ids.len() < limit)
+                    },
+                )?;
+                Ok(ids)
+            })
+            .map_err(crate::service::document_load_error)?
+            .ok_or_else(|| corruption("worker lost its verified primary directory"))
+    }
+}
+
 impl GenerationDocumentSource<'_> {
     fn with_ranked_compounds<T>(
         &self,
