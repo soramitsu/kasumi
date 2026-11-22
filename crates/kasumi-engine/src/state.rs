@@ -149,10 +149,9 @@ impl Generation {
             selection.served_primary_at(self.state.revision_base, self.state.revision)
         }) {
             for collection in collections.values_mut() {
-                // History hydration still needs the manifest and its references.
-                if collection.archived_documents.is_empty() {
-                    collection.documents.clear();
-                }
+                // The pinned primary owns live descriptors. Only history
+                // references and manifests are needed to hydrate archive rows.
+                collection.documents.clear();
             }
         }
         self.lease_with_collections(collections, Arc::new(QueryIndexes::default()), true)

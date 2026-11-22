@@ -2133,6 +2133,13 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             }),
         );
         let detached = Arc::new(reopened.read_view(collections, vec![]));
+        let leased = detached.lease_view();
+        assert!(leased.state.collections["docs"].documents.is_empty());
+        assert!(
+            leased.state.collections["docs"]
+                .archived_documents
+                .contains_key("absent")
+        );
         let persisted = detached.document_source("docs")?;
         let mut visited = Vec::new();
         kasumi_query::CollectionRecords::visit_records(&persisted, |id, record| {

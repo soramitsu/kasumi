@@ -319,27 +319,29 @@ impl Roots {
             }
             let documents = original.documents.clone();
             let archived = original.archived_documents.clone();
-            for difference in old.documents.diff(&new.documents) {
-                use imbl::ordmap::DiffItem;
-                let id = match difference {
-                    DiffItem::Add(k, _) | DiffItem::Remove(k, _) => k,
-                    DiffItem::Update { old: (k, _), .. } => k,
-                };
-                let paths = self.paths.entry(name.clone()).or_default();
-                paths.documents = paths.documents.saturating_add(1).min(documents.len());
-                if let Some(value) = documents.get(id)
-                    && new
-                        .documents
-                        .get(id)
-                        .is_none_or(|current| !Arc::ptr_eq(value, current))
-                {
-                    self.account_payload(
-                        0,
-                        name,
-                        id,
-                        |limit| document_slot_heap(value, limit),
-                        budget,
-                    )?;
+            if !documents.is_empty() {
+                for difference in old.documents.diff(&new.documents) {
+                    use imbl::ordmap::DiffItem;
+                    let id = match difference {
+                        DiffItem::Add(k, _) | DiffItem::Remove(k, _) => k,
+                        DiffItem::Update { old: (k, _), .. } => k,
+                    };
+                    let paths = self.paths.entry(name.clone()).or_default();
+                    paths.documents = paths.documents.saturating_add(1).min(documents.len());
+                    if let Some(value) = documents.get(id)
+                        && new
+                            .documents
+                            .get(id)
+                            .is_none_or(|current| !Arc::ptr_eq(value, current))
+                    {
+                        self.account_payload(
+                            0,
+                            name,
+                            id,
+                            |limit| document_slot_heap(value, limit),
+                            budget,
+                        )?;
+                    }
                 }
             }
             for difference in old.archived_documents.diff(&new.archived_documents) {
@@ -656,17 +658,8 @@ impl LeaseManager {
                 // names. The merged page moves those strings without cloning them.
                 reservation.reserve_additional(((request.limit + 1) * 768) as u64)?;
                 let metadata = crate::snapshot_codec::metadata(&root.generation.state);
-                let disk_lengths = selection
-                    .served_primary_at(metadata.revision_base, metadata.revision)
-                    && root
-                        .generation
-                        .state
-                        .collections
-                        .get(&request.collection)
-                        .is_some_and(|collection| {
-                            collection.documents.is_empty()
-                                && collection.archived_documents.is_empty()
-                        });
+                let disk_lengths =
+                    selection.served_primary_at(metadata.revision_base, metadata.revision);
                 let selection = selection.clone();
                 scan_reader = root
                     .generation
@@ -688,23 +681,23 @@ impl LeaseManager {
                         };
                         let limit = request.limit + 1;
                         if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
-                            let mut ids = Vec::with_capacity(limit);
+                            let mut headers = Vec::with_capacity(limit);
                             crate::application_records::visit_snapshot_headers(
                                 tree,
                                 &request.collection,
                                 request.after_id.as_deref(),
                                 metadata.revision,
-                                |id, _, _| {
+                                |id, version, kind| {
                                     check()?;
-                                    ids.push(id.to_owned());
-                                    Ok(ids.len() < limit)
+                                    headers.push((id.to_owned(), version, kind));
+                                    Ok(headers.len() < limit)
                                 },
                             )?;
                             // Drop the header scan before opening each descriptor on the
                             // same pinned tree. Only the bounded lengths leave this reader.
-                            return ids
+                            return headers
                                 .into_iter()
-                                .map(|id| {
+                                .map(|(id, version, kind)| {
                                     if !disk_lengths {
                                         return Ok((id, None));
                                     }
@@ -718,14 +711,23 @@ impl LeaseManager {
                                             metadata.revision,
                                             check,
                                         )?;
-                                    let crate::application_records::PrimaryPoint::Live(slot) =
-                                        point
-                                    else {
-                                        anyhow::bail!(
-                                            "snapshot header has no live document descriptor"
-                                        )
+                                    use crate::application_records::PrimaryPoint;
+                                    use kasumi_query::RecordKind;
+                                    let bytes = match (kind, point) {
+                                        (RecordKind::Live, PrimaryPoint::Live(slot))
+                                            if slot.version() == version =>
+                                        {
+                                            usize::try_from(slot.document_bytes()?)?
+                                        }
+                                        (
+                                            RecordKind::Archived,
+                                            PrimaryPoint::Archived(reference),
+                                        ) if reference.version == version => {
+                                            reference.document_bytes
+                                        }
+                                        _ => anyhow::bail!("snapshot header and descriptor differ"),
                                     };
-                                    Ok((id, Some(usize::try_from(slot.document_bytes()?)?)))
+                                    Ok((id, Some(bytes)))
                                 })
                                 .collect();
                         }
