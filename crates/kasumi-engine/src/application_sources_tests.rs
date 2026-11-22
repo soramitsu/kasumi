@@ -3161,6 +3161,19 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .upsert("docs", "b", serde_json::json!({"value": 2})),
     )
     .await?;
+    let limits = engine.generation()?.state.limits.clone();
+    let mut limited = limits.clone();
+    limited.max_cursor_bytes = 1;
+    db.administer(context.clone(), kasumi_types::Operation::SetLimits(limited))
+        .await?;
+    let mut limited_request = kasumi_types::QueryRequest::new("docs");
+    limited_request.limit = Some(1);
+    assert_eq!(
+        db.query(&context, limited_request).await.unwrap_err().code,
+        kasumi_types::ErrorCode::ResourceExhausted
+    );
+    db.administer(context.clone(), kasumi_types::Operation::SetLimits(limits))
+        .await?;
     let pinned = engine.generation()?;
     let old_generation = Arc::downgrade(&pinned);
     let mut request = kasumi_types::QueryRequest::new("docs");

@@ -34,23 +34,19 @@ impl CursorDocuments {
                 + collection.len()
                 + generation.state.tenant.len()
                 + generation.state.incarnation.len()) as u64;
-            if bytes <= available {
-                match memory.reserve(bytes) {
-                    Ok(()) => {
-                        return Ok((
-                            Self::Disk(Box::new(DiskCursor {
-                                selection: selection.clone(),
-                                boundary: (&generation.state).into(),
-                                collection: collection.to_owned(),
-                                resolver: resolver.clone(),
-                            })),
-                            bytes,
-                        ));
-                    }
-                    Err(error) if error.code == ErrorCode::ResourceExhausted => {}
-                    Err(error) => return Err(error),
-                }
+            if bytes > available {
+                return Err(cursor_budget_exceeded());
             }
+            memory.reserve(bytes)?;
+            return Ok((
+                Self::Disk(Box::new(DiskCursor {
+                    selection: selection.clone(),
+                    boundary: (&generation.state).into(),
+                    collection: collection.to_owned(),
+                    resolver: resolver.clone(),
+                })),
+                bytes,
+            ));
         }
         Ok((Self::Generation(generation.clone()), 0))
     }

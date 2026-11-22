@@ -213,6 +213,9 @@ fn pin_rows(
         return Ok((PinnedRows::default(), 0));
     }
     let mut charged = kasumi_query::vec_bytes::<PinnedRow>(remaining.len())?;
+    if charged > max_cursor_bytes as u64 {
+        return Err(cursor_budget_exceeded());
+    }
     memory.reserve(charged)?;
     let (source, source_bytes) = CursorDocuments::capture(
         generation,
@@ -232,14 +235,9 @@ fn pin_rows(
                 .checked_add(slot_bytes)
                 .ok_or_else(query_workspace_overflow)?;
             charged = charged
-            .checked_add(bytes)
-            .filter(|charged| *charged <= max_cursor_bytes as u64)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "query result exceeds max_cursor_bytes; narrow the filter or use seek paging",
-                )
-            })?;
+                .checked_add(bytes)
+                .filter(|charged| *charged <= max_cursor_bytes as u64)
+                .ok_or_else(cursor_budget_exceeded)?;
             memory.reserve(bytes)?;
             rows.push(PinnedRow {
                 id: id.into(),
@@ -258,6 +256,13 @@ fn pin_rows(
         },
         charged,
     ))
+}
+
+fn cursor_budget_exceeded() -> Error {
+    Error::new(
+        ErrorCode::ResourceExhausted,
+        "query result exceeds max_cursor_bytes; narrow the filter or use seek paging",
+    )
 }
 
 fn pinned_slot_bytes(document: &DocumentSlot) -> Result<u64> {
