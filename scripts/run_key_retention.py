@@ -267,7 +267,7 @@ def main():
     require(1024 <= args.base_port <= 65532, "four free unprivileged loopback ports required")
     with tempfile.TemporaryDirectory(prefix="kasumi-key-retention-") as private:
         params = {"private_root": str(Path(private).resolve()), "base_port": args.base_port,
-                  "python": str(Path(sys.executable).resolve())}
+                  "python": os.path.abspath(sys.executable)}
         with domain_run.Run(KIND, RUNNER, MODULES, args.evidence, args.output, args.journal,
                             args.attempt_id, params, domain_run.QUALIFYING) as run:
             execute(run, params)
