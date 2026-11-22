@@ -293,8 +293,9 @@ impl RuntimeLease {
             Arc::new(move || credential(&path)),
         )?;
         let identity = client
-            .discover_lease(&discovery, Duration::from_secs(5))
-            .await?;
+            .discover_lease_before_deadline(&discovery, Duration::from_secs(5))
+            .await?
+            .ok_or_else(lease_acquisition_deadline)?;
         let mut boot = ServingBoot::new(trust, identity)?;
         if purpose == LeasePurpose::RestorePreparation {
             boot = boot.for_restore_preparation();
@@ -303,11 +304,12 @@ impl RuntimeLease {
         // redirect/retry can re-anchor this exact request's local authority.
         let attempt = boot.begin_acquisition()?;
         let lease = client
-            .acquire_lease(
+            .acquire_lease_before_deadline(
                 &attempt,
                 Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
             )
-            .await?;
+            .await?
+            .ok_or_else(lease_acquisition_deadline)?;
         let gate = ServingGate::new(lease.clone())?;
         let runtime = Arc::new(Self {
             gate,
@@ -388,6 +390,14 @@ impl RuntimeLease {
     pub(crate) fn access(&self) -> Result<StorageAccess> {
         StorageAccess::serving(self.gate.clone())
     }
+}
+
+// No transport error, grant, or renewal worker exists at this local terminal.
+pub(crate) fn lease_acquisition_deadline() -> kasumi_types::Error {
+    kasumi_types::Error::new(
+        kasumi_types::ErrorCode::Unavailable,
+        "installed authority operation deadline elapsed",
+    )
 }
 
 pub(crate) async fn acquire_tenant_access(
