@@ -52,13 +52,36 @@ qualification record as the output-relative `build_evidence` argument to
 `attempt_index.finish_outcome`. The functional record is `evidence.json`.
 The independent build record uses final bundle paths for its binary references.
 The verifier compares both records with their admitted native products.
-Run the frozen verifier against the exact clean Git revision:
+Run the frozen verifier against the exact clean Git revision.
 
 ```sh
 python3 -I -B -S /frozen/source/scripts/verify_release_acceptance.py \
   /evidence/release-manifest.json --repository /clean/revision \
   --journal-heads /operator/native-journal-heads.json
 ```
+
+### Composing the release manifest
+
+Keep a selections JSON file in the bundle directory. Its `source` names the
+exact Git `commit` and the relative paths to its `archive` and `files`
+inventory. Use JSON objects mapping IDs to bundle-relative paths for
+`configurations`, `artifacts`, `gates`, `candidates` and `journals`.
+A gate path selects its original domain evidence. A candidate path selects a
+JSON object containing its native `platform`, `primary` and `independent`
+records in the acceptance schema. A journal path selects its indexed bytes.
+The composer generates `SHA256SUMS` when all 24 other deliverables are present.
+
+```sh
+python3 -B scripts/compose_release_manifest.py /evidence/selections.json \
+  --repository /clean/revision --output /evidence/manifest-draft.json --draft
+python3 -B scripts/compose_release_manifest.py /evidence/selections.json \
+  --repository /clean/revision --output /evidence/release-manifest.json \
+  --journal-heads /operator/native-journal-heads.json
+```
+
+The draft reports missing artifact IDs, gates and platforms. Use a new output
+name for revised selections to keep each draft reproducible. Final publication
+of the manifest requires the isolated frozen verifier to certify those exact bytes.
 
 The native input declaration is mandatory; there is no ambient Cargo/Rustup
 fallback. See [the assembly input contract](repeatable-assembly.md). The owned
