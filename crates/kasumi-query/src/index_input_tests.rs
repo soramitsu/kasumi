@@ -283,7 +283,7 @@ fn ledger_rows(values: &[(&str, u32, u32)]) -> Rows {
     });
     rows
 }
-fn ledger_posting<'a>(indexes: &'a QueryIndexes, field: &str, id: &str) -> &'a structured::IdSet {
+fn ledger_posting<'a>(indexes: &'a QueryIndexes, field: &str, id: &str) -> &'a structured::Posting {
     indexes.collections["docs"].structured.fields[field]
         .entries
         .values()
@@ -310,6 +310,88 @@ fn distinct_fields_share_new_singleton_owners_and_split_on_later_writes() {
             .collect::<Vec<_>>(),
         ["b", "c"]
     );
+}
+
+#[test]
+fn sole_posting_owners_stay_inline_and_share_the_collection_id() {
+    fn rows(values: &[(&str, u64)]) -> Rows {
+        let values: Vec<_> = values
+            .iter()
+            .map(|&(id, key)| (id, serde_json::json!({"key": key})))
+            .collect();
+        let mut rows = Rows::new("docs", &values, true, false);
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::Number;
+        rows
+    }
+    // Every posting with one document is inline and names the exact ID
+    // allocation of the collection; larger postings keep a persistent set.
+    fn check(indexes: &QueryIndexes, expected: &[(u64, &[&str])]) {
+        let structured = &indexes.collections["docs"].structured;
+        let field = &structured.fields["/key"];
+        assert_eq!(field.entries.len(), expected.len());
+        for ((key, posting), (value, ids)) in field.entries.iter().zip(expected) {
+            let wanted =
+                scalar::scalar(Some(&serde_json::json!(value)), Some(ScalarType::Number)).unwrap();
+            assert_eq!(key, &wanted);
+            assert_eq!(posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(), *ids);
+            match posting {
+                structured::Posting::One(owner) => {
+                    assert_eq!(ids.len(), 1);
+                    assert!(Arc::ptr_eq(
+                        owner,
+                        structured.ids.get(owner.as_ref()).unwrap()
+                    ));
+                }
+                structured::Posting::Many(set) => {
+                    assert!(set.len() > 1);
+                    for id in set {
+                        assert!(Arc::ptr_eq(id, structured.ids.get(id.as_ref()).unwrap()));
+                    }
+                }
+            }
+        }
+    }
+    let distinct = rows(&[("a", 1), ("b", 2), ("c", 3)]);
+    let joined = rows(&[("a", 1), ("b", 2), ("c", 3), ("d", 2)]);
+    let split = rows(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+    let deleted = rows(&[("a", 1), ("c", 3), ("d", 2)]);
+    let first = QueryIndexes::build([&distinct]).unwrap();
+    check(&first, &[(1, &["a"]), (2, &["b"]), (3, &["c"])]);
+    let second = update(&first, Changes::new(&distinct, &joined, &first, &["d"])).unwrap();
+    check(&second, &[(1, &["a"]), (2, &["b", "d"]), (3, &["c"])]);
+    let third = update(&second, Changes::new(&joined, &split, &second, &["d"])).unwrap();
+    check(
+        &third,
+        &[(1, &["a"]), (2, &["b"]), (3, &["c"]), (4, &["d"])],
+    );
+    let fourth = update(&second, Changes::new(&joined, &deleted, &second, &["b"])).unwrap();
+    check(&fourth, &[(1, &["a"]), (2, &["d"]), (3, &["c"])]);
+    // Untouched sole owners are the same allocation in every generation.
+    let posting = |indexes: &QueryIndexes, value: u64| {
+        let key =
+            scalar::scalar(Some(&serde_json::json!(value)), Some(ScalarType::Number)).unwrap();
+        indexes.collections["docs"].structured.fields["/key"].entries[&key].clone()
+    };
+    assert!(posting(&first, 1).ptr_eq(&posting(&fourth, 1)));
+    assert!(posting(&first, 3).ptr_eq(&posting(&third, 3)));
+    // Each generation agrees with a cold build of its rows.
+    for (indexes, rows) in [(&second, &joined), (&third, &split), (&fourth, &deleted)] {
+        let rebuilt = QueryIndexes::build([rows]).unwrap();
+        let entries = |indexes: &QueryIndexes| {
+            indexes.collections["docs"].structured.fields["/key"]
+                .entries
+                .iter()
+                .map(|(key, posting)| {
+                    (
+                        key.clone(),
+                        posting.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(entries(indexes), entries(&rebuilt));
+    }
 }
 
 #[test]
@@ -422,7 +504,10 @@ fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
         assert_eq!(entries.len(), 1);
         let (_, posting) = entries.get_min().unwrap();
         assert_eq!(posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(), ids);
-        assert_eq!(posting.ptr_eq(&structured.ids), all);
+        assert_eq!(
+            matches!(posting, structured::Posting::Many(ids) if ids.ptr_eq(&structured.ids)),
+            all
+        );
     }
     let uniform = rows(serde_json::json!([7]));
     let hole = rows(serde_json::json!([]));
@@ -467,7 +552,10 @@ fn sparse_field_presence_shares_only_a_posting_that_covers_every_present_documen
             field.present.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
             ["b", "c"]
         );
-        assert_eq!(field.present.ptr_eq(posting), shared);
+        assert_eq!(
+            matches!(posting, structured::Posting::Many(ids) if field.present.ptr_eq(ids)),
+            shared
+        );
     }
 
     let repeated = rows(serde_json::json!([7, 7]));

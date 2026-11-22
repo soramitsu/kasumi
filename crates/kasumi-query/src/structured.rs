@@ -17,13 +17,113 @@ pub(crate) type IdSet = OrdSet<Arc<str>>;
 /// Every compound index of one document can retain the same immutable ID.
 pub(crate) type TupleMap = OrdMap<Vec<Scalar>, Arc<str>>;
 
+/// The documents indexed under one distinct scalar, in ID order.
+///
+/// A persistent set allocates a whole sixteen-slot leaf even for one ID, so a
+/// high-cardinality field would retain that leaf for nearly every document of
+/// the applying generation and of every generation reopened from disk. A sole
+/// owner therefore stays inline and shares the collection's ID allocation. A
+/// posting with two or more documents keeps its persistent set, so roots stay
+/// shared with presence, the collection IDs and earlier generations.
+///
+/// Canonical form: `One` exactly when the posting has one document. Postings
+/// are never empty while they are stored in a field.
+#[derive(Debug, Clone)]
+pub(crate) enum Posting {
+    One(Arc<str>),
+    Many(IdSet),
+}
+
+impl Posting {
+    /// Share `ids` when it has more than one document.
+    pub(crate) fn from_set(ids: &IdSet) -> Self {
+        match ids.get_min() {
+            Some(id) if ids.len() == 1 => Self::One(Arc::clone(id)),
+            _ => Self::Many(ids.clone()),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(ids) => ids.len(),
+        }
+    }
+
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        match self {
+            Self::One(owner) => owner.as_ref() == id,
+            Self::Many(ids) => ids.contains(id),
+        }
+    }
+
+    pub(crate) fn get_min(&self) -> Option<&Arc<str>> {
+        match self {
+            Self::One(owner) => Some(owner),
+            Self::Many(ids) => ids.get_min(),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> PostingIter<'_> {
+        match self {
+            Self::One(owner) => PostingIter::One(std::iter::once(owner)),
+            Self::Many(ids) => PostingIter::Many(ids.iter()),
+        }
+    }
+
+    /// Both name the same immutable owner allocation or persistent root.
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::One(a), Self::One(b)) => Arc::ptr_eq(a, b),
+            (Self::Many(a), Self::Many(b)) => a.ptr_eq(b),
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for Posting {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::One(a), Self::One(b)) => a == b,
+            (Self::Many(a), Self::Many(b)) => a == b,
+            _ => self.len() == other.len() && self.iter().eq(other.iter()),
+        }
+    }
+}
+
+pub(crate) enum PostingIter<'a> {
+    One(std::iter::Once<&'a Arc<str>>),
+    Many(<&'a IdSet as IntoIterator>::IntoIter),
+}
+
+impl<'a> Iterator for PostingIter<'a> {
+    type Item = &'a Arc<str>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::One(owner) => owner.next(),
+            Self::Many(ids) => ids.next(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Posting {
+    type Item = &'a Arc<str>;
+    type IntoIter = PostingIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Sharing lasts only for the current document. Correlated fields can grow
 /// or shrink the same immutable ID root even when their scalar keys differ.
 struct DocumentPostings<'a> {
     id: &'a Arc<str>,
-    singleton: Option<IdSet>,
+    singleton: Option<Posting>,
     insertions: Vec<(IdSet, IdSet)>,
     removals: Vec<(IdSet, IdSet)>,
+    // Inline sole owners that gained this document, and their shared sets.
+    promotions: Vec<(Arc<str>, IdSet)>,
     limit: usize,
 }
 
@@ -34,19 +134,20 @@ impl<'a> DocumentPostings<'a> {
             singleton: None,
             insertions: Vec::new(),
             removals: Vec::new(),
+            promotions: Vec::new(),
             // A wide array may visit many values. Bound the old/new roots
             // kept beyond the immediate edit, independently of array length.
             limit: if fields > 1 { fields.min(16) } else { 0 },
         }
     }
 
-    fn singleton(&mut self) -> IdSet {
+    fn singleton(&mut self) -> Posting {
         self.singleton
-            .get_or_insert_with(|| IdSet::unit(Arc::clone(self.id)))
+            .get_or_insert_with(|| Posting::One(Arc::clone(self.id)))
             .clone()
     }
 
-    fn change(&mut self, ids: &mut IdSet, insert: bool) {
+    fn change_set(&mut self, ids: &mut IdSet, insert: bool) {
         let changes = if insert {
             &mut self.insertions
         } else {
@@ -66,13 +167,43 @@ impl<'a> DocumentPostings<'a> {
             changes.push((old, ids.clone()));
         }
     }
+
+    /// Add or remove this document, keeping the posting canonical. Callers
+    /// delete a posting whose sole owner is this document instead.
+    fn change(&mut self, posting: &mut Posting, insert: bool) {
+        match posting {
+            Posting::Many(ids) => {
+                self.change_set(ids, insert);
+                if ids.len() == 1 {
+                    *posting = Posting::from_set(ids);
+                }
+            }
+            Posting::One(owner) if insert && owner.as_ref() != self.id.as_ref() => {
+                if let Some((_, next)) = self
+                    .promotions
+                    .iter()
+                    .find(|(old, _)| Arc::ptr_eq(old, owner))
+                {
+                    *posting = Posting::Many(next.clone());
+                    return;
+                }
+                let mut ids = IdSet::unit(Arc::clone(owner));
+                ids.insert(Arc::clone(self.id));
+                if self.promotions.len() < self.limit {
+                    self.promotions.push((Arc::clone(owner), ids.clone()));
+                }
+                *posting = Posting::Many(ids);
+            }
+            Posting::One(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct FieldIndex {
     pub kind: ScalarType,
     pub(crate) share_strings: bool,
-    pub entries: OrdMap<Scalar, IdSet>,
+    pub entries: OrdMap<Scalar, Posting>,
     pub present: IdSet,
 }
 
@@ -82,8 +213,9 @@ impl FieldIndex {
             return;
         }
         let (_, posting) = self.entries.get_min().expect("single field posting");
-        if posting.len() != ids.len() || posting.ptr_eq(ids) {
-            return;
+        match posting {
+            Posting::Many(posting) if posting.len() == ids.len() && !posting.ptr_eq(ids) => {}
+            _ => return,
         }
         self.set_only_posting(ids);
     }
@@ -93,9 +225,18 @@ impl FieldIndex {
     // Check at most two entries, covering one value and the missing posting.
     fn share_sparse_presence(&mut self, present: usize) -> bool {
         if self.entries.len() <= 2 {
-            for (key, ids) in &self.entries {
-                if *key != Scalar::Missing && ids.len() == present {
-                    self.present = ids.clone();
+            for (key, posting) in &self.entries {
+                if *key != Scalar::Missing && posting.len() == present {
+                    match posting {
+                        Posting::Many(ids) => self.present = ids.clone(),
+                        // A one-document presence has no root to share; keep
+                        // an existing equal set rather than allocating another.
+                        Posting::One(owner) => {
+                            if self.present.len() != 1 || !self.present.contains(owner) {
+                                self.present = IdSet::unit(Arc::clone(owner));
+                            }
+                        }
+                    }
                     return true;
                 }
             }
@@ -111,7 +252,7 @@ impl FieldIndex {
             .into_iter()
             .next()
             .expect("single field posting");
-        self.entries = OrdMap::unit(key, ids.clone());
+        self.entries = OrdMap::unit(key, Posting::from_set(ids));
     }
 
     fn insert(&mut self, key: Scalar, row: &mut DocumentPostings<'_>) {
@@ -325,10 +466,10 @@ impl Structured {
                 }
                 match (old_value.is_some(), new_value.is_some()) {
                     (false, true) => {
-                        postings.change(&mut index.present, true);
+                        postings.change_set(&mut index.present, true);
                     }
                     (true, false) => {
-                        postings.change(&mut index.present, false);
+                        postings.change_set(&mut index.present, false);
                     }
                     _ => {}
                 }
@@ -447,7 +588,7 @@ impl Structured {
                             return Err(unique_conflict(name));
                         }
                         // Only occupied/vacant is consulted after all removals.
-                        entries.insert(scalar, IdSet::new());
+                        entries.insert(scalar, Posting::Many(IdSet::new()));
                     }
                 }
             }
@@ -597,7 +738,7 @@ impl Structured {
                 && value.is_some()
                 && !index.share_sparse_presence(index.present.len() + 1)
             {
-                postings.change(&mut index.present, true);
+                postings.change_set(&mut index.present, true);
             }
         }
         self.ids.insert(Arc::clone(&owner));
@@ -1151,7 +1292,7 @@ impl Structured {
                     Ok(index
                         .entries
                         .get(&scalar(Some(value), kind)?)
-                        .map_or(0, IdSet::len))
+                        .map_or(0, Posting::len))
                 };
                 Some(match test {
                     Test::Eq(value) | Test::Contains(value) => ids(value)?,
@@ -1671,7 +1812,16 @@ impl FieldIndex {
     ) -> Result<IdSet> {
         let kind = Some(self.kind);
         let mut candidates = IdSet::new();
-        let mut add = |ids: &IdSet| -> Result<()> {
+        let mut add = |posting: &Posting| -> Result<()> {
+            let ids = match posting {
+                Posting::Many(ids) => ids,
+                Posting::One(id) => {
+                    if whole || universe.contains(id) {
+                        candidates.insert(Arc::clone(id));
+                    }
+                    return check_size(candidates.len(), cap);
+                }
+            };
             if whole {
                 check_size(
                     candidates
@@ -1709,7 +1859,7 @@ impl FieldIndex {
             Ok(())
         };
         match test {
-            Test::Exists(true) => add(&self.present)?,
+            Test::Exists(true) => add(&Posting::Many(self.present.clone()))?,
             Test::Exists(false) if whole => {
                 candidates = complement(universe, &self.present, cancellation)?;
                 check_size(candidates.len(), cap)?;
