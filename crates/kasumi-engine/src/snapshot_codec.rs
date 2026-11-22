@@ -1916,7 +1916,7 @@ mod tests {
         source.revision = 2;
         source.schema_epoch = 1;
         source.policy_epoch = 1;
-        let documents: imbl::OrdMap<_, _> = ["a", "b", "c"]
+        let documents: imbl::OrdMap<String, Arc<DocumentSlot>> = ["a", "b", "c"]
             .into_iter()
             .map(|id| {
                 let document = Document {
