@@ -3162,6 +3162,14 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     )
     .await?;
     let pinned = engine.generation()?;
+    let old_generation = Arc::downgrade(&pinned);
+    let mut request = kasumi_types::QueryRequest::new("docs");
+    request.limit = Some(1);
+    let first = db.query(&context, request.clone()).await?;
+    assert_eq!(first.rows[0].id, "a");
+    request.cursor = Some(first.cursor.clone().context("expected ordinary cursor")?);
+    assert_eq!(first.revision, pinned.state.revision);
+    drop(first);
     let pinned_manifest = current(&engine, &store)?;
     assert_eq!(pinned_manifest.records.tree, initial.records.tree);
     assert_eq!(pinned_manifest.document_count, 2);
@@ -3218,6 +3226,16 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     assert!(resident(&pinned)[1].is_some());
     assert_eq!(resident(&latest)[1], None);
     drop((pinned, latest));
+    assert!(
+        old_generation.upgrade().is_none(),
+        "cursor kept the obsolete applying generation"
+    );
+    let second = db.query(&context, request).await?;
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].id, "b");
+    assert_eq!(second.rows[0].body, serde_json::json!({"value": 2}));
+    assert!(second.cursor.is_none());
+    drop(second);
 
     // Snapshot, then advance the log beyond it.
     let expected = db

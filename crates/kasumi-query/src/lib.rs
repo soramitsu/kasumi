@@ -30,7 +30,7 @@ pub use ordered_tuple::{
 };
 mod page;
 use page::PageWriter;
-pub use page::{PageBound, copy_page, copy_page_from_source};
+pub use page::{PageBound, copy_page, copy_page_from_source, copy_page_with_reader};
 mod field_postings;
 mod scalar;
 pub use field_postings::{FieldPostingRow, FieldPredicate, FieldValue};

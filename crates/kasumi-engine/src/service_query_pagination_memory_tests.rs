@@ -1,33 +1,31 @@
 fn pagination_memory_rows() -> PinnedRows {
     let mut generation = query_memory_generation();
-    let rows: Vec<_> = (0..3)
-        .map(|id| PinnedRow {
-            document: Arc::new(DocumentSlot::Pending(Arc::new(Document {
-                id: format!("row-{id}"),
-                version: 7,
-                body: json!({"nested": vec![json!({}); 128], "label": "value"}),
-            }))),
-            score: None,
-        })
-        .collect();
-    let bytes = kasumi_query::vec_bytes::<PinnedRow>(rows.len()).unwrap() as usize
-        + rows
-            .iter()
-            .map(|row| pinned_slot_bytes(&row.document).unwrap() as usize)
-            .sum::<usize>();
-    Arc::get_mut(&mut generation)
+    let collection = Arc::get_mut(&mut generation)
         .unwrap()
         .state
         .collections
         .get_mut("docs")
-        .unwrap()
-        .documents = rows
-        .iter()
-        .map(|row| (row.document.id().to_owned(), row.document.clone()))
-        .collect();
+        .unwrap();
+    let mut rows = Vec::new();
+    let mut bytes = kasumi_query::vec_bytes::<PinnedRow>(3).unwrap() as usize;
+    for n in 0..3 {
+        let id = format!("row-{n}");
+        let document = Arc::new(DocumentSlot::Pending(Arc::new(Document {
+            id: id.clone(),
+            version: 7,
+            body: json!({"nested": vec![json!({}); 128], "label": "value"}),
+        })));
+        bytes += id.len() + 32 + pinned_slot_bytes(&document).unwrap() as usize;
+        rows.push(PinnedRow {
+            id: id.clone().into_boxed_str(),
+            version: 7,
+            score: None,
+        });
+        collection.documents.insert(id, document);
+    }
     PinnedRows {
         rows,
-        generation: Some(generation),
+        source: Some(CursorDocuments::Generation(generation)),
         bytes,
     }
 }
@@ -38,7 +36,12 @@ fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryRes
         rows: rows.rows[range]
             .iter()
             .map(|row| {
-                let DocumentSlot::Pending(document) = row.document.as_ref() else {
+                let Some(CursorDocuments::Generation(generation)) = &rows.source else {
+                    panic!("fixture resident source")
+                };
+                let DocumentSlot::Pending(document) =
+                    generation.state.collections["docs"].documents[row.id.as_ref()].as_ref()
+                else {
                     panic!("fixture pending document");
                 };
                 QueryRow {
@@ -845,24 +848,22 @@ async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_can
         let mut cursors = fixture.db.cursors.lock().unwrap();
         let cursor = cursors.get_mut(&token).unwrap();
         let rows = Arc::get_mut(&mut cursor.rows).expect("only cursor retains these rows");
-        assert!(
-            rows.rows
-                .iter()
-                .all(|row| matches!(row.document.as_ref(), DocumentSlot::Stored(_)))
-        );
-        let mut selected = rows.generation.as_ref().unwrap().lease_view();
-        let original = selected.document_sources.take().unwrap();
-        assert!(
-            selected
-                .document_sources
-                .set(Arc::new(PausedNativeDocument {
-                    original,
-                    entered: Mutex::new(Some(entered)),
-                    released: Mutex::new(released),
-                }))
-                .is_ok()
-        );
-        rows.generation = Some(Arc::new(selected));
+        let pause = |original: Arc<dyn crate::document_store::GenerationDocuments>| -> Arc<dyn crate::document_store::GenerationDocuments> {
+            Arc::new(PausedNativeDocument { original, entered: Mutex::new(Some(entered)), released: Mutex::new(released) })
+        };
+        match rows.source.as_mut().expect("cursor source") {
+            CursorDocuments::Disk(disk) => disk.resolver = pause(disk.resolver.clone()),
+            CursorDocuments::Generation(generation) => {
+                assert!(rows.rows.iter().all(|row| matches!(
+                    generation.state.collections["docs"].documents[row.id.as_ref()].as_ref(),
+                    DocumentSlot::Stored(_)
+                )));
+                let mut selected = generation.lease_view();
+                let original = selected.document_sources.take().unwrap();
+                assert!(selected.document_sources.set(pause(original)).is_ok());
+                *generation = Arc::new(selected);
+            }
+        }
     }
     let node = fixture.db.admission().clone();
     let baseline_decode = node

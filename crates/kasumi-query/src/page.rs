@@ -236,6 +236,32 @@ pub fn copy_page_from_source<'a, S: crate::DocumentSource + ?Sized, W: QueryWork
     memory: &mut QueryMemory<W>,
 ) -> crate::ReadResult<Vec<QueryRow>, S::Failure> {
     let source = crate::document_source::BoundSource::new(source);
+    copy_page_with_reader(
+        rows,
+        select,
+        bound,
+        cancellation,
+        memory,
+        |id, version, copy| {
+            crate::document_source::with_live(&source, id, Some(version), cancellation, copy)
+        },
+    )
+}
+
+/// Assemble a continuation page from a reader that lends one live document
+/// from the pinned collection and revision. A loan ends before the next lookup.
+pub fn copy_page_with_reader<'a, W: QueryWorkspace, E: From<kasumi_types::Error>>(
+    rows: impl ExactSizeIterator<Item = (&'a str, u64, Option<f32>)>,
+    select: &[String],
+    bound: PageBound,
+    cancellation: &QueryCancellation,
+    memory: &mut QueryMemory<W>,
+    mut read: impl FnMut(
+        &str,
+        u64,
+        &mut dyn FnMut(&Document) -> Result<bool>,
+    ) -> std::result::Result<bool, E>,
+) -> std::result::Result<Vec<QueryRow>, E> {
     memory.scope(|memory| {
         let selection = (!select.is_empty())
             .then(|| Selection::new(select, "select"))
@@ -244,13 +270,9 @@ pub fn copy_page_from_source<'a, S: crate::DocumentSource + ?Sized, W: QueryWork
         for (id, version, score) in rows {
             cancellation.check()?;
             if writer.is_full()
-                || !crate::document_source::with_live(
-                    &source,
-                    id,
-                    Some(version),
-                    cancellation,
-                    |document| writer.push(document, score, memory),
-                )?
+                || !read(id, version, &mut |document| {
+                    writer.push(document, score, memory)
+                })?
             {
                 break;
             }

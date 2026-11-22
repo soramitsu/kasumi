@@ -2,8 +2,11 @@ use crate::admission::{
     CancelOnDrop, NodeAdmission, ProposalBudget, Reservation, WorkFence, WorkRegistration,
 };
 use crate::document_source::DocumentReads;
+#[path = "query_cursor_source.rs"]
+mod query_cursor_source;
 use crate::output::{AdmittedOutput, OUTPUT_CHARGE_BYTES};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
+use query_cursor_source::CursorDocuments;
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
 #[path = "backup_producer_jobs.rs"]
@@ -171,7 +174,7 @@ struct Cursor {
 #[derive(Default)]
 struct PinnedRows {
     rows: Vec<PinnedRow>,
-    generation: Option<Arc<crate::Generation>>,
+    source: Option<CursorDocuments>,
     /// Admitted resident bytes, including the row vector: the measure that
     /// `max_cursor_bytes` bounds across a tenant's open cursors.
     bytes: usize,
@@ -184,17 +187,15 @@ impl std::fmt::Debug for PinnedRows {
             .field("bytes", &self.bytes)
             .field(
                 "revision",
-                &self
-                    .generation
-                    .as_ref()
-                    .map(|generation| generation.state.revision),
+                &self.source.as_ref().map(CursorDocuments::revision),
             )
             .finish()
     }
 }
 #[derive(Debug)]
 struct PinnedRow {
-    document: Arc<DocumentSlot>,
+    id: Box<str>,
+    version: u64,
     score: Option<f32>,
 }
 
@@ -212,6 +213,13 @@ fn pin_rows(
     }
     let mut charged = kasumi_query::vec_bytes::<PinnedRow>(remaining.len())?;
     memory.reserve(charged)?;
+    let (source, source_bytes) = CursorDocuments::capture(
+        generation,
+        collection,
+        (max_cursor_bytes as u64).saturating_sub(charged),
+        memory,
+    )?;
+    charged += source_bytes;
     let mut rows = Vec::with_capacity(remaining.len());
     for (id, score) in remaining {
         cancellation.check()?;
@@ -224,7 +232,12 @@ fn pin_rows(
                     "selected archived content requires bounded hydration",
                 )
             })?;
-        let bytes = pinned_slot_bytes(document)?;
+        let mut bytes = id.len() as u64 + 32;
+        if matches!(source, CursorDocuments::Generation(_)) {
+            bytes = bytes
+                .checked_add(pinned_slot_bytes(document)?)
+                .ok_or_else(query_workspace_overflow)?;
+        }
         charged = charged
             .checked_add(bytes)
             .filter(|charged| *charged <= max_cursor_bytes as u64)
@@ -236,7 +249,8 @@ fn pin_rows(
             })?;
         memory.reserve(bytes)?;
         rows.push(PinnedRow {
-            document: document.clone(),
+            id: id.into(),
+            version: document.version(),
             score,
         });
     }
@@ -244,7 +258,7 @@ fn pin_rows(
     Ok((
         PinnedRows {
             rows,
-            generation: Some(generation.clone()),
+            source: Some(source),
             bytes,
         },
         charged,
@@ -332,7 +346,11 @@ fn finish_document_read<T>(
     read: impl FnOnce(&DocumentReads) -> Result<T>,
 ) -> Result<T> {
     let result = read(&reads);
-    match (result, reads.finish()) {
+    retire_document_read(result, reads.finish())
+}
+
+fn retire_document_read<T>(result: Result<T>, retirement: anyhow::Result<()>) -> Result<T> {
+    match (result, retirement) {
         (result, Ok(())) => result,
         (Ok(value), Err(error)) => {
             drop(value);
@@ -911,29 +929,22 @@ impl QueryResultOwner {
             rows: self.request.page_size(),
             bytes: max_result_bytes,
         };
-        let generation = self.rows.generation.as_ref().ok_or_else(|| {
+        let source = self.rows.source.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::Corruption,
                 "cursor selected generation is missing",
             )
         })?;
-        // Each continuation page opens its own shared view; the cursor
-        // retains only the generation, never a view, between pages.
-        let rows = with_document_reads(generation, deadline, |reads| {
-            kasumi_query::copy_page_from_source(
-                &reads.source(&self.request.collection)?,
-                self.rows.rows[offset.min(self.rows.rows.len())..]
-                    .iter()
-                    .map(|row| (row.document.id(), row.document.version(), row.score)),
-                &self.request.select,
-                bound,
-                cancellation,
-                self.memory
-                    .as_mut()
-                    .expect("query page keeps its operation ledger"),
-            )
-            .map_err(source_read_error)
-        })?;
+        let rows = source.copy_page(
+            &self.request,
+            &self.rows.rows[offset.min(self.rows.rows.len())..],
+            bound,
+            cancellation,
+            deadline,
+            self.memory
+                .as_mut()
+                .expect("query page keeps its operation ledger"),
+        )?;
         Ok(QueryResponse {
             revision,
             rows,

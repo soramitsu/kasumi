@@ -75,6 +75,18 @@ pub struct Generation {
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    /// A hydration overlay owns its body reservations. Only an unmodified
+    /// generation with a proven native primary can lend a detached cursor.
+    pub(crate) fn cursor_primary(
+        &self,
+    ) -> Option<&crate::application_sources::SelectedApplication> {
+        self.application_selection.get().filter(|selection| {
+            self._read_reservations.is_empty()
+                && self.staged_documents.is_none()
+                && selection.served_primary_at(self.state.revision_base, self.state.revision)
+        })
+    }
+
     pub(crate) fn load_document<'a>(
         &self,
         slot: &'a DocumentSlot,
