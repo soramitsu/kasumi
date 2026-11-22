@@ -9,14 +9,18 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_query::QueryWorkspace;
-use kasumi_store::WriteOp;
+use kasumi_store::{
+    NodeDiskMemoryAdmission, TenantStorageReadView, WriteOp,
+    ordered_pages::{MAX_PAGE_BYTES, PageCache, PageSource},
+    primary_manifest::{MAX_MANIFEST_BYTES, PrimaryManifest},
+};
 use kasumi_types::{
     AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
 };
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 pub(crate) const BODIES: &str = "engine.document.bodies";
@@ -391,6 +395,8 @@ impl SelectedDocuments {
         SelectedRead {
             documents: self.clone(),
             reader: Mutex::new(None),
+            pages: OnceLock::new(),
+            primary: OnceLock::new(),
         }
     }
 
@@ -595,8 +601,43 @@ pub(crate) struct SelectedRead {
     documents: SelectedDocuments,
     // Taken out while in use, so a failure or unwind never puts it back.
     reader: Mutex<Option<DocumentReader>>,
+    // A page of query results may visit adjacent descriptors through many
+    // short-lived tree readers. These hints die with this selected read.
+    pages: OnceLock<Arc<PageCache>>,
+    primary: OnceLock<(PrimaryManifest, kasumi_kv::CacheMemoryLease)>,
 }
 impl SelectedRead {
+    pub(crate) fn directory_pages(&self, memory: &Arc<dyn NodeDiskMemoryAdmission>) -> &PageCache {
+        // Keep a small ancestor path and its live and archive leaves. The LRU
+        // charges decoded bytes to the node and falls back to disk on refusal.
+        self.pages
+            .get_or_init(|| PageCache::new(memory.clone(), 8 * MAX_PAGE_BYTES as u64))
+    }
+
+    /// The paired source is immutable for the lifetime of this selection.
+    /// Callers must hold its directory loan and check the requested boundary.
+    pub(crate) fn primary_manifest(
+        &self,
+        view: &TenantStorageReadView,
+    ) -> Result<Option<std::borrow::Cow<'_, PrimaryManifest>>> {
+        use std::borrow::Cow;
+        view.check_access()?;
+        if let Some((manifest, _)) = self.primary.get() {
+            return Ok(Some(Cow::Borrowed(manifest)));
+        }
+        let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+            return Ok(None);
+        };
+        let credit = (MAX_MANIFEST_BYTES + std::mem::size_of::<PrimaryManifest>()) as u64;
+        if manifest.is_current()
+            && let Ok(lease) = view.memory().reserve_cache_memory(credit)
+        {
+            let (manifest, _) = self.primary.get_or_init(|| (manifest, lease));
+            return Ok(Some(Cow::Borrowed(manifest)));
+        }
+        Ok(Some(Cow::Owned(manifest)))
+    }
+
     fn with_reader<T>(&self, read: impl FnOnce(&mut DocumentReader) -> Result<T>) -> Result<T> {
         let idle = self.reader.lock().unwrap_or_else(|p| p.into_inner()).take();
         let mut reader = match idle {

@@ -3257,29 +3257,36 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     // The earlier generation reads its own rows from its pinned root, after
     // the later edit deleted the pages it uses; the current one reads its own.
     let latest = engine.generation()?;
-    let point = |generation: &crate::Generation, id: &str| -> Result<Option<u64>> {
+    let versions = |generation: &crate::Generation| -> Result<Vec<Option<u64>>> {
         let selection = generation
             .application_selection
             .get()
             .context("generation selection")?;
-        Ok(
-            match selection
-                .primary_point(None, &generation.state, "docs", id, |_| Ok(()))?
-                .context("selected generation has no current primary directory")?
-            {
+        let read = generation
+            .shared_document_read()?
+            .context("selected reader")?;
+        let shared = Some(read.selected());
+        let mut versions = Vec::new();
+        for id in ["a", "b", "c"] {
+            let point = selection
+                .primary_point(shared, &generation.state, "docs", id, |_| Ok(()))?
+                .context("selected generation has no current primary directory")?;
+            versions.push(match point {
                 crate::application_records::PrimaryPoint::Live(slot) => Some(slot.version()),
                 crate::application_records::PrimaryPoint::Archived(_) => {
                     anyhow::bail!("unexpected archived primary row")
                 }
                 crate::application_records::PrimaryPoint::Missing => None,
-            },
-        )
-    };
-    let versions = |generation: &crate::Generation| -> Result<Vec<Option<u64>>> {
-        ["a", "b", "c"]
-            .into_iter()
-            .map(|id| point(generation, id))
-            .collect()
+            });
+        }
+        let stats = selection
+            .with_serving_primary(shared, &generation.state, |_, memory, _| {
+                Ok(read.selected().directory_pages(memory).stats())
+            })?
+            .context("selected generation has no primary directory")?;
+        assert!(stats.hits > 0 && stats.charged > 0 && stats.leased <= stats.budget);
+        read.finish()?;
+        Ok(versions)
     };
     let resident = |generation: &crate::Generation| -> Vec<Option<u64>> {
         ["a", "b", "c"]

@@ -149,13 +149,13 @@ impl SelectedApplication {
             else {
                 return Ok(None);
             };
+            let memory = kasumi_store::ordered_pages::PageSource::memory(view);
             let tree = kasumi_store::ordered_pages::TreeReader::new(
                 view,
                 &manifest.page_space,
                 manifest.records,
-                None,
+                shared.map(|read| read.directory_pages(&memory)),
             )?;
-            let memory = kasumi_store::ordered_pages::PageSource::memory(view);
             read(&tree, &memory, manifest.layout_epoch, manifest.revision).map(Some)
         })
     }
@@ -348,25 +348,34 @@ impl SelectedApplication {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned primary view");
-            let Some(manifest) = self.current_primary_manifest(view, state)? else {
+            let Some(manifest) = self.current_primary_manifest(shared, view, state)? else {
                 return Ok(None);
             };
-            let tree =
-                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
+            let tree = TreeReader::new(
+                view.as_ref(),
+                &manifest.page_space,
+                manifest.records,
+                shared.map(|read| read.directory_pages(&memory)),
+            )?;
             read(&tree, &memory).map(Some)
         })
     }
 
     /// Both primary point readers and text shard version checks use this
     /// manifest on the same immutable paired source as their data.
-    fn current_primary_manifest(
+    fn current_primary_manifest<'r>(
         &self,
+        shared: Option<&'r crate::document_store::SelectedRead>,
         view: &kasumi_store::TenantStorageReadView,
         state: &SnapshotBoundary<impl AsRef<str>>,
-    ) -> Result<Option<kasumi_store::primary_manifest::PrimaryManifest>> {
+    ) -> Result<Option<std::borrow::Cow<'r, kasumi_store::primary_manifest::PrimaryManifest>>> {
         use kasumi_store::primary_manifest::PrimaryManifest;
-        let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+        let manifest = match shared {
+            Some(read) => read.primary_manifest(view)?,
+            None => PrimaryManifest::load_from_pair(view)?.map(std::borrow::Cow::Owned),
+        };
+        let Some(manifest) = manifest else {
             return Ok(None);
         };
         if !manifest.is_current()
@@ -396,7 +405,8 @@ impl SelectedApplication {
         use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
         use kasumi_store::ordered_pages::{PageSource, TreeReader};
         let boundary = SnapshotBoundary::<&str>::from(state);
-        if let Some(primary) = self.current_primary_manifest(view, &boundary)? {
+        if let Some(primary) = self.current_primary_manifest(None, view, &boundary)? {
+            let primary = primary.into_owned();
             return Ok(Some((primary.page_space, primary.records)));
         }
         let Some(position) = self.serving_position() else {
