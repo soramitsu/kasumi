@@ -81,7 +81,10 @@ def retain(root, path):
     destination = root / "blobs" / checksum
     destination.parent.mkdir(exist_ok=True)
     if not destination.exists():
-        with path.open("rb") as source, destination.open("xb") as output:
+        # Retained operator inputs are passed directly to the installed daemon.
+        with path.open("rb") as source, open(
+            destination, "xb", opener=lambda name, flags: os.open(name, flags, 0o600)
+        ) as output:
             shutil.copyfileobj(source, output)
             output.flush()
             os.fsync(output.fileno())

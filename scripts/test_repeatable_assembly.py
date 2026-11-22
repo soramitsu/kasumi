@@ -1,6 +1,7 @@
 """Actual synthetic-process counterexamples; these are not native release evidence."""
 import copy
 import json
+import os
 import shutil
 from pathlib import Path
 import sys
@@ -15,6 +16,19 @@ from release_gate import inventory, sha256, write_json
 
 
 class AssemblyCustodyTests(unittest.TestCase):
+    def test_retained_operator_inputs_are_private_with_an_ordinary_umask(self):
+        policy = self.root / "policy.json"
+        policy.write_bytes(b"{}")
+        previous = os.umask(0o022)
+        try:
+            item = assembly.retain(self.custody, policy)
+            self.assertEqual(item, assembly.retain(self.custody, policy))
+        finally:
+            os.umask(previous)
+        retained = self.custody / item["path"]
+        self.assertEqual(retained.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(retained.read_bytes(), policy.read_bytes())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="repeatable-assembly-")
         self.addCleanup(self.temporary.cleanup)
