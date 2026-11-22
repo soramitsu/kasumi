@@ -3221,6 +3221,22 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
         pinned.document_sources.get().is_some(),
         "ordinary apply did not bind the body resolver"
     );
+    let worker = pinned
+        .query_worker_view(&request, |_| Ok(true))?
+        .context("ordinary page should use the authenticated primary")?;
+    assert!(worker.state.collections["docs"].documents.is_empty());
+    assert!(
+        worker.state.collections["docs"]
+            .archived_documents
+            .is_empty()
+    );
+    assert_eq!(
+        worker.indexes.structured_layout_sha256(),
+        pinned.indexes.structured_layout_sha256()
+    );
+    assert_eq!(pinned.state.collections["docs"].documents.len(), 2);
+    assert!(pinned.query_worker_view(&request, |_| Ok(false))?.is_none());
+    drop(worker);
     assert_eq!(first.rows[0].id, "a");
     request.cursor = Some(first.cursor.clone().context("expected ordinary cursor")?);
     assert_eq!(first.revision, pinned.state.revision);

@@ -175,7 +175,11 @@ impl Generation {
         indexes: Arc<QueryIndexes>,
         history: bool,
     ) -> Self {
-        let mut state = crate::snapshot_codec::metadata(&self.state);
+        let mut state = if history {
+            crate::snapshot_codec::metadata(&self.state)
+        } else {
+            crate::snapshot_codec::query_metadata(&self.state, self.state.policy.clone())
+        };
         state.collections = collections;
         if history {
             state.history_archives = self.state.history_archives.clone();
@@ -193,6 +197,42 @@ impl Generation {
             document_sources: self.clone_document_sources(),
             _read_reservations: Vec::new(),
         }
+    }
+
+    /// An ordinary page needs one collection's planner and its verified primary.
+    /// Hydrated reads keep the generation that owns their private body reservations.
+    pub(crate) fn query_worker_view(
+        &self,
+        request: &QueryRequest,
+        admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
+    ) -> anyhow::Result<Option<Self>> {
+        let name = &request.collection;
+        if request.paging == Paging::Seek {
+            return self.physical_seek_view(name, admit);
+        }
+        if self.cursor_primary().is_none() || self.document_sources.get().is_none() {
+            return Ok(None);
+        }
+        let Some(collection) = self.state.collections.get(name) else {
+            return Ok(None);
+        };
+        // The definition and collection indexes are shared. Only metadata and
+        // two single-entry directory maps are allocated by this projection.
+        let bytes = 16_384 + 2 * name.len() as u64;
+        if !admit(bytes)? {
+            return Ok(None);
+        }
+        let Some(indexes) = self.indexes.for_query_collection(name) else {
+            return Ok(None);
+        };
+        let mut collection = collection.clone();
+        collection.documents.clear();
+        collection.archived_documents.clear();
+        Ok(Some(self.lease_with_collections(
+            BTreeMap::from([(name.clone(), collection)]),
+            Arc::new(indexes),
+            false,
+        )))
     }
 
     /// A seek worker owns its exact selected source. Once it proves the

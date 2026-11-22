@@ -480,6 +480,21 @@ pub(crate) fn metadata_with_shared(
     policy: Arc<Policy>,
     lifecycle_control: Option<Arc<LifecycleControlState>>,
 ) -> TenantState {
+    let mut metadata = query_metadata(state, policy);
+    metadata.pending_restore = state.pending_restore.clone();
+    metadata.restored_from = state.restored_from.clone();
+    metadata.lifecycle_control = lifecycle_control;
+    metadata.audit_retention = state.audit_retention.clone();
+    metadata.key_retirements = state.key_retirements.clone();
+    metadata.target_journal_retirements = state.target_journal_retirements.clone();
+    metadata.target_journal_writers = state.target_journal_writers.clone();
+    metadata
+}
+
+/// The state fields used by a page worker and its selected source readers.
+/// Recovery records, audit manifests and key retirement histories can grow
+/// independently of a page and are read by the enclosing service.
+pub(crate) fn query_metadata(state: &TenantState, policy: Arc<Policy>) -> TenantState {
     TenantState {
         tenant: state.tenant.clone(),
         incarnation: state.incarnation.clone(),
@@ -489,10 +504,10 @@ pub(crate) fn metadata_with_shared(
         schema_epoch: state.schema_epoch,
         suspended: state.suspended,
         retired: state.retired,
-        pending_restore: state.pending_restore.clone(),
-        restored_from: state.restored_from.clone(),
+        pending_restore: None,
+        restored_from: None,
         restore_lineage: Default::default(),
-        lifecycle_control,
+        lifecycle_control: None,
         target_lifecycle: Default::default(),
         recovery_control: Default::default(),
         document_count: state.document_count,
@@ -521,10 +536,10 @@ pub(crate) fn metadata_with_shared(
         schema_activation_bytes: state.schema_activation_bytes,
         retirements: Default::default(),
         retirement_bytes: state.retirement_bytes,
-        audit_retention: state.audit_retention.clone(),
-        key_retirements: state.key_retirements.clone(),
-        target_journal_retirements: state.target_journal_retirements.clone(),
-        target_journal_writers: state.target_journal_writers.clone(),
+        audit_retention: kasumi_types::AuditRetentionState::empty(state.audit_retention.stream_id),
+        key_retirements: Default::default(),
+        target_journal_retirements: Default::default(),
+        target_journal_writers: Vec::new(),
         audits: Default::default(),
     }
 }

@@ -800,82 +800,73 @@ struct QueryOutput {
 impl QueryWork {
     /// Copy the first page and pin the rest for a cursor, or read one seek page.
     fn run(mut self) -> QueryOutput {
-        if self.request.paging == Paging::Seek {
-            let mut projection_charge = 0;
-            let mut response = self
-                .generation
-                .physical_seek_view(&self.request.collection, |bytes| {
-                    match self.memory.reserve(bytes) {
-                        Ok(()) => {
-                            projection_charge = bytes;
-                            Ok(true)
-                        }
-                        Err(e) if e.code == ErrorCode::ResourceExhausted => Ok(false),
-                        Err(e) => Err(e),
-                    }
-                })
-                .map_err(document_load_error)
-                .and_then(|projected| {
-                    if let Some(projected) = projected {
-                        self.generation = Arc::new(projected);
-                    }
-                    with_document_reads(&self.generation, self.deadline, |reads| {
-                        query_seek::seek_page(
+        let mut charge = 0;
+        let mut response = self
+            .generation
+            .query_worker_view(&self.request, |bytes| match self.memory.reserve(bytes) {
+                Ok(()) => {
+                    charge = bytes;
+                    Ok(true)
+                }
+                Err(error) if error.code == ErrorCode::ResourceExhausted => Ok(false),
+                Err(error) => Err(error),
+            })
+            .map_err(document_load_error)
+            .and_then(|projection| {
+                if let Some(projection) = projection {
+                    self.generation = Arc::new(projection);
+                }
+                with_document_reads(&self.generation, self.deadline, |reads| {
+                    if self.request.paging == Paging::Seek {
+                        return query_seek::seek_page(
                             &self.generation,
                             reads,
                             &self.request,
                             &self.cancellation,
                             &mut self.memory,
                         )
-                    })
-                })
-                .map(|page| (page, PinnedRows::default()));
-            drop(self.generation);
-            if projection_charge > 0
-                && let Err(error) = self.memory.release(projection_charge)
-                && response.is_ok()
-            {
-                response = Err(error);
-            }
-            return QueryOutput {
-                response,
-                request: self.request,
-                memory: self.memory,
-                _registration: self.registration.clone(),
-            };
-        }
-        let generation = &self.generation;
-        let limits = &generation.state.limits;
-        let cancellation = &self.cancellation;
-        let bound = kasumi_query::PageBound {
-            rows: self.request.page_size(),
-            bytes: limits.max_result_bytes,
-        };
-        let response = with_document_reads(generation, self.deadline, |reads| {
-            let source = reads.source(&self.request.collection)?;
-            generation
-                .indexes
-                .execute_page(
-                    &source,
-                    &self.request,
-                    limits,
-                    bound,
-                    cancellation,
-                    &mut self.memory,
-                    |remaining, memory| {
-                        pin_rows(
-                            remaining,
-                            generation,
-                            &self.request.collection,
-                            reads,
-                            limits.max_cursor_bytes,
+                        .map(|page| (page, PinnedRows::default()));
+                    }
+                    let generation = &self.generation;
+                    let limits = &generation.state.limits;
+                    let cancellation = &self.cancellation;
+                    let bound = kasumi_query::PageBound {
+                        rows: self.request.page_size(),
+                        bytes: limits.max_result_bytes,
+                    };
+
+                    let source = reads.source(&self.request.collection)?;
+                    generation
+                        .indexes
+                        .execute_page(
+                            &source,
+                            &self.request,
+                            limits,
+                            bound,
                             cancellation,
-                            memory,
+                            &mut self.memory,
+                            |remaining, memory| {
+                                pin_rows(
+                                    remaining,
+                                    generation,
+                                    &self.request.collection,
+                                    reads,
+                                    limits.max_cursor_bytes,
+                                    cancellation,
+                                    memory,
+                                )
+                            },
                         )
-                    },
-                )
-                .map_err(source_read_error)
-        });
+                        .map_err(source_read_error)
+                })
+            });
+        drop(self.generation);
+        if charge > 0
+            && let Err(error) = self.memory.release(charge)
+            && response.is_ok()
+        {
+            response = Err(error);
+        }
         QueryOutput {
             response,
             request: self.request,
