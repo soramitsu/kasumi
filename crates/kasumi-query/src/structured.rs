@@ -88,6 +88,21 @@ impl FieldIndex {
         self.set_only_posting(ids);
     }
 
+    // Every non-missing scalar posting is a subset of field presence, including
+    // array fields. Equal cardinality proves equality without a document walk.
+    // Check at most two entries, covering one value and the missing posting.
+    fn share_sparse_presence(&mut self, present: usize) -> bool {
+        if self.entries.len() <= 2 {
+            for (key, ids) in &self.entries {
+                if *key != Scalar::Missing && ids.len() == present {
+                    self.present = ids.clone();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn set_only_posting(&mut self, ids: &IdSet) {
         debug_assert_eq!(self.entries.len(), 1);
         // All postings are subsets of the collection IDs. Move the sole
@@ -346,10 +361,13 @@ impl Structured {
         // Presence is a subset of this collection's IDs. A sparse field
         // can become complete when its last missing document is deleted.
         for (field, previous) in next.fields.values_mut().zip(self.fields.values()) {
+            let postings_changed = !field.entries.ptr_eq(&previous.entries);
             if field.present.len() == next.ids.len() {
                 field.present = next.ids.clone();
+            } else if postings_changed || !field.present.ptr_eq(&previous.present) {
+                field.share_sparse_presence(field.present.len());
             }
-            if !field.entries.ptr_eq(&previous.entries) {
+            if postings_changed {
                 field.share_complete_posting(&next.ids);
             }
         }
@@ -557,8 +575,6 @@ impl Structured {
             if state.complete_presence && value.is_none() {
                 index.present = self.ids.clone();
                 state.complete_presence = false;
-            } else if !state.complete_presence && value.is_some() {
-                postings.change(&mut index.present, true);
             }
             let keys = indexed_values(value, index.kind)?;
             if state.uniform_posting {
@@ -576,6 +592,12 @@ impl Structured {
             }
             for key in keys {
                 index.insert(key, &mut postings);
+            }
+            if !state.complete_presence
+                && value.is_some()
+                && !index.share_sparse_presence(index.present.len() + 1)
+            {
+                postings.change(&mut index.present, true);
             }
         }
         self.ids.insert(Arc::clone(&owner));
