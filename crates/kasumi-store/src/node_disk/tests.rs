@@ -51,7 +51,7 @@ fn namespace_pending(disk: &NodeDisk) -> u64 {
         .accounted
         .values()
         .filter_map(AccountedInode::directory)
-        .map(|entry| entry.pending)
+        .map(|entry| entry.pending().unwrap())
         .sum()
 }
 

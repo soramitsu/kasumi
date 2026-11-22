@@ -649,7 +649,7 @@ impl ParentTransition {
             .ok_or(io::ErrorKind::InvalidData)?;
         if self.changes[1].is_some()
             || before.settled
-            || before.parent != Some(parent.0)
+            || before.parent(child.0) != Some(parent.0)
             || before.children != 0
             || child.1.len() != before.len
             || census::DirectoryAllocation::observe(&child.1, before.allocation.btrfs_sector)?
@@ -705,12 +705,13 @@ impl ParentTransition {
                 .checked_sub(change.before.bytes)
                 .and_then(|v| v.checked_add(charged))
                 .ok_or(io::ErrorKind::InvalidData)?;
+            let old_pending = change.before.pending()?;
             pending = pending
-                .checked_sub(change.before.pending)
+                .checked_sub(old_pending)
                 .and_then(|v| v.checked_add(new_pending))
                 .ok_or(io::ErrorKind::InvalidData)?;
             shared = shared
-                .checked_sub(change.before.pending)
+                .checked_sub(old_pending)
                 .and_then(|v| v.checked_add(new_pending))
                 .ok_or(io::ErrorKind::InvalidData)?;
             directory_bytes = directory_bytes
@@ -722,7 +723,6 @@ impl ParentTransition {
                 change.identity,
                 AccountedDirectory {
                     bytes: charged,
-                    pending: new_pending,
                     allocation,
                     len: metadata.len(),
                     children: change.children,

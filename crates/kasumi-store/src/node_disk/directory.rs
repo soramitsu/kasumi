@@ -75,7 +75,7 @@ pub(super) fn checked_entry<'a>(
     };
     if !entry.settled
         || entry.binding != binding
-        || entry.parent != parent
+        || entry.parent(identity) != parent
         || !entry.matches_allocation(&metadata)?
         || entry.len != metadata.len()
     {

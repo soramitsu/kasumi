@@ -807,6 +807,10 @@ fn enroll_directory(
     let metadata = file.metadata()?;
     directory(&metadata)?;
     let identity = Identity::of(&metadata);
+    ensure!(
+        parent.is_none_or(|parent| parent.0 == identity.0),
+        "directory parent is on another filesystem"
+    );
     totals
         .accounted
         .try_reserve(1)
@@ -818,9 +822,8 @@ fn enroll_directory(
                 identity,
                 AccountedInode::Directory(AccountedDirectory {
                     binding,
-                    parent,
+                    parent_inode: parent.map(|parent| parent.1),
                     bytes: 0,
-                    pending: 0,
                     allocation: DirectoryAllocation::observe(&metadata, btrfs_sector)?,
                     settled: false,
                     len: metadata.len(),
@@ -869,7 +872,6 @@ fn settle_directory(
     let bytes = policy.extent_bytes.max(observed);
     let pending = bytes - enrolled.allocation.backed();
     enrolled.bytes = bytes;
-    enrolled.pending = pending;
     enrolled.settled = true;
     let next_bytes = totals
         .bytes
