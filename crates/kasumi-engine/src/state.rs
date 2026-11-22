@@ -144,11 +144,18 @@ impl Generation {
     /// Share persistent document roots and fixed point-history owners without
     /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
-        self.lease_with_collections(
-            self.state.collections.clone(),
-            Arc::new(QueryIndexes::default()),
-            true,
-        )
+        let mut collections = self.state.collections.clone();
+        if self.application_selection.get().is_some_and(|selection| {
+            selection.served_primary_at(self.state.revision_base, self.state.revision)
+        }) {
+            for collection in collections.values_mut() {
+                // History hydration still needs the manifest and its references.
+                if collection.archived_documents.is_empty() {
+                    collection.documents.clear();
+                }
+            }
+        }
+        self.lease_with_collections(collections, Arc::new(QueryIndexes::default()), true)
     }
 
     fn lease_with_collections(

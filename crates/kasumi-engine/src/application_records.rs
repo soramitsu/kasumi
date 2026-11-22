@@ -358,6 +358,33 @@ impl PrimaryPoint {
     }
 }
 
+/// Keep both decode grants alive for as long as the caller borrows the point.
+pub(crate) fn admitted_snapshot_point(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    collection: &str,
+    id: &str,
+    revision: u64,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<(PrimaryPoint, Vec<kasumi_store::DiskMemoryLease>, u64)> {
+    let mut leases = Vec::new();
+    let mut retained = 0u64;
+    let point = snapshot_point(tree, collection, id, revision, |bytes| {
+        let work = crate::snapshot_codec::inspect_external_json_work(bytes, &mut check)?;
+        let required = work
+            .checked_add(2 * bytes.len() as u64 + 512)
+            .context("primary record workspace overflow")?;
+        retained = retained
+            .checked_add(required)
+            .context("primary record workspace overflow")?;
+        leases.push(crate::document_restore::ReadAdmissionFailure::reserve(
+            memory, required,
+        )?);
+        Ok(())
+    })?;
+    Ok((point, leases, retained))
+}
+
 /// Resolve both possible records from a single authenticated root. A miss is
 /// authoritative for that snapshot. The body or history chunk is read later.
 pub(crate) fn snapshot_point(

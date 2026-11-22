@@ -192,36 +192,18 @@ impl GenerationDocumentSource<'_> {
         if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
                 .with_serving_primary(self.directory_reader(), state, |tree, memory, _| {
-                    let mut leases = Vec::new();
-                    let mut retained = 0u64;
-                    let point = crate::application_records::snapshot_point(
+                    crate::application_records::admitted_snapshot_point(
                         tree,
+                        memory,
                         &self.collection,
                         id,
                         state.revision,
-                        |bytes| {
-                            let work = crate::snapshot_codec::inspect_external_json_work(
-                                bytes,
-                                &mut || {
-                                    cancellation.check()?;
-                                    self.check_deadline()?;
-                                    Ok(())
-                                },
-                            )?;
-                            let required =
-                                work.checked_add(2 * bytes.len() as u64 + 512).ok_or_else(
-                                    || anyhow::anyhow!("primary record workspace overflow"),
-                                )?;
-                            retained = retained.checked_add(required).ok_or_else(|| {
-                                anyhow::anyhow!("primary record workspace overflow")
-                            })?;
-                            leases.push(crate::document_restore::ReadAdmissionFailure::reserve(
-                                memory, required,
-                            )?);
+                        || {
+                            cancellation.check()?;
+                            self.check_deadline()?;
                             Ok(())
                         },
-                    )?;
-                    Ok((point, leases, retained))
+                    )
                 })
                 .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
             if let Some((mut point, _leases, retained)) = selected {

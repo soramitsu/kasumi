@@ -2035,6 +2035,12 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         let clock = Arc::new(kasumi_clock::SystemLeaseClock);
         let term = reopened_db.raft_group().current_term();
         let lease_id = uuid::Uuid::new_v4().to_string();
+        assert!(!reopened.state.collections["docs"].documents.is_empty());
+        assert!(
+            reopened.lease_view().state.collections["docs"]
+                .documents
+                .is_empty()
+        );
         let handle = reopened_engine.leases.open(
             &reopened_engine,
             &context,

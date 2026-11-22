@@ -551,8 +551,10 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         .unwrap();
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
-    let mut selected = fixture.db.engine().generation().unwrap().lease_view();
-    let slot = selected.state.collections["docs"].documents["point"].clone();
+    let original_generation = fixture.db.engine().generation().unwrap();
+    let slot = original_generation.state.collections["docs"].documents["point"].clone();
+    let mut selected = original_generation.lease_view();
+    drop(original_generation);
     assert!(matches!(slot.as_ref(), DocumentSlot::Stored(_)));
     let original = selected.document_sources.take().unwrap();
     assert!(
