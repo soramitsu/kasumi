@@ -307,14 +307,19 @@ digest in `release/oci/base-image.json`, and the candidate package produced by
 the matching packager:
 
 ```sh
-python3 scripts/oci_image.py --base-layout /absolute/base-layout \
-  --package /absolute/artifacts/candidate-001 \
-  --target aarch64-unknown-linux-gnu \
-  --output /absolute/artifacts/kasumi-linux-arm64.oci.tar
+python3 -I -B -S scripts/run_oci_image_owned.py \
+  --journal /absolute/native-custody --attempt-id arm64-image-001 \
+  --output /absolute/native-custody/image-001 --evidence /absolute/functional \
+  --base-layout /absolute/base-layout \
+  --package /absolute/artifacts/kasumi-0.1.0-aarch64-unknown-linux-gnu.tar.gz
 ```
 
-Select `x86_64-unknown-linux-gnu` only for the independently validated Linux
-x86-64 candidate. The assembler adds one uncompressed layer: the delivered
+Run this command on each native Linux target with its own package, functional
+evidence, and initialized native journal. The producer reads the build time
+from the functional evidence, verifies the packaged provenance and binaries,
+and writes the image archive, image SBOM and `image.json` under
+`image-001/image/`. Select these original files from the transported journal.
+The assembler adds one uncompressed layer: the delivered
 package under `/opt/kasumi` (binaries, notices and Cargo SBOM) and an empty
 private `/var/lib/kasumi` owned by the numeric runtime user 65532:65532, which
 has no passwd entry. The default entrypoint serves

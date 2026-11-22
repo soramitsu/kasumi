@@ -1554,6 +1554,31 @@ def check_selected_build(root, admission, outcome, head):
             require(binaries[name]["file"] == original, "selected independent product belongs to another native build")
 
 
+def selected_oci_outcome(root, target, artifacts, primary):
+    """Identify the original native attempt that produced both delivered image files."""
+    image = artifacts["oci:" + target]["file"]
+    sbom = artifacts["image-sbom:" + target]["file"]
+    image_path = reference(root, image)
+    directory = image_path.parent.parent
+    output = directory / "outcome.json"
+    outcome = json_reference(root, attempt_index.file_ref(root, output))
+    products = unique(outcome["products"], "id", "original image products")
+    record = json_reference(directory, outcome["image_record"])
+    require(reference(directory, outcome["image_record"]) == image_path.parent / "image.json"
+            and outcome["schema"] == attempt_index.outcome_schema("oci-image")
+            and outcome["target"] == target and outcome["status"] == "passed"
+            and outcome["functional_sha256"] == primary["functional"]["sha256"]
+            and outcome["package_sha256"] == record["package_sha256"] == artifacts["package:" + target]["file"]["sha256"]
+            and record["target"] == target and set(products) == {"image", "image-sbom"},
+            "selected OCI assembly differs from the native functional build or package")
+    for key, ref, record_key in (("image", image, "image"), ("image-sbom", sbom, "image_sbom")):
+        path = reference(root, ref)
+        require(reference(directory, products[key]["file"]) == path
+                and record[record_key] == {"path": path.name, "sha256": ref["sha256"]},
+                "delivered OCI files must come from the same native assembly attempt")
+    return output.relative_to(root).as_posix()
+
+
 def verify_attempts(root, attempts, selected, *, head=None, original_root=None):
     root = attempt_index.custody(root)
     original_names = attempt_namespace(root)
@@ -1601,6 +1626,25 @@ def verify_attempts(root, attempts, selected, *, head=None, original_root=None):
             check_pre_dispatch_failure(root, record, admission, outcome)
         if selected_path in selected:
             require(record["status"] == "passed", "selected attempt failed")
+            if admission["kind"] == "oci-image":
+                output = root / admission["output"]
+                image = json_reference(output, outcome["image_record"])
+                require([item["id"] for item in record["processes"]] == ["assemble"],
+                        "native image lacks its original assembler process")
+                assembler = record["processes"][0]
+                process = json_reference(root, assembler["receipt"])
+                argv = process["command"]
+                source = process["working_directory"]
+                require(len(argv) == 17 and argv[1:5] == ["-I", "-B", "-S", source + "/scripts/oci_image.py"]
+                        and argv[5:8] == ["--source", source, "--base-layout"]
+                        and argv[9] == "--package" and argv[11:] == ["--target", outcome["target"],
+                            "--source-date-epoch", str(image["source_date_epoch"]), "--output",
+                            outcome["custody_root"] + "/image"]
+                        and json_reference(root, assembler["log"]) == image
+                        and reference(output, process["stdout"]) == reference(root, assembler["log"])
+                        and process["stderr"] == outcome["stderr"],
+                        "native image does not match the original assembler invocation and output")
+                reference(output, outcome["stderr"])
             if head is not None and admission["kind"] in {"functional", "independent-build"}:
                 require("build_evidence" in outcome, "selected native build omitted its qualification record")
                 check_selected_build(root, admission, outcome, head)
@@ -1652,7 +1696,8 @@ def verify_native_journals(root, journals, selected, anchor_path):
         require(len(parts) >= 3 and parts[0] == "native-attempts" and parts[1] in anchored,
                 "selected attempt lies outside anchored native journals")
         head = anchored[parts[1]]["head"]
-        require((head["target"], head["host"]) == (target, host), "selected attempt names another host or target")
+        require(head["target"] == target and (head["host"] == host or (kind == "oci-image" and host is None)),
+                "selected attempt names another host or target")
         local_selections[parts[1]]["/".join(parts[2:])] = kind
 
     seen_attempts = set()
@@ -1718,6 +1763,10 @@ def verify_inputs(manifest_path, repository, anchor_path=None):
         selected[attempt] = (kind, gate["id"].split(":", 1)[1], domain["host"]["id"])
     for target, candidate in candidates.items():
         primary = candidate["primary"]
+        if target in LINUX:
+            image_attempt = selected_oci_outcome(root, target, artifacts, primary)
+            require(image_attempt not in selected, "two selections name the same native attempt")
+            selected[image_attempt] = ("oci-image", target, None)
         independent = json_reference(root, candidate["independent"])
         for kind, ref, host in (("functional", primary["functional"], primary["host"]),
                                 ("independent-build", candidate["independent"], independent["host"])):

@@ -18,10 +18,14 @@ import sys
 import tarfile
 import threading
 import unittest
+from unittest.mock import patch
 
+import attempt_index
 import domain_run
 import oci_image
 import release_gate
+import run_oci_image_owned
+import verify_release_acceptance as acceptance
 import repeatable_assembly as owned
 import run_oci_smoke as smoke
 import test_domain_runs
@@ -143,6 +147,50 @@ class ImageFixture(test_domain_runs.DomainFixture):
 
 
 class AssemblyTests(ImageFixture):
+    def test_original_native_assembly_binds_delivered_image_and_session(self):
+        self.functional["build_environment"] = {"SOURCE_DATE_EPOCH": "1767225600"}
+        evidence = self.evidence / "evidence.json"
+        evidence.write_text(json.dumps(self.functional))
+        provenance = {key: self.functional[key] for key in ("source_commit", "source_tree", "lockfile_sha256")}
+        provenance.update(target=TARGET, source_date_epoch=1767225600, executables=self.candidates,
+                          functional_evidence_sha256=release_gate.sha256(evidence))
+        archive = self.pack("kasumi-release", **{"provenance.json": (json.dumps(provenance).encode(), 0o644)})
+        output = self.root / "native-image"
+        with patch.object(run_oci_image_owned, "native_target", return_value=TARGET):
+            run_oci_image_owned.launch(self.root, "image-1", output, self.evidence, self.layout, archive)
+        record = json.loads((output / "image/image.json").read_text())
+        ref = lambda path: attempt_index.file_ref(self.root, path)
+        primary = {"functional": ref(evidence)}
+        products = {"oci:" + TARGET: {"file": ref(output / "image" / record["image"]["path"])},
+                    "image-sbom:" + TARGET: {"file": ref(output / "image" / record["image_sbom"]["path"])},
+                    "package:" + TARGET: {"file": ref(archive)}}
+        selected = acceptance.selected_oci_outcome(self.root, TARGET, products, primary)
+        attempts = [{"id": "image-1", "receipt": ref(self.root / "attempts/image-1/attempt.json")}]
+        acceptance.verify_attempts(self.root, attempts, {selected: "oci-image"})
+        duplicate = self.root / "other-sbom.json"
+        shutil.copyfile(output / "image" / record["image_sbom"]["path"], duplicate)
+        products["image-sbom:" + TARGET] = {"file": ref(duplicate)}
+        with self.assertRaisesRegex(ValueError, "same native assembly"):
+            acceptance.selected_oci_outcome(self.root, TARGET, products, primary)
+
+    def test_owned_image_seals_preflight_and_post_dispatch_failures(self):
+        with patch.object(run_oci_image_owned, "native_target", side_effect=ValueError("wrong target")):
+            with self.assertRaisesRegex(ValueError, "wrong target"):
+                run_oci_image_owned.launch(self.root, "wrong-host", self.root / "wrong-host",
+                                           self.evidence, self.layout, self.package)
+        self.functional["build_environment"] = {"SOURCE_DATE_EPOCH": "1767225600"}
+        with patch.object(run_oci_image_owned, "native_target", return_value=TARGET):
+            with self.assertRaises((ValueError, OSError)):
+                run_oci_image_owned.launch(self.root, "wrong-package", self.root / "wrong-package",
+                                           self.evidence, self.layout, self.package)
+        for name, dispatched in (("wrong-host", False), ("wrong-package", True)):
+            record = json.loads((self.root / name / "outcome.json").read_text())
+            self.assertEqual((record["status"], record["dispatch_started"], record["products"]),
+                             ("failed", dispatched, []))
+        attempts = [{"id": name, "receipt": attempt_index.file_ref(self.root, self.root / "attempts" / name / "attempt.json")}
+                    for name in ("wrong-host", "wrong-package")]
+        acceptance.verify_attempts(self.root, attempts, {})
+
     def test_same_inputs_give_identical_bytes_and_a_self_consistent_sbom(self):
         first, second = self.assemble("image-a"), self.assemble("image-b")
         self.assertEqual(first, second)

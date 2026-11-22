@@ -25,6 +25,9 @@ from pathlib import Path, PurePosixPath
 import sys
 import tarfile
 
+if __name__ == "__main__" and sys.flags.isolated:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from release_gate import sha256, write_json
 
 SCHEMA = "kasumi-oci-image-v1"
@@ -237,6 +240,10 @@ def compose(source, layout, package, target, epoch):
         require(read_blob(layout, layer["digest"]).stat().st_size == layer["size"],
                 "base layer size differs from its descriptor")
     files = package_files(package)
+    provenance = json.loads(files["provenance.json"][0])
+    require(provenance.get("target") == target, "package provenance names another image target")
+    require(provenance.get("source_date_epoch", epoch) == epoch,
+            "image build time differs from the package provenance")
     layer = runtime_layer(files, epoch)
     created = dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     config["created"] = created
@@ -308,7 +315,7 @@ def assemble(source, layout, package, target, epoch, output):
     return record
 
 
-def verify(source, archive, sbom, target, binaries):
+def verify(source, archive, sbom, target, binaries, *, provenance=None):
     """Bind a delivered image archive to the pinned base, candidates and SBOM.
 
     Reads only the archive: platform, manifest and layer identities, inherited
@@ -368,6 +375,10 @@ def verify(source, archive, sbom, target, binaries):
                 if member.isfile():
                     files[name[len(PREFIX) + 1:]] = (contents.extractfile(member).read(),
                                                      bool(member.mode & 0o111))
+    if provenance is not None:
+        packed = json.loads(files["provenance.json"][0])
+        require(all(packed.get(key) == value for key, value in provenance.items()),
+                "image contains another functional build's package provenance")
     for name in BINARIES:
         require(name in binaries and "bin/" + name in files and files["bin/" + name][1]
                 and hashlib.sha256(files["bin/" + name][0]).hexdigest() == binaries[name],
