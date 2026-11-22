@@ -653,40 +653,71 @@ impl Original {
     }
 }
 
-fn read_originals(root: &Path) -> anyhow::Result<BTreeMap<u64, Original>> {
-    let path = root.join("original.jsonl");
+enum JournalTail {
+    Complete,
+    MissingNewline,
+    Torn { valid_bytes: u64 },
+}
+
+fn read_journal(file: &std::fs::File) -> anyhow::Result<(BTreeMap<u64, Original>, JournalTail)> {
+    let mut reader = std::io::BufReader::new(file);
     let mut originals = BTreeMap::new();
-    if !path.exists() {
-        return Ok(originals);
-    }
-    let text = std::fs::read_to_string(path)?;
-    let complete = text.ends_with('\n');
-    let lines: Vec<&str> = text.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        match serde_json::from_str::<Original>(line) {
-            Ok(original) => {
-                anyhow::ensure!(
-                    originals.insert(original.ordinal, original).is_none(),
-                    "duplicate original ordinal"
-                );
-            }
-            // A torn final line from an interrupted writer is not a result.
-            Err(_) if index + 1 == lines.len() && !complete => {}
-            Err(error) => return Err(error.into()),
+    let mut valid_bytes = 0u64;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok((originals, JournalTail::Complete));
         }
+        let terminated = line.ends_with(b"\n");
+        let original: Original = match serde_json::from_slice(&line) {
+            Ok(original) => original,
+            Err(error) if !terminated && error.is_eof() => {
+                return Ok((originals, JournalTail::Torn { valid_bytes }));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            originals.insert(original.ordinal, original).is_none(),
+            "duplicate original ordinal"
+        );
+        if !terminated {
+            return Ok((originals, JournalTail::MissingNewline));
+        }
+        valid_bytes += line.len() as u64;
     }
-    Ok(originals)
+}
+
+fn read_originals(root: &Path) -> anyhow::Result<BTreeMap<u64, Original>> {
+    match std::fs::File::open(root.join("original.jsonl")) {
+        Ok(file) => Ok(read_journal(&file)?.0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 struct Journal(std::fs::File);
 impl Journal {
-    fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(root.join("original.jsonl"))?,
-        ))
+    fn resume(root: &Path) -> anyhow::Result<(BTreeMap<u64, Original>, Self)> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(root.join("original.jsonl"))?;
+        let (originals, tail) = read_journal(&file)?;
+        match tail {
+            JournalTail::Complete => {}
+            JournalTail::MissingNewline => {
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+            JournalTail::Torn { valid_bytes } => {
+                file.set_len(valid_bytes)?;
+                file.sync_all()?;
+            }
+        }
+        std::fs::File::open(root)?.sync_all()?;
+        Ok((originals, Self(file)))
     }
     fn append(&mut self, original: &Original) -> anyhow::Result<()> {
         let mut line = serde_json::to_vec(original)?;
@@ -698,6 +729,59 @@ impl Journal {
         self.0.sync_all()?;
         Ok(())
     }
+}
+
+#[test]
+fn journal_resume_preserves_originals_across_every_last_record_cut() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let path = root.join("original.jsonl");
+    let record = |ordinal| Original {
+        ordinal,
+        session_id: uuid::Uuid::from_u128(ordinal as u128 + 1),
+        request_id: format!("請求-{ordinal}"),
+        kind: Kind::Aborted,
+        stage: "populate".into(),
+        checkpoint: None,
+        outcome: None,
+        seconds: 0.5,
+        resolution: None,
+    };
+    let (first, second, third) = (record(0), record(1), record(2));
+    let mut prefix = serde_json::to_vec(&first)?;
+    prefix.push(b'\n');
+    let encoded = serde_json::to_vec(&second)?;
+    for cut in 0..=encoded.len() {
+        let mut interrupted = prefix.clone();
+        interrupted.extend_from_slice(&encoded[..cut]);
+        std::fs::write(&path, &interrupted)?;
+        let originals = read_originals(root)?;
+        assert_eq!(std::fs::read(&path)?, interrupted);
+        let (resumed, mut journal) = Journal::resume(root)?;
+        assert_eq!(resumed, originals);
+        assert_eq!(resumed.get(&0), Some(&first));
+        if cut == encoded.len() {
+            assert_eq!(resumed.get(&1), Some(&second));
+        } else {
+            assert_eq!(resumed.len(), 1);
+            journal.append(&second)?;
+        }
+        journal.append(&third)?;
+        journal.sync()?;
+        drop(journal);
+        assert_eq!(
+            read_originals(root)?,
+            BTreeMap::from([(0, first.clone()), (1, second.clone()), (2, third.clone())]),
+            "cut at byte {cut}"
+        );
+    }
+    for tail in [b"{broken}".as_slice(), b"{\n", prefix.as_slice()] {
+        let bytes = [prefix.as_slice(), tail].concat();
+        std::fs::write(&path, &bytes)?;
+        assert!(Journal::resume(root).is_err());
+        assert_eq!(std::fs::read(&path)?, bytes);
+    }
+    Ok(())
 }
 
 fn stats(values: &mut [f64]) -> serde_json::Value {
@@ -1530,8 +1614,7 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
         let recorded = boundary(&inst, &plan).await?;
         write_json(&root.join("boundary.json"), &recorded)?;
     }
-    let done = read_originals(root)?;
-    let mut journal = Journal::open(root)?;
+    let (done, mut journal) = Journal::resume(root)?;
     let mut durations: BTreeMap<Kind, Vec<f64>> = BTreeMap::new();
     let reserve = plan.reserve_start();
     let first_missing = (0..reserve).find(|id| !done.contains_key(id));
@@ -1687,8 +1770,7 @@ async fn resolve(root: &Path) -> anyhow::Result<()> {
     let started = Instant::now();
     let inst = Installation::open(root, &plan).await?;
     let opened = started.elapsed().as_secs_f64();
-    let mut done = read_originals(root)?;
-    let mut journal = Journal::open(root)?;
+    let (mut done, mut journal) = Journal::resume(root)?;
     let mut inflight: Vec<Inflight> = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let path = entry?.path();
