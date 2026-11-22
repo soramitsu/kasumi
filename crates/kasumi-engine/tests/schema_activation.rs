@@ -2101,3 +2101,69 @@ async fn schema_only_replacement_preserves_indexed_reads_and_constraints_on_encr
     audit.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn fieldless_primary_keeps_pinned_pages_across_writes_and_encrypted_reopen() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = root.path().join("node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let (db, audit, node) = open(&physical, &path, true).await;
+    db.activate_schema(context("owner"), creates(db.engine(), "create", &["docs"]))
+        .await
+        .unwrap();
+    let seeded = (0..64).fold(MutationBatch::new(), |batch, i| {
+        batch.upsert("docs", format!("d{i:03}"), json!({"n":i}))
+    });
+    db.mutate(context("owner"), seeded).await.unwrap();
+    let all = QueryRequest::new("docs").limit(7);
+    let first = db.query(&context("owner"), all.clone()).await.unwrap();
+    assert_eq!(first.rows.len(), 7);
+    let cursor = first.cursor.clone().expect("retained original page");
+    let rev = first.revision;
+    drop(first);
+    db.mutate(
+        context("owner"),
+        MutationBatch::new()
+            .upsert("docs", "d007", json!({"n":1007}))
+            .upsert("docs", "new", json!({"n":64})),
+    )
+    .await
+    .unwrap();
+    let next = db
+        .query(&context("owner"), all.clone().cursor(cursor))
+        .await
+        .unwrap();
+    assert_eq!(next.revision, rev);
+    assert_eq!(next.rows[0].id, "d007");
+    assert_eq!(next.rows[0].body["n"], 7);
+    drop(next);
+    async fn changed(db: &Database) {
+        let scanned = db
+            .query(
+                &context("owner"),
+                QueryRequest::new("docs")
+                    .allow_scan()
+                    .filter(Filter::new().eq("/n", 1007)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scanned.rows.len(), 1);
+        assert_eq!(scanned.rows[0].id, "d007");
+        let existing = db
+            .query(&context("owner"), QueryRequest::new("docs").limit(100))
+            .await
+            .unwrap();
+        assert_eq!(existing.rows.len(), 65);
+        assert_eq!(existing.rows.last().unwrap().id, "new");
+    }
+    changed(&db).await;
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop((db, audit, node));
+    let (db, audit, node) = open(&physical, &path, false).await;
+    changed(&db).await;
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}

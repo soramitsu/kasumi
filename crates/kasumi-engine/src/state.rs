@@ -222,7 +222,9 @@ impl Generation {
         if !admit(bytes)? {
             return Ok(None);
         }
-        let Some(indexes) = self.indexes.for_query_collection(name) else {
+        let Some(indexes) = self.indexes.for_query_collection_with_primary(name, || {
+            Arc::new(crate::document_source::NativeIdPages::new(self, name))
+        }) else {
             return Ok(None);
         };
         let mut collection = collection.clone();
@@ -2021,7 +2023,20 @@ impl TenantEngine {
         )
     }
 
-    fn publish_generation(&self, next: Option<Arc<Generation>>) {
+    fn publish_generation(&self, mut next: Option<Arc<Generation>>) {
+        if let Some(generation) = next.as_mut().and_then(Arc::get_mut)
+            && generation.application_selection.get().is_some()
+            && self
+                .current
+                .load()
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(&old.indexes, &generation.indexes))
+            && let Some(indexes) = generation
+                .indexes
+                .with_collection_id_sources(&generation.state.collections)
+        {
+            generation.indexes = Arc::new(indexes);
+        }
         // A newly captured selection was taken under the apply lock, after
         // every object deletion committed so far: later applies read object
         // presence through it. A generation that keeps its predecessor's
@@ -3984,13 +3999,19 @@ impl TenantEngine {
             .into());
         }
         check()?;
-        let indexes = Arc::new(match document_indexes {
+        let mut indexes = match document_indexes {
             Some(building) => building.finish(self.text_residency())?,
             None => {
                 crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
                     .map_err(crate::index_source::into_anyhow)?
             }
-        });
+        };
+        if documents.is_some()
+            && let Some(bound) = indexes.with_collection_id_sources(&state.collections)
+        {
+            indexes = bound;
+        }
+        let indexes = Arc::new(indexes);
         check()?;
         Ok(Generation {
             receipts,

@@ -600,6 +600,14 @@ impl AcceptedGeneration<'_> {
             }
         }
         drop(replaced);
+        // Changed IDs now refer to the finalized descriptors. Release the
+        // provisional pending documents before exposing their index generation.
+        if let Some(indexes) = candidate
+            .indexes
+            .with_collection_id_sources(&candidate.state.collections)
+        {
+            candidate.indexes = Arc::new(indexes);
+        }
         Ok(Some(prepared))
     }
 

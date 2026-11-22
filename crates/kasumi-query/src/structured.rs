@@ -1563,6 +1563,64 @@ impl Structured {
     }
 }
 
+impl crate::CollectionIndexes {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the selected query source, its planning limits and workspace through fallback"
+    )]
+    pub(crate) fn fallback_candidates<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        filter: &Node<'_>,
+        restricted: Option<&IdSet>,
+        allow_scan: bool,
+        allow_index_reads: bool,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<IdSet, S::Failure> {
+        let mut selected = IdSet::new();
+        let universe = match (restricted, &self.logical_ids) {
+            (Some(ids), _) => ids,
+            (None, None) => &self.structured.ids,
+            (None, Some(logical)) => {
+                if let Some(scan) = Scan::prepare(filter, &self.structured.fields)?
+                    && !scan.has_leaf()
+                    && !scan.evaluate(&Value::Null, cancellation)?
+                {
+                    return Ok(selected);
+                }
+                logical.visit_selected(source, cancellation, |id| {
+                    cancellation.check()?;
+                    if selected
+                        .get_max()
+                        .is_some_and(|prior: &Arc<str>| prior.as_ref() >= id)
+                    {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "unordered primary directory",
+                        ));
+                    }
+                    check_size(selected.len() + 1, cap)?;
+                    reserve_posting_id(memory, id)?;
+                    selected.insert(Arc::from(id));
+                    Ok(())
+                })?;
+                &selected
+            }
+        };
+        self.structured.candidates(
+            source,
+            filter,
+            universe,
+            allow_scan,
+            allow_index_reads,
+            cap,
+            cancellation,
+        )
+    }
+}
+
 // Each inserted ID may allocate a 16-slot persistent tree node and its edges,
 // as well as the string backing. Admit these before mutating the private set.
 fn reserve_posting_id<W: crate::QueryWorkspace>(

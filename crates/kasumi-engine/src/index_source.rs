@@ -162,26 +162,7 @@ pub(crate) fn record<'a>(
         .map(|reference| RecordLoan::Archived(reference.as_ref())))
 }
 
-/// Merge two strictly ordered key streams, yielding a shared key once.
-pub(crate) fn ordered_union<T: Ord>(
-    left: impl Iterator<Item = T>,
-    right: impl Iterator<Item = T>,
-) -> impl Iterator<Item = T> {
-    let mut left = left.peekable();
-    let mut right = right.peekable();
-    std::iter::from_fn(move || match (left.peek(), right.peek()) {
-        (Some(a), Some(b)) => match a.cmp(b) {
-            std::cmp::Ordering::Less => left.next(),
-            std::cmp::Ordering::Greater => right.next(),
-            std::cmp::Ordering::Equal => {
-                right.next();
-                left.next()
-            }
-        },
-        (Some(_), None) => left.next(),
-        _ => right.next(),
-    })
-}
+pub(crate) use kasumi_query::ordered_union;
 
 pub(crate) fn resident_ids_after<'a>(
     collection: &'a CollectionState,
