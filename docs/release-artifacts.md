@@ -47,6 +47,56 @@ journal with the final `head` from `attempt_index.py head` and the absolute
 targets are represented and replays every admission, including failures and
 interruptions. It reads transported files from the bundle.
 
+`scripts/transport_attempt_journal.py` moves one host directory into that
+layout. Run `produce` beside the original once every admission has finished.
+Carry the journal head and the printed `producer_sha256` to the bundle host by
+a channel other than the upload.
+
+```sh
+python3 -I -S -B /frozen/source/scripts/attempt_index.py head --root /native/custody
+python3 -I -S -B /frozen/source/scripts/transport_attempt_journal.py produce \
+  --root /native/custody --archive /native/transfer/custody.tar \
+  --producer /native/transfer/custody.producer.json --max-bytes <byte cap> \
+  --omit run/tmp
+```
+
+The archive holds the journal, every receipt and every admitted output whole,
+including failed, interrupted and pre-dispatch attempts. Only compiler work
+trees are thinned: a functional run's `source` and `target` directories, an
+independent build's `source` and `target` under its recorded build root, and
+each directory named with `--omit`. From those the archive keeps the files the
+verifier opens, the directory listings it reads and the files the build's
+qualification record names. The manifest counts what stays behind. `produce`
+refuses a journal with an unfinished admission, and it publishes the producer
+record only after the archive has been restored and replayed as a relocated
+copy.
+
+Run `admit` beside the bundle with the operator's anchor file.
+
+```sh
+python3 -I -S -B /frozen/source/scripts/transport_attempt_journal.py admit \
+  --archive /incoming/custody.tar --producer-manifest /incoming/custody.producer.json \
+  --producer-sha256 <producer digest> \
+  --journal-heads /operator/native-journal-heads.json --max-bytes <byte cap> \
+  --output /evidence/native-attempts/<journal-id> \
+  --record /operator/admissions/<journal-id>-1
+```
+
+The archive is restored to `native-attempts/.<journal-id>.pending`, replayed by
+the acceptance verifier against the anchored head and original root, and then
+renamed into place. The record directory is new for every run and keeps the
+outcome in `receipt.json`:
+
+| Exit | `status` | Meaning |
+| --- | --- | --- |
+| 0 | `admitted` | The root is in place and replays. `placement` is `placed`, or `confirmed` when an earlier run had already placed the same root. |
+| 1 | `rejected` | This transfer put nothing in the namespace. An existing root is never replaced. |
+| 2 | `unconfirmed` | The verified root is in place, but a step after the rename failed. Run `admit` again with a new record directory to confirm it. |
+
+A leftover `.pending` directory means an admission was interrupted before the
+rename. It blocks a retry and fails final verification until an operator
+removes it.
+
 When finishing a selected functional or independent build, pass its original
 qualification record as the output-relative `build_evidence` argument to
 `attempt_index.finish_outcome`. The functional record is `evidence.json`.
