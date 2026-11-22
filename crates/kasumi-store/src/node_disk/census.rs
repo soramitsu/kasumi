@@ -24,6 +24,7 @@ pub(super) struct Root {
     pub(super) identity: Identity,
     /// Index of the filesystem charged for every promise beneath this root.
     pub(super) filesystem: usize,
+    pub(super) btrfs_sector: u32,
 }
 
 impl Root {
@@ -156,6 +157,7 @@ pub(super) fn open_roots(
                     use std::os::unix::ffi::OsStrExt;
                     CString::new(path.as_os_str().as_bytes())?
                 },
+                btrfs_sector: btrfs_sector(&file)?,
                 file,
                 identity,
                 filesystem,
@@ -498,6 +500,7 @@ impl<'a> CensusSession<'a> {
                     &root.file,
                     NamespaceBinding::root(root.identity),
                     None,
+                    root.btrfs_sector,
                 )?;
                 self.stack.push(Cursor::open(
                     root.file.try_clone()?,
@@ -572,7 +575,13 @@ impl<'a> CensusSession<'a> {
                     self.stack.len() < self.config.max_depth as usize,
                     "census depth exhausted"
                 );
-                enroll_directory(&mut self.scan, &child, binding, Some(parent))?;
+                enroll_directory(
+                    &mut self.scan,
+                    &child,
+                    binding,
+                    Some(parent),
+                    root.btrfs_sector,
+                )?;
                 self.subdirectories += 1;
                 self.stack.push(Cursor::open(
                     child,
@@ -699,6 +708,86 @@ pub(super) fn directory_extent(metadata: &Metadata) -> io::Result<u64> {
         .ok_or_else(|| io::ErrorKind::InvalidData.into())
 }
 
+// Btrfs can report one sector for a synchronized directory and zero after
+// inode-cache reclaim without changing its namespace. The sector cannot
+// retire any of the filesystem promise: its disappearance is asynchronous.
+#[cfg(target_os = "linux")]
+fn btrfs_sector(file: &File) -> io::Result<u32> {
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: fstatfs initializes the structure on success and borrows the FD.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.f_type != libc::BTRFS_SUPER_MAGIC {
+        return Ok(0);
+    }
+    u32::try_from(stat.f_bsize)
+        .ok()
+        .filter(|size| size.is_power_of_two())
+        .ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn btrfs_sector(_file: &File) -> io::Result<u32> {
+    Ok(0)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct DirectoryAllocation {
+    pub(super) reported: u64,
+    pub(super) btrfs_sector: u32,
+    changed_seconds: i64,
+    changed_nanos: u32,
+}
+
+impl DirectoryAllocation {
+    pub(super) fn observe(metadata: &Metadata, btrfs_sector: u32) -> io::Result<Self> {
+        let mut observation = Self {
+            reported: directory_extent(metadata)?,
+            btrfs_sector,
+            ..Self::default()
+        };
+        if btrfs_sector != 0 {
+            observation.changed_seconds = metadata.ctime();
+            observation.changed_nanos =
+                u32::try_from(metadata.ctime_nsec()).map_err(|_| io::ErrorKind::InvalidData)?;
+        }
+        Ok(observation)
+    }
+
+    pub(super) fn backed(self) -> u64 {
+        if self.reported == u64::from(self.btrfs_sector) {
+            0
+        } else {
+            self.reported
+        }
+    }
+
+    pub(super) fn matches(self, metadata: &Metadata, charged: u64) -> io::Result<bool> {
+        Ok(self.accepts(Self::observe(metadata, self.btrfs_sector)?, charged))
+    }
+
+    fn accepts(self, current: Self, charged: u64) -> bool {
+        current.btrfs_sector == self.btrfs_sector
+            && self.changed_seconds == current.changed_seconds
+            && self.changed_nanos == current.changed_nanos
+            && current.reported <= charged
+            && current.backed() == self.backed()
+    }
+}
+
+#[cfg(test)]
+pub(super) fn backed_directory_bytes(path: &std::path::Path) -> u64 {
+    let directory = File::open(path).unwrap();
+    let observed = directory.metadata().unwrap().blocks() * 512;
+    if observed == u64::from(btrfs_sector(&directory).unwrap()) {
+        0
+    } else {
+        observed
+    }
+}
+
 fn namespace_times(metadata: &Metadata) -> [i64; 4] {
     [
         metadata.mtime(),
@@ -713,6 +802,7 @@ fn enroll_directory(
     file: &File,
     binding: NamespaceBinding,
     parent: Option<Identity>,
+    btrfs_sector: u32,
 ) -> Result<()> {
     let metadata = file.metadata()?;
     directory(&metadata)?;
@@ -731,6 +821,7 @@ fn enroll_directory(
                     parent,
                     bytes: 0,
                     pending: 0,
+                    allocation: DirectoryAllocation::observe(&metadata, btrfs_sector)?,
                     settled: false,
                     len: metadata.len(),
                     children: 0,
@@ -772,9 +863,11 @@ fn settle_directory(
             && namespace_times(&metadata) == cursor.namespace_times,
         "directory changed during persistent census"
     );
-    let observed = directory_extent(&metadata)?;
+    enrolled.allocation =
+        DirectoryAllocation::observe(&metadata, enrolled.allocation.btrfs_sector)?;
+    let observed = enrolled.allocation.reported;
     let bytes = policy.extent_bytes.max(observed);
-    let pending = bytes - observed;
+    let pending = bytes - enrolled.allocation.backed();
     enrolled.bytes = bytes;
     enrolled.pending = pending;
     enrolled.settled = true;

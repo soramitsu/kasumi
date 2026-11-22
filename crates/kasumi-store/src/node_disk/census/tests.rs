@@ -724,3 +724,48 @@ fn actual_initial_promise_overflow_removes_only_the_unpublished_registration() {
     let disk = open(&config, &memory);
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
 }
+
+#[test]
+fn btrfs_directory_sector_stays_reserved_only_with_the_same_namespace_and_within_budget() {
+    let empty = DirectoryAllocation {
+        btrfs_sector: 4096,
+        changed_seconds: 12,
+        changed_nanos: 41,
+        ..DirectoryAllocation::default()
+    };
+    let synced = DirectoryAllocation {
+        reported: 4096,
+        ..empty
+    };
+    assert_eq!(empty.backed(), 0);
+    assert_eq!(synced.backed(), 0);
+    assert!(empty.accepts(synced, 4096));
+    assert!(synced.accepts(empty, 4096));
+    assert!(!empty.accepts(synced, 4095));
+    assert!(!synced.accepts(
+        DirectoryAllocation {
+            changed_nanos: 42,
+            ..empty
+        },
+        4096
+    ));
+    let larger = DirectoryAllocation {
+        reported: 8192,
+        ..synced
+    };
+    assert_eq!(larger.backed(), 8192);
+    assert!(!larger.accepts(synced, 8192));
+    assert!(!synced.accepts(larger, 8192));
+    let ordinary = DirectoryAllocation {
+        btrfs_sector: 0,
+        ..synced
+    };
+    assert_eq!(ordinary.backed(), 4096);
+    assert!(!ordinary.accepts(
+        DirectoryAllocation {
+            reported: 0,
+            ..ordinary
+        },
+        4096
+    ));
+}

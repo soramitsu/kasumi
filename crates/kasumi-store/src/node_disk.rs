@@ -518,6 +518,7 @@ struct AccountedDirectory {
     /// Charged total, including the unused admitted namespace promise.
     bytes: u64,
     pending: u64,
+    allocation: census::DirectoryAllocation,
     settled: bool,
     len: u64,
     children: u64,
@@ -527,6 +528,15 @@ struct AccountedDirectory {
     /// Namespace generation of the last settled change to this directory's
     /// entries; zero from census. A listing compares only its own directory.
     membership_generation: u64,
+}
+
+impl AccountedDirectory {
+    fn matches_allocation(&self, metadata: &std::fs::Metadata) -> io::Result<bool> {
+        Ok(
+            self.bytes.checked_sub(self.pending) == Some(self.allocation.backed())
+                && self.allocation.matches(metadata, self.bytes)?,
+        )
+    }
 }
 
 struct State {

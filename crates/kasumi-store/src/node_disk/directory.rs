@@ -76,11 +76,7 @@ pub(super) fn checked_entry<'a>(
     if !entry.settled
         || entry.binding != binding
         || entry.parent != parent
-        || entry
-            .bytes
-            .checked_sub(entry.pending)
-            .ok_or(io::ErrorKind::InvalidData)?
-            != census::directory_extent(&metadata)?
+        || !entry.matches_allocation(&metadata)?
         || entry.len != metadata.len()
     {
         return Err(io::ErrorKind::InvalidData.into());
@@ -327,10 +323,7 @@ impl NodeDiskDirectory {
         let entry = state.accounted[&self.owner().identity]
             .directory()
             .expect("verified directory enrollment");
-        entry
-            .bytes
-            .checked_sub(entry.pending)
-            .ok_or_else(|| io::ErrorKind::InvalidData.into())
+        Ok(entry.allocation.reported)
     }
 
     /// Synchronize an unchanged enrolled directory through its retained FD.

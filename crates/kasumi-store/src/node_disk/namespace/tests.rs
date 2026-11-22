@@ -39,7 +39,11 @@ fn assert_physical_parents(disk: &NodeDisk, paths: &[(&Path, u64, u32)]) {
             value.bytes,
             disk.config.directory_policy.extent_bytes.max(actual)
         );
-        assert_eq!(value.pending, value.bytes - actual);
+        assert_eq!(value.allocation.reported, actual);
+        assert_eq!(
+            value.pending,
+            value.bytes - census::backed_directory_bytes(path)
+        );
         observed += actual;
         charged += value.bytes;
         pending += value.pending;

@@ -1083,10 +1083,7 @@ fn verify_enrolled(
         .get(&identity)
         .and_then(AccountedInode::directory)
         .ok_or(io::ErrorKind::InvalidData)?;
-    if !entry.settled
-        || entry.len != metadata.len()
-        || entry.bytes.checked_sub(entry.pending) != Some(census::directory_extent(metadata)?)
-    {
+    if !entry.settled || entry.len != metadata.len() || !entry.matches_allocation(metadata)? {
         return Err(io::ErrorKind::InvalidData.into());
     }
     Ok(())
@@ -1395,10 +1392,12 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let observed = census::directory_extent(&metadata)?;
+    let allocation =
+        census::DirectoryAllocation::observe(&metadata, disk.roots[&operation.root].btrfs_sector)?;
+    let observed = allocation.reported;
     let reserved = disk.config.directory_policy.extent_bytes;
     let charged = reserved.max(observed);
-    let pending = charged - observed;
+    let pending = charged - allocation.backed();
     let bytes = state
         .bytes
         .checked_sub(reserved)
@@ -1429,6 +1428,7 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         parent: Some(operation.parent.identity()),
         bytes: charged,
         pending,
+        allocation,
         settled: false,
         len: metadata.len(),
         children: 0,
@@ -1547,7 +1547,7 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
         .ok_or(io::ErrorKind::InvalidData)?;
     let directory_bytes = state
         .directory_bytes
-        .checked_sub(entry.bytes - entry.pending)
+        .checked_sub(entry.allocation.reported)
         .ok_or(io::ErrorKind::InvalidData)?;
     let directories = state
         .directories

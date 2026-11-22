@@ -11,6 +11,7 @@ fn directory(binding: u8, parent: Option<Identity>) -> AccountedDirectory {
         parent,
         bytes: 8192,
         pending: 0,
+        allocation: super::super::census::DirectoryAllocation::default(),
         settled: true,
         len: 24,
         children: 3,
