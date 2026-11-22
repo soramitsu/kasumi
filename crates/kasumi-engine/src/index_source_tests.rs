@@ -450,7 +450,7 @@ fn schema_replacement_reads_each_stored_body_once_for_schema_and_once_for_unique
         .unwrap()
         .documents
         .insert("c".into(), document("c", 3, "alpha"));
-    let failure = prepare(&state).err().expect("duplicate index value");
+    let failure = prepare(&state).expect_err("duplicate index value");
     assert_eq!(query_error(failure).code, ErrorCode::Conflict);
     assert_eq!(resolver.reads.load(Ordering::Relaxed), 2);
 }
