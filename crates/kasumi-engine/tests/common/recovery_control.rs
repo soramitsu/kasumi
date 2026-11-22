@@ -2589,6 +2589,18 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     .await;
     intent
 }
+// The Control read releases no observation when its audit times out. Retry
+// with the original operation, phase and credential within the fixture's window.
+fn retryable_preparation_read(error: &Error) -> bool {
+    if error.code == ErrorCode::AuditUnavailable
+        && error.message == "control commitment audit deadline elapsed"
+    {
+        eprintln!("recovery preparation read withheld: {error}");
+        return true;
+    }
+    uncertain_control_read(error.code)
+}
+
 async fn prepare_next(
     f: &Fixture,
     _db: &Arc<Database>,
@@ -2601,12 +2613,7 @@ async fn prepare_next(
             let current = f.leader().await;
             let head = match current.recovery_status(context.clone(), operation).await {
                 Ok(head) => head,
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) =>
-                {
+                Err(error) if retryable_preparation_read(&error) => {
                     continue;
                 }
                 Err(error) => panic!("recovery planning status rejected: {error:?}"),
@@ -2622,11 +2629,7 @@ async fn prepare_next(
                         input,
                     );
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
+                Err(error) if retryable_preparation_read(&error) => {}
                 other => panic!("recovery planning dispatch rejected: {other:?}"),
             }
         }
@@ -2672,12 +2675,7 @@ async fn prepare_next(
                 Err(error) if error.code == ErrorCode::NotFound => {
                     last_error = Some(format!("phase read: {error:?}"));
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) =>
-                {
+                Err(error) if retryable_preparation_read(&error) => {
                     last_error = Some(format!("phase read: {error:?}"));
                     continue;
                 }
