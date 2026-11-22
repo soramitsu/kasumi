@@ -122,20 +122,29 @@ impl TextLayout {
         Ok(())
     }
 
-    fn document(&self, id: &str, version: u64, body: &Value) -> TantivyDocument {
+    fn indexed_values<'a>(
+        &'a self,
+        body: &'a Value,
+    ) -> impl Iterator<Item = (Field, Field, &'a str)> {
+        self.indexes.values().flat_map(move |index| {
+            index.paths.iter().flat_map(move |(path, ranked, surface)| {
+                text_values(body, path).map(move |text| (*ranked, *surface, text))
+            })
+        })
+    }
+
+    fn document(&self, id: &str, version: u64, body: &Value) -> (TantivyDocument, u64) {
         let mut indexed = TantivyDocument::default();
         indexed.add_text(self.id_field, id);
         indexed.add_u64(self.version_field, version);
-        for fields in self.indexes.values() {
-            for (path, ranked, surface) in &fields.paths {
-                for text in text_values(body, path) {
-                    let normalized: String = text.nfkc().collect();
-                    indexed.add_text(*ranked, &normalized);
-                    indexed.add_text(*surface, &normalized);
-                }
-            }
+        let mut text_bytes = 0u64;
+        for (ranked, surface, text) in self.indexed_values(body) {
+            let normalized: String = text.nfkc().collect();
+            text_bytes = text_bytes.saturating_add(normalized.len() as u64);
+            indexed.add_text(ranked, &normalized);
+            indexed.add_text(surface, &normalized);
         }
-        indexed
+        (indexed, text_bytes)
     }
 
     /// The stored identity of one indexed row.
@@ -336,9 +345,8 @@ impl TextSnapshot {
             let Record::Live(document) = record else {
                 return Ok(());
             };
-            writer
-                .add_document(core.layout.document(id, document.version, &document.body))
-                .map_err(search_error)?;
+            let (indexed, _) = core.layout.document(id, document.version, &document.body);
+            writer.add_document(indexed).map_err(search_error)?;
             Ok(())
         })?;
         writer.commit().map_err(search_error)?;
@@ -382,13 +390,11 @@ impl TextSnapshot {
                 writer.delete_term(Term::from_field_text(self.core.layout.id_field, id));
             }
             if let Some(Record::Live(document)) = delta.new {
-                writer
-                    .add_document(
-                        self.core
-                            .layout
-                            .document(id, document.version, &document.body),
-                    )
-                    .map_err(search_error)?;
+                let (indexed, _) = self
+                    .core
+                    .layout
+                    .document(id, document.version, &document.body);
+                writer.add_document(indexed).map_err(search_error)?;
             }
             Ok(())
         })?;

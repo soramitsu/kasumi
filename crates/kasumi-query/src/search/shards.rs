@@ -65,11 +65,9 @@ impl TextShardLayout {
     /// Normalized text bytes one body contributes, for shard cut decisions.
     pub fn text_bytes(&self, body: &Value) -> u64 {
         self.0
-            .indexes
-            .values()
-            .flat_map(|index| index.paths.iter())
-            .flat_map(|(path, ..)| text_values(body, path))
-            .map(|text| text.len() as u64)
+            .indexed_values(body)
+            .flat_map(|(_, _, text)| text.nfkc())
+            .map(|c| c.len_utf8() as u64)
             .sum()
     }
 }
@@ -132,11 +130,10 @@ impl TextShardWriter {
         if self.documents >= MAX_SHARD_DOCUMENTS {
             return Err(search_error("text shard row bound reached"));
         }
-        self.writer
-            .add_document(self.layout.0.document(id, version, body))
-            .map_err(search_error)?;
+        let (indexed, text_bytes) = self.layout.0.document(id, version, body);
+        self.writer.add_document(indexed).map_err(search_error)?;
         self.documents += 1;
-        self.text_bytes = self.text_bytes.saturating_add(self.layout.text_bytes(body));
+        self.text_bytes = self.text_bytes.saturating_add(text_bytes);
         Ok(())
     }
     pub fn documents(&self) -> u32 {

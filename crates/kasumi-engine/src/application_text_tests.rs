@@ -249,6 +249,42 @@ fn stored(id: &str, version: u64) -> Arc<DocumentSlot> {
 }
 
 #[test]
+fn expanded_unicode_text_cuts_the_persisted_shard_at_its_normalized_byte_limit() {
+    use kasumi_store::test_utils::TestDiskMemory;
+    let layout = TextShardLayout::for_definition(&definition("/title")).unwrap();
+    let memory = TestDiskMemory::new(32 << 20, 1);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let title = "㍿ ".repeat(4096);
+    let normalized_bytes = ("株式会社 ".len() * 4096) as u64;
+    let first_shard = CUT_TEXT_BYTES.div_ceil(normalized_bytes) as u32;
+    let documents: Vec<_> = (0..=first_shard)
+        .map(|n| {
+            let id = format!("doc-{n:03}");
+            let slot = DocumentSlot::Pending(Arc::new(Document {
+                id: id.clone(),
+                version: 1,
+                body: json!({"title": title}),
+            }));
+            (id, slot)
+        })
+        .collect();
+    let mut sizes = Vec::new();
+    build_shards(
+        &provider,
+        &layout,
+        documents.iter().map(|(id, slot)| (id.as_str(), slot)),
+        &ResolverBodies(None),
+        |shard| {
+            sizes.push(shard.documents);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(sizes, [first_shard, 1]);
+    assert_eq!(memory.snapshot().used_bytes, 0);
+}
+
+#[test]
 fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
     use kasumi_store::test_utils::TestDiskMemory;
     struct FailAtBody<'a>(&'a TestDiskMemory, u64);

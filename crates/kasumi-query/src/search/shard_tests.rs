@@ -419,3 +419,25 @@ impl DocumentChanges for NoChanges {
         unreachable!()
     }
 }
+
+#[test]
+fn shard_writer_counts_normalized_utf8_bytes_across_indexed_values() {
+    let layout =
+        TextShardLayout::for_definition(&definition(Analyzer::UnicodeV1, &["/title", "/alias"]))
+            .unwrap();
+    let body =
+        json!({"title": ["㍿", "Ａ", "e\u{301}", null, 5], "alias": "é", "unindexed": "ignored"});
+    let expected = "株式会社Aéé".len() as u64;
+    let mut writer = TextShardWriter::new(&layout).unwrap();
+    writer.add("first", 1, &body).unwrap();
+    assert_eq!(writer.text_bytes(), expected);
+    assert_eq!(layout.text_bytes(&body), expected);
+
+    let second = json!({"title": "㍿㍿"});
+    writer.add("second", 2, &second).unwrap();
+    assert_eq!(
+        writer.text_bytes(),
+        expected + "株式会社株式会社".len() as u64
+    );
+    assert_eq!(writer.finish().unwrap().unwrap().documents, 2);
+}
