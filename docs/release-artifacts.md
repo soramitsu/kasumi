@@ -60,6 +60,70 @@ python3 -I -B -S /frozen/source/scripts/verify_release_acceptance.py \
   --journal-heads /operator/native-journal-heads.json
 ```
 
+### Producing the independent build
+
+`scripts/run_independent_build.py` produces a candidate's `independent` record.
+It makes one fresh native production compilation per target, separately from
+the primary functional run, and may use the same physical host. Run it with the
+declared native Python from a frozen source that has no `__pycache__`:
+
+```sh
+python3 /frozen/source/scripts/release_host.py \
+  --output /operator/host-preflight.json --target <target>
+python3 -I -S -B /frozen/source/scripts/run_independent_build.py \
+  --journal /absolute/artifacts --attempt-id independent-001 \
+  --output /absolute/artifacts/independent-001 \
+  --identity /operator/release-identity.json \
+  --source-archive /evidence/source.tar \
+  --native-inputs /absolute/native-inputs/inputs.json \
+  --host-preflight /operator/host-preflight.json \
+  --host-attestation /operator/host-attestation.txt \
+  --host-reservation /operator/host-reservation.json --jobs 2
+```
+
+The journal is this host's existing attempt journal, and the output is a fresh
+path inside it. The identity file holds exactly the seven source identity
+fields of [the acceptance manifest](release-acceptance-manifest.md), with the
+values the final manifest will compute, including `configurations_sha256`.
+A later configuration change invalidates the record. The source archive is the
+frozen Git archive whose SHA-256 is `source_archive_sha256`. The preflight is
+the `release_host.py` output for the journal's target, and the attestation is
+the operator or hypervisor statement for the host. The reservation is a JSON
+object with `id`, `starts_at`, `ends_at`, `cpu_count`, `memory_bytes` and
+`disk_bytes`. It must cover the whole compilation.
+
+The verifier requires the exact functional `production` command, which begins
+`cargo +1.97.1`. A toolchain's own `bin/cargo` rejects `+toolchain` selectors,
+so the producer runs Rustup's `cargo` proxy from the declaration's
+`cargo_home/bin`. Declare the Rustup executable behind that proxy, such as
+`~/.cargo/bin/rustup`, in `host_files` with its SHA-256. The declared
+`rust-sysroot` must be `<RUSTUP_HOME>/toolchains/1.97.1-<target>`. Cargo
+receives the declaration's explicit offline environment plus
+`CARGO_TARGET_DIR`, `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`. No ambient
+Cargo, Rustup or Python setting reaches it.
+
+The attempt is admitted before its output exists. Every input is copied into
+the output and read only from that copy. The archive is extracted into a fresh
+`build/source`, whose inventory, lockfile and vendor hash must match the
+identity, and the executing producer modules must equal the frozen source.
+Cargo builds into a fresh `build/target` as one owned process. Its receipt, log
+and executable bytes are kept as `production-process.json`, `production.log`
+and `tools/cargo`. After its process group drains, the producer requires
+exactly the three production executables, no fixture features, the target
+architecture and an unchanged source. It then hashes the actual binaries.
+
+The terminal outcome names those binaries as products and selects
+`independent-build.json` as its `build_evidence`. The record's references
+already use final bundle paths, `native-attempts/<journal-id>/<output>/...`.
+Copy the host directory into the bundle unchanged and point the candidate's
+`independent` reference at that record. The producer prints a JSON summary
+with the record's `bundle_record` path, the binary hashes and the new journal
+`head` to anchor. It exits 0 when the build passed, 1 when it failed or was
+interrupted, and 2 when the attempt could not be admitted or finished.
+A rejected input, failed compilation or cancellation stays in the journal with
+any partial products and cannot be selected. The verifier, not the producer,
+compares the binaries with the primary build.
+
 ### Composing the release manifest
 
 Keep a selections JSON file in the bundle directory. Its `source` names the
