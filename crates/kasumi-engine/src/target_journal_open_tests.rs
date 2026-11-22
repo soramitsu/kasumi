@@ -2545,7 +2545,8 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         query.node_id,
     );
     let mut completed = marked.clone();
-    completed.resolved_revision = Some(completed.prepared_revision + 1);
+    let attempt = &completed.effect_attempts[&kasumi_types::RecoveryEffect::TargetCommand];
+    completed.resolved_revision = Some(attempt.begun_revision + 1);
     let terminal_outcome = |signature| {
         kasumi_types::RecoveryDispatchOutcome::Target(Box::new(
             kasumi_types::TargetRuntimeResponse {
@@ -2561,6 +2562,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         ))
     };
     completed.outcome = Some(terminal_outcome(signature));
+    completed.validate()?;
     assert!(journal.deletion_status(&query, None, &completed).is_err());
     drop(journal);
     let mut terminal = cleanup;
