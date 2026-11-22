@@ -20,6 +20,7 @@ import unittest
 from unittest.mock import patch
 
 import attempt_index
+import domain_run
 import package_release
 import release_gate
 import repeatable_assembly as assembly
@@ -46,7 +47,7 @@ def command(*arguments):
     return done.returncode, done.stdout, done.stderr
 
 
-def domain(root, name, kind, status):
+def domain(root, name, kind, status, report=None):
     """One journaled domain attempt that owned a real child process."""
     output = root / name
     attempt_index.begin(root, name, kind, output, now())
@@ -54,7 +55,7 @@ def domain(root, name, kind, status):
     python = str(Path(sys.executable).resolve(strict=True))
     item = assembly.run_owned(output, "probe", [python, "-I", "-S", "-B", "-c", "print('domain probe')"],
                               str(output), {"PATH": "/usr/bin:/bin"}, 60)
-    (output / "report.json").write_text(json.dumps({"attempt": name}) + "\n")
+    (output / "report.json").write_text(json.dumps(report or {"attempt": name}) + "\n")
     (output / "raw/nested").mkdir(parents=True)
     (output / "raw/nested/unreferenced.log").write_text("kept with the whole domain output\n")
     (output / "empty").mkdir()
@@ -453,6 +454,19 @@ class CustodyTransportTests(unittest.TestCase):
         domain(scratch / "aliased", "correctness-linked", "correctness", "passed")
         (scratch / "aliased/correctness-linked/raw/link").symlink_to("nested")
         refuse(scratch / "aliased", "symlink.*correctness-linked/raw/link")
+
+        # A passed rehearsal travels, but it is never offered as a selection: its own gate refuses it.
+        (scratch / "rehearsed").mkdir()
+        attempt_index.create(scratch / "rehearsed", "journal-rehearsed", "unit-host", independent_fixture.TARGET)
+        for name, qualification in (("installed-rehearsal", domain_run.REHEARSAL),
+                                    ("installed-qualifying", domain_run.QUALIFYING)):
+            domain(scratch / "rehearsed", name, "installed", "passed",
+                   {"schema": domain_run.SCHEMA, "qualification": qualification})
+        produced = custody.produce(scratch / "rehearsed", scratch / "rehearsed.tar", scratch / "rehearsed.json", CAP)
+        self.assertEqual([(fact["id"], fact["status"], fact["selectable"], fact["refusal"])
+                          for fact in produced["attempts"]],
+                         [("installed-qualifying", "passed", True, None),
+                          ("installed-rehearsal", "passed", False, "the domain run is a non-qualifying rehearsal")])
 
         # The operator may leave a named directory behind; the verifier still gets what it reads.
         (scratch / "named").mkdir()

@@ -60,6 +60,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 
 import attempt_index
+import domain_run
 import export_functional_evidence as functional_transport
 import package_release as package
 from release_gate import sha256
@@ -160,6 +161,19 @@ def selection_needs(root, journal_id, kind, evidence):
     return found
 
 
+def rehearsal(output, outcome):
+    """Whether a passed attempt's report is a domain run that its gate refuses as a rehearsal."""
+    for product in outcome.get("products", ()):
+        if product["id"] == "report":
+            try:
+                report = acceptance.read_json(output / product["file"]["path"])
+            except REJECTIONS:
+                return False
+            return (isinstance(report, dict) and report.get("schema") == domain_run.SCHEMA
+                    and report.get("qualification") != domain_run.QUALIFYING)
+    return False
+
+
 def judge(root, head, original_root=None):
     """Ask the frozen verifier about every admission in one custody root.
 
@@ -186,10 +200,13 @@ def judge(root, head, original_root=None):
             evidence = root / selected
         fact = {"id": name, "kind": begin["kind"], "status": record["status"], "output": begin["output"],
                 "selectable": False, "refusal": None}
-        if record["status"] == "passed":
-            passed[name] = (fact, selected, evidence)
-        else:
+        if record["status"] != "passed":
             fact["refusal"] = "the attempt " + record["status"]
+        elif rehearsal(root / begin["output"], outcome):
+            # The journal would accept the selection; the domain gate itself never does.
+            fact["refusal"] = "the domain run is a non-qualifying rehearsal"
+        else:
+            passed[name] = (fact, selected, evidence)
         facts.append(fact)
     refused = {}
     try:
