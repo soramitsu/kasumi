@@ -264,18 +264,18 @@ def check_products(output, kind, products, passed):
             "native attempt product roster differs")
 
 
-def check_outcome(root, identity, begin, receipt, outcome):
+def check_outcome(root, identity, begin, receipt, outcome, original_root):
     kind = begin["kind"]
     require(isinstance(outcome, dict)
             and outcome.get("schema") == KIND_OUTCOMES[kind]
-            and outcome.get("custody_root") == str(root / begin["output"])
+            and outcome.get("custody_root") == str(original_root / begin["output"])
             and outcome.get("attempt_id") == begin["id"]
             and outcome.get("status") == receipt["status"]
             and outcome.get("started_at") == receipt["started_at"]
             and outcome.get("finished_at") == receipt["finished_at"],
             "native attempt receipt differs from original outcome")
     if KINDS[kind][1] is None:
-        check_domain_observation(root, identity, begin, receipt)
+        check_domain_observation(root, identity, begin, receipt, original_root)
         return
     require(receipt["domain_observation"] is None,
             "native attempt kind has no domain observation")
@@ -285,7 +285,7 @@ def check_outcome(root, identity, begin, receipt, outcome):
                    receipt["status"] == "passed")
 
 
-def check_domain_observation(root, identity, begin, receipt):
+def check_domain_observation(root, identity, begin, receipt, original_root):
     """Bind an unqualified domain observation to its original native attempt."""
     observed_ref = receipt["domain_observation"]
     if receipt["status"] != "passed":
@@ -302,7 +302,7 @@ def check_domain_observation(root, identity, begin, receipt):
     require(observation["schema"] == DOMAIN_SCHEMA
             and observation["status"] == "unqualified"
             and observation["attempt_id"] == begin["id"]
-            and observation["custody_root"] == str(root / begin["output"])
+            and observation["custody_root"] == str(original_root / begin["output"])
             and observation["started_at"] == receipt["started_at"]
             and observation["finished_at"] == receipt["finished_at"]
             and observation["target"] == identity["target"],
@@ -357,7 +357,7 @@ def check_admission(row, identity, entries):
     timestamp(row["started_at"], "native attempt start")
 
 
-def check_receipt(root, identity, begin, receipt):
+def check_receipt(root, identity, begin, receipt, *, original_root=None):
     """The same terminal contract binds a new receipt and a replayed one."""
     exact(receipt, RECEIPT_FIELDS, "native attempt receipt")
     require(receipt["schema"] == ACCEPTANCE_SCHEMA and receipt["id"] == begin["id"]
@@ -372,10 +372,10 @@ def check_receipt(root, identity, begin, receipt):
     require(isinstance(evidence, dict)
             and PurePosixPath(relative(evidence.get("path"))).is_relative_to(begin["output"]),
             "native attempt evidence escapes admitted output")
-    check_outcome(root, identity, begin, receipt, json_ref(root, evidence))
+    check_outcome(root, identity, begin, receipt, json_ref(root, evidence), original_root or root)
 
 
-def replay_rows(root, attempts, stream):
+def replay_rows(root, attempts, stream, *, original_root=None):
     identity = None
     entries = {}
     previous = ZERO
@@ -406,7 +406,8 @@ def replay_rows(root, attempts, stream):
             require(isinstance(row["receipt"], dict)
                     and row["receipt"].get("path") == "attempts/" + attempt_id + "/attempt.json",
                     "attempt terminal receipt is outside its admission")
-            check_receipt(root, identity, entries[attempt_id]["begin"], json_ref(root, row["receipt"]))
+            check_receipt(root, identity, entries[attempt_id]["begin"], json_ref(root, row["receipt"]),
+                          original_root=original_root)
             entries[attempt_id]["terminal"] = row
         else:
             raise ValueError("unknown native attempt index event")
@@ -419,6 +420,17 @@ def journal_head(journal):
     return {**journal["identity"], "sequence": journal["sequence"], "sha256": journal["sha256"]}
 
 
+def original_custody_path(value):
+    """A producing host's absolute path is compared as text and never opened."""
+    require(isinstance(value, str) and value.startswith("/") and not value.startswith("//")
+            and "\\" not in value and "\x00" not in value,
+            "invalid original native custody path")
+    path = PurePosixPath(value)
+    require(path.as_posix() == value and ".." not in path.parts,
+            "invalid original native custody path")
+    return path
+
+
 def custody(root):
     root = Path(root)
     require(not root.is_symlink(), "attempt custody root is aliased")
@@ -428,8 +440,11 @@ def custody(root):
 
 
 @contextmanager
-def locked_index(root, *, shared=False):
+def locked_index(root, *, shared=False, original_root=None):
     root = custody(root)
+    if original_root is not None:
+        require(shared, "transported attempt journals are read-only")
+        original_root = original_custody_path(original_root)
     attempts = root / "attempts"
     require(not attempts.is_symlink() and attempts.is_dir(), "attempt namespace is absent or aliased")
     flags = (os.O_RDONLY if shared else os.O_RDWR | os.O_APPEND) | getattr(os, "O_NOFOLLOW", 0)
@@ -438,7 +453,7 @@ def locked_index(root, *, shared=False):
         fcntl.flock(descriptor, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         with os.fdopen(os.dup(descriptor), "rb") as stream:
             stream.seek(0)
-            journal = replay_rows(root, attempts, stream)
+            journal = replay_rows(root, attempts, stream, original_root=original_root)
         yield root, attempts, descriptor, journal
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -499,8 +514,10 @@ def head(root):
         return journal_head(journal)
 
 
-def replay(root, *, complete=True, head=None):
-    with locked_index(root, shared=True) as (_, _, _, journal):
+def replay(root, *, complete=True, head=None, original_root=None):
+    if original_root is not None:
+        require(head is not None, "transported attempt journal needs its anchored head")
+    with locked_index(root, shared=True, original_root=original_root) as (_, _, _, journal):
         if head is not None:
             require(journal_head(journal) == check_head(head),
                     "attempt journal head differs from its anchor")
@@ -594,7 +611,7 @@ def finish(root, attempt_id, receipt):
 
 
 def finish_outcome(root, attempt_id, status, finished_at, *, products, processes,
-                   dispatch_started, facts=None):
+                   dispatch_started, facts=None, build_evidence=None):
     """Write a registered kind's outcome record in its output, then terminate it.
 
     ``products`` maps each retained product id to its path inside the admitted
@@ -614,6 +631,9 @@ def finish_outcome(root, attempt_id, status, finished_at, *, products, processes
                "target": identity["target"], "dispatch_started": dispatch_started,
                "products": [{"id": name, "file": file_ref(output, output / products[name])}
                             for name in sorted(products)]}
+    if build_evidence is not None:
+        require(begin["kind"] in {"functional", "independent-build"}, "build evidence requires a build attempt")
+        outcome["build_evidence"] = file_ref(output, output / relative(build_evidence))
     path = output / "outcome.json"
     data = canonical(outcome)
     file = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)

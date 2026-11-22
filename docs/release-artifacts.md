@@ -35,6 +35,31 @@ later attempts and retain each new head with
 `attempt_index.py head --root /absolute/artifacts`; an existing journal must
 have the same identity.
 
+For final verification, retain each complete host directory under
+`native-attempts/<journal-id>/` in the evidence bundle. Preserve the native
+relative paths and the original bytes of the journal, outcomes and process
+records. The manifest's `attempts` array contains one object per journal with
+its `id` and a `journal` file reference to
+`native-attempts/<journal-id>/attempts/index.jsonl`. Keep the operator's
+anchor file outside the bundle. Its JSON array contains one object per native
+journal with the final `head` from `attempt_index.py head` and the absolute
+`original_root` on the producing host. The verifier checks that all three
+targets are represented and replays every admission, including failures and
+interruptions. It reads transported files from the bundle.
+
+When finishing a selected functional or independent build, pass its original
+qualification record as the output-relative `build_evidence` argument to
+`attempt_index.finish_outcome`. The functional record is `evidence.json`.
+The independent build record uses final bundle paths for its binary references.
+The verifier compares both records with their admitted native products.
+Run the frozen verifier against the exact clean Git revision:
+
+```sh
+python3 -I -B -S /frozen/source/scripts/verify_release_acceptance.py \
+  /evidence/release-manifest.json --repository /clean/revision \
+  --journal-heads /operator/native-journal-heads.json
+```
+
 The native input declaration is mandatory; there is no ambient Cargo/Rustup
 fallback. See [the assembly input contract](repeatable-assembly.md). The owned
 launcher, runner and packager require isolated Python and reject cached

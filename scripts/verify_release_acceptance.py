@@ -232,8 +232,11 @@ def reference(root, ref):
     if observations is not None:
         key = str(path.absolute())
         previous = observations.get(key)
-        require(previous is None or previous[2] == ref, "input identity changed during verification")
-        observations[key] = (root, path, dict(ref))
+        # A domain runner and the bundle reference the same file from different roots.
+        require(previous is None or (previous[2]["sha256"], previous[2]["bytes"]) ==
+                (ref["sha256"], ref["bytes"]), "input identity changed during verification")
+        if previous is None or len(ref["path"]) > len(previous[2]["path"]):
+            observations[key] = (root, path, dict(ref))
     return path
 
 
@@ -1521,11 +1524,33 @@ def check_pre_dispatch_failure(root, record, admission, outcome):
         require(not rows, "pre-dispatch failure retains child admissions")
 
 
-def verify_attempts(root, attempts, selected):
+def check_selected_build(root, admission, outcome, head):
+    """Link the qualification record to the native attempt's original compiled products."""
+    output = root / admission["output"]
+    ref = outcome["build_evidence"]
+    path = reference(output, ref)
+    products = {item["id"]: reference(output, item["file"]) for item in outcome["products"]}
+    if admission["kind"] == "functional":
+        require(path.name == "evidence.json" and
+                all(products[name] == path.parent / "target" / "release" / name for name in package.BINARIES)
+                and products["source-archive"] == path.parent / "source.tar"
+                and products["source-inventory"] == path.parent / "source-files.json",
+                "selected functional evidence belongs to another native build")
+    else:
+        binaries = unique(read_json(path)["binaries"], "name", "independent binaries")
+        require(binaries.keys() == products.keys(), "independent build journal products differ")
+        for name, product in products.items():
+            original = attempt_index.file_ref(root, product)
+            original["path"] = f"native-attempts/{head['journal_id']}/" + original["path"]
+            require(binaries[name]["file"] == original, "selected independent product belongs to another native build")
+
+
+def verify_attempts(root, attempts, selected, *, head=None, original_root=None):
+    root = attempt_index.custody(root)
     original_names = attempt_namespace(root)
     journal = attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
     reference(root, journal)
-    admitted = attempt_index.replay(root, complete=True)
+    admitted = attempt_index.replay(root, head=head, original_root=original_root)
     indexed = unique(attempts, "id", "retained attempts")
     require(indexed and set(indexed) == set(admitted),
             "acceptance manifest omits a native attempt admission")
@@ -1551,34 +1576,102 @@ def verify_attempts(root, attempts, selected):
                 "pre-dispatch attempt claims child processes")
         if record["domain_observation"] is not None:
             reference(root, record["domain_observation"])
-        selected_paths.add(record["evidence"]["path"])
+        # Domain receipts select the launcher or outcome. Build qualification uses a
+        # separately verified record whose bytes the native producer must retain.
+        selected_path = record["evidence"]["path"]
+        if admission["kind"] in {"functional", "independent-build"} and "build_evidence" in outcome:
+            ref = outcome["build_evidence"]
+            reference(root / admission["output"], ref)
+            selected_path = admission["output"] + "/" + ref["path"]
+        selected_paths.add(selected_path)
         elapsed = (timestamp(record["finished_at"]) - timestamp(record["started_at"])).total_seconds()
         if record["processes"]:
             check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed",
                             expected_exits=domain_expected_exits(admission["kind"]))
         else:
             check_pre_dispatch_failure(root, record, admission, outcome)
-        if record["evidence"]["path"] in selected:
+        if selected_path in selected:
             require(record["status"] == "passed", "selected attempt failed")
-            require(selected[record["evidence"]["path"]] in (None, admission["kind"]),
+            if head is not None and admission["kind"] in {"functional", "independent-build"}:
+                require("build_evidence" in outcome, "selected native build omitted its qualification record")
+                check_selected_build(root, admission, outcome, head)
+            require(selected[selected_path] in (None, admission["kind"]),
                     "gate selected an attempt of another kind")
         paths.add(attempt["receipt"]["path"])
     require(original_names == set(indexed) == attempt_namespace(root)
             and paths == {"attempts/" + name + "/attempt.json" for name in indexed}
             and journal == attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
-            and set(indexed) == set(attempt_index.replay(root, complete=True))
+            and set(indexed) == set(attempt_index.replay(root, head=head, original_root=original_root))
             and set(selected) <= selected_paths,
             "attempt history omitted an on-disk or selected attempt")
     reference(root, journal)
 
 
-def verify(manifest_path, repository):
+def verify_native_journals(root, journals, selected, anchor_path):
+    """Replay every original native journal and bind selected attempts to their host."""
+    require(anchor_path is not None, "supply the operator's native journal heads")
+    anchor_path = Path(anchor_path).resolve(strict=True)
+    require(not anchor_path.is_relative_to(root), "operator journal heads must be outside the bundle")
+    anchors = read_json(anchor_path)
+    require(isinstance(anchors, list), "operator journal heads must be an array")
+    anchored = {}
+    for item in anchors:
+        exact(item, {"head", "original_root"}, "native journal anchor")
+        head = attempt_index.check_head(item["head"])
+        require(head["journal_id"] not in anchored, "duplicate native journal anchor")
+        attempt_index.original_custody_path(item["original_root"])
+        anchored[head["journal_id"]] = item
+    indexed = unique(journals, "id", "native journals")
+    require(indexed.keys() == anchored.keys() and
+            {item["head"]["target"] for item in anchors} == set(PLATFORMS),
+            "native journal roster differs from operator heads or required targets")
+    namespace = root / "native-attempts"
+    require(not namespace.is_symlink() and namespace.is_dir(), "native journal namespace is absent or aliased")
+
+    def census():
+        with os.scandir(namespace) as entries:
+            names = set()
+            for entry in entries:
+                require(entry.is_dir(follow_symlinks=False), "native journal namespace contains an unowned entry")
+                names.add(entry.name)
+            return names
+
+    require(census() == set(anchored), "native journal namespace differs from anchored roster")
+    local_selections = {key: {} for key in anchored}
+    for path, (kind, target, host) in selected.items():
+        parts = PurePosixPath(relative_path(path)).parts
+        require(len(parts) >= 3 and parts[0] == "native-attempts" and parts[1] in anchored,
+                "selected attempt lies outside anchored native journals")
+        head = anchored[parts[1]]["head"]
+        require((head["target"], head["host"]) == (target, host), "selected attempt names another host or target")
+        local_selections[parts[1]]["/".join(parts[2:])] = kind
+
+    seen_attempts = set()
+    for journal_id, item in sorted(indexed.items()):
+        exact(item, {"id", "journal"}, "native journal")
+        require(item["journal"]["path"] == f"native-attempts/{journal_id}/attempts/index.jsonl",
+                "native journal lies outside its permanent namespace")
+        reference(root, item["journal"])
+        custody = namespace / journal_id
+        expected = anchored[journal_id]
+        names = attempt_namespace(custody)
+        require(seen_attempts.isdisjoint(names), "duplicate native attempt id across journals")
+        seen_attempts.update(names)
+        retained = [{"id": name, "receipt": attempt_index.file_ref(custody, custody / "attempts" / name / "attempt.json")}
+                    for name in sorted(names)]
+        verify_attempts(custody, retained, local_selections[journal_id], head=expected["head"],
+                        original_root=expected["original_root"])
+    require(census() == set(anchored) and read_json(anchor_path) == anchors,
+            "native journal roster changed during verification")
+
+
+def verify(manifest_path, repository, anchor_path=None):
     require(_CLEAN_SOURCE_EXECUTION,
             "final acceptance requires the isolated clean-source CLI bootstrap")
     observations = {}
     token = OBSERVATIONS.set(observations)
     try:
-        result = verify_inputs(manifest_path, repository)
+        result = verify_inputs(manifest_path, repository, anchor_path)
         for root, _, ref in tuple(observations.values()):
             reference(root, ref)
         check_clean_source_execution(Path(__file__).resolve(strict=True).parent,
@@ -1590,7 +1683,7 @@ def verify(manifest_path, repository):
         OBSERVATIONS.reset(token)
 
 
-def verify_inputs(manifest_path, repository):
+def verify_inputs(manifest_path, repository, anchor_path=None):
     root = manifest_path.parent.resolve(strict=True)
     path = package.owned_file(root, manifest_path.name)
     with path.open("rb") as stream:
@@ -1612,11 +1705,16 @@ def verify_inputs(manifest_path, repository):
         kind, attempt = verify_gate(root, gate, identity, files, configs, binaries, artifacts,
                                     candidates)
         require(attempt not in selected, "two gates selected the same journaled attempt")
-        selected[attempt] = kind
-    for candidate in candidates.values():
-        selected[candidate["primary"]["functional"]["path"]] = None
-        selected[candidate["independent"]["path"]] = None
-    verify_attempts(root, manifest["attempts"], selected)
+        domain = json_reference(root, gate["evidence"])
+        selected[attempt] = (kind, gate["id"].split(":", 1)[1], domain["host"]["id"])
+    for target, candidate in candidates.items():
+        primary = candidate["primary"]
+        independent = json_reference(root, candidate["independent"])
+        for kind, ref, host in (("functional", primary["functional"], primary["host"]),
+                                ("independent-build", candidate["independent"], independent["host"])):
+            require(ref["path"] not in selected, "two selections name the same native attempt")
+            selected[ref["path"]] = (kind, target, host["id"])
+    verify_native_journals(root, manifest["attempts"], selected, anchor_path)
     require(verify_source(root, manifest, repository.resolve(strict=True))[0] == identity,
             "frozen source changed during verification")
     return {"schema": SCHEMA, "status": "passed", "manifest_sha256": manifest_digest,
@@ -1628,9 +1726,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--journal-heads", type=Path, help="operator-held native journal heads and original roots")
     args = parser.parse_args()
     try:
-        print(json.dumps(verify(args.manifest.resolve(strict=True), args.repository), sort_keys=True))
+        print(json.dumps(verify(args.manifest.resolve(strict=True), args.repository, args.journal_heads), sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, tarfile.TarError) as error:
         print("Release acceptance rejected: " + str(error), file=sys.stderr)
         return 1

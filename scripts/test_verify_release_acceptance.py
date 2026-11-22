@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import py_compile
+import shutil
 import struct
 import tarfile
 import tempfile
@@ -855,7 +856,7 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 refs = {name: self.file(name) for name in ("acceptance.json", "source-input.rs", "gate.log")}
 
-                def inspect_then_mutate(_manifest, _repository):
+                def inspect_then_mutate(_manifest, _repository, _heads):
                     for ref in refs.values():
                         acceptance.reference(self.root, ref)
                     (self.root / changed).write_bytes(b"unvalidated replacement")
@@ -942,7 +943,7 @@ class AcceptanceTests(unittest.TestCase):
                 acceptance.check_clean_source_execution(scripts, **{**options, **changed})
 
     def test_final_source_identity_is_rechecked_and_manifest_hash_is_bound_to_parsed_bytes(self):
-        gates = [{"id": name, "evidence": {"path": name + ".json"}}
+        gates = [{"id": name, "evidence": self.value(name + ".json", {"host": {"id": "unit-host"}})}
                  for name in sorted(acceptance.required_gates())]
         manifest = {"schema": acceptance.SCHEMA, "source": {}, "candidates": [], "gates": gates,
                     "artifacts": [], "attempts": []}
@@ -955,14 +956,14 @@ class AcceptanceTests(unittest.TestCase):
                 patch.object(acceptance, "verify_artifacts", return_value={}), \
                 patch.object(acceptance, "verify_gate", side_effect=lambda root, gate, *_: (
                     gate["id"].split(":")[0], gate["id"] + "/outcome.json")), \
-                patch.object(acceptance, "verify_attempts") as attempts:
+                patch.object(acceptance, "verify_native_journals") as attempts:
             value = acceptance.verify(self.root / ref["path"], self.root)
             self.assertEqual(value["manifest_sha256"], ref["sha256"])
             # Every gate's journaled attempt is selected under its own kind.
             selected = attempts.call_args.args[2]
             self.assertEqual(len(selected), len(gates))
             self.assertEqual(selected["ha-soak:" + acceptance.REFERENCE + "/outcome.json"],
-                             "ha-soak")
+                             ("ha-soak", acceptance.REFERENCE, "unit-host"))
             self.assertEqual(source.call_count, 2)
             source.side_effect = [(first_identity, {}, {}), ({"source_commit": "2" * 40}, {}, {})]
             with self.assertRaisesRegex(ValueError, "source changed"):
@@ -1065,6 +1066,83 @@ class AcceptanceTests(unittest.TestCase):
         self.value("attempts/omitted/attempt.json", {})
         with self.assertRaises(ValueError):
             acceptance.verify_attempts(self.root, attempts, {})
+
+    def test_native_journals_preserve_failures_and_verify_every_anchored_host(self):
+        bundle = self.root / "bundle"
+        journals, anchors = [], []
+        for target in acceptance.PLATFORMS:
+            native = self.root / target
+            native.mkdir()
+            attempt_index.create(native, target, "host-" + target, target)
+            output = native / "build"
+            attempt_index.begin(native, target, "independent-build", output, "2026-01-01T00:00:00Z")
+            output.mkdir()
+            attempt_index.finish_outcome(native, target, "failed", "2026-01-01T00:00:01Z",
+                                         products={}, processes=[], dispatch_started=False)
+            dest = bundle / "native-attempts" / target
+            shutil.copytree(native, dest)
+            journals.append({"id": target, "journal": attempt_index.file_ref(bundle, dest / "attempts/index.jsonl")})
+            anchors.append({"original_root": str(native.resolve()), "head": attempt_index.head(native)})
+        heads = self.root / "operator-heads.json"
+        heads.write_text(json.dumps(anchors))
+        acceptance.verify_native_journals(bundle, journals, {}, heads)
+        target = acceptance.REFERENCE
+        path = f"native-attempts/{target}/build/outcome.json"
+        for host, reason in [("host-" + target, "selected attempt failed"), ("other", "another host")]:
+            with self.assertRaisesRegex(ValueError, reason):
+                acceptance.verify_native_journals(bundle, journals, {path: ("independent-build", target, host)}, heads)
+        with self.assertRaisesRegex(ValueError, "roster differs"):
+            acceptance.verify_native_journals(bundle, journals[:-1], {}, heads)
+        anchors[0]["head"]["sha256"] = "0" * 64
+        heads.write_text(json.dumps(anchors))
+        with self.assertRaisesRegex(ValueError, "differs from its anchor"):
+            acceptance.verify_native_journals(bundle, journals, {}, heads)
+
+    def test_selected_independent_record_binds_native_products_after_transport(self):
+        native = self.root / "host"
+        native.mkdir()
+        attempt_index.create(native, "mac", "mac-host", "aarch64-apple-darwin")
+        output = native / "build"
+        attempt_index.begin(native, "independent", "independent-build", output, "2026-01-02T00:00:00Z")
+        output.mkdir()
+        with patch.object(self, "root", native):
+            process, _ = self.process()
+        products = {}
+        binaries = []
+        for name in sorted(acceptance.package.BINARIES):
+            path = output / "target" / "release" / name
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_bytes(name.encode())
+            products[name] = path.relative_to(output).as_posix()
+            ref = attempt_index.file_ref(native, path)
+            binaries.append({"name": name, "file": {**ref, "path": "native-attempts/mac/" + ref["path"]}})
+        proof = output / "build.json"
+        proof.write_text(json.dumps({"binaries": binaries}))
+        attempt_index.finish_outcome(native, "independent", "passed", "2026-01-02T00:00:10Z",
+                                     products=products, processes=[process], dispatch_started=True,
+                                     build_evidence="build.json")
+        dest = self.root / "bundle/native-attempts/mac"
+        shutil.copytree(native, dest)
+        ref = attempt_index.file_ref(dest, dest / "attempts/independent/attempt.json")
+        retained = [{"id": "independent", "receipt": ref}]
+        args = {"head": attempt_index.head(native), "original_root": str(native.resolve())}
+        acceptance.verify_attempts(dest, retained, {"build/build.json": "independent-build"}, **args)
+        with self.assertRaisesRegex(ValueError, "omitted an on-disk or selected attempt"):
+            acceptance.verify_attempts(dest, retained, {"build/outcome.json": "independent-build"}, **args)
+        wrong = {**args, "original_root": str(dest)}
+        with self.assertRaisesRegex(ValueError, "differs from original outcome"):
+            acceptance.verify_attempts(dest, retained, {}, **wrong)
+
+    def test_rebased_reference_preserves_original_observation(self):
+        ref = self.value("custody/evidence.json", {"result": 1})
+        token = acceptance.OBSERVATIONS.set({})
+        self.addCleanup(acceptance.OBSERVATIONS.reset, token)
+        acceptance.reference(self.root / "custody", {**ref, "path": "evidence.json"})
+        path = acceptance.reference(self.root, ref)
+        self.assertEqual(acceptance.read_json(path), {"result": 1})
+        path.write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "between verification and parsing"):
+            acceptance.read_json(path)
 
     def test_attempt_census_rejects_unfinished_and_aliased_entries(self):
         process, receipt = self.process()

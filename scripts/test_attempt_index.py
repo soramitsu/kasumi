@@ -3,6 +3,7 @@ import ast
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -25,6 +26,23 @@ class AttemptIndexTests(unittest.TestCase):
         self.finished = "2026-09-24T00:00:10+00:00"
         self.journal = self.root / "attempts/index.jsonl"
         self.identity = index.create(self.root, "unit-journal", "unit-host", TARGET)
+
+    def test_transported_assembly_replays_original_paths_and_anchored_bytes(self):
+        self.begin()
+        self.finish()
+        anchor = index.head(self.root)
+        with tempfile.TemporaryDirectory(prefix="transported-attempt-unit-") as tmp:
+            moved = Path(tmp) / "snapshot"
+            shutil.copytree(self.root, moved)
+            self.assertIn("assembly-one", index.replay(moved, head=anchor, original_root=str(self.root)))
+            with self.assertRaisesRegex(ValueError, "needs its anchored head"):
+                index.replay(moved, original_root=str(self.root))
+            for invalid in (str(self.root) + "/", "/other/../archive", "relative", "//archive"):
+                with self.subTest(path=invalid), self.assertRaisesRegex(ValueError, "original native custody path"):
+                    index.replay(moved, head=anchor, original_root=invalid)
+            (moved / "assembly-one/assembly/attempt.json").write_text("changed")
+            with self.assertRaisesRegex(ValueError, "reference bytes differ"):
+                index.replay(moved, head=anchor, original_root=str(self.root))
 
     def begin(self, attempt_id="assembly-one", output=None):
         return index.begin(self.root, attempt_id, "repeatable-assembly",
