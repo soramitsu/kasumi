@@ -881,7 +881,7 @@ async fn cleanup(
         .map_err(|error| format!("{:?}: {}", error.code, error.message))
 }
 
-/// The first unjournaled abort may already own a Control claim at an older
+/// An unjournaled abort may already own a Control claim at an older
 /// source revision. Resolve the actual session before attempting another claim.
 async fn interrupted_abort_status(
     inst: &Installation,
@@ -1534,7 +1534,10 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
     let mut journal = Journal::open(root)?;
     let mut durations: BTreeMap<Kind, Vec<f64>> = BTreeMap::new();
     let reserve = plan.reserve_start();
-    let first_missing = (0..reserve).find(|id| !done.contains_key(id));
+    // Control and the destination can durably advance several sessions between
+    // external journal syncs. Follow that original prefix across completed
+    // checkpoints until an abort has no previously published claim.
+    let mut resolve_existing = resumed;
     for ordinal in 0..reserve {
         if done.contains_key(&ordinal) {
             if ordinal == plan.cleanup_ordinal() {
@@ -1542,15 +1545,17 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
             }
             continue;
         }
-        let resume = resumed && first_missing == Some(ordinal);
-        let original = run_session(&inst, &plan, ordinal, "populate", resume).await?;
+        let original = run_session(&inst, &plan, ordinal, "populate", resolve_existing).await?;
         durations
             .entry(original.kind)
             .or_default()
             .push(original.seconds);
         journal.append(&original)?;
-        if resume {
+        if resolve_existing {
             journal.sync()?;
+            if original.kind == Kind::Aborted && original.resolution.is_none() {
+                resolve_existing = false;
+            }
         }
         if ordinal == plan.cleanup_ordinal() {
             journal.sync()?;
@@ -2643,9 +2648,14 @@ async fn prepare_interrupted_claim(root: &Path, plan: &Plan, ordinal: u64) -> an
         "original claim already terminal"
     );
     write_json(&root.join("original-claim.json"), &previous)?;
+    advance_population_source(&inst, ordinal + 1).await?;
+    inst.close().await
+}
+
+async fn advance_population_source(inst: &Installation, ordinal: u64) -> anyhow::Result<()> {
     inst.source
         .administer(
-            inst.context(ordinal + 1),
+            inst.context(ordinal),
             Operation::CreateCollection(CollectionDefinition {
                 name: "later".into(),
                 write_mode: CollectionWriteMode::Mutable,
@@ -2656,8 +2666,25 @@ async fn prepare_interrupted_claim(root: &Path, plan: &Plan, ordinal: u64) -> an
             }),
         )
         .await
-        .native("advance source after original claim")?;
-    inst.close().await
+        .native("advance source after original claim")
+        .map(|_| ())
+}
+
+fn interrupted_population_plan() -> Plan {
+    Plan {
+        schema: SCHEMA.into(),
+        cohort: "regression".into(),
+        sessions: 24,
+        failure_stride: 3,
+        profile: None,
+        kill_reserve: 2,
+        nonce: uuid::Uuid::new_v4(),
+        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
+        source_hot_audit_bytes: 128 << 10,
+        control_hot_audit_bytes: 1 << 20,
+        cleanup_objects: 300,
+        page_limit: 8,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2671,20 +2698,7 @@ async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advanc
     let temp = kasumi_store::test_utils::private_tempdir()?;
     let root = temp.path().join("installation");
     std::fs::create_dir_all(root.join("logs"))?;
-    let plan = Plan {
-        schema: SCHEMA.into(),
-        cohort: "regression".into(),
-        sessions: 24,
-        failure_stride: 3,
-        profile: None,
-        kill_reserve: 2,
-        nonce: uuid::Uuid::new_v4(),
-        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
-        source_hot_audit_bytes: 128 << 10,
-        control_hot_audit_bytes: 1 << 20,
-        cleanup_objects: 300,
-        page_limit: 8,
-    };
+    let plan = interrupted_population_plan();
     write_json(&root.join("plan.json"), &plan)?;
     // The persistent disk registry owns its admission until process exit.
     Parent {
@@ -2725,6 +2739,73 @@ async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advanc
         "retained terminal replay published another Control row"
     );
     reopened.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_population_recovers_all_unjournaled_originals() -> anyhow::Result<()> {
+    if let Ok(stage) = std::env::var(STAGE) {
+        let root = PathBuf::from(std::env::var(ROOT)?);
+        if stage == "populate" {
+            return populate(&root).await;
+        }
+        anyhow::ensure!(stage == "original-prefix");
+        let plan = plan_of(&root)?;
+        let inst = Installation::open(&root, &plan).await?;
+        let mut journal = Journal::open(&root)?;
+        let mut originals = Vec::new();
+        // The node and destination durably acknowledge six sessions. Only
+        // the first result reaches the external observer's durable journal.
+        for ordinal in 0..6 {
+            let original = run_session(&inst, &plan, ordinal, "original", false).await?;
+            if ordinal == 0 {
+                journal.append(&original)?;
+                journal.sync()?;
+            }
+            originals.push(original);
+        }
+        write_json(&root.join("acknowledged.json"), &originals)?;
+        advance_population_source(&inst, plan.sessions + 1).await?;
+        return inst.close().await;
+    }
+
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = Plan {
+        sessions: 11,
+        failure_stride: 2,
+        ..interrupted_population_plan()
+    };
+    write_json(&root.join("plan.json"), &plan)?;
+    let mut parent = Parent {
+        root: root.clone(),
+        test: test_name("interrupted_population_recovers_all_unjournaled_originals"),
+        exe: std::env::current_exe()?,
+        processes: Vec::new(),
+    };
+    parent.run("original-prefix")?;
+    let prefix = std::fs::read(root.join("original.jsonl"))?;
+    let originals: Vec<Original> = read_json(&root.join("acknowledged.json"))?;
+    parent.run("populate")?;
+    let journal = std::fs::read(root.join("original.jsonl"))?;
+    anyhow::ensure!(journal.starts_with(&prefix));
+    let recovered = read_originals(&root)?;
+    anyhow::ensure!(recovered.len() as u64 == plan.reserve_start());
+    for original in originals {
+        let current = &recovered[&original.ordinal];
+        anyhow::ensure!(
+            current.session_id == original.session_id
+                && current.request_id == original.request_id
+                && current.kind == original.kind
+                && current.outcome == original.outcome
+                && current.checkpoint == original.checkpoint
+        );
+        if original.kind == Kind::Aborted {
+            anyhow::ensure!(current.resolution.is_some());
+        }
+    }
+    anyhow::ensure!(recovered[&7].resolution.is_none());
+    Ok(())
 }
 
 /// Small normal regression: every process, kill point, replay, boundary and
