@@ -395,12 +395,10 @@ fn action<'a>(
         )));
     };
     if previous.definition != collection.definition {
-        return Ok(IndexUpdate::Rebuild(StateCollection::with_resolver(
-            new,
-            name,
-            collection,
-            new_resolver,
-        )));
+        return Ok(IndexUpdate::Replace {
+            previous,
+            source: StateCollection::with_resolver(new, name, collection, new_resolver),
+        });
     }
     if previous.documents.ptr_eq(&collection.documents)
         && previous
