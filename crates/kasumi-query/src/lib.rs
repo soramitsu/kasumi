@@ -118,36 +118,6 @@ pub struct QueryIndexes {
     structured_layout: std::sync::OnceLock<[u8; 32]>,
 }
 
-/// Persistent primary-ID roots for coherent point/scan leases. This intentionally
-/// retains no text or field-index generation.
-#[derive(Debug, Clone)]
-pub struct ReadIds(BTreeMap<String, IdSet>);
-impl ReadIds {
-    pub fn document_ids_after(
-        &self,
-        collection: &str,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<String>> {
-        use std::ops::Bound;
-        if limit == 0 || limit > 1001 {
-            return Err(invalid("ID page limit outside bounds"));
-        }
-        let ids = self
-            .0
-            .get(collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
-        Ok(ids
-            .range::<_, str>((
-                after.map_or(Bound::Unbounded, Bound::Excluded),
-                Bound::Unbounded,
-            ))
-            .take(limit)
-            .map(|id| id.as_ref().to_owned())
-            .collect())
-    }
-}
-
 /// One collection definition's compiled document schema. Resolving it encodes
 /// and hashes the whole schema; validating a document with it does neither, so
 /// callers that check several documents of one definition, such as one batch's
@@ -203,14 +173,6 @@ impl QueryIndexes {
             .validate_document(definition, body)
     }
 
-    pub fn read_ids(&self) -> ReadIds {
-        ReadIds(
-            self.collections
-                .iter()
-                .map(|(name, indexes)| (name.clone(), indexes.structured.ids.clone()))
-                .collect(),
-        )
-    }
     /// Stream the two disjoint ID sets for every indexed field. The field
     /// ordinal follows the same sorted path map used by the planner. An empty
     /// array or explicit null has a present posting; a missing path has one
