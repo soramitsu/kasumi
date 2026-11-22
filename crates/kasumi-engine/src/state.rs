@@ -4000,7 +4000,9 @@ impl TenantEngine {
         }
         check()?;
         let mut indexes = match document_indexes {
-            Some(building) => building.finish(self.text_residency())?,
+            Some(building) => {
+                building.finish_installed(self.text_residency(), &state.collections, check)?
+            }
             None => {
                 crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
                     .map_err(crate::index_source::into_anyhow)?

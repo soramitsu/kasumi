@@ -280,12 +280,14 @@ pub(crate) fn build_with_resolver(
     resolver: Option<&dyn DocumentResolver>,
     residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
-    QueryIndexes::build_with_residency(
-        state.collections.iter().map(|(name, collection)| {
-            StateCollection::with_resolver(state, name, collection, resolver)
-        }),
-        residency,
-    )
+    let records = state.collections.iter().map(|(name, collection)| {
+        StateCollection::with_resolver(state, name, collection, resolver)
+    });
+    if resolver.is_some() {
+        QueryIndexes::build_installed_with_residency(records, residency)
+    } else {
+        QueryIndexes::build_with_residency(records, residency)
+    }
 }
 
 fn check_scope(old: &TenantState, new: &TenantState) -> Result<()> {

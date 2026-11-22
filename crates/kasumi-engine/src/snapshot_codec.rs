@@ -1357,7 +1357,7 @@ fn read_placed(
         SnapshotInput::VerifiedTarget { records, .. }
             if records.summary().kinds[4].records == 0 =>
         {
-            Some(kasumi_query::SnapshotIndexBuilder::default())
+            Some(kasumi_query::SnapshotIndexBuilder::for_installed_rows())
         }
         _ => None,
     };
@@ -1905,6 +1905,77 @@ mod tests {
                 .to_string()
                 .contains("materialized snapshot image changed"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn authenticated_fieldless_restore_binds_the_staged_document_headers() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
+        let mut source = state();
+        let documents = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                let document = Document {
+                    id: id.into(),
+                    version: 0,
+                    body: serde_json::json!({"id": id}),
+                };
+                (
+                    id.to_owned(),
+                    Arc::new(DocumentSlot::Pending(Arc::new(document))),
+                )
+            })
+            .collect();
+        source.collections.insert(
+            "docs".into(),
+            CollectionState {
+                definition: Arc::new(CollectionDefinition {
+                    name: "docs".into(),
+                    schema: serde_json::json!({"type":"object"}),
+                    indexes: vec![],
+                    strict_read_audit: false,
+                    retention_class: CollectionRetentionClass::Operational,
+                    write_mode: CollectionWriteMode::Mutable,
+                }),
+                data_epoch: 0,
+                documents,
+                archived_documents: Default::default(),
+                archived_document_bytes: 0,
+            },
+        );
+        let mut bytes = Vec::new();
+        write(&source, &mut bytes).unwrap();
+        let image = kasumi_store::SnapshotImage::from_bytes(&scratch.disk, &bytes).unwrap();
+        let records = crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+            image,
+            128 << 20,
+            || Ok(()),
+        )
+        .unwrap()
+        .into_records();
+        let decoded =
+            super::read_verified_target(&records, &source.tenant, "restored", &|| Ok(())).unwrap();
+        for (id, slot) in &decoded.state.collections["docs"].documents {
+            let DocumentSlot::Stored(descriptor) = slot.as_ref() else {
+                panic!("authenticated restore retained a pending body");
+            };
+            let document =
+                kasumi_types::DocumentResolver::load(&decoded.documents, descriptor).unwrap();
+            assert_eq!(document.body, serde_json::json!({"id":id}));
+        }
+        let indexes = decoded
+            .document_indexes
+            .unwrap()
+            .finish_installed(
+                kasumi_query::TextResidency::Directory,
+                &decoded.state.collections,
+                || Ok::<_, anyhow::Error>(()),
+            )
+            .unwrap();
+        assert_eq!(
+            indexes.document_ids_after("docs", Some("a"), 2).unwrap(),
+            ["b", "c"]
         );
     }
 

@@ -898,6 +898,166 @@ fn snapshot_primary_ids_match_the_rebuilt_root_and_invalid_input_cannot_finish()
 }
 
 #[test]
+fn installed_snapshot_build_binds_original_headers_and_rejects_substitution() {
+    let rows = Rows::new("docs", &[], false, false);
+    let definition = Arc::new(rows.definition);
+    let mut building = SnapshotIndexBuilder::for_installed_rows();
+    building.add_collection(&definition).unwrap();
+    let mut collection = CollectionState {
+        documents: Default::default(),
+        archived_documents: Default::default(),
+        archived_document_bytes: 0,
+        data_epoch: 1,
+        definition,
+    };
+    for id in ["a", "b", "c"] {
+        let doc = Document {
+            id: id.into(),
+            version: 7,
+            body: serde_json::json!({}),
+        };
+        building.add_document("docs", &doc).unwrap();
+        collection
+            .documents
+            .insert(id.into(), crate::source_test_utils::pending(doc));
+    }
+    let mut catalog = BTreeMap::from([("docs".to_string(), collection)]);
+    assert!(building.clone().finish(TextResidency::Directory).is_err());
+    let refused = building
+        .clone()
+        .finish_installed(TextResidency::Directory, &catalog, || {
+            Err(Error::new(
+                ErrorCode::Unavailable,
+                "selected snapshot check refused",
+            ))
+        });
+    assert!(matches!(
+        refused,
+        Err(Error {
+            code: ErrorCode::Unavailable,
+            ..
+        })
+    ));
+    let selected = building
+        .clone()
+        .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+        .unwrap();
+    assert!(selected.collections["docs"].structured.ids.is_empty());
+    assert_eq!(
+        selected.document_ids_after("docs", Some("a"), 2).unwrap(),
+        ["b", "c"]
+    );
+    let wrong = Document {
+        id: "b".into(),
+        version: 8,
+        body: serde_json::json!({}),
+    };
+    catalog
+        .get_mut("docs")
+        .unwrap()
+        .documents
+        .insert("b".into(), crate::source_test_utils::pending(wrong));
+    assert!(
+        building
+            .clone()
+            .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+            .is_err()
+    );
+    catalog.get_mut("docs").unwrap().documents.remove("b");
+    assert!(
+        building
+            .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+            .is_err()
+    );
+}
+
+#[test]
+fn installed_rebuild_replays_checked_records_and_preserves_source_failure() {
+    struct Records<'a> {
+        owner: &'a CollectionState,
+        loans: &'a Rows,
+        failure: Option<&'a Arc<()>>,
+    }
+    impl CollectionRecords for Records<'_> {
+        type Failure = SourceError;
+        fn definition(&self) -> &CollectionDefinition {
+            &self.owner.definition
+        }
+        fn identity(&self) -> SourceIdentity<'_> {
+            SourceIdentity::new(self.owner, "tenant", "incarnation", "docs")
+        }
+        fn visit_records(
+            &self,
+            lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            self.loans.visit_records(lend)?;
+            if let Some(failure) = self.failure {
+                return Err(ReadFailure::Source(SourceError(Arc::clone(failure))));
+            }
+            Ok(())
+        }
+    }
+    let rows = Rows::new(
+        "docs",
+        &[("a", serde_json::json!({})), ("b", serde_json::json!({}))],
+        false,
+        false,
+    );
+    let mut collection = CollectionState {
+        documents: Default::default(),
+        archived_documents: Default::default(),
+        definition: Arc::new(rows.definition.clone()),
+        archived_document_bytes: 0,
+        data_epoch: 1,
+    };
+    for (id, record) in &rows.rows {
+        let Decoded::Live(doc) = record.decode() else {
+            unreachable!()
+        };
+        collection
+            .documents
+            .insert(id.clone(), crate::source_test_utils::pending(doc));
+    }
+    let build = |loans, failure| {
+        QueryIndexes::build_installed_with_residency(
+            [Records {
+                owner: &collection,
+                loans,
+                failure,
+            }],
+            TextResidency::Directory,
+        )
+    };
+    let indexes = build(&rows, None).unwrap();
+    assert!(indexes.collections["docs"].structured.ids.is_empty());
+    assert_eq!(
+        indexes.document_ids_after("docs", None, 2).unwrap(),
+        ["a", "b"]
+    );
+    let original = Arc::new(());
+    assert!(
+        matches!(build(&rows, Some(&original)), Err(ReadFailure::Source(SourceError(source))) if Arc::ptr_eq(&source,&original))
+    );
+    let missing = Rows::new("docs", &[("a", serde_json::json!({}))], false, false);
+    assert!(matches!(
+        build(&missing, None),
+        Err(ReadFailure::Query(Error {
+            code: ErrorCode::Corruption,
+            ..
+        }))
+    ));
+    let invalid = Rows::new(
+        "docs",
+        &[("a", Value::Null), ("b", serde_json::json!({}))],
+        false,
+        false,
+    );
+    assert!(matches!(build(&invalid, None), Err(ReadFailure::Query(_))));
+    let independent = QueryIndexes::build([&rows]).unwrap();
+    assert_eq!(independent.collections["docs"].structured.ids.len(), 2);
+}
+
+#[test]
 fn later_collection_rejection_never_advances_an_earlier_shared_text_writer() {
     let old_text = Rows::new(
         "a",
