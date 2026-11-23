@@ -2654,7 +2654,13 @@ impl NodeRuntime {
         observe(
             &mut self.startup_drain,
             &mut retained,
-            crate::target_runtime::shutdown_target(&mut self.target_recovery).await,
+            crate::target_runtime::shutdown_target(
+                &mut self.target_recovery,
+                self.administration
+                    .as_ref()
+                    .map(|manager| &manager.readiness.probe),
+            )
+            .await,
         );
         if !self.stopping_audit_started {
             self.stopping_audit_started = true;

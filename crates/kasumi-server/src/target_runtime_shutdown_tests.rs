@@ -11,6 +11,16 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     let node = physical.create_new(&path, file_id).unwrap();
     let first_id = node.registered_opening_id().unwrap();
     let retained_alias = node.clone();
+    let probe = crate::readiness_probe::ProbeSlot::default();
+    let (ready, original) = tokio::sync::oneshot::channel::<()>();
+    probe
+        .start(&physical.admission, Some(node.locator()), async move {
+            original.await?;
+            drop(retained_alias);
+            Ok(false)
+        })
+        .await
+        .unwrap();
     let mut generation = Generation {
         node: Some(node),
         ..Default::default()
@@ -46,10 +56,15 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     assert_eq!(generation.node_retirement.as_ref().unwrap().id(), first_id);
     assert!(!generation.node_retirement.as_ref().unwrap().is_retired());
 
-    drop(retained_alias);
+    ready.send(()).unwrap();
+    // Even a satisfied actor channel still owns the original physical facade
+    // until this exact retained future is polled.
     // The original diagnostic remains observable after its owner actually
     // retires; it must not authorize a second opening while still retained.
-    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    let completed = generation
+        .close_with_witness(&cluster, &registry, None, Some(&probe))
+        .await
+        .unwrap_err();
     assert_eq!(completed.completion(), DrainCompletion::Complete);
     assert_eq!(completed.issues().len(), 1);
     assert_eq!(completed.issues()[0].component(), "target physical owner");
@@ -61,13 +76,46 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     assert_ne!(second_id, first_id);
     reopened.prepare_cache_warming().await.unwrap();
     reopened.activate_cache_warming().unwrap();
+    let other = physical
+        .create_new(
+            &directory.path().join("persistent/unrelated.kv"),
+            Uuid::new_v4(),
+        )
+        .unwrap();
+    let retained_alias = reopened.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let observed_settlement = settled.clone();
+    let (ready, original) = tokio::sync::oneshot::channel::<()>();
+    probe
+        .start(&physical.admission, Some(reopened.locator()), async move {
+            original.await?;
+            drop(retained_alias);
+            observed_settlement.store(true, Ordering::Release);
+            Ok(false)
+        })
+        .await
+        .unwrap();
+    probe.observe_closed_node(&reopened.locator()).await;
+    assert!(!settled.load(Ordering::Acquire));
+    // A pending exact query and a ready different physical opening cannot settle one another.
+    ready.send(()).unwrap();
+    probe.observe_closed_node(&other.locator()).await;
+    assert!(!settled.load(Ordering::Acquire));
+    let before = physical.admission.snapshot().reserved_bytes;
     generation.node = Some(reopened);
 
     // A later management phase closes this newly accepted physical opening,
     // never borrowing the old positive receipt as proof of its retirement.
-    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    let completed = generation
+        .close_with_witness(&cluster, &registry, None, Some(&probe))
+        .await
+        .unwrap_err();
     assert_eq!(completed.completion(), DrainCompletion::Complete);
     assert_eq!(completed.issues().len(), 1);
+    assert!(physical.admission.snapshot().reserved_bytes < before);
+    assert!(settled.load(Ordering::Acquire));
+    other.shutdown().await.unwrap();
+    assert!(other.retire().is_retired());
     assert!(generation.node.is_none());
     let second = generation.node_retirement.as_ref().unwrap();
     assert_eq!(second.id(), second_id);
@@ -370,7 +418,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             check_closing_activation.then(|| runtime.call_jobs.acquire_failure().unwrap());
         let mut outer = Some(runtime);
         phase.set("cancelling the first shutdown");
-        let mut first = Box::pin(shutdown_target(&mut outer));
+        let mut first = Box::pin(shutdown_target(&mut outer, None));
         std::future::poll_fn(|cx| {
             assert!(first.as_mut().poll(cx).is_pending());
             Poll::Ready(())
@@ -412,7 +460,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             drop(seat);
         }
         phase.set("joining the paused monitor");
-        let mut retry = Box::pin(shutdown_target(&mut outer));
+        let mut retry = Box::pin(shutdown_target(&mut outer, None));
         std::future::poll_fn(|cx| {
             assert!(retry.as_mut().poll(cx).is_pending());
             Poll::Ready(())

@@ -167,7 +167,7 @@ impl Generation {
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
     ) -> DrainResult {
-        self.close_with_witness(cluster, registry, None).await
+        self.close_with_witness(cluster, registry, None, None).await
     }
 
     async fn close_with_witness(
@@ -175,6 +175,7 @@ impl Generation {
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
         witness: Option<StopDrainWitness<'_>>,
+        readiness: Option<&crate::readiness_probe::ProbeSlot>,
     ) -> DrainResult {
         use kasumi_engine::TargetOwnerDrain::*;
         let observe = |stage, report: &DrainReport| -> DrainResult {
@@ -416,6 +417,16 @@ impl Generation {
         }
         self.fresh_catalogs = false;
         if retained.is_none() {
+            if let Some(probe) = readiness
+                && let Some(node) = self.node.as_ref().map(NodeStore::locator).or_else(|| {
+                    self.node_retirement
+                        .as_ref()
+                        .filter(|receipt| !receipt.is_retired())
+                        .map(kasumi_store::NodeRetirement::locator)
+                })
+            {
+                probe.observe_closed_node(&node).await;
+            }
             if let Some(original) = &mut self.node_retirement {
                 original.retry();
             } else if let Some(node) = self.node.take() {
@@ -616,9 +627,12 @@ pub struct TargetRecoveryRuntime {
     fail_next_initialize_reply: AtomicBool,
 }
 /// Keep the outer owner reachable across cancellation of its recursive drain.
-pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> DrainResult {
+pub(crate) async fn shutdown_target(
+    owner: &mut Option<Arc<TargetRecoveryRuntime>>,
+    readiness: Option<&crate::readiness_probe::ProbeSlot>,
+) -> DrainResult {
     if let Some(target) = owner.as_ref()
-        && let Err(failure) = target.shutdown().await
+        && let Err(failure) = target.shutdown_with_readiness(readiness).await
     {
         if failure.completion() == DrainCompletion::Complete {
             // The original diagnostic has been returned to the caller, and
@@ -1437,6 +1451,7 @@ impl TargetRecoveryRuntime {
                                 operation: &operation,
                                 proof: &proof,
                             }),
+                            None,
                         )
                         .await
                         .map_err(Into::into)
@@ -2595,6 +2610,13 @@ impl TargetRecoveryRuntime {
         Ok(SignedLocalTargetCleanup { fact, signature })
     }
     pub async fn shutdown(&self) -> DrainResult {
+        self.shutdown_with_readiness(None).await
+    }
+
+    async fn shutdown_with_readiness(
+        &self,
+        readiness: Option<&crate::readiness_probe::ProbeSlot>,
+    ) -> DrainResult {
         let mut report = self.shutdown_gate.lock().await;
         let mut retained = None;
         self.seal_admission();
@@ -2644,7 +2666,7 @@ impl TargetRecoveryRuntime {
             if let Err(failure) = target
                 .lock()
                 .await
-                .close(&self.cluster, &self.registry)
+                .close_with_witness(&self.cluster, &self.registry, None, readiness)
                 .await
             {
                 report.merge(&failure);

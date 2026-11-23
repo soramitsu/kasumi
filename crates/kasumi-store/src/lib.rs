@@ -1247,6 +1247,12 @@ pub enum NodeStoreLookup {
 }
 
 impl NodeStoreLocator {
+    /// Compare the installed census and its exact generation without acquiring
+    /// another facade or treating a missing owner as a retirement receipt.
+    pub fn same_owner(&self, other: &Self) -> bool {
+        self.id == other.id && Arc::ptr_eq(&self.provider, &other.provider)
+    }
+
     pub fn try_borrow(&self) -> NodeStoreLookup {
         // The actual census implementation must distinguish metadata contention
         // from absent generation; both remain distinct from retirement receipts.
@@ -1274,6 +1280,13 @@ pub struct NodeRetirement {
 }
 
 impl NodeRetirement {
+    pub fn locator(&self) -> NodeStoreLocator {
+        NodeStoreLocator {
+            id: self.id,
+            provider: self.provider.clone(),
+        }
+    }
+
     pub fn id(&self) -> StorageOwnerId {
         self.id
     }

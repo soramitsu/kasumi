@@ -490,12 +490,16 @@ impl Administration {
             let database = selected.database.clone();
             self.readiness
                 .probe
-                .start(&self.admission, async move {
-                    database
-                        .raft_group()
-                        .readiness_probe(local_id, expected_voters)
-                        .await
-                })
+                .start(
+                    &self.admission,
+                    Some(selected.store.node_store().locator()),
+                    async move {
+                        database
+                            .raft_group()
+                            .readiness_probe(local_id, expected_voters)
+                            .await
+                    },
+                )
                 .await
                 .context(SweepFailure::ProbeAdmission)?;
             let observed = tokio::select! {

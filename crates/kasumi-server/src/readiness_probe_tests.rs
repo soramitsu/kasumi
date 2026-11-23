@@ -26,7 +26,7 @@ async fn repeated_timeouts_keep_one_actual_queued_probe_and_its_charge() {
     let queued = Arc::new(AtomicUsize::new(0));
     let (reply, receiver) = tokio::sync::oneshot::channel();
     let dispatched = queued.clone();
-    slot.start(&admission, async move {
+    slot.start(&admission, None, async move {
         dispatched.fetch_add(1, Ordering::AcqRel);
         receiver.await?;
         Ok(true)
@@ -48,7 +48,7 @@ async fn repeated_timeouts_keep_one_actual_queued_probe_and_its_charge() {
         );
         let attempted = queued.clone();
         assert!(
-            slot.start(&admission, async move {
+            slot.start(&admission, None, async move {
                 attempted.fetch_add(1, Ordering::AcqRel);
                 Ok(true)
             })
@@ -85,7 +85,7 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
     let original = Arc::new(());
     let identity = original.clone();
     let (reply, receiver) = tokio::sync::oneshot::channel();
-    slot.start(&admission, async move {
+    slot.start(&admission, None, async move {
         receiver.await?;
         Err(ProbeFailure(identity).into())
     })
@@ -102,7 +102,11 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
         admission.snapshot().reserved_bytes,
         bookkeeping + PROBE_BYTES
     );
-    assert!(slot.start(&admission, async { Ok(true) }).await.is_err());
+    assert!(
+        slot.start(&admission, None, async { Ok(true) })
+            .await
+            .is_err()
+    );
     reply.send(()).unwrap();
     let failure = slot.drain_after_group_shutdown().await.unwrap_err();
     assert_eq!(
@@ -129,7 +133,7 @@ async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() 
     let slot = ProbeSlot::default();
     let payload = Arc::new(());
     let weak = Arc::downgrade(&payload);
-    slot.start(&admission, async move {
+    slot.start(&admission, None, async move {
         std::panic::panic_any(payload);
     })
     .await
@@ -140,7 +144,11 @@ async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() 
         bookkeeping + PROBE_BYTES
     );
     assert!(weak.upgrade().is_some());
-    assert!(slot.start(&admission, async { Ok(true) }).await.is_err());
+    assert!(
+        slot.start(&admission, None, async { Ok(true) })
+            .await
+            .is_err()
+    );
     let failure = slot.drain_after_group_shutdown().await.unwrap_err();
     assert!(
         failure.issues()[0]
