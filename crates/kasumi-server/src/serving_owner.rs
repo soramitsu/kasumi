@@ -22,14 +22,12 @@ pub(crate) struct Registration {
     _reservation: kasumi_engine::admission::Reservation,
 }
 impl Registration {
-    pub(crate) fn new(
-        kind: Kind,
+    pub(crate) fn reserve(
         identity: uuid::Uuid,
         admission: &Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Self> {
-        // Startup's existing pending inventory owns every acquired resource if
-        // this reservation/fence fails before the runtime is published.
-        check_admission(registry(kind), identity)?;
+        // An opening owns its physical resources and pays for this slot even if
+        // the caller has already left. Only claiming its ticket can publish it.
         let mut reservation = admission.reserve(4096, None)?;
         // Installed metadata holds bytes for its lifetime, not an inflight
         // request-operation slot. The exact charge is released only on Drop.
@@ -38,6 +36,9 @@ impl Registration {
             identity,
             _reservation: reservation,
         })
+    }
+    pub(crate) fn admit(&self, kind: Kind) -> Result<()> {
+        check_admission(registry(kind), self.identity)
     }
 }
 

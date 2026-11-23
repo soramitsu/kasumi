@@ -349,12 +349,41 @@ mod tests {
             observation: observation.clone(),
             fail_once: false,
         };
+        struct Prepared {
+            owner: Candidate,
+            registration: crate::serving_owner::Registration,
+            kind: crate::serving_owner::Kind,
+        }
+        impl Runtime for Prepared {
+            fn handoff(&mut self) -> Result<()> {
+                self.registration.admit(self.kind)
+            }
+            fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>> {
+                self.owner.close()
+            }
+        }
+        let serving_kind = if signal == "-TERM" {
+            crate::serving_owner::Kind::Data
+        } else {
+            crate::serving_owner::Kind::Authority
+        };
+        let admission = kasumi_engine::admission::NodeAdmission::new(Default::default())?;
+        let baseline = admission.snapshot().reserved_bytes;
+        let opening_admission = admission.clone();
         let (started, admitted) = oneshot::channel();
         let (resume, proceed) = oneshot::channel();
         let opening = open(kind, async move {
             started.send(()).expect("startup observer");
             proceed.await?;
-            Ok(candidate)
+            let registration = crate::serving_owner::Registration::reserve(
+                uuid::Uuid::new_v4(),
+                &opening_admission,
+            )?;
+            Ok(Prepared {
+                owner: candidate,
+                registration,
+                kind: serving_kind,
+            })
         });
         tokio::time::timeout(Duration::from_secs(30), async {
             let send_signal = async {
@@ -373,6 +402,9 @@ mod tests {
             sent?;
             anyhow::ensure!(result?.is_none());
             anyhow::ensure!(!observation.dropped.load(Ordering::Acquire));
+            // Exercise the real process exit ordering while this accepted open
+            // is still constructing its unpublished, fully charged owner.
+            crate::serving_owner::seal(serving_kind);
             resume.send(()).expect("retained startup owner");
             observation.entered.notified().await;
             anyhow::ensure!(!observation.closed.load(Ordering::Acquire));
@@ -380,6 +412,17 @@ mod tests {
             drain(kind).await?;
             anyhow::ensure!(observation.closed.load(Ordering::Acquire));
             anyhow::ensure!(observation.dropped.load(Ordering::Acquire));
+            assert_eq!(admission.snapshot().reserved_bytes, baseline);
+            let refused =
+                crate::serving_owner::Registration::reserve(uuid::Uuid::new_v4(), &admission)?;
+            let error = refused.admit(serving_kind).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("no runtime is admitted to serve")
+            );
+            drop(refused);
+            assert_eq!(admission.snapshot().reserved_bytes, baseline);
             Ok(())
         })
         .await?

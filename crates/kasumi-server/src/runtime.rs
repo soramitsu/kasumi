@@ -1750,7 +1750,7 @@ impl NodeRuntime {
                 crate::node_enrollment::target_journal_exclusion(config.database_id, &admission),
             )?;
         }
-        let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
+        let serving_registration = crate::serving_owner::Registration::reserve(config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
             telemetry: crate::observability::Telemetry::new(),
@@ -7845,6 +7845,10 @@ mod deployed_format_tests;
 
 impl crate::startup_owner::Runtime for NodeRuntime {
     fn handoff(&mut self) -> Result<()> {
+        self.serving_registration
+            .as_ref()
+            .expect("a prepared runtime owns its serving reservation")
+            .admit(crate::serving_owner::Kind::Data)?;
         // Ticket::claim calls this synchronously while retaining the entire
         // runtime. Failed/abandoned publication still drains dormant workers.
         for node in &self.owned_nodes {
