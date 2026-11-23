@@ -21,6 +21,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import resource
 import shutil
 import signal
 import stat
@@ -247,7 +248,7 @@ def verify_export(repository, commit, directory, files):
 
 
 def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/cgroup")):
-    """Retain raw visible cgroup counters, including child OOM events.
+    """Record the runner's inherited process limits and visible cgroup counters.
 
     These reads are not atomic. Ancestor counters can include other workloads;
     a cumulative peak is not a per-gate peak. Missing counters are explicit and
@@ -255,7 +256,11 @@ def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/
     """
     record = {"observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "scope": "raw visible cgroup counters; non-atomic and possibly shared",
+              "runner_rlimits": {}, "rlim_infinity": resource.RLIM_INFINITY,
               "membership": None, "cgroups": {}, "errors": []}
+    for name in ("AS", "CPU", "FSIZE", "NOFILE", "STACK"):
+        soft, hard = resource.getrlimit(getattr(resource, "RLIMIT_" + name))
+        record["runner_rlimits"][name] = {"soft": soft, "hard": hard}
     try:
         with Path(membership).open() as source:
             value = source.read(65537)

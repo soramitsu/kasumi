@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import resource
 import shutil
 import signal
 import struct
@@ -295,6 +296,21 @@ class ReleaseGateTests(unittest.TestCase):
             missing = observe(root / "missing", cgroups)
             self.assertFalse(missing["available"])
             self.assertTrue(missing["errors"])
+
+    def test_resource_record_matches_the_limits_inherited_by_the_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c", "import json, resource; print(json.dumps({"
+                       "name: resource.getrlimit(getattr(resource, 'RLIMIT_' + name)) "
+                       "for name in ('AS', 'CPU', 'FSIZE', 'NOFILE', 'STACK')}))"]
+            result = release_gate.run_gate("limits", command, root, root, os.environ.copy())
+            self.assertEqual(result["exit_code"], 0)
+            child = json.loads((root / result["log"]).read_text())
+            expected = {name: {"soft": soft, "hard": hard} for name, (soft, hard) in child.items()}
+            report = json.loads((root / result["resources"]).read_text())
+            for opening in ("before", "after"):
+                self.assertEqual(report[opening]["runner_rlimits"], expected)
+                self.assertEqual(report[opening]["rlim_infinity"], resource.RLIM_INFINITY)
 
     def test_compiled_fixture_or_test_artifact_cannot_pass_production_driver(self):
         command = dict(release_gate.functional_gates(2, sys.executable))["network-driver"]
