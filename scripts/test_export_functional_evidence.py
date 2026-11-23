@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import export_functional_evidence as exporter
-from release_gate import generated_output_paths, inventory, record_compiled_package, sha256, write_json
+from release_gate import functional_gates, generated_output_paths, inventory, record_compiled_package, sha256, write_json
 import verify_release_acceptance as acceptance
 
 
@@ -35,11 +35,12 @@ class FunctionalExportTests(unittest.TestCase):
         self.write_source_tar()
         self.file("tools/python", b"synthetic Python executable", executable=True)
         gates = []
+        commands = dict(functional_gates(1, "/usr/bin/python3"))
         for name in ("toolchain", "workspace", "production", "openraft-integration"):
             self.file(name + ".log", b"synthetic original log\n")
             self.file(name + "-process.json", (json.dumps({"working_directory": str(self.source.resolve())}) + "\n").encode())
             self.file(name + "-resources.json", b"{}\n")
-            gates.append({"name": name, "log": name + ".log", "log_sha256": sha256(self.run / (name + ".log")),
+            gates.append({"name": name, "command": commands[name], "log": name + ".log", "log_sha256": sha256(self.run / (name + ".log")),
                           "process": name + "-process.json",
                           "process_sha256": sha256(self.run / (name + "-process.json")),
                           "resources": name + "-resources.json",
@@ -101,6 +102,16 @@ class FunctionalExportTests(unittest.TestCase):
             exporter.package.verify_compiler_executables(directory, gate, process)
         production = next(gate for gate in record["gates"] if gate["name"] == "production")
         return record, production, TARGET, {}
+
+    def test_noncompiler_gate_cannot_supply_a_compiled_package(self):
+        gate = next(gate for gate in self.record["gates"] if gate["name"] == "toolchain")
+        path = self.file(gate["log"], b'{\n  "ready": true\n}\n')
+        gate["log_sha256"] = sha256(path)
+        process = {"working_directory": str(self.source.resolve())}
+        exporter.package.verify_compiler_executables(self.run, gate, process)
+        gate["compiled_packages"]["example"] = {"features": [], "targets": []}
+        with self.assertRaisesRegex(ValueError, "package inventory differs"):
+            exporter.package.verify_compiler_executables(self.run, gate, process)
 
     def test_unicode_escaped_cargo_reason_still_requires_executable(self):
         omitted = self.file("target/debug/deps/escaped-test", b"compiled but omitted", executable=True)

@@ -106,7 +106,7 @@ def verify_compiler_executables(directory, gate, process):
     original_target = Path(working_directory).parent / "target"
     emitted = {}
     compiled_packages = {}
-    for message in compiler_artifact_messages(owned_file(directory, gate["log"])):
+    for message in compiler_artifact_messages(owned_file(directory, gate["log"]), gate["command"]):
         record_compiled_package(compiled_packages, message)
         raw = message.get("executable")
         if raw is None:
@@ -188,7 +188,8 @@ def verify_evidence(directory):
     for gate in gates:
         if gate["command"] != expected[gate["name"]]:
             raise ValueError("recorded gate command differs from the pinned contract")
-        if gate["exit_code"] != 0 or gate.get("fixture_feature_violation") or gate.get("missing_production_executables"):
+        if (gate["exit_code"] != 0 or "inventory_error" in gate
+                or gate.get("fixture_feature_violation") or gate.get("missing_production_executables")):
             raise ValueError("a functional gate failed")
         verify_file(directory, gate["log"], gate["log_sha256"])
         if not gate.get("resources") or not gate.get("resources_sha256"):

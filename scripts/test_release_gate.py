@@ -374,12 +374,33 @@ class ReleaseGateTests(unittest.TestCase):
                        "package_id": "synthetic:compiled-test"}
             encoded = json.dumps(message).replace("compiler-artifact", "compiler\\u002dartifact")
             command = [sys.executable, "-c", "print(" + repr(encoded) + ")"]
-            result = release_gate.run_gate("escaped", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("escaped", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertIn("compiled-test", result["executables"])
             command = [sys.executable, "-c", "print(" + repr(encoded) + "); print(" + repr(encoded) + ")"]
             with self.assertRaisesRegex(ValueError, "duplicate compiler-artifact"):
-                release_gate.run_gate("duplicate", command, root, root, os.environ.copy())
+                release_gate.run_gate("duplicate", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertTrue((root / "duplicate-process.json").is_file())
+
+    def test_multiline_service_output_is_preserved_without_a_compiler_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            command = [sys.executable, "-c", "import json; print(json.dumps({'ready': True}, indent=2))"]
+            output, record = self.dispatch(Path(temporary), [("service", command)])
+            gate = record["gates"][0]
+            self.assertEqual(gate["exit_code"], 0)
+            self.assertEqual(json.loads((output / gate["log"]).read_bytes()), {"ready": True})
+            self.assertEqual((gate["compiled_packages"], gate["executables"]), ({}, {}))
+
+    def test_incomplete_failed_build_retains_the_compiler_exit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            command = [sys.executable, "-c", "import sys; print('{'); sys.exit(101)", release_gate.CARGO_JSON]
+            output, record = self.dispatch(Path(temporary), [("production", command)])
+            gate = record["gates"][0]
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(gate["exit_code"], 101)
+            self.assertEqual(json.loads((output / gate["process"]).read_bytes())["exit_code"], 101)
+            self.assertIn("malformed", gate["inventory_error"])
+            self.assertTrue(gate["missing_production_executables"])
+            self.assertEqual((gate["compiled_packages"], gate["executables"]), ({}, {}))
 
     def test_failed_gate_retains_log_and_exact_executable_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -392,7 +413,7 @@ class ReleaseGateTests(unittest.TestCase):
                                   "crate_types": ["bin"]}, "profile": {"test": True},
                        "features": [], "package_id": "example"}
             command = [sys.executable, "-c", "import sys; print(" + repr(json.dumps(message)) + "); print('failed assertion'); sys.exit(7)"]
-            result = release_gate.run_gate("failed", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("failed", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertEqual(result["exit_code"], 7)
             self.assertIn("failed assertion", (root / "failed.log").read_text())
             recorded = result["executables"]["tested-artifact"]["sha256"]
@@ -413,7 +434,7 @@ class ReleaseGateTests(unittest.TestCase):
                  "kind": ["custom-build"], "crate_types": ["bin"]}},
             ]
             command = [sys.executable, "-c", "print(" + repr("\n".join(map(json.dumps, messages))) + ")"]
-            result = release_gate.run_gate("inventory", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("inventory", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertEqual(result["executables"], {})
             package = result["compiled_packages"]["registry+example#dep@1.0.0"]
             self.assertEqual(package["features"], ["alloc", "std"])
@@ -428,7 +449,7 @@ class ReleaseGateTests(unittest.TestCase):
                                   "crate_types": ["lib"]}}
             command = [sys.executable, "-c", "print(" + repr(json.dumps(message)) + ")"]
             with self.assertRaisesRegex(ValueError, "package metadata is malformed"):
-                release_gate.run_gate("malformed-features", command, root, root, os.environ.copy())
+                release_gate.run_gate("malformed-features", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
 
     def test_content_and_new_inputs_change_inventory_without_relying_on_mtime(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -451,7 +472,7 @@ class ReleaseGateTests(unittest.TestCase):
             artifact = {"reason": "compiler-artifact", "executable": str(root / "unowned")}
             command = [sys.executable, "-c", "print(" + repr(json.dumps(artifact)) + ")"]
             with self.assertRaises(ValueError):
-                release_gate.run_gate("unowned", command, root, root, os.environ.copy())
+                release_gate.run_gate("unowned", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertTrue((root / "unowned.log").is_file())
 
     def test_uncertain_cleanup_stops_before_parsing_or_hashing_artifacts(self):

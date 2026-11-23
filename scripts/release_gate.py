@@ -33,6 +33,7 @@ import time
 import gate_process
 
 TOOLCHAIN = "1.97.1"
+CARGO_JSON = "--message-format=json-render-diagnostics"
 FORBIDDEN_FIXTURE_FEATURES = frozenset({"test-utils", "embedded-fixture", "loopback-fixture"})
 
 _SERDE_JSON = ("--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml")
@@ -114,8 +115,10 @@ def _reject_nonfinite_cargo(value):
     raise ValueError("nonfinite Cargo JSON value: " + value)
 
 
-def compiler_artifact_messages(log):
-    """Parse every bounded gate-log line; malformed JSON-looking lines fail."""
+def compiler_artifact_messages(log, command=None):
+    """Parse bounded Cargo JSON lines only for commands requesting that format."""
+    if command is not None and CARGO_JSON not in command:
+        return
     with Path(log).open("rb") as stream:
         while line := stream.readline(MAX_CARGO_LOG_LINE_BYTES + 1):
             if len(line) > MAX_CARGO_LOG_LINE_BYTES:
@@ -305,13 +308,34 @@ def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/
     return record
 
 
+def collect_compiler_outputs(log, command, target):
+    artifacts = {}
+    compiled_packages = {}
+    for message in compiler_artifact_messages(log, command):
+        record_compiled_package(compiled_packages, message)
+        raw = message.get("executable")
+        if raw is not None:
+            if (not isinstance(raw, str) or not Path(raw).is_absolute()
+                    or os.path.normpath(raw) != raw):
+                raise ValueError("compiler-artifact executable path is malformed")
+            identity = compiler_executable_identity(message)
+            executable = Path(raw).resolve()
+            relative = str(executable.relative_to(target))
+            if relative in artifacts:
+                raise ValueError("duplicate compiler-artifact executable identity")
+            artifacts[relative] = identity
+    for relative, artifact in artifacts.items():
+        path = target / relative
+        artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
+    return artifacts, compiled_packages
+
+
 def run_gate(name, command, source, output, environment, timeout_seconds=14400):
     """Hash actual executable outputs only after the original process group drains."""
     log = Path(output) / (name + ".log")
     process_path = Path(output) / (name + "-process.json")
-    artifacts = {}
-    compiled_packages = {}
     target = (Path(output) / "target").resolve()
+    inventory_error = None
     memory_before = memory_observation()
     resources = Path(output) / (name + "-resources.json")
     write_json(resources, {"before": memory_before, "after": None})
@@ -327,23 +351,14 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
             raise RuntimeError("gate process custody is uncertain; logs and artifacts remain unverified")
         # Read the retained file after command ownership closes. A silent child
         # cannot hold a pipe open beyond the command's original deadline.
-        for message in compiler_artifact_messages(log):
-            record_compiled_package(compiled_packages, message)
-            raw = message.get("executable")
-            if raw is not None:
-                if (not isinstance(raw, str) or not Path(raw).is_absolute()
-                        or os.path.normpath(raw) != raw):
-                    raise ValueError("compiler-artifact executable path is malformed")
-                identity = compiler_executable_identity(message)
-            if raw is not None:
-                executable = Path(raw).resolve()
-                relative = str(executable.relative_to(target))
-                if relative in artifacts:
-                    raise ValueError("duplicate compiler-artifact executable identity")
-                artifacts[relative] = identity
-        for relative, artifact in artifacts.items():
-            path = target / relative
-            artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
+        try:
+            artifacts, compiled_packages = collect_compiler_outputs(log, command, target)
+        except (ValueError, OSError) as error:
+            if process["exit_code"] == 0:
+                raise
+            # Keep the child's actual failure even if its compiler stream is incomplete.
+            inventory_error = str(error)
+            artifacts, compiled_packages = {}, {}
     except BaseException as error:
         if process is not None:
             for cleanup_error in process["cleanup"]["errors"]:
@@ -358,6 +373,7 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
         "duration_seconds": process["duration_seconds"],
         "log": log.name, "log_sha256": sha256(log), "executables": artifacts,
         "compiled_packages": compiled_packages,
+        **({"inventory_error": inventory_error} if inventory_error is not None else {}),
         "process": process_path.name, "process_sha256": sha256(process_path),
         "process_cleanup": process["cleanup"], "timed_out": process["timed_out"],
         "received_signals": process["received_signals"], "process_error": process["error"],
@@ -369,7 +385,7 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
 def functional_gates(jobs, python_executable):
     cargo = ["cargo", "+" + TOOLCHAIN]
     locked = ["--locked", "-j", str(jobs)]
-    encoded = ["--message-format=json-render-diagnostics"]
+    encoded = [CARGO_JSON]
     return [
         ("toolchain", ["rustc", "+" + TOOLCHAIN, "-Vv"]),
         ("format", cargo + ["fmt", "--all", "--", "--check"]),
@@ -406,12 +422,12 @@ def validate_production_artifacts(name, result):
     if ({artifact["target"] for artifact in artifacts} != required
             or len(artifacts) != len(required) or any(artifact["test"] for artifact in artifacts)):
         result["missing_production_executables"] = True
-        result["exit_code"] = 1
+        result["exit_code"] = result["exit_code"] or 1
     if not result["compiled_packages"] or any(
             set(package["features"]) & FORBIDDEN_FIXTURE_FEATURES
             for package in result["compiled_packages"].values()):
         result["fixture_feature_violation"] = True
-        result["exit_code"] = 1
+        result["exit_code"] = result["exit_code"] or 1
 
 
 def generated_output_paths(name):
@@ -479,7 +495,7 @@ def dispatch_gates(gates, source, output, environment, timeout_seconds, record, 
         result = run_gate(name, command, source, output, environment, timeout_seconds)
         if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (Path(output) / result["log"]).read_text()):
             result["fixture_feature_violation"] = True
-            result["exit_code"] = 1
+            result["exit_code"] = result["exit_code"] or 1
         validate_production_artifacts(name, result)
         record["gates"].append(result)
         result["generated_outputs"] = retain_generated_outputs(name, source, output)
