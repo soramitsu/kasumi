@@ -33,6 +33,7 @@ use uuid::Uuid;
 pub(crate) struct ReleaseGate {
     entered: Notify,
     release: Notify,
+    workspace: std::sync::OnceLock<Box<dyn Fn() -> Option<u64> + Send + Sync>>,
 }
 impl std::fmt::Debug for ReleaseGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,7 +45,22 @@ impl ReleaseGate {
         Arc::new(Self {
             entered: Notify::new(),
             release: Notify::new(),
+            workspace: Default::default(),
         })
+    }
+    pub(super) fn observe_workspace(&self, fence: Option<&kasumi_engine::ResponseFence<'_>>) {
+        if let Some(fence) = fence {
+            assert!(
+                self.workspace
+                    .set(Box::new(fence.observe_fixture_workspace()))
+                    .is_ok()
+            );
+        }
+    }
+    fn workspace_bytes(&self) -> Option<u64> {
+        self.workspace
+            .get()
+            .expect("request reached its original response fence")()
     }
     pub(super) async fn wait(&self) {
         self.entered.notify_one();
@@ -649,7 +665,6 @@ async fn terminal_body_is_materialized_with_its_admission_before_credential_rele
 async fn sdk_response_keeps_original_policy_epoch_until_http_release() {
     let fixture = Fixture::new().await;
     let issued = fixture.issue();
-    let baseline = fixture.admission.snapshot().reserved_bytes;
     let gate = ReleaseGate::new();
     let mut pending_request = request(
         &issued.token,
@@ -661,7 +676,7 @@ async fn sdk_response_keeps_original_policy_epoch_until_http_release() {
     pending_request.extensions_mut().insert(gate.clone());
     let running = tokio::spawn(fixture.router().oneshot(pending_request));
     gate.entered().await;
-    assert!(fixture.admission.snapshot().reserved_bytes > baseline);
+    assert!(gate.workspace_bytes().is_some_and(|bytes| bytes > 0));
     fixture
         .database
         .administer(
@@ -681,7 +696,7 @@ async fn sdk_response_keeps_original_policy_epoch_until_http_release() {
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body, json!({"error":"CONFLICT"}));
-    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    assert_eq!(gate.workspace_bytes(), None);
     fixture.close().await;
 }
 
@@ -1323,7 +1338,6 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
 async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_receipt() {
     let fixture = Fixture::new().await;
     let issued = fixture.issue();
-    let baseline = fixture.admission.snapshot().reserved_bytes;
     let gate = ReleaseGate::new();
     let arguments = json!({
         "read_set":[], "idempotency_key":"uncharged-mcp-mutation",
@@ -1359,36 +1373,43 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
     drop(committed);
     // The committed result tree is charged. Nothing is left for its body,
     // nor for a tool error body in its place.
-    let held = fixture.admission.snapshot().reserved_bytes;
-    assert!(held > baseline);
+    assert!(gate.workspace_bytes().is_some_and(|bytes| bytes > 0));
     let filler = fixture.reserve_all_but(0);
+    let observe_filler = filler.observe_fixture_charge();
+    let filler_charge = observe_filler();
+    assert!(matches!(filler_charge, Some((bytes, true)) if bytes > 0));
     gate.release();
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body, json!({"error":"UNKNOWN_OUTCOME"}));
-    // The withheld response returned its fence charges; only the filler stays.
-    assert_eq!(
-        fixture.admission.snapshot().reserved_bytes,
-        baseline + fixture.budget - held
-    );
+    // Maintenance and storage share the node ledger. Follow both original
+    // allocation identities across release, including reuse of either slot.
+    assert_eq!(gate.workspace_bytes(), None);
+    assert_eq!(observe_filler(), filler_charge);
     drop(filler);
-    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    assert_eq!(observe_filler(), None);
 
     // The same credential resolves the original identity; a retry of the
     // identical batch returns the original outcome without a second write.
-    let (status, body) = decoded(
-        fixture
-            .router()
-            .oneshot(request(
-                &issued.token,
-                "tools/call",
-                json!({
-                    "name":"kasumi_receipt",
-                    "arguments":{"idempotency_key":"uncharged-mcp-mutation"},
-                }),
-            ))
-            .await
-            .unwrap(),
+    let call = async |name: &str, arguments: Value| {
+        let gate = ReleaseGate::new();
+        let mut pending = request(
+            &issued.token,
+            "tools/call",
+            json!({"name":name, "arguments":arguments}),
+        );
+        pending.extensions_mut().insert(gate.clone());
+        let running = tokio::spawn(fixture.router().oneshot(pending));
+        gate.entered().await;
+        assert!(gate.workspace_bytes().is_some_and(|bytes| bytes > 0));
+        gate.release();
+        let response = decoded(running.await.unwrap().unwrap()).await;
+        assert_eq!(gate.workspace_bytes(), None);
+        response
+    };
+    let (status, body) = call(
+        "kasumi_receipt",
+        json!({"idempotency_key":"uncharged-mcp-mutation"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1396,18 +1417,7 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
         body["result"]["structuredContent"],
         serde_json::to_value(&receipt).unwrap()
     );
-    let (status, body) = decoded(
-        fixture
-            .router()
-            .oneshot(request(
-                &issued.token,
-                "tools/call",
-                json!({"name":"kasumi_mutate", "arguments":arguments}),
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
+    let (status, body) = call("kasumi_mutate", arguments).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["result"]["structuredContent"],
@@ -1422,7 +1432,6 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
     assert_eq!(retained.version, committed_version);
     assert_eq!(retained.body, json!({"value":"committed once"}));
     drop(retained);
-    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
     fixture.close().await;
 }
 

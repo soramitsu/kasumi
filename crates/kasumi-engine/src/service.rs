@@ -1374,6 +1374,13 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
 }
 
 impl<'a> ResponseFence<'a> {
+    /// Observe the adapter workspace without extending its lifetime.
+    #[cfg(feature = "test-utils")]
+    pub fn observe_fixture_workspace(&self) -> impl Fn() -> Option<u64> + use<> {
+        let charge = self.workspace.observe_fixture_charge();
+        move || charge().map(|(bytes, _resident)| bytes)
+    }
+
     fn capture(database: ResponseDatabase<'a>, context: &RequestContext) -> Result<Self> {
         Self::capture_workspace(database, context, false)
     }

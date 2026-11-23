@@ -1584,8 +1584,9 @@ impl Drop for OrdinaryProtection {
     }
 }
 impl Reservation {
-    #[cfg(test)]
-    pub(crate) fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
+    /// Observe this allocation by slot and generation, including after release.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
         let core = self.core.clone();
         let slot = self.slot;
         let id = self.id;

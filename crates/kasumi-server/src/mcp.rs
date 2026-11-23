@@ -387,6 +387,7 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             };
             #[cfg(test)]
             if let Some(gate) = gate {
+                gate.observe_workspace(owned.fence.as_ref());
                 gate.wait().await;
             }
             // Discovery and protocol errors have no database fence, but still
@@ -1104,6 +1105,8 @@ impl ServerHandler for KasumiMcp {
                 .map_err(|error| invocation.release_error(error))?;
             #[cfg(test)]
             if let Some(gate) = &body_charge_gate {
+                gate.0
+                    .observe_workspace(invocation.response_fence.lock().unwrap().as_ref());
                 gate.0.wait().await;
             }
             // The SDK encodes the counted envelope after this handler returns.
