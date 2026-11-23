@@ -1,20 +1,43 @@
-//! Diagnostics for the one-use Initialize packet. A durable target reservation
-//! enables the report. Subsequent calls to inspect or replay it do not.
+//! Private diagnostics for the first locally accepted Start and Initialize failures.
 use super::TargetTaskFailure;
 use kasumi_engine::SnapshotFailure;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 #[derive(Default)]
-pub(crate) struct InitializeDiagnostic {
-    pub(crate) phase: Option<Uuid>,
+pub(crate) struct MembershipDiagnostic {
+    accepted: Option<(Packet, Uuid)>,
     pub(crate) stage: &'static str,
 }
 
-// One fixed-size copy for the installed target. The caller retains its original
-// error and performs no diagnostic I/O on its execution or response deadline.
+#[derive(Clone, Copy)]
+enum Packet {
+    Start,
+    Initialize,
+}
+
+impl MembershipDiagnostic {
+    pub(crate) fn accepted(&mut self, step: &kasumi_types::TargetRuntimeStep, phase: Uuid) {
+        use kasumi_types::{TargetReplicaInput, TargetRuntimeStep};
+        let packet = match step {
+            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_)) => Packet::Start,
+            TargetRuntimeStep::Initialize(_) => Packet::Initialize,
+            _ => return,
+        };
+        self.accepted = Some((packet, phase));
+        self.stage = "verify_reserved_membership";
+    }
+}
+
+// Fixed-size summaries. Recording a failure never performs I/O on the request deadline.
 #[derive(Default)]
-pub(super) struct InitializeFailures {
+pub(super) struct MembershipFailures {
+    start: FailureSlot,
+    initialize: FailureSlot,
+}
+
+#[derive(Default)]
+struct FailureSlot {
     first: std::sync::OnceLock<Failure>,
     exported: AtomicBool,
 }
@@ -28,9 +51,9 @@ struct Failure {
     database: Option<kasumi_types::ErrorCode>,
 }
 
-impl InitializeFailures {
-    pub(super) fn record(&self, diagnostic: &InitializeDiagnostic, original: &TargetTaskFailure) {
-        let Some(phase) = diagnostic.phase else {
+impl MembershipFailures {
+    pub(super) fn record(&self, diagnostic: &MembershipDiagnostic, original: &TargetTaskFailure) {
+        let Some((packet, phase)) = diagnostic.accepted else {
             return;
         };
         let mut failure = Failure {
@@ -76,17 +99,29 @@ impl InitializeFailures {
             TargetTaskFailure::NodeStartup(_) => "node_startup",
             TargetTaskFailure::RetiredSource(_) => "retired_source",
         };
-        let _ = self.first.set(failure);
+        let slot = match packet {
+            Packet::Start => &self.start,
+            Packet::Initialize => &self.initialize,
+        };
+        let _ = slot.first.set(failure);
     }
 
     pub(super) fn export(&self) {
+        self.start.export("target-start", "target_start_failed");
+        self.initialize
+            .export("target-initialize", "target_initialize_failed");
+    }
+}
+
+impl FailureSlot {
+    fn export(&self, kind: &'static str, event: &'static str) {
         let Some(failure) = self.first.get() else {
             return;
         };
         if self.exported.swap(true, Ordering::Relaxed) {
             return;
         }
-        let path = crate::startup_preparation::diagnostic_path("target-initialize");
+        let path = crate::startup_preparation::diagnostic_path(kind);
         // Never format or retain the original message, transport metadata, or payload.
         let detail = std::fmt::from_fn(|f| {
             write!(
@@ -102,10 +137,10 @@ impl InitializeFailures {
         });
         let written = crate::startup_preparation::write_private_text(&path, &detail).is_ok();
         tracing::error!(
-            event = "target_initialize_failed",
+            event,
             diagnostic_written = written,
             diagnostic_path = %path.display(),
-            "the first locally accepted Initialize failure has a private diagnostic"
+            "the first locally accepted membership packet failure has a private diagnostic"
         );
     }
 }
@@ -115,25 +150,43 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn only_first_durable_initialize_failure_records_private_stage_and_typed_code() {
-        const NAME: &str = "target_runtime::initialize_diagnostic::tests::only_first_durable_initialize_failure_records_private_stage_and_typed_code";
-        const CHILD: &str = "KASUMI_TEST_ACCEPTED_INITIALIZE_DIAGNOSTIC";
+    fn durably_accepted_start_and_initialize_keep_separate_private_failures() {
+        const NAME: &str = "target_runtime::membership_diagnostic::tests::durably_accepted_start_and_initialize_keep_separate_private_failures";
+        const CHILD: &str = "KASUMI_TEST_ACCEPTED_MEMBERSHIP_DIAGNOSTIC";
         if std::env::var_os(CHILD).is_some() {
             crate::logging::initialize().unwrap();
             let directory = crate::startup_preparation::diagnostic_directory();
-            let mut diagnostic = InitializeDiagnostic::default();
-            let failures = InitializeFailures::default();
+            let mut diagnostic = MembershipDiagnostic::default();
+            let failures = MembershipFailures::default();
             let source = kasumi_client::ClientError::Transport(tonic::Status::unavailable(
                 "protected fixture detail",
             ));
             let original = TargetTaskFailure::Snapshot(SnapshotFailure::Source(source.into()));
+            use kasumi_types::{TargetQuorumInput, TargetReplicaInput, TargetRuntimeStep};
+            let quorum = TargetQuorumInput {
+                origin_sha256: "0".repeat(64),
+                materialized: Default::default(),
+            };
+            let activation = TargetRuntimeStep::StartActivation {
+                quorum: quorum.clone(),
+                issuer_command_id: Uuid::from_u128(5),
+            };
+            let start = TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone()));
+            let initialize = TargetRuntimeStep::Initialize(quorum);
+            failures.record(&diagnostic, &original);
+            diagnostic.accepted(&activation, Uuid::from_u128(6));
             failures.record(&diagnostic, &original);
             failures.export();
             assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
-            diagnostic.phase = Some(Uuid::from_u128(1));
+            diagnostic.accepted(&initialize, Uuid::from_u128(1));
             diagnostic.stage = "acquire_lifecycle_grant";
             failures.record(&diagnostic, &original);
-            diagnostic.phase = Some(Uuid::from_u128(2));
+            diagnostic.accepted(&initialize, Uuid::from_u128(2));
+            failures.record(&diagnostic, &original);
+            diagnostic.accepted(&start, Uuid::from_u128(3));
+            diagnostic.stage = "open_target_replica";
+            failures.record(&diagnostic, &original);
+            diagnostic.accepted(&start, Uuid::from_u128(4));
             failures.record(&diagnostic, &original);
             assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
             failures.export();
@@ -142,18 +195,27 @@ mod tests {
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
                 .collect();
-            assert_eq!(files.len(), 1);
-            assert_eq!(
-                std::fs::metadata(&files[0]).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            assert_eq!(
-                std::fs::read_to_string(&files[0]).unwrap(),
-                format!(
-                    "phase={} stage=acquire_lifecycle_grant failure=transport io=None transport=Some(Unavailable) database=None\n",
-                    Uuid::from_u128(1)
-                )
-            );
+            assert_eq!(files.len(), 2);
+            for (kind, stage, phase) in [
+                ("target-initialize", "acquire_lifecycle_grant", 1),
+                ("target-start", "open_target_replica", 3),
+            ] {
+                let file = files
+                    .iter()
+                    .find(|p| p.file_name().unwrap().to_str().unwrap().contains(kind))
+                    .unwrap();
+                assert_eq!(
+                    std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                assert_eq!(
+                    std::fs::read_to_string(file).unwrap(),
+                    format!(
+                        "phase={} stage={stage} failure=transport io=None transport=Some(Unavailable) database=None\n",
+                        Uuid::from_u128(phase)
+                    )
+                );
+            }
             let TargetTaskFailure::Snapshot(SnapshotFailure::Source(source)) = original else {
                 unreachable!()
             };
@@ -172,9 +234,11 @@ mod tests {
             .unwrap();
         let logs = String::from_utf8(output.stderr).unwrap();
         assert!(output.status.success(), "{logs}");
-        assert!(logs.contains("target_initialize_failed"));
+        assert!(logs.contains("target_initialize_failed") && logs.contains("target_start_failed"));
         assert!(
-            !logs.contains("protected fixture detail") && !logs.contains("acquire_lifecycle_grant")
+            !logs.contains("protected fixture detail")
+                && !logs.contains("acquire_lifecycle_grant")
+                && !logs.contains("open_target_replica")
         );
     }
 }

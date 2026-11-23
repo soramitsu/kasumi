@@ -30,12 +30,11 @@ deadlines. The dispatch must belong to the original intent's operator.
 Response release repeats the check under that operator's live admission fence. The callback closes with that dispatch. Physical phase and
 writer reads continue to require the addressed voter.
 
-If an accepted Initialize returns an error, the installed target retains its
-phase ID, last execution stage and typed failure codes. The target monitor or
-shutdown writes the first such failure for that runtime to a mode-0600 file.
-The `target_initialize_failed` daemon event gives its path and write status.
-The stage identifies where execution returned an error. Membership recovery
-still requires the durable evidence described below.
+The installed target retains the first error from each durably accepted initial
+Start or Initialize packet. On monitor or shutdown, it writes each phase ID,
+execution stage and typed failure codes to its own mode-0600 file. The
+`target_start_failed` and `target_initialize_failed` daemon events give the
+path and write status. Membership recovery requires the durable evidence below.
 
 The native entry adapter requires an explicit initialization field. Its only
 permitted non-null value is a bounded, verified signed cause on the first

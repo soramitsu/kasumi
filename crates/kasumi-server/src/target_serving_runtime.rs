@@ -46,7 +46,7 @@ impl TargetRecoveryRuntime {
                 let Some(runtime) = weak.upgrade() else {
                     break;
                 };
-                runtime.call_jobs.initialize_failures.export();
+                runtime.call_jobs.membership_failures.export();
                 #[cfg(test)]
                 runtime.serving_monitor.after_upgrade().await;
                 if runtime.closing.load(Ordering::Acquire) {

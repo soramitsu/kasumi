@@ -63,11 +63,11 @@ fn trace_owned_stage<T, E: std::fmt::Display>(
 #[path = "target_call_jobs.rs"]
 mod target_call_jobs;
 use target_call_jobs::TargetCallJobs;
-#[path = "target_initialize_diagnostic.rs"]
-mod initialize_diagnostic;
+#[path = "target_membership_diagnostic.rs"]
+mod membership_diagnostic;
 #[path = "target_call_failure.rs"]
 mod target_call_failure;
-pub(crate) use initialize_diagnostic::InitializeDiagnostic;
+pub(crate) use membership_diagnostic::MembershipDiagnostic;
 pub(crate) use target_call_failure::TargetCallFailure;
 pub use target_call_failure::TargetCallReport;
 use target_call_failure::{TargetCallSeat, TargetTaskFailure};
@@ -1258,7 +1258,7 @@ impl TargetRecoveryRuntime {
         let failure = submission.seat().clone();
         let this = self.clone();
         let receive = submission.submit(async move {
-            let mut diagnostic = InitializeDiagnostic::default();
+            let mut diagnostic = MembershipDiagnostic::default();
             let mut reply = this
                 .clone()
                 .execute_owned(
@@ -1272,7 +1272,7 @@ impl TargetRecoveryRuntime {
                 .await
                 .inspect_err(|original| {
                     this.call_jobs
-                        .initialize_failures
+                        .membership_failures
                         .record(&diagnostic, original)
                 })?;
             reply.permit = Some(permit);
@@ -1304,7 +1304,7 @@ impl TargetRecoveryRuntime {
         envelope: TargetExecuteRequest,
         admission: TargetRequestAdmission,
         failure: TargetCallSeat,
-        diagnostic: &mut InitializeDiagnostic,
+        diagnostic: &mut MembershipDiagnostic,
     ) -> TargetTaskResult<TargetRuntimeReply> {
         let bearer = self.phase_observation_credential(bearer)?;
         let TargetExecuteRequest {
@@ -1592,6 +1592,7 @@ impl TargetRecoveryRuntime {
         #[cfg(test)]
         trace_owned_stage(request.command_id, "perform", started, &performed);
         let (outcome, evidence) = performed?;
+        diagnostic.stage = "check_operation";
         #[cfg(test)]
         let started = std::time::Instant::now();
         let checked = phase.check_operation(&operation, &bearer).await;
@@ -1835,7 +1836,7 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&'a TargetInitialDispatchIdentity>,
         request: &'a TargetRuntimeRequest,
         bearer: &'a Zeroizing<String>,
-        diagnostic: &'a mut InitializeDiagnostic,
+        diagnostic: &'a mut MembershipDiagnostic,
     ) -> TargetPerformFuture<'a> {
         // Select one existing boxed dispatch allocation. Materialization must
         // not carry the other recovery steps' poll temporaries while retiring
@@ -2135,7 +2136,7 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&TargetInitialDispatchIdentity>,
         request: &TargetRuntimeRequest,
         bearer: &Zeroizing<String>,
-        diagnostic: &mut InitializeDiagnostic,
+        diagnostic: &mut MembershipDiagnostic,
     ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
         diagnostic.stage = "prepare_replica_stores";
         let intent = &phase.original().observation().intent;
@@ -2233,6 +2234,7 @@ impl TargetRecoveryRuntime {
                 },
                 None => kasumi_engine::TargetReplicaStartup::Established,
             };
+            diagnostic.stage = "open_target_replica";
             let replica = kasumi_engine::open_target_replica(
                 op,
                 stores.clone(),
@@ -2249,6 +2251,7 @@ impl TargetRecoveryRuntime {
             .await?;
             let name = format!("{}/{}", key.0, key.1);
             let check = stores.clone();
+            diagnostic.stage = "register_database_group";
             self.cluster.register_database_group(
                 name.clone(),
                 replica.database(),
@@ -2263,6 +2266,7 @@ impl TargetRecoveryRuntime {
         if let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_)) = step {
             let identity = initial_dispatch
                 .ok_or_else(|| missing_target_owner("initial Start dispatch identity absent"))?;
+            diagnostic.stage = "read_original_control";
             let (original, marked) = observe_initial_dispatch_from_control(
                 &self.installed,
                 op.context(),
@@ -2275,6 +2279,7 @@ impl TargetRecoveryRuntime {
                 &self.marked_first_membership_reads,
             )
             .await?;
+            diagnostic.stage = "record_initial_start";
             self.journal
                 .record_initial_start(&original, &marked, identity, request, replica)?
                 .check()?;
@@ -2632,7 +2637,7 @@ impl TargetRecoveryRuntime {
             return report.outcome(retained);
         }
         let calls = self.call_jobs.drain().await;
-        self.call_jobs.initialize_failures.export();
+        self.call_jobs.membership_failures.export();
         if let Err(error) = calls {
             report.merge(&error);
             if error.completion() == DrainCompletion::Retained {

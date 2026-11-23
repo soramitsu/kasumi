@@ -230,7 +230,7 @@ impl RuntimeTargetPhase {
         original_bearer: Zeroizing<String>,
         request: &TargetRuntimeRequest,
         initial_dispatch: Option<&TargetInitialDispatchIdentity>,
-        diagnostic: &mut crate::target_runtime::InitializeDiagnostic,
+        diagnostic: &mut crate::target_runtime::MembershipDiagnostic,
         #[cfg(test)] marked_read_count: &AtomicU64,
         admission: &TargetRequestAdmission,
     ) -> Result<(Arc<Self>, Option<kasumi_engine::VerifiedInitialMembership>)> {
@@ -374,13 +374,7 @@ impl RuntimeTargetPhase {
                 )
                 .into());
             };
-            if matches!(
-                &request.step,
-                kasumi_types::TargetRuntimeStep::Initialize(_)
-            ) {
-                diagnostic.phase = Some(identity.phase_id);
-                diagnostic.stage = "verify_reserved_membership";
-            }
+            diagnostic.accepted(&request.step, identity.phase_id);
             admission.check()?;
             initial_start =
                 Some(prebind.verify_initial_membership(node_id, LifecyclePhase::Initialize)?);
