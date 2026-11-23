@@ -1374,6 +1374,8 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
     // The committed result tree is charged. Nothing is left for its body,
     // nor for a tool error body in its place.
     assert!(gate.workspace_bytes().is_some_and(|bytes| bytes > 0));
+    // A completed audit job could otherwise release ledger space after the fill.
+    let quiescent = fixture.security.quiescent_jobs_for_test().await;
     let filler = fixture.reserve_all_but(0);
     let observe_filler = filler.observe_fixture_charge();
     let filler_charge = observe_filler();
@@ -1389,6 +1391,7 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
     drop(filler);
     assert_eq!(observe_filler(), None);
 
+    drop(quiescent);
     // The same credential resolves the original identity; a retry of the
     // identical batch returns the original outcome without a second write.
     let call = async |name: &str, arguments: Value| {
@@ -1619,9 +1622,11 @@ async fn native_admin_change_refused_at_its_acknowledgement_fence_is_unknown_out
     );
     // The change commits within this headroom. Its acknowledgement fence, taken
     // at the new policy epoch, then cannot reserve its workspace.
+    let quiescent = fixture.security.quiescent_jobs_for_test().await;
     let filler = fixture.reserve_all_but(fixture.response_fence_headroom() - 1);
     let refused = admin.set_policy(request).await.unwrap_err();
     drop(filler);
+    drop(quiescent);
     let error: Error = serde_json::from_slice(refused.details()).unwrap();
     assert_eq!(error.code, ErrorCode::UnknownOutcome, "{error:?}");
     assert!(
