@@ -3527,6 +3527,31 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
             scores.keys().map(String::as_str).collect::<Vec<_>>(),
             expected
         );
+        // The request's token and the read's deadline stop the selected
+        // directory before it lends a shard, as typed query errors.
+        let token = kasumi_query::QueryCancellation::default();
+        token.cancel();
+        match source.with_text_shards_until(&token, |_| -> kasumi_types::Result<()> {
+            panic!("a cancelled request reached its shards")
+        }) {
+            Err(kasumi_query::ReadFailure::Query(error)) => {
+                assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted)
+            }
+            other => panic!("cancelled text read: {other:?}"),
+        }
+        let reads =
+            crate::document_source::DocumentReads::new(&detached, std::time::Instant::now())?;
+        match reads
+            .source("docs")?
+            .with_text_shards_until(&Default::default(), |_| -> kasumi_types::Result<()> {
+                panic!("an expired read reached its shards")
+            }) {
+            Err(kasumi_query::ReadFailure::Query(error)) => {
+                assert_eq!(error.message, "document read deadline exceeded")
+            }
+            other => panic!("expired text read: {other:?}"),
+        }
+        reads.finish()?;
         Ok(())
     }
 

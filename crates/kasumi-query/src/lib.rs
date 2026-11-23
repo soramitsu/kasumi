@@ -938,7 +938,7 @@ impl QueryIndexes {
                         .any(|index| index.text.is_some()) =>
                 {
                     source
-                        .with_text_shards(|shards| {
+                        .with_text_shards_until(cancellation, |shards| {
                             search::search_shards(
                                 shards,
                                 search,

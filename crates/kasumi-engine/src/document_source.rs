@@ -668,7 +668,22 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         &self,
         search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> Result<T>,
     ) -> ReadResult<Option<T>, Self::Failure> {
-        self.check_deadline()?;
+        self.with_text_shards_until(&QueryCancellation::default(), search)
+    }
+
+    /// The request's token and this read's deadline bound directory setup,
+    /// traversal and every shard open; a tripped stop is the typed query
+    /// error, never a storage failure.
+    fn with_text_shards_until<T>(
+        &self,
+        cancellation: &QueryCancellation,
+        search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        let stop = crate::application_text::TextStop::new(
+            cancellation,
+            self.reads.map(|reads| reads.deadline),
+        );
+        stop.check()?;
         let state = &self.generation.state;
         let Some(selection) = self.generation.application_selection.get() else {
             return Ok(None);
@@ -678,6 +693,9 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                 self.directory_reader(),
                 state,
                 |tree, source, manifest, memory| {
+                    if let Err(stopped) = stop.check() {
+                        return Ok(Err(stopped));
+                    }
                     let primary =
                         selection.text_version_root_at(source, state, &self.collection)?;
                     let primary = primary
@@ -705,7 +723,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                             None => Ok(crate::application_text::live_version(collection, id)
                                 == Some(version)),
                         },
-                        memory,
+                        (memory, &stop),
                         search,
                     )
                 },

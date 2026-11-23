@@ -28,8 +28,8 @@
 use crate::admission::{NodeAdmission, Reservation};
 use anyhow::{Context, Result, ensure};
 use kasumi_query::{
-    BuiltTextShard, MAX_SHARD_BYTES, MAX_SHARD_DOCUMENTS, TextShard, TextShardLayout, TextShardSet,
-    TextShardWriter, merge_text_shards,
+    BuiltTextShard, MAX_SHARD_BYTES, MAX_SHARD_DOCUMENTS, QueryCancellation, TextShard,
+    TextShardLayout, TextShardSet, TextShardWriter, merge_text_shards,
 };
 use kasumi_store::{
     NamespaceStage, NodeDiskMemoryAdmission, SelectedGeneration, TenantStore, WriteOp,
@@ -315,12 +315,14 @@ fn collection_keys(tree: &TreeReader<'_>, collection: &str) -> Result<Vec<Vec<u8
     Ok(keys)
 }
 
+/// `check` runs before each file read: a stopped search reads no more files.
 fn open_shard(
     tree: &TreeReader<'_>,
     layout: &TextShardLayout,
     collection: &str,
     seq: u64,
     descriptor: &ShardDescriptor,
+    check: &dyn Fn() -> Result<()>,
 ) -> Result<TextShard> {
     ensure!(
         descriptor.layout == layout.sha256(),
@@ -332,6 +334,7 @@ fn open_shard(
     );
     let mut files = Vec::with_capacity(descriptor.files.len());
     for (name, length) in &descriptor.files {
+        check()?;
         let expected = usize::try_from(*length)?;
         let bytes = tree.with_value(&file_key(collection, seq, name), expected, |value| {
             let bytes = value.context("text shard file missing")?;
@@ -1308,7 +1311,9 @@ impl CollectionEdit<'_, '_> {
                 let descriptor: ShardDescriptor = read(self.tree, &shard_key(self.name, seq))?
                     .context("text shard descriptor missing")?;
                 Ok((
-                    open_shard(self.tree, self.layout, self.name, seq, &descriptor)?,
+                    open_shard(self.tree, self.layout, self.name, seq, &descriptor, &|| {
+                        Ok(())
+                    })?,
                     descriptor.bytes(),
                 ))
             }
@@ -1494,6 +1499,54 @@ impl ShardCache {
     }
 }
 
+/// A search request's cooperative stop: its query token, which the public
+/// waiter cancels when it gives up, and the read worker's own deadline.
+/// Directory setup, level traversal, every shard open and every admission wait
+/// check it, and a tripped stop returns the typed query error rather than a
+/// storage failure.
+pub(crate) struct TextStop<'a> {
+    cancellation: &'a QueryCancellation,
+    deadline: Option<std::time::Instant>,
+}
+
+impl<'a> TextStop<'a> {
+    pub(crate) fn new(
+        cancellation: &'a QueryCancellation,
+        deadline: Option<std::time::Instant>,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+        }
+    }
+
+    pub(crate) fn check(&self) -> kasumi_types::Result<()> {
+        self.cancellation.check()?;
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(crate::document_source::DocumentReads::deadline_error());
+        }
+        Ok(())
+    }
+
+    /// The stop inside a storage step, marked so the caller can return it as
+    /// the original query error.
+    fn checked(&self) -> Result<()> {
+        self.check().map_err(|error| {
+            kasumi_query::ReadFailure::<std::convert::Infallible>::Query(error).into()
+        })
+    }
+}
+
+/// A storage step's error: the request's own stop stays a typed query error.
+fn stopped_or(error: anyhow::Error) -> std::result::Result<kasumi_types::Error, anyhow::Error> {
+    error
+        .downcast::<kasumi_query::ReadFailure<std::convert::Infallible>>()
+        .map(kasumi_query::ReadFailure::into_query_error)
+}
+
 /// One collection's shards at the selected directory: a [`TextShardSet`]
 /// whose storage failures keep their original owner for the caller.
 struct DirectoryShards<'r, 't> {
@@ -1509,6 +1562,7 @@ struct DirectoryShards<'r, 't> {
     cursor: std::cell::Cell<Option<(usize, u8, u64)>>,
     current: &'r dyn Fn(&str, u64) -> Result<bool>,
     admission: &'r Arc<NodeAdmission>,
+    stop: &'r TextStop<'r>,
     failure: RefCell<Option<anyhow::Error>>,
 }
 
@@ -1520,15 +1574,22 @@ impl DirectoryShards<'_, '_> {
             "text directory unavailable",
         )
     }
-    fn sequence(&self, wanted: usize) -> Result<u64> {
+    /// The sequence of shard `wanted`. Each level entry visited checks the
+    /// request's stop, so a nonsequential ordinal cannot outlive it.
+    fn sequence(&self, wanted: usize) -> Result<kasumi_types::Result<u64>> {
         ensure!(wanted < self.shard_count, "text shard ordinal out of range");
         let (mut ordinal, from) = match self.cursor.get() {
-            Some((ordinal, _, seq)) if ordinal == wanted => return Ok(seq),
+            Some((ordinal, _, seq)) if ordinal == wanted => return Ok(Ok(seq)),
             Some((ordinal, level, seq)) if ordinal < wanted => (ordinal, (level, seq)),
             _ => (0, (0, 0)),
         };
         let mut found = None;
+        let mut stopped = None;
         visit_levels(self.tree, self.name, from, |level, seq| {
+            if let Err(error) = self.stop.check() {
+                stopped = Some(error);
+                return Ok(false);
+            }
             if ordinal == wanted {
                 found = Some((wanted, level, seq));
                 return Ok(false);
@@ -1536,9 +1597,12 @@ impl DirectoryShards<'_, '_> {
             ordinal += 1;
             Ok(true)
         })?;
+        if let Some(error) = stopped {
+            return Ok(Err(error));
+        }
         let position = found.context("text directory shard count differs")?;
         self.cursor.set(Some(position));
-        Ok(position.2)
+        Ok(Ok(position.2))
     }
 
     fn load(&self, seq: u64) -> Result<Arc<OpenShard>> {
@@ -1555,7 +1619,7 @@ impl DirectoryShards<'_, '_> {
             key,
             &self.layout,
             self.admission,
-            true,
+            Some(self.stop),
         )? {
             ShardLoad::Open(shard) => Ok(shard),
             ShardLoad::Capacity(_) => {
@@ -1570,14 +1634,17 @@ enum ShardLoad {
     Capacity(u64),
 }
 
+/// `demand` is a search's stop; warming passes `None` and never waits.
 fn load_selected_shard(
     tree: &TreeReader<'_>,
     source: &dyn PageSource,
     address: ShardAddress,
     layout: &TextShardLayout,
     admission: &Arc<NodeAdmission>,
-    demand: bool,
+    demand: Option<&TextStop<'_>>,
 ) -> Result<ShardLoad> {
+    let check = || demand.map_or(Ok(()), TextStop::checked);
+    check()?;
     // A cache hit still requires access to this immutable selected source.
     source.check_access()?;
     let descriptor: ShardDescriptor = read(tree, &shard_key(&address.collection, address.seq))?
@@ -1607,10 +1674,10 @@ fn load_selected_shard(
     let charged_bytes = file_bytes * 2 + MAX_DESCRIPTOR_BYTES as u64;
     let optional = admission.try_reserve_text_shard(charged_bytes)?;
     let retain = optional.is_some();
-    let lease = match optional {
-        Some(lease) => lease,
-        None if !demand => return Ok(ShardLoad::Capacity(charged_bytes)),
-        None => {
+    let lease = match (optional, demand) {
+        (Some(lease), _) => lease,
+        (None, None) => return Ok(ShardLoad::Capacity(charged_bytes)),
+        (None, Some(stop)) => {
             // A cold scan that fits the transient budget leaves the hot set
             // alone. Required reads still respect installed audit protection.
             let mut cache = admission.text_shards.lock().unwrap();
@@ -1619,7 +1686,9 @@ fn load_selected_shard(
             }
             let mut reclaimed = 0;
             loop {
-                match admission.reserve_waiting(charged_bytes, None) {
+                // A stopped search neither evicts the hot set nor waits.
+                check()?;
+                match admission.reserve_waiting(charged_bytes, Some(stop.cancellation.clone())) {
                     Ok(lease) => break lease,
                     Err(error) => {
                         if error.code == kasumi_types::ErrorCode::ResourceExhausted
@@ -1636,7 +1705,14 @@ fn load_selected_shard(
         }
     };
     let shard = Arc::new(OpenShard {
-        shard: open_shard(tree, layout, &key.0.collection, key.0.seq, &descriptor)?,
+        shard: open_shard(
+            tree,
+            layout,
+            &key.0.collection,
+            key.0.seq,
+            &descriptor,
+            &check,
+        )?,
         charged_bytes,
         _lease: lease,
     });
@@ -1666,8 +1742,17 @@ impl TextShardSet for DirectoryShards<'_, '_> {
         shard: usize,
         visit: &mut dyn FnMut(&TextShard) -> kasumi_types::Result<()>,
     ) -> kasumi_types::Result<()> {
-        let seq = self.sequence(shard).map_err(|error| self.fail(error))?;
-        let opened = self.load(seq).map_err(|error| self.fail(error))?;
+        self.stop.check()?;
+        let seq = match self.sequence(shard) {
+            Ok(found) => found?,
+            Err(error) => return Err(self.fail(error)),
+        };
+        // Never open another shard once the request has stopped.
+        self.stop.check()?;
+        let opened = self.load(seq).map_err(|error| match stopped_or(error) {
+            Ok(stopped) => stopped,
+            Err(storage) => self.fail(storage),
+        })?;
         visit(&opened.shard)
     }
     fn indexed_documents(&self) -> u64 {
@@ -1677,6 +1762,7 @@ impl TextShardSet for DirectoryShards<'_, '_> {
         self.descriptor.tokens.get(field).copied().unwrap_or(0)
     }
     fn current(&self, id: &str, version: u64) -> kasumi_types::Result<bool> {
+        self.stop.check()?;
         (self.current)(id, version).map_err(|error| self.fail(error))
     }
 }
@@ -1690,9 +1776,13 @@ pub(crate) fn search_collection<T>(
     manifest: &TextManifest,
     definition: &kasumi_types::CollectionDefinition,
     current: impl Fn(&str, u64) -> Result<bool>,
-    admission: &Arc<NodeAdmission>,
+    (admission, stop): (&Arc<NodeAdmission>, &TextStop<'_>),
     search: impl FnOnce(&dyn TextShardSet) -> kasumi_types::Result<T>,
 ) -> Result<kasumi_types::Result<T>> {
+    // A request that has already stopped reads nothing from the directory.
+    if let Err(stopped) = stop.check() {
+        return Ok(Err(stopped));
+    }
     let name = definition.name.as_str();
     let layout = TextShardLayout::for_definition(definition)
         .context("searched collection has no text layout")?;
@@ -1702,13 +1792,23 @@ pub(crate) fn search_collection<T>(
         descriptor.layout == layout.sha256(),
         "text directory layout differs from the selected definition"
     );
+    // The authenticated census still covers every level entry, but each
+    // entry checks the request first: a stopped request ends it early.
     let mut shard_count = 0usize;
+    let mut stopped = None;
     visit_levels(tree, name, (0, 0), |_, _| {
+        if let Err(error) = stop.check() {
+            stopped = Some(error);
+            return Ok(false);
+        }
         shard_count = shard_count
             .checked_add(1)
             .context("text shard count overflow")?;
         Ok(true)
     })?;
+    if let Some(error) = stopped {
+        return Ok(Err(error));
+    }
     ensure!(
         shard_count as u64 == descriptor.shards,
         "text directory shard count differs"
@@ -1725,6 +1825,7 @@ pub(crate) fn search_collection<T>(
         cursor: std::cell::Cell::new(None),
         current: &current,
         admission,
+        stop,
         failure: RefCell::new(None),
     };
     let result = search(&set);
