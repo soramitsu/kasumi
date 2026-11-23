@@ -1045,6 +1045,10 @@ async fn replicated_source_without_control_refuses_before_backup_effects_and_ret
     );
     assert_eq!(files(&path), original_files);
     fixture.router.isolate(&group, db.group.node_id(), false);
+    assert!(Arc::ptr_eq(
+        &fixture.leader("restored original backup quorum").await,
+        &db
+    ));
     let aborted = db
         .abort_backup_session(actor.clone(), abort_request)
         .await
@@ -1067,10 +1071,26 @@ async fn replicated_source_without_control_refuses_before_backup_effects_and_ret
             .unwrap(),
         pending.claim.intent_ciphertext
     );
-    let proof = db
-        .backup_checkpoint_named(actor.clone(), alias, id)
-        .await
-        .unwrap();
+    let publish = || db.backup_checkpoint_named(actor.clone(), alias, id);
+    let proof = match publish().await {
+        Ok(proof) => proof,
+        Err(error)
+            if error.operation_error().is_some_and(|cause| {
+                cause.code == ErrorCode::UnknownOutcome && !cause.has_physical_source()
+            }) =>
+        {
+            eprintln!("resolving original backup session {id} after {error:?}");
+            // A timed-out proposal can still apply. Wait for the original
+            // leader's log on all three members before requesting its proof.
+            fixture
+                .settle_acknowledged(&db, "original backup publication")
+                .await;
+            publish()
+                .await
+                .expect("resolve the original backup session")
+        }
+        Err(error) => panic!("backup publication failed: {error:?}"),
+    };
     let row = db
         .backup_owner(actor, destination.as_ref(), id)
         .await
