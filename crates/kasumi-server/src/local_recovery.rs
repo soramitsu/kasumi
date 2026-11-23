@@ -835,13 +835,7 @@ async fn resume_owned(
             LocalRecoveryPhase::Finished | LocalRecoveryPhase::Stopped
         ) {
             if let Err(error) = operator.step(&mut journal).await {
-                // Resolve a possibly committed atomic transition before writing
-                // diagnostics; never turn an uncertain activation into a stop.
-                journal = record_failure(operator.store(), operation, &error)?;
-                let _ = operator
-                    .event(&journal, kasumi_engine::SecurityOutcome::Failed)
-                    .await;
-                return Err(error);
+                return Err(operator.report_step_failure(operation, error).await);
             }
             if journal.status.phase == LocalRecoveryPhase::Stopping {
                 tokio::task::yield_now().await;
@@ -1343,6 +1337,20 @@ impl Operator {
                     Err(cleanup) => error.context(cleanup),
                 })
             }
+        }
+    }
+
+    /// Resolve the original phase before recording its failure. If the operator
+    /// store is sealed, retain the phase error in the caller's error chain.
+    async fn report_step_failure(&self, operation: Uuid, error: anyhow::Error) -> anyhow::Error {
+        match record_failure(self.store(), operation, &error) {
+            Ok(journal) => {
+                let _ = self
+                    .event(&journal, kasumi_engine::SecurityOutcome::Failed)
+                    .await;
+                error
+            }
+            Err(write) => error.context(format!("recording local recovery failure: {write:#}")),
         }
     }
 
