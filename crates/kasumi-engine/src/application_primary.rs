@@ -856,10 +856,9 @@ fn edit(
                 let framing_lease = memory.clone().reserve_installed(u64::try_from(framing)?)?;
                 leases.push(framing_lease);
                 let added = application_records::primary_rows(
+                    candidate,
                     name,
-                    candidate.collections.get(name),
                     id,
-                    candidate.revision,
                     located,
                     memory,
                     &mut rows,

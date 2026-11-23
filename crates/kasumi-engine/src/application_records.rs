@@ -365,7 +365,7 @@ impl PrimaryPoint {
             if let DocumentSlot::Located(_) = slot.as_ref() {
                 let descriptor = slot
                     .descriptor(&collection.definition.name, id, resolver)
-                    .map_err(|error| crate::service::document_load_error(error))?;
+                    .map_err(crate::service::document_load_error)?;
                 return Ok(Self::Live(Arc::new(DocumentSlot::stored_descriptor(
                     descriptor.into_owned(),
                 ))));
@@ -811,18 +811,18 @@ pub(crate) fn visit_primary(
     Ok(())
 }
 
-/// The three primary rows of one document at `revision`: each key with its
+/// The three primary rows of one document at the candidate revision: each key with its
 /// value, or `None` where the row must be absent. Returns the bytes added.
 pub(crate) fn primary_rows(
+    candidate: &TenantState,
     name: &str,
-    collection: Option<&CollectionState>,
     id: &str,
-    revision: u64,
     located: Option<&dyn DocumentResolver>,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     rows: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     leases: &mut Vec<kasumi_store::DiskMemoryLease>,
 ) -> Result<usize> {
+    let collection = candidate.collections.get(name);
     let mut added = 0usize;
     let mut insert = |key: Vec<u8>, value: Option<Vec<u8>>| {
         added = added
@@ -849,7 +849,7 @@ pub(crate) fn primary_rows(
         .transpose()?;
     insert(archive_key(name, id), archived);
     let header = collection
-        .map(|collection| crate::index_source::header(collection, id, revision))
+        .map(|collection| crate::index_source::header(collection, id, candidate.revision))
         .transpose()?
         .flatten()
         .map(|header| header_value(&header).to_vec());
