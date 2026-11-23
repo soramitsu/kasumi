@@ -248,6 +248,9 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 && (action == "renew" || action == "watch")
                 && control.len() <= 1 =>
         {
+            let stop = (action == "watch")
+                .then(crate::daemon_signals::StopSignals::install)
+                .transpose()?;
             let profile = ClientProfile::load(Path::new(path))?;
             // An MCP credential cannot reach the administrative listener, so a
             // Control administrator renews it.
@@ -258,29 +261,39 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             let _lock = private_files::ExclusiveLock::acquire(
                 &profile.bearer_file.with_extension("watch.lock"),
             )?;
-            loop {
-                match renew(&profile, control.as_ref()).await {
-                    Ok(expiry) => {
-                        if action == "renew" {
-                            println!(
-                                "{}",
-                                serde_json::json!({"family_id":profile.family_id,"expires_at_ms":expiry})
-                            );
-                            break;
+            if let Some(mut stop) = stop {
+                loop {
+                    // Finish the admitted renewal and its journal publication before
+                    // releasing the watcher lock. A stop received meanwhile stays pending.
+                    let delay = match renew(&profile, control.as_ref()).await {
+                        Ok(expiry) => {
+                            let now = kasumi_clock::EpochClock::system()?.now_ms()?;
+                            renewal_delay_ms(expiry.saturating_sub(now), random_unit())
                         }
-                        let now = kasumi_clock::EpochClock::system()?.now_ms()?;
-                        let delay = renewal_delay_ms(expiry.saturating_sub(now), random_unit());
-                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}, _ = tokio::signal::ctrl_c() => break }
+                        Err(error) if retryable(&error) => {
+                            tracing::warn!(
+                                "credential renewal unavailable; retaining original renewal identity"
+                            );
+                            retry_delay_ms(random_unit())
+                        }
+                        Err(error) => {
+                            return Err(explain_renewal_failure(profile.family_id, error));
+                        }
+                    };
+                    tokio::select! {
+                        biased;
+                        _ = stop.wait() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
                     }
-                    Err(error) if action == "watch" && retryable(&error) => {
-                        tracing::warn!(
-                            "credential renewal unavailable; retaining original renewal identity"
-                        );
-                        let delay = retry_delay_ms(random_unit());
-                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}, _ = tokio::signal::ctrl_c() => break }
-                    }
-                    Err(error) => return Err(explain_renewal_failure(profile.family_id, error)),
                 }
+            } else {
+                let expiry = renew(&profile, control.as_ref())
+                    .await
+                    .map_err(|error| explain_renewal_failure(profile.family_id, error))?;
+                println!(
+                    "{}",
+                    serde_json::json!({"family_id":profile.family_id,"expires_at_ms":expiry})
+                );
             }
         }
         [
