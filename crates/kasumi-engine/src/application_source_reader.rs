@@ -122,6 +122,50 @@ impl SelectedApplication {
         self.with_base_snapshot_boundary(shared, &SnapshotBoundary::<&str>::from(state), read)
     }
 
+    pub(crate) fn verified_feed_end(&self, base: u64, revision: u64) -> Option<u64> {
+        let &(seen_base, seen_revision, end) = self.cell.verified_feed.get()?;
+        ((base, revision) == (seen_base, seen_revision)).then_some(end)
+    }
+
+    /// Read the selected snapshot even when a previous page has proved its
+    /// extent. Only the extent is reusable; access and the rows are checked
+    /// on the reader's own view for every page.
+    pub(crate) fn with_snapshot_feed<T>(
+        &self,
+        state: &SnapshotBoundary<impl AsRef<str>>,
+        next_sequence: u64,
+        read: impl FnOnce(crate::application_records::SnapshotFeed<'_, '_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let result = self
+            .with_base_snapshot_boundary(None, state, |tree, memory, _, revision| {
+                let Some(feed) = crate::application_records::SnapshotFeed::open(
+                    tree,
+                    memory,
+                    revision,
+                    state.revision,
+                    next_sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let extent = (state.revision_base, state.revision, feed.end_sequence);
+                ensure!(
+                    *self.cell.verified_feed.get_or_init(|| extent) == extent,
+                    "selected snapshot change-feed extent differs"
+                );
+                read(feed).map(Some)
+            })?
+            .flatten();
+        ensure!(
+            result.is_some()
+                || self
+                    .verified_feed_end(state.revision_base, state.revision)
+                    .is_none(),
+            "previously selected snapshot change feed is missing"
+        );
+        Ok(result)
+    }
+
     pub(crate) fn with_base_snapshot_boundary<T>(
         &self,
         shared: Option<&crate::document_store::SelectedRead>,

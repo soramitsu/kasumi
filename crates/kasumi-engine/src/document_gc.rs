@@ -301,18 +301,11 @@ impl Walk {
         let prefix = if retained.commits.is_empty() {
             None
         } else {
-            selection
-                .with_base_snapshot_records(None, state, |tree, memory, _, revision| {
-                    Ok(crate::application_records::SnapshotFeed::open(
-                        tree,
-                        memory,
-                        revision,
-                        state.revision,
-                        end,
-                    )?
-                    .map(|feed| feed.end_sequence))
-                })?
-                .flatten()
+            selection.with_snapshot_feed(
+                &crate::application_sources::SnapshotBoundary::<&str>::from(state),
+                end,
+                |feed| Ok(feed.end_sequence),
+            )?
         };
         let disk_end = prefix.filter(|&after| {
             after > first && retained.commits.range(after..).take(MAX_TAIL + 1).count() <= MAX_TAIL

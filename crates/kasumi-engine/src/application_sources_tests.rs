@@ -2594,6 +2594,14 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .context("new log entry lost its selected base snapshot")?;
     assert!(base.0 < latest.state.revision);
     crate::document_gc::check_snapshot_feed_walk(&latest, &source.storage.admission, true)?;
+    assert_eq!(
+        latest
+            .application_selection
+            .get()
+            .unwrap()
+            .verified_feed_end(latest.state.revision_base, latest.state.revision,),
+        Some(base.1),
+    );
     assert_eq!(base.1, 3);
     drop(latest);
     let request = |start, limit| kasumi_types::ReadChangeFeed {
