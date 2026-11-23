@@ -27,6 +27,14 @@
 //! current directory rebuilds one from the restored indexes in a fresh
 //! generation that the restore publication selects.
 //!
+//! Covered replay proves the directory with the canonical ordered digest of
+//! both sides. Within the bounded build budget the proof is unconditional. A
+//! larger directory uses the same proof with its sort workspace admitted and
+//! a wall-clock budget well inside the server's startup phase, so a current
+//! directory of any size keeps serving across reopen instead of being
+//! discarded and reconstructed from every document; a proof that runs out of
+//! budget or access takes the reconstruction path as before.
+//!
 //! Small replacements use a bounded bulk build. An oversized replacement
 //! selects an empty non-serving space and persists its captured producer and
 //! document high key. The idle worker advances the native field-row cursor
@@ -66,6 +74,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::time::{Duration, Instant};
 
 /// Rows one ordinary publication may add and remove in place.
 pub(crate) const MAX_EDIT_ROWS: usize = 2048;
@@ -522,6 +531,36 @@ pub(crate) fn verify_rows(
     state: &TenantState,
     indexes: &QueryIndexes,
 ) -> Result<()> {
+    verify_rows_until(source, manifest, state, indexes, None)
+}
+
+/// Rows between two budget and access checks of a deadline-bound proof.
+const PROOF_CHECK_ROWS: u64 = 4096;
+
+/// [`verify_rows`] that gives up once `deadline` passes or the store's access
+/// ends, checked every [`PROOF_CHECK_ROWS`] rows on each side. Every page load
+/// rechecks access on its own as well.
+fn verify_rows_until(
+    source: &dyn PageSource,
+    manifest: &StructuredManifest,
+    state: &TenantState,
+    indexes: &QueryIndexes,
+    deadline: Option<Instant>,
+) -> Result<()> {
+    let mut visited = 0u64;
+    let mut progress = || -> Result<()> {
+        visited += 1;
+        if let Some(deadline) = deadline
+            && visited.is_multiple_of(PROOF_CHECK_ROWS)
+        {
+            source.check_access()?;
+            ensure!(
+                Instant::now() < deadline,
+                "structured covered proof exceeded its startup budget"
+            );
+        }
+        Ok(())
+    };
     ensure!(
         manifest.tenant == state.tenant
             && manifest.incarnation == state.incarnation
@@ -534,6 +573,7 @@ pub(crate) fn verify_rows(
     let mut remaining_rows = manifest.records.count();
     let mut remaining_bytes = manifest.records.bytes();
     visit_rows(indexes, |key, value| {
+        progress()?;
         remaining_rows = remaining_rows
             .checked_sub(1)
             .context("structured directory row count differs from the selected state")?;
@@ -556,6 +596,7 @@ pub(crate) fn verify_rows(
     let reader = TreeReader::new(source, &manifest.page_space, manifest.records, None)?;
     let mut selected = Sha256::new();
     reader.scan(Bound::Unbounded, Direction::Forward, &mut |key, value| {
+        progress()?;
         record_digest(
             &mut selected,
             key,
@@ -616,34 +657,115 @@ fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
             largest = largest.max(long);
         }
     }
-    // Vec growth can retain twice the used capacity. Escaped prefixes can
-    // double in size, and their temporary scalar components can also grow.
-    Some(
-        4096 + (largest as u64)
-            * (4 * (INLINE_VALUE + DIGEST + 16)
-                + 2 * std::mem::size_of::<(Vec<u8>, kasumi_query::StructuredPostings<'_>)>())
-                as u64,
-    )
+    Some(sort_workspace(largest))
 }
 
-/// Covered replay can only select rows it actually proved. Large trees move
-/// to the recoverable non-serving path, including when a false small root
-/// understates the selected resident input.
-fn verify_bounded(
+/// Workspace of one ordered visit whose widest field holds `largest` long
+/// scalars. Vec growth can retain twice the used capacity. Escaped prefixes
+/// can double in size, and their temporary scalar components can also grow.
+fn sort_workspace(largest: usize) -> u64 {
+    4096 + (largest as u64)
+        * (4 * (INLINE_VALUE + DIGEST + 16)
+            + 2 * std::mem::size_of::<(Vec<u8>, kasumi_query::StructuredPostings<'_>)>())
+            as u64
+}
+
+/// The ordered proof's workspace at any size. Only runs of long scalars that
+/// share their first bytes are gathered and sorted, so it grows with the
+/// widest field's long scalars and never with rows. Visiting each distinct
+/// scalar once allocates nothing.
+fn ordered_proof_workspace(
+    indexes: &QueryIndexes,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<u64> {
+    check()?;
+    let mut largest = 0usize;
+    let mut visited = 0u64;
+    for (_, fields) in indexes.structured_collections() {
+        for field in fields {
+            let mut long = 0;
+            for postings in field.values() {
+                visited += 1;
+                if visited.is_multiple_of(PROOF_CHECK_ROWS) {
+                    check()?;
+                }
+                if postings.value.tag >= 4 && postings.value.bytes.len() > INLINE_VALUE {
+                    long += 1;
+                    ensure!(
+                        sort_workspace(long) <= MAX_REBUILD_BYTES as u64,
+                        "structured proof sort exceeds its workspace budget"
+                    );
+                }
+            }
+            largest = largest.max(long);
+        }
+    }
+    check()?;
+    Ok(sort_workspace(largest))
+}
+
+/// Wall-clock budget of one covered proof beyond the bounded build budget.
+/// It runs while a reopening tenant is not yet serving, inside the startup
+/// phase whose systemd timeout the server extends to 30 minutes per tenant
+/// open. A proof that does not finish in time falls back to the
+/// reconstruction path, so startup never waits longer for a large directory
+/// than this budget plus the existing resident index build.
+pub(crate) const LARGE_PROOF_BUDGET: Duration = Duration::from_secs(5 * 60);
+
+/// Covered replay can only select rows it actually proved, always with the
+/// canonical ordered digest of [`verify_rows`]. Within the bounded build
+/// budget it runs unconditionally. A larger tree, including a false small
+/// root over a large resident input, admits the proof's sort workspace and
+/// runs under [`LARGE_PROOF_BUDGET`]; the resident visit stops as soon as it
+/// exceeds the authenticated root's row or byte total, and no page is read
+/// unless both totals match. A failed proof moves the directory to the
+/// recoverable non-serving path as before.
+fn verify_covered(
     source: &dyn PageSource,
     manifest: &StructuredManifest,
     state: &TenantState,
     indexes: &QueryIndexes,
 ) -> Result<()> {
-    ensure!(
-        manifest.records.count() <= MAX_REBUILD_ROWS as u64
-            && manifest.records.bytes() <= MAX_REBUILD_BYTES as u64,
-        "structured root exceeds the ordinary verification budget"
-    );
-    let cost = bulk_workspace(indexes)
-        .context("structured input exceeds the ordinary verification budget")?;
-    let _sort = source.memory().reserve_installed(cost)?;
-    verify_rows(source, manifest, state, indexes)
+    if manifest.records.count() <= MAX_REBUILD_ROWS as u64
+        && manifest.records.bytes() <= MAX_REBUILD_BYTES as u64
+        && let Some(cost) = bulk_workspace(indexes)
+    {
+        let _sort = source.memory().reserve_installed(cost)?;
+        return verify_rows(source, manifest, state, indexes);
+    }
+    let started = Instant::now();
+    let deadline = started + LARGE_PROOF_BUDGET;
+    let proved = (|| {
+        let bytes = ordered_proof_workspace(indexes, || {
+            source.check_access()?;
+            ensure!(
+                Instant::now() < deadline,
+                "structured covered proof exceeded its startup budget"
+            );
+            Ok(())
+        })?;
+        let _sort = source.memory().reserve_installed(bytes)?;
+        verify_rows_until(source, manifest, state, indexes, Some(deadline))
+    })();
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match &proved {
+        Ok(()) => tracing::info!(
+            event = "structured_large_covered_proof",
+            rows = manifest.records.count(),
+            bytes = manifest.records.bytes(),
+            elapsed_ms,
+            "large structured directory proved by its ordered digest"
+        ),
+        Err(error) => tracing::warn!(
+            event = "structured_large_covered_proof_refused",
+            rows = manifest.records.count(),
+            elapsed_ms,
+            budget_exhausted = Instant::now() >= deadline,
+            io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+            "large structured directory was not proved; it will be reconstructed"
+        ),
+    }
+    proved
 }
 
 /// Bulk-build the rows of `indexes` into a fresh staged generation. The
@@ -718,7 +840,7 @@ pub(crate) fn prepare_restore(
         if manifest.revision == state.revision
             && manifest.matches_applied(applied.as_ref())
             && (manifest.rebuild().is_some()
-                || verify_bounded(&**store, &manifest, state, indexes).is_ok())
+                || verify_covered(&**store, &manifest, state, indexes).is_ok())
         {
             return Ok(());
         }
@@ -936,7 +1058,7 @@ fn follow(
             }
             let same = binds_genesis || manifest.matches_applied(applied.as_ref());
             let verified = if same {
-                verify_bounded(&**store, &manifest, candidate, candidate_indexes)
+                verify_covered(&**store, &manifest, candidate, candidate_indexes)
             } else {
                 Err(anyhow::anyhow!(
                     "replayed entry differs from the structured directory boundary"

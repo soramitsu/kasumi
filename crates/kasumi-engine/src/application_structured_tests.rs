@@ -1099,22 +1099,19 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_resumes_a_large_one(
     NamespaceStage::reclaim_family(&fixture.store, structured::FAMILY).unwrap();
     assert_eq!(fixture.space_rows(&before.page_space), 0);
     assert_eq!(fixture.space_rows(structured::INITIAL_SPACE[0]), 0);
-    // Covered ordinary replay reaches the installed 71,393-row boundary.
-    // Its current read lease remains valid while the new selection explicitly
-    // withdraws the unbounded proof and the registered owner seeds it again.
+    // Covered ordinary replay reaches the installed 71,393-row boundary. The
+    // ordered proof, now admitted beyond the bounded build budget, keeps the
+    // directory current: nothing is published and no replacement is seeded.
     let pinned = fixture.store.read_view().unwrap();
     let original = fixture.manifest();
-    assert!(fixture.publish(&restarted, &fifth, &fifth, 1));
-    let stale = fixture.manifest();
-    assert_eq!(stale.status, structured::StructuredStatus::Stale);
-    assert_eq!(stale.records, original.records);
-    assert_eq!(
-        StructuredManifest::load_at(&pinned).unwrap().unwrap(),
-        original
-    );
+    assert!(original.records.count() > MAX_REBUILD_ROWS as u64);
+    assert!(bulk_workspace(&fifth.indexes).is_none());
+    let replayed = StructuredOwner::default();
+    assert!(!fixture.publish(&replayed, &fifth, &fifth, 1));
+    assert_eq!(fixture.manifest(), original);
     assert!(
-        !maintain(
-            &restarted,
+        maintain(
+            &replayed,
             &fixture.store,
             &fifth.state,
             &fifth.indexes,
@@ -1123,11 +1120,114 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_resumes_a_large_one(
         )
         .unwrap()
     );
+    assert_eq!(fixture.manifest(), original);
+    // A reopen whose snapshot is exactly at the directory keeps it too.
+    let mut writes = Vec::new();
+    prepare_restore(
+        &StructuredOwner::default(),
+        &fixture.store,
+        &fifth.state,
+        &fifth.indexes,
+        &snapshot_meta(&fifth.state, 1),
+        true,
+        &mut writes,
+    )
+    .unwrap();
+    assert!(writes.is_empty());
+    assert_eq!(fixture.manifest(), original);
+    // A proof that runs out of its startup budget is refused, so the caller
+    // falls back to the reconstruction path rather than delaying startup.
+    let expired = verify_rows_until(
+        &*fixture.store,
+        &original,
+        &fifth.state,
+        &fifth.indexes,
+        Some(Instant::now()),
+    )
+    .unwrap_err();
+    assert!(
+        expired.to_string().contains("startup budget"),
+        "{expired:#}"
+    );
+    // The next ordinary write edits the same generation in place.
+    let sixth = fifth.next(vec![("d000013".into(), small(8000))], &[], None);
+    assert!(fixture.publish(&replayed, &fifth, &sixth, 1));
+    let edited = fixture.manifest();
+    assert!(edited.is_current());
+    assert_eq!(edited.page_space, original.page_space);
+    fixture.verify(&sixth);
+    // A replayed boundary whose rows differ only in one scalar of the same
+    // encoded length has equal row and byte totals; the ordered digest still
+    // refuses it. Its read lease remains valid while the selection withdraws
+    // the directory and the registered owner seeds a replacement.
+    let other = fifth.next(vec![("d000013".into(), small(8001))], &[], None);
+    assert_eq!(other.state.revision, sixth.state.revision);
+    let differs =
+        verify_covered(&*fixture.store, &edited, &other.state, &other.indexes).unwrap_err();
+    assert!(differs.to_string().contains("rows differ"), "{differs:#}");
+    let restarted = StructuredOwner::default();
+    assert!(fixture.publish(&restarted, &fifth, &other, 1));
+    let stale = fixture.manifest();
+    assert_eq!(stale.status, structured::StructuredStatus::Stale);
+    assert_eq!(stale.records, edited.records);
+    assert_eq!(
+        StructuredManifest::load_at(&pinned).unwrap().unwrap(),
+        original
+    );
+    assert!(
+        !maintain(
+            &restarted,
+            &fixture.store,
+            &other.state,
+            &other.indexes,
+            None,
+            Some(&applied(&other.state, 1))
+        )
+        .unwrap()
+    );
     let replacement = fixture.manifest();
     assert!(replacement.rebuild().is_some());
     assert_eq!(replacement.records.count(), 0);
     pinned.close().unwrap();
     fixture.close().await;
+}
+
+#[test]
+fn the_ordered_proof_workspace_grows_with_long_scalars_not_rows() {
+    let genesis = genesis();
+    // Long scalars at, just under and over the ordered-key bound.
+    let long = genesis.next(
+        (0..60).map(|n| (format!("d{n:03}"), body(n))).collect(),
+        &[],
+        None,
+    );
+    // Within the bounded build budget both workspaces sort the same runs.
+    assert_eq!(
+        Some(ordered_proof_workspace(&long.indexes, || Ok(())).unwrap()),
+        bulk_workspace(&long.indexes)
+    );
+    assert!(ordered_proof_workspace(&long.indexes, || Ok(())).unwrap() > sort_workspace(0));
+    // 10,200 documents without long scalars exceed the build budget but
+    // need only the fixed proof workspace.
+    let large = genesis.next(
+        (0..10_200)
+            .map(|n| (format!("d{n:06}"), small(n)))
+            .collect(),
+        &[],
+        None,
+    );
+    assert!(bulk_workspace(&large.indexes).is_none());
+    assert_eq!(
+        ordered_proof_workspace(&large.indexes, || Ok(())).unwrap(),
+        sort_workspace(0)
+    );
+    let mut checks = 0;
+    let interrupted = ordered_proof_workspace(&large.indexes, || {
+        checks += 1;
+        anyhow::ensure!(checks < 2, "closed during count");
+        Ok(())
+    });
+    assert_eq!(interrupted.unwrap_err().to_string(), "closed during count");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
