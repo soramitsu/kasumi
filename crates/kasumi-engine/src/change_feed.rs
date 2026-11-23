@@ -18,6 +18,7 @@ impl FeedPageSource {
     pub(super) fn capture(
         generation: &crate::Generation,
         start: &ChangeFeedStart,
+        verified_disk_end: Option<u64>,
         reserve: impl FnOnce(u64) -> Result<()>,
     ) -> Result<Self> {
         let feed = &generation.state.change_feed;
@@ -29,23 +30,26 @@ impl FeedPageSource {
         let mut commits = Vec::new();
         let floor = feed.next_sequence.saturating_sub(feed.event_count as u64);
         if let Some(first) = first.filter(|&n| n >= floor && n < feed.next_sequence) {
-            // A continuation may start in the middle of one atomic commit.
-            let lower = feed
-                .commits
-                .range(..=first)
-                .next_back()
-                .map_or(first, |(&n, _)| n);
             let last = first.saturating_add(MAX_EXAMINED as u64 - 1);
-            let count = feed.commits.range(lower..=last).count();
-            reserve((count * std::mem::size_of::<Arc<ChangeCommit>>()) as u64)?;
-            commits
-                .try_reserve_exact(count)
-                .map_err(|_| query_workspace_overflow())?;
-            commits.extend(
-                feed.commits
-                    .range(lower..=last)
-                    .map(|(_, commit)| commit.clone()),
-            );
+            let first_tail = first.max(verified_disk_end.unwrap_or(first));
+            if first_tail <= last && first_tail < feed.next_sequence {
+                // A continuation may start in the middle of one atomic commit.
+                let lower = feed
+                    .commits
+                    .range(..=first_tail)
+                    .next_back()
+                    .map_or(first_tail, |(&n, _)| n);
+                let count = feed.commits.range(lower..=last).count();
+                reserve((count * std::mem::size_of::<Arc<ChangeCommit>>()) as u64)?;
+                commits
+                    .try_reserve_exact(count)
+                    .map_err(|_| query_workspace_overflow())?;
+                commits.extend(
+                    feed.commits
+                        .range(lower..=last)
+                        .map(|(_, commit)| commit.clone()),
+                );
+            }
         }
 
         let resolver = generation
@@ -227,21 +231,24 @@ impl Database {
         )?;
         let boundary = SnapshotBoundary::<String>::from(state);
         let selection = generation.application_selection.get().cloned();
-        let mut input = FeedPageSource::capture(&generation, &read.request.start, |bytes| {
-            memory.reserve(bytes)
-        })?;
+        let verified_disk_end = selection
+            .as_ref()
+            .and_then(|s| s.verified_feed_end(state.revision_base, state.revision));
+        let mut input = FeedPageSource::capture(
+            &generation,
+            &read.request.start,
+            verified_disk_end,
+            |bytes| memory.reserve(bytes),
+        )?;
         drop(generation);
         let actor = context.clone();
         let owner = memory.workspace().blocking_owner();
         let read = tokio::select! {
             result = owner.read_child(cancellation.clone(), None, move |token| {
                 let result = if let Some(selection) = selection {
-                    selection.with_base_snapshot_boundary(None, &boundary, |tree, memory, _, disk_revision| {
-                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, disk_revision, boundary.revision, input.next_sequence)?;
-                        if let Some(prefix) = &disk {
-                            input.commits.retain(|commit| commit.first_sequence.saturating_add(commit.records.len() as u64) > prefix.end_sequence);
-                        }
-                        Ok(read.build(&boundary, &input, &actor, token, disk))
+                    selection.with_snapshot_feed(&boundary, input.next_sequence, |disk| {
+                        input.commits.retain(|commit| commit.first_sequence.saturating_add(commit.records.len() as u64) > disk.end_sequence);
+                        Ok(read.build(&boundary, &input, &actor, token, Some(disk)))
                     }).map_err(document_load_error)?
                 } else { None };
                 read.page = Some(match result { Some(page) => page?, None => read.build(&boundary, &input, &actor, token, None)? });

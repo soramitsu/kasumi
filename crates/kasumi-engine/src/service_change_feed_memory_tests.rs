@@ -96,7 +96,7 @@ fn feed_page_releases_commits_outside_the_cursor_window() {
     let node = query_memory_node(2 << 20);
     let token = QueryCancellation::default();
     let mut memory = QueryMemory::empty(node.reserve(512, Some(token.clone())).unwrap());
-    let input = change_feed::FeedPageSource::capture(&generation, &request.start, |bytes| {
+    let input = change_feed::FeedPageSource::capture(&generation, &request.start, None, |bytes| {
         assert_eq!(
             bytes,
             (501 * std::mem::size_of::<Arc<ChangeCommit>>()) as u64
@@ -104,10 +104,26 @@ fn feed_page_releases_commits_outside_the_cursor_window() {
         memory.reserve(bytes)
     })
     .unwrap();
-    let at_head = change_feed::FeedPageSource::capture(&generation, &ChangeFeedStart::Now, |_| {
-        panic!("a head cursor needs no commit pointers")
-    })
-    .unwrap();
+    // Sequence 4002 starts in a two-event commit. The original page ends at
+    // 5001 irrespective of how many events its disk-backed prefix supplies.
+    let tail =
+        change_feed::FeedPageSource::capture(&generation, &request.start, Some(4999), |bytes| {
+            assert_eq!(bytes, 2 * std::mem::size_of::<Arc<ChangeCommit>>() as u64);
+            Ok(())
+        })
+        .unwrap();
+    drop(tail);
+    let disk_page =
+        change_feed::FeedPageSource::capture(&generation, &request.start, Some(5003), |_| {
+            panic!("the verified disk prefix covers this page")
+        })
+        .unwrap();
+    drop(disk_page);
+    let at_head =
+        change_feed::FeedPageSource::capture(&generation, &ChangeFeedStart::Now, None, |_| {
+            panic!("a head cursor needs no commit pointers")
+        })
+        .unwrap();
     drop(generation);
     assert!(before.upgrade().is_none() && after.upgrade().is_none());
     assert!(first.upgrade().is_some() && last.upgrade().is_some());
@@ -171,7 +187,8 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     assert_eq!(
         change_feed::build_change_feed_page(
             &crate::application_sources::SnapshotBoundary::<String>::from(&generation.state),
-            &change_feed::FeedPageSource::capture(&generation, &request.start, |_| Ok(())).unwrap(),
+            &change_feed::FeedPageSource::capture(&generation, &request.start, None, |_| Ok(()))
+                .unwrap(),
             &context,
             &request,
             &cancellation,
@@ -205,8 +222,8 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let cancellation = QueryCancellation::default();
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
     let boundary = crate::application_sources::SnapshotBoundary::<String>::from(&generation.state);
-    let input =
-        change_feed::FeedPageSource::capture(&generation, &request.start, |_| Ok(())).unwrap();
+    let input = change_feed::FeedPageSource::capture(&generation, &request.start, None, |_| Ok(()))
+        .unwrap();
     let parent = Arc::downgrade(&generation);
     drop(generation);
     assert!(parent.upgrade().is_none());
