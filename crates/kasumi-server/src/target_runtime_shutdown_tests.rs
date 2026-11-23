@@ -78,7 +78,7 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     reopened.activate_cache_warming().unwrap();
     let other = physical
         .create_new(
-            &directory.path().join("persistent/unrelated.kv"),
+            directory.path().join("persistent/unrelated.kv"),
             Uuid::new_v4(),
         )
         .unwrap();
