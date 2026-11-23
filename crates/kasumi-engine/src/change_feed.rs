@@ -3,15 +3,51 @@
 use super::*;
 use crate::application_sources::SnapshotBoundary;
 
-/// A page reads only the retained commit prefix and its own document resolver.
+const MAX_EXAMINED: usize = 1000;
+
+/// A page holds only commits intersecting its scan window and its own resolver.
 pub(super) struct FeedPageSource {
-    feed: kasumi_types::ChangeFeedState,
+    next_sequence: u64,
+    event_count: usize,
+    commits: Vec<Arc<ChangeCommit>>,
     max_result_bytes: usize,
     resolver: Option<Arc<dyn DocumentResolver>>,
 }
 
 impl FeedPageSource {
-    pub(super) fn capture(generation: &crate::Generation) -> Self {
+    pub(super) fn capture(
+        generation: &crate::Generation,
+        start: &ChangeFeedStart,
+        reserve: impl FnOnce(u64) -> Result<()>,
+    ) -> Result<Self> {
+        let feed = &generation.state.change_feed;
+        let first = match start {
+            ChangeFeedStart::Beginning => Some(1),
+            ChangeFeedStart::After { cursor } => cursor.after_sequence.checked_add(1),
+            ChangeFeedStart::Now => None,
+        };
+        let mut commits = Vec::new();
+        let floor = feed.next_sequence.saturating_sub(feed.event_count as u64);
+        if let Some(first) = first.filter(|&n| n >= floor && n < feed.next_sequence) {
+            // A continuation may start in the middle of one atomic commit.
+            let lower = feed
+                .commits
+                .range(..=first)
+                .next_back()
+                .map_or(first, |(&n, _)| n);
+            let last = first.saturating_add(MAX_EXAMINED as u64 - 1);
+            let count = feed.commits.range(lower..=last).count();
+            reserve((count * std::mem::size_of::<Arc<ChangeCommit>>()) as u64)?;
+            commits
+                .try_reserve_exact(count)
+                .map_err(|_| query_workspace_overflow())?;
+            commits.extend(
+                feed.commits
+                    .range(lower..=last)
+                    .map(|(_, commit)| commit.clone()),
+            );
+        }
+
         let resolver = generation
             .document_sources
             .get()
@@ -22,11 +58,13 @@ impl FeedPageSource {
                     .as_ref()
                     .map(|owner| Arc::new(owner.clone()) as Arc<dyn DocumentResolver>)
             });
-        Self {
-            feed: generation.state.change_feed.clone(),
+        Ok(Self {
+            next_sequence: feed.next_sequence,
+            event_count: feed.event_count,
+            commits,
             max_result_bytes: generation.state.limits.max_result_bytes,
             resolver,
-        }
+        })
     }
 }
 
@@ -189,7 +227,9 @@ impl Database {
         )?;
         let boundary = SnapshotBoundary::<String>::from(state);
         let selection = generation.application_selection.get().cloned();
-        let mut input = FeedPageSource::capture(&generation);
+        let mut input = FeedPageSource::capture(&generation, &read.request.start, |bytes| {
+            memory.reserve(bytes)
+        })?;
         drop(generation);
         let actor = context.clone();
         let owner = memory.workspace().blocking_owner();
@@ -197,9 +237,9 @@ impl Database {
             result = owner.read_child(cancellation.clone(), None, move |token| {
                 let result = if let Some(selection) = selection {
                     selection.with_base_snapshot_boundary(None, &boundary, |tree, memory, _, disk_revision| {
-                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, disk_revision, boundary.revision, input.feed.next_sequence)?;
-                        if disk.as_ref().is_some_and(|prefix| prefix.end_sequence == input.feed.next_sequence) {
-                            input.feed.commits.clear();
+                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, disk_revision, boundary.revision, input.next_sequence)?;
+                        if let Some(prefix) = &disk {
+                            input.commits.retain(|commit| commit.first_sequence.saturating_add(commit.records.len() as u64) > prefix.end_sequence);
                         }
                         Ok(read.build(&boundary, &input, &actor, token, disk))
                     }).map_err(document_load_error)?
@@ -266,8 +306,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
     memory.scope(|memory| {
         cancellation.check()?;
         let baseline = memory.live_bytes();
-        let feed = &input.feed;
-        let head_sequence = feed
+        let head_sequence = input
             .next_sequence
             .checked_sub(1)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "change feed sequence is invalid"))?;
@@ -294,9 +333,9 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 cursor.after_sequence
             }
         };
-        let first_available_sequence = feed
+        let first_available_sequence = input
             .next_sequence
-            .checked_sub(feed.event_count as u64)
+            .checked_sub(input.event_count as u64)
             .filter(|sequence| *sequence > 0)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "invalid change feed bounds"))?;
         if after + 1 < first_available_sequence {
@@ -312,7 +351,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         let capacity = if after == head_sequence {
             0
         } else {
-            request.limit.min(feed.event_count).min(1000)
+            request.limit.min(input.event_count).min(MAX_EXAMINED)
         };
         memory.reserve(kasumi_query::change_feed_page_workspace_bytes(
             &context.tenant,
@@ -350,13 +389,13 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         let mut append =
             |sequence, revision, ordinal, count, record: &ChangeRecord| -> Result<bool> {
                 cancellation.check()?;
-                if examined >= 1000 || events.len() >= request.limit {
+                if examined >= MAX_EXAMINED || events.len() >= request.limit {
                     return Ok(false);
                 }
                 examined += 1;
                 if !request.collections.contains(&record.collection) {
                     next.after_sequence = sequence;
-                    return Ok(examined < 1000);
+                    return Ok(examined < MAX_EXAMINED);
                 }
                 let document = record
                     .document
@@ -421,7 +460,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 bytes += event_bytes;
                 next.after_sequence = sequence;
                 events.push(event);
-                Ok(examined < 1000 && events.len() < request.limit)
+                Ok(examined < MAX_EXAMINED && events.len() < request.limit)
             };
         // Appends never change an earlier commit within an incarnation.
         // The current retention floor applies to both halves. If a page ends
@@ -435,24 +474,18 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
             }
             _ => Some(first_requested),
         };
-        if let Some(tail) = tail.filter(|&start| start < feed.next_sequence) {
-            let start = feed
-                .commits
-                .range(..=tail)
-                .next_back()
-                .map_or(tail, |(&sequence, _)| sequence);
-            'commits: for (_, commit) in feed.commits.range(start..) {
-                for (ordinal, record) in commit.records.iter().enumerate() {
-                    let sequence = commit.first_sequence + ordinal as u64;
-                    if sequence >= tail
-                        && !append(
-                            sequence,
-                            commit.revision,
-                            ordinal,
-                            commit.records.len(),
-                            record,
-                        )?
-                    {
+        if let Some(tail) = tail.filter(|&start| start < input.next_sequence) {
+            'commits: for commit in &input.commits {
+                let skip = tail.saturating_sub(commit.first_sequence);
+                let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+                for (ordinal, record) in commit.records.iter().enumerate().skip(skip) {
+                    if !append(
+                        commit.first_sequence + ordinal as u64,
+                        commit.revision,
+                        ordinal,
+                        commit.records.len(),
+                        record,
+                    )? {
                         break 'commits;
                     }
                 }
