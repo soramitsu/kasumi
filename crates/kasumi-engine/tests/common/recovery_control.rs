@@ -1833,40 +1833,7 @@ async fn complete_recovery(
         RecoveryDispatchOutcome::Authority(Box::new(signed)),
     )
     .await;
-    let (cleanup_phase, input) = prepare_next(&f, &db, id).await;
-    let RecoveryDispatch::ControlIntent(commit) = input else {
-        panic!("cleanup Control phase required")
-    };
-    let phase = db
-        .recovery_phase(f.context("owner"), id, cleanup_phase)
-        .await
-        .unwrap();
-    let mut invocation = f.context("owner");
-    invocation.authorization = invocation
-        .authorization
-        .with_expiry_limit(phase.dispatch_limit().await.unwrap())
-        .unwrap();
-    drop(phase);
-    consume_fixture_effect(&f, id, cleanup_phase, RecoveryEffect::ControlIntent).await;
-    db.lifecycle_control(invocation, LifecycleControlCommand::CommitIntent(commit))
-        .await
-        .unwrap();
-    let intent = db
-        .engine()
-        .generation()
-        .unwrap()
-        .state
-        .lifecycle_intent(cleanup_phase)
-        .unwrap()
-        .unwrap()
-        .clone();
-    resolve_phase(
-        &f,
-        id,
-        cleanup_phase,
-        RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
-    )
-    .await;
+    let intent = commit_next_intent(&f, &db, id).await;
     for node_id in 1..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
         let RecoveryDispatch::Target {
@@ -2499,14 +2466,7 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("committed Control phase required")
     };
-    // Preparation follows the current leader; the caller's cached handle can
-    // now be a follower. Pin one original read credential before reacquiring it.
-    let phase_context = f.context("owner");
-    let db = f.leader().await;
-    let prepared = db
-        .recovery_phase(phase_context, operation, phase_id)
-        .await
-        .unwrap();
+    let prepared = read_recovery_phase(f, f.context("owner"), operation, phase_id).await;
     let mut context = f.context("owner");
     context.authorization = context
         .authorization
@@ -2515,6 +2475,9 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     drop(prepared);
     let requested_phase = command.phase;
     let requested_id = command.command_id;
+    let started = std::time::Instant::now();
+    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
+    let db = f.leader().await;
     let before = {
         let receiver = db.raft_group().raft().metrics();
         let metrics = receiver.borrow();
@@ -2525,8 +2488,6 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
             metrics.state,
         )
     };
-    let started = std::time::Instant::now();
-    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
         .await
         .unwrap_or_else(|error| {

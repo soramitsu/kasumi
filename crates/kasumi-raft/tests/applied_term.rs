@@ -116,11 +116,9 @@ async fn new_leader_admits_proposals_only_after_applying_its_own_term() -> Fixtu
     // none of its appends arrive: its first entry never commits or applies.
     transport.silenced.store(1, Ordering::SeqCst);
     transport.muted.store(2, Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(
-        2 * common::config().election_timeout_max,
-    ))
-    .await;
-    groups[1].raft().trigger().elect().await?;
+    // Only node 2 may campaign. If its first vote reaches node 3 before
+    // the previous lease expires, the next election can still make progress.
+    groups[1].raft().runtime_config().elect(true);
     groups[1]
         .raft()
         .wait(Some(Duration::from_secs(5)))
