@@ -3409,7 +3409,9 @@ async fn resolve_expired_completion(
     let inspection = commit_next_control(f, db, operation).await;
     assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
     assert_ne!(inspection.request.command_id, old_intent.request.command_id);
-    for node in 1..=2 {
+    // The terminal resolution started voters 1 and 2. A fresh inspection first
+    // starts voter 3, which that majority missed, then the earlier startup.
+    for node in [3, 1] {
         let (id, dispatch) = prepare_next(f, db, operation).await;
         let RecoveryDispatch::Target { node_id, request } = dispatch else {
             panic!("fresh inspection startup required")
@@ -3445,7 +3447,7 @@ async fn resolve_expired_completion(
     let RecoveryDispatch::Target { node_id, request } = next else {
         panic!("inspection peer retry required")
     };
-    assert_eq!((first_node, node_id), (1, 2));
+    assert_eq!((first_node, node_id), (1, 3));
     assert_eq!(
         first, request,
         "inspection retries preserve their exact finite request"
