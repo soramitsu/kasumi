@@ -334,21 +334,6 @@ pub(crate) fn established_effect(step: &TargetRuntimeStep) -> bool {
             | TargetRuntimeStep::Inspect(_)
     )
 }
-fn startup_attempted(
-    state: &TenantState,
-    operation: &RecoveryRecord,
-    node: u64,
-    current: Uuid,
-) -> Result<bool> {
-    let Some(id) = operation.voters.get(&node).and_then(|v| v.start_attempt) else {
-        return Ok(false);
-    };
-    let retained = phase(state, operation, id)?;
-    Ok(
-        matches!(&retained.input, RecoveryDispatch::Target { node_id, request }
-        if *node_id == node && request.command_id == current && established_start(&request.step)),
-    )
-}
 pub(crate) fn ready_nodes(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -377,10 +362,40 @@ pub(crate) fn established_destination(
     if ready.len() > operation.voters.len() / 2 {
         return Ok((ready[0], false));
     }
-    for node in operation.voters.keys() {
-        if !ready.contains(node) && !startup_attempted(state, operation, *node, current)? {
-            return Ok((*node, true));
+    let inspecting = matches!(
+        intent(state, operation, current)?.request.phase,
+        LifecyclePhase::InspectCompletionAttempt
+            | LifecyclePhase::InspectCompletionResolution
+            | LifecyclePhase::InspectTarget
+    );
+    let mut next_start = None;
+    for (&node, voter) in &operation.voters {
+        if ready.contains(&node) {
+            continue;
         }
+        let previous = voter
+            .start_attempt
+            .map(|id| phase(state, operation, id))
+            .transpose()?;
+        if previous.is_some_and(|record| matches!(&record.input,
+            RecoveryDispatch::Target { node_id, request }
+            if *node_id == node && request.command_id == current && established_start(&request.step))) {
+            continue;
+        }
+        // A fresh read-only inspection can otherwise repeatedly start the same
+        // majority and never reach the elected observer at another voter.
+        // Earlier attempts only rank startups. Every reply is still scoped to
+        // the current intent and only a positive quorum observation resolves it.
+        let sequence = previous
+            .filter(|_| inspecting)
+            .map(|record| record.sequence);
+        let rank = (sequence, node);
+        if next_start.is_none_or(|best| rank < best) {
+            next_start = Some(rank);
+        }
+    }
+    if let Some((_, node)) = next_start {
+        return Ok((node, true));
     }
     let after = match operation.last_phase {
         Some(id) => match &phase(state, operation, id)?.input {

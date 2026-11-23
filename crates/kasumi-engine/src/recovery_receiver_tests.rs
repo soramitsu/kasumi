@@ -1715,6 +1715,76 @@ fn established_receiver_routes_around_unknown_start_without_unanimous_reopening(
 }
 
 #[test]
+fn fresh_completion_inspection_starts_the_voter_missed_by_the_previous_majority() {
+    let (mut state, mut operation, attempt) = fixture_state();
+    let input = status_input(&state, &operation).unwrap();
+    let previous = fixture::intent(
+        &attempt.origin,
+        LifecyclePhase::InspectCompletionAttempt,
+        input.digest().unwrap(),
+        20,
+        1000,
+        2000,
+    );
+    control(&mut state, &operation, previous.clone());
+    operation.current_intent = Some(previous.request.command_id);
+    operation.pending_phase = None;
+    for node in [1, 2] {
+        let dispatch = next(&state, &operation, &previous, 1100, 2000).unwrap();
+        assert!(
+            matches!(&dispatch, RecoveryDispatch::Target { node_id, request }
+            if *node_id == node && matches!(request.step, TargetRuntimeStep::Start(_)))
+        );
+        let record = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(970 + u128::from(node)),
+            dispatch,
+            Some(RecoveryDispatchOutcome::Target(Box::new(
+                TargetRuntimeResponse {
+                    node_id: node,
+                    command_id: previous.request.command_id,
+                    outcome: TargetRuntimeOutcome::Started {
+                        origin_sha256: attempt.input.quorum.origin_sha256.clone(),
+                    },
+                },
+            ))),
+            21 + node,
+        );
+        let voter = operation.voters.get_mut(&node).unwrap();
+        voter.start_attempt = Some(record.phase_id);
+        voter.started = Some(record.phase_id);
+    }
+    let fresh = fixture::intent(
+        &attempt.origin,
+        LifecyclePhase::InspectCompletionAttempt,
+        input.digest().unwrap(),
+        30,
+        2001,
+        3000,
+    );
+    control(&mut state, &operation, fresh.clone());
+    operation.current_intent = Some(fresh.request.command_id);
+    assert!(
+        quorum::ready_nodes(&state, &operation, fresh.request.command_id)
+            .unwrap()
+            .is_empty()
+    );
+    let dispatch = next(&state, &operation, &fresh, 2100, 3000).unwrap();
+    let RecoveryDispatch::Target { node_id, request } = dispatch else {
+        panic!("a newly authorized startup is required");
+    };
+    assert_eq!(node_id, 3);
+    assert_eq!(request.command_id, fresh.request.command_id);
+    assert!(matches!(
+        request.step,
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionAttemptStatus(_))
+    ));
+    validate_step(&state, &operation, &fresh, node_id, &request, true).unwrap();
+    assert!(preparation(&state, &operation).is_err());
+}
+
+#[test]
 fn complete_mutation_retry_includes_initialized_leader_without_new_start() {
     let (mut state, mut operation, attempt) = fixture_state();
     let current = attempt.intent.clone();
