@@ -125,7 +125,29 @@ impl CredentialFixture {
     ) -> RequestContext {
         let epoch =
             kasumi_clock::EpochClock::new(clock, Arc::new(kasumi_clock::SystemWallClock)).unwrap();
+        self.credential_from_observation(epoch.observe().unwrap(), validity_ms)
+    }
+    /// The credential and ordered admission must reach expiry on the same
+    /// observed commit, even when the host spends longer on disk I/O.
+    fn credential_with_command_clock(&self, clock: Arc<dyn LeaseClock>) -> RequestContext {
+        struct FrozenWall(u64);
+        impl kasumi_clock::WallClock for FrozenWall {
+            fn now_ms(&self) -> anyhow::Result<u64> {
+                Ok(self.0)
+            }
+        }
+        let epoch = Arc::new(
+            kasumi_clock::EpochClock::new(clock, Arc::new(FrozenWall(now_ms().unwrap()))).unwrap(),
+        );
         let observation = epoch.observe().unwrap();
+        *self.db.command_clock.lock().unwrap() = Arc::new(FixtureCommandClock(epoch));
+        self.credential_from_observation(observation, 1000)
+    }
+    fn credential_from_observation(
+        &self,
+        observation: kasumi_clock::ClockObservation,
+        validity_ms: u64,
+    ) -> RequestContext {
         let generation = self.db.engine().generation().unwrap();
         let incarnation = uuid::Uuid::parse_str(&generation.state.incarnation).unwrap();
         let resource = if generation.state.retired {
@@ -408,7 +430,7 @@ impl LeaseClock for CommitObservedClock {
 #[tokio::test]
 async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
     let fixture = CredentialFixture::new().await;
-    let context = fixture.credential(Arc::new(CommitObservedClock(Arc::downgrade(
+    let context = fixture.credential_with_command_clock(Arc::new(CommitObservedClock(Arc::downgrade(
         &fixture.db.engine,
     ))));
     let error = fixture
@@ -769,7 +791,7 @@ async fn lineage_read_keeps_original_expiry_and_current_collection_policy_at_rel
             .clone(),
         collection: "docs".into(),
     };
-    let context = fixture.credential(Arc::new(LineageAuditClock(Arc::downgrade(
+    let context = fixture.credential_with_command_clock(Arc::new(LineageAuditClock(Arc::downgrade(
         &fixture.db.engine,
     ))));
     assert_eq!(
@@ -793,7 +815,7 @@ async fn lineage_read_keeps_original_expiry_and_current_collection_policy_at_rel
             .any(|a| a.action == "restore_lineage")
     );
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
-    let fresh = fixture.credential(clock.clone());
+    let fresh = fixture.credential_with_command_clock(clock.clone());
     let proof = fixture
         .db
         .read_restore_lineage(&fresh, request)
