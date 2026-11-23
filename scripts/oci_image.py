@@ -279,6 +279,12 @@ def compose(source, layout, package, target, epoch):
     return image, index, blobs, base_layers, sbom
 
 
+def docker_manifest(config, layers, reference):
+    """Point Docker's archive loader at the same config and ordered OCI layers."""
+    return [{"Config": "blobs/sha256/" + config[7:], "RepoTags": [reference],
+             "Layers": ["blobs/sha256/" + layer[7:] for layer in layers]}]
+
+
 def assemble(source, layout, package, target, epoch, output):
     """Write the image archive, its SBOM and an assembly record into a new directory."""
     output = Path(output)
@@ -295,7 +301,10 @@ def assemble(source, layout, package, target, epoch, output):
         return info
 
     with tarfile.open(archive, "w", format=tarfile.GNU_FORMAT) as bundle:
-        members = {"oci-layout": canonical({"imageLayoutVersion": "1.0.0"}), "index.json": index}
+        docker = docker_manifest(image["config_digest"], [*base_layers, image["layer_digest"]],
+                                 image["reference"])
+        members = {"oci-layout": canonical({"imageLayoutVersion": "1.0.0"}), "index.json": index,
+                   "manifest.json": canonical(docker)}
         members.update({"blobs/sha256/" + key[7:]: data for key, data in blobs.items()})
         members.update({"blobs/sha256/" + key[7:]: None for key in base_layers})
         for name in sorted(members):
@@ -362,6 +371,14 @@ def verify(source, archive, sbom, target, binaries, *, provenance=None):
         require(config.get("os") == "linux" and config.get("architecture") == base["architecture"]
                 and all(config["config"].get(key) == value for key, value in RUNTIME.items()),
                 "image runtime configuration differs from the release contract")
+        if "manifest.json" in members:
+            member = members["manifest.json"]
+            require(member.size <= MAX_JSON_BYTES, "Docker archive manifest exceeds its size limit")
+            docker = json.loads(bundle.extractfile(member).read())
+            expected = docker_manifest(manifest["config"]["digest"],
+                                       [item["digest"] for item in manifest["layers"]],
+                                       descriptor["annotations"]["org.opencontainers.image.ref.name"])
+            require(docker == expected, "Docker and OCI archive manifests differ")
         files = {}
         with tarfile.open(fileobj=io.BytesIO(blob(layer["digest"])), mode="r:") as contents:
             for member in contents:

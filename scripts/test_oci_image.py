@@ -213,6 +213,12 @@ class AssemblyTests(ImageFixture):
         self.assertNotEqual(self.assemble("image-c", epoch=1767225601)["manifest_digest"],
                             first["manifest_digest"])
         with tarfile.open(archive) as bundle:
+            docker, = json.load(bundle.extractfile("manifest.json"))
+            manifest = json.load(bundle.extractfile("blobs/sha256/" + first["manifest_digest"][7:]))
+            self.assertEqual(docker["RepoTags"], [first["reference"]])
+            self.assertEqual(docker["Config"], "blobs/sha256/" + first["config_digest"][7:])
+            self.assertEqual(docker["Layers"],
+                             ["blobs/sha256/" + item["digest"][7:] for item in manifest["layers"]])
             layer = bundle.extractfile("blobs/sha256/" + first["layer_digest"][7:]).read()
         with tarfile.open(fileobj=io.BytesIO(layer)) as contents:
             members = {member.name: member for member in contents}
@@ -295,6 +301,14 @@ class AssemblyTests(ImageFixture):
         root_user = rebuilt(lambda config, manifest, members: config["config"].update(User="0:0"))
         with self.assertRaisesRegex(ValueError, "runtime configuration differs"):
             oci_image.verify(self.source, root_user, sbom, TARGET, self.candidates)
+
+        def reverse_docker_layers(config, manifest, members):
+            docker = json.loads(members["manifest.json"])
+            docker[0]["Layers"].reverse()
+            members["manifest.json"] = oci_image.canonical(docker)
+
+        with self.assertRaisesRegex(ValueError, "Docker and OCI archive manifests differ"):
+            oci_image.verify(self.source, rebuilt(reverse_docker_layers), sbom, TARGET, self.candidates)
 
         def extra_layer(config, manifest, members):
             extra = b"unreviewed layer"
