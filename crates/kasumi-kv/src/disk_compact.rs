@@ -466,12 +466,31 @@ impl DiskState {
         self.compact.stats = CompactionProgress::default();
         let before = self.arena.stats()?;
         while progress.units < budget.units {
-            let record = *self.owner.lock()?.compaction();
+            let root = self.owner.lock()?;
+            let record = *root.compaction();
+            let (segment, arena) = root.compaction_cutoffs();
+            drop(root);
             let advanced = match record.phase() {
                 CompactionPhase::Idle => self.idle_step(&record, budget, progress)?,
                 CompactionPhase::Evacuating => self.evacuate_step(&record, budget, progress)?,
                 CompactionPhase::Reclaiming => self.reclaiming_step(&record, budget, progress)?,
-                CompactionPhase::Packing => self.pack_step(budget, progress)?,
+                CompactionPhase::Packing => {
+                    // Reclamation could only consider files at or below the frozen
+                    // cutoffs. When newer files alone reach the full file trigger,
+                    // let Idle measure the store before spending more work on density.
+                    let newer_files = segment
+                        .saturating_sub(record.cutoff_segment())
+                        .saturating_add(arena.saturating_sub(record.cutoff_arena()));
+                    let trigger = self
+                        .maintenance
+                        .policy
+                        .trigger_files(record.baseline_files());
+                    if newer_files >= trigger {
+                        self.finish_cycle(budget, progress)?
+                    } else {
+                        self.pack_step(budget, progress)?
+                    }
+                }
             };
             if !advanced {
                 break;

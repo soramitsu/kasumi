@@ -221,3 +221,77 @@ fn dense_levels_publish_one_packing_cursor_per_step_not_per_pair() {
     drop(state);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn confirmed_file_growth_during_packing_reopens_the_cycle_before_more_density_work() {
+    let group = InMemoryGroup::new();
+    let admission = Admission::new(12 << 20);
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    let original = populate_sparse_directory(&mut state, 48);
+    evacuate_all(&mut state);
+    let packing = record(&state);
+    let threshold = state
+        .maintenance
+        .policy
+        .trigger_files(packing.baseline_files());
+    for index in 0..threshold {
+        seal_files(&mut state);
+        state
+            .commit(&[Operation::put("accounts", b"latest", index.to_be_bytes())])
+            .unwrap();
+    }
+    let selected = state.selected;
+    let before = state.arena.stats().unwrap();
+    let deferred = step(
+        &mut state,
+        MaintenanceBudget {
+            units: 1,
+            mutations: 0,
+        },
+    );
+    assert_eq!(deferred.mutations, 0);
+    assert_eq!(phase(&state), CompactionPhase::Packing);
+    let completed = step(&mut state, ONE);
+    assert!(completed.phase_changed);
+    assert_eq!(phase(&state), CompactionPhase::Idle);
+    assert_eq!(completed.mutations, 1);
+    assert_eq!(
+        state.arena.stats().unwrap().pages_written,
+        before.pages_written
+    );
+    assert_eq!(state.selected, selected);
+    assert_eq!(
+        value(&mut state, &original, &long_key(1)).unwrap(),
+        1u16.to_be_bytes()
+    );
+    let current = state.snapshot().unwrap();
+    assert_eq!(
+        value(&mut state, &current, b"latest").unwrap(),
+        (threshold - 1).to_be_bytes()
+    );
+    for _ in 0..threshold * 4 + 64 {
+        step(&mut state, ONE);
+        if phase(&state) == CompactionPhase::Evacuating {
+            break;
+        }
+    }
+    let next = record(&state);
+    assert_eq!(next.phase(), CompactionPhase::Evacuating);
+    assert_eq!(next.cycle(), packing.cycle() + 1);
+    assert!(next.cutoff_arena() > packing.cutoff_arena());
+    assert_eq!(
+        value(&mut state, &original, &long_key(1)).unwrap(),
+        1u16.to_be_bytes()
+    );
+    drop((current, original, state));
+    assert_eq!(admission.used.load(Ordering::Acquire), 0);
+    let mut reopened =
+        DiskState::open(Arc::new(group.crash()), admission, GROUP, LARGE_CACHE).unwrap();
+    assert_eq!(record(&reopened), next);
+    let current = reopened.snapshot().unwrap();
+    assert_eq!(current.root(), selected);
+    assert_eq!(
+        value(&mut reopened, &current, b"latest").unwrap(),
+        (threshold - 1).to_be_bytes()
+    );
+}
