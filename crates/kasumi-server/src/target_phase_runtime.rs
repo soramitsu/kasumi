@@ -716,6 +716,13 @@ impl RuntimeTargetPhase {
                     .min(Duration::from_secs(5)),
             )
             .await?;
+        drop(issuer);
+        if self.original.observation().intent.request.phase == LifecyclePhase::Initialize {
+            // A sibling dispatch can finish, abort or be superseded while the
+            // issuer is answering. Only an independently current original
+            // Control read may publish this renewal into the existing live gate.
+            self.check_current(&budget).await?;
+        }
         self.scope.invocation().gate().renew(lease)?;
         Ok(())
     }

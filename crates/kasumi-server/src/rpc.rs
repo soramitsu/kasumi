@@ -48,6 +48,16 @@ fn phase_reader(
     {
         return Ok(Some(active));
     }
+    if let Observation::Intent(command) = observation
+        && let Some(active) = coordinator.phase_callbacks.find_initial_start_reader(
+            reader,
+            peer,
+            command,
+            &coordinator.database,
+        )?
+    {
+        return Ok(Some(active));
+    }
     if !matches!(observation, Observation::Writer(_))
         && let Some(active) =
             coordinator

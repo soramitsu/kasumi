@@ -68,6 +68,40 @@ impl RecoveryEffectDispatchTicket {
         phase.dispatch_remaining().await
     }
 }
+impl Database {
+    /// A read-only return connection may observe the original Initialize intent
+    /// while a sibling's physical dispatch is still active. Resolve its sender
+    /// and positive Start in the current Control generation on every check.
+    pub fn is_current_initial_intent_reader(
+        &self,
+        operation: Uuid,
+        pending: Uuid,
+        command: Uuid,
+        original: &RequestContext,
+        reader: &RequestContext,
+        certificate_sha256: &str,
+    ) -> Result<bool> {
+        let current = self.engine.generation()?;
+        let Some(head) = current
+            .state
+            .recovery_control
+            .operations
+            .get(&operation.to_string())
+        else {
+            return Ok(false);
+        };
+        recovery::quorum::current_initial_intent_reader(
+            &current.state,
+            head,
+            pending,
+            command,
+            &original.principal,
+            (&reader.principal, certificate_sha256),
+            || self.lifecycle_now(),
+        )
+    }
+}
+
 impl VerifiedRecoveryPhase {
     pub fn record(&self) -> &RecoveryPhaseRecord {
         &self.record

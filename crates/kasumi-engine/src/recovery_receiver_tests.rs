@@ -2503,6 +2503,196 @@ fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_ac
 }
 
 #[test]
+fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
+    let (mut state, mut operation, _) = fixture_state();
+    let initialized = operation.initialization.take().unwrap();
+    let original = state
+        .recovery_control
+        .phases
+        .remove(&initialized.to_string())
+        .unwrap();
+    let RecoveryDispatch::Target { request, .. } = original.input else {
+        unreachable!()
+    };
+    let TargetRuntimeStep::Initialize(quorum) = &request.step else {
+        unreachable!()
+    };
+    let command = request.command_id;
+    operation.phase = RecoveryPhase::Initialize;
+    operation.current_intent = Some(command);
+    let nodes = operation.request.target_nodes.clone();
+    let first = &nodes[&1];
+
+    // Voter one starts first, then needs to keep its live child through both
+    // sibling Starts and its own eventual Initialize.
+    for (sequence, node, initialize) in [(1, 1, false), (2, 2, false), (3, 3, false), (4, 1, true)]
+    {
+        let id = Uuid::from_u128(8600 + u128::from(sequence));
+        let step = if initialize {
+            TargetRuntimeStep::Initialize(quorum.clone())
+        } else {
+            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone()))
+        };
+        let input = RecoveryDispatch::Target {
+            node_id: node,
+            request: Box::new(TargetRuntimeRequest {
+                step,
+                not_after_ms: if sequence == 1 { 450 } else { 500 },
+                ..(*request).clone()
+            }),
+        };
+        let mut active = retained(&mut state, &operation, id, input, None, 70 + sequence);
+        operation.pending_phase = Some(id);
+        let eligible = |generation: &TenantState,
+                        head: &RecoveryRecord,
+                        phase,
+                        cmd,
+                        reader: &kasumi_types::LifecycleNode,
+                        pin: &str,
+                        now| {
+            quorum::current_initial_intent_reader(
+                generation,
+                head,
+                phase,
+                cmd,
+                "operator",
+                (&reader.principal, pin),
+                || Ok(now),
+            )
+            .unwrap()
+        };
+        let read = |generation: &TenantState, head: &RecoveryRecord, now| {
+            eligible(
+                generation,
+                head,
+                id,
+                command,
+                first,
+                &first.certificate_sha256,
+                now,
+            )
+        };
+        assert!(!read(&state, &operation, 160));
+        active.effect_attempts.insert(
+            RecoveryEffect::TargetCommand,
+            RecoveryEffectAttempt {
+                attempt_id: Uuid::new_v4(),
+                input_sha256: active.input_sha256.clone(),
+                admitted_at_ms: 155,
+                begun_revision: active.prepared_revision + 1,
+            },
+        );
+        state
+            .recovery_control
+            .phases
+            .insert(id.to_string(), active.clone());
+        for (reader_id, reader) in &nodes {
+            assert_eq!(
+                eligible(
+                    &state,
+                    &operation,
+                    id,
+                    command,
+                    reader,
+                    &reader.certificate_sha256,
+                    160
+                ),
+                initialize || *reader_id <= node,
+                "reader {reader_id} during dispatch {sequence}"
+            );
+        }
+        assert!(!eligible(
+            &state,
+            &operation,
+            id,
+            command,
+            first,
+            &nodes[&2].certificate_sha256,
+            160
+        ));
+        assert!(!eligible(
+            &state,
+            &operation,
+            id,
+            Uuid::new_v4(),
+            first,
+            &first.certificate_sha256,
+            160
+        ));
+        assert!(!eligible(
+            &state,
+            &operation,
+            Uuid::new_v4(),
+            command,
+            first,
+            &first.certificate_sha256,
+            160
+        ));
+        // Time is checked again on response release. During sibling dispatches
+        // voter one's own earlier cap still wins.
+        let cap = 450;
+        assert!(read(&state, &operation, cap - 1));
+        assert!(!read(&state, &operation, cap));
+        assert!(
+            !quorum::current_initial_intent_reader(
+                &state,
+                &operation,
+                id,
+                command,
+                "other-operator",
+                (&first.principal, &first.certificate_sha256),
+                || Ok(160)
+            )
+            .unwrap()
+        );
+        let mut stale_generation = state.clone();
+        std::sync::Arc::make_mut(stale_generation.lifecycle_control.as_mut().unwrap())
+            .installation
+            .generation += 1;
+        assert!(!read(&stale_generation, &operation, 160));
+        let mut replaced = operation.clone();
+        replaced.request.target_incarnation = Uuid::new_v4();
+        assert!(!read(&state, &replaced, 160));
+        let mut superseded = operation.clone();
+        superseded.current_intent = Some(Uuid::new_v4());
+        assert!(!read(&state, &superseded, 160));
+        let mut stopping = operation.clone();
+        stopping.stop_request = Some(Uuid::new_v4());
+        assert!(!read(&state, &stopping, 160));
+        for phase in [
+            RecoveryPhase::StopTarget,
+            RecoveryPhase::Stopped,
+            RecoveryPhase::Finished,
+        ] {
+            stopping.phase = phase;
+            assert!(!read(&state, &stopping, 160));
+        }
+        active.resolved_revision = Some(active.prepared_revision + 2);
+        let outcome = if initialize {
+            TargetRuntimeOutcome::Initialized {
+                origin_sha256: quorum.origin_sha256.clone(),
+            }
+        } else {
+            TargetRuntimeOutcome::Started {
+                origin_sha256: quorum.origin_sha256.clone(),
+            }
+        };
+        active.outcome = Some(RecoveryDispatchOutcome::Target(Box::new(
+            TargetRuntimeResponse {
+                command_id: command,
+                node_id: node,
+                outcome,
+            },
+        )));
+        state.recovery_control.phases.insert(id.to_string(), active);
+        assert!(!read(&state, &operation, 160));
+        if !initialize {
+            operation.voters.get_mut(&node).unwrap().started = Some(id);
+        }
+    }
+}
+
+#[test]
 fn first_membership_dispatch_requires_the_intent_principal_after_acceptance() {
     let (mut state, mut operation, _) = fixture_state();
     let original_id = operation.initialization.take().unwrap();
