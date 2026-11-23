@@ -902,11 +902,26 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         2
     );
     *current_credential.write().unwrap() = node_token.clone();
-    let original = boot.begin_acquisition().unwrap();
-    let acquired = pool
-        .acquire_lease(&original, Duration::from_secs(1))
-        .await
-        .unwrap();
+    // The fixture lease lasts 1 s from its attempt, so the pool gets exactly
+    // that budget. When a loaded host exhausts it, the pool reports its own
+    // deadline (`None`; `acquire_lease` maps it to DeadlineExceeded) and never
+    // regenerates the attempt. The caller then begins a new attempt; any
+    // installed member's error still fails the test.
+    let mut original = boot.begin_acquisition().unwrap();
+    let mut acquired = None;
+    for attempt in 1..=5 {
+        if let Some(lease) = pool
+            .acquire_lease_before_deadline(&original, Duration::from_secs(1))
+            .await
+            .unwrap()
+        {
+            acquired = Some(lease);
+            break;
+        }
+        eprintln!("installed issuer lease attempt {attempt} exhausted its 1 s pool budget");
+        original = boot.begin_acquisition().unwrap();
+    }
+    let acquired = acquired.expect("five lease attempts each exhausted the 1 s pool budget");
     assert!(acquired.remaining().unwrap() <= Duration::from_secs(1));
     *current_credential.write().unwrap() = admin.clone();
     assert_eq!(
