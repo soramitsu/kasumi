@@ -1156,11 +1156,16 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_resumes_a_large_one(
     assert!(edited.is_current());
     assert_eq!(edited.page_space, original.page_space);
     fixture.verify(&sixth);
-    // A replayed boundary whose rows differ only in one scalar of the same
-    // encoded length has equal row and byte totals; the ordered digest still
-    // refuses it. Its read lease remains valid while the selection withdraws
-    // the directory and the registered owner seeds a replacement.
-    let other = fifth.next(vec![("d000013".into(), small(8001))], &[], None);
+    // Swap complete bodies between equal-length IDs. Every encoded scalar,
+    // ID length and posting count is preserved, while the posting owners differ.
+    let other = fifth.next(
+        vec![
+            ("d000013".into(), sixth.documents["d000014"].clone()),
+            ("d000014".into(), sixth.documents["d000013"].clone()),
+        ],
+        &[],
+        None,
+    );
     assert_eq!(other.state.revision, sixth.state.revision);
     let differs =
         verify_covered(&*fixture.store, &edited, &other.state, &other.indexes).unwrap_err();
