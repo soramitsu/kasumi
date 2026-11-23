@@ -2,6 +2,7 @@
 //! a response whose caller disappears after the child publishes its result.
 #[cfg(test)]
 use super::SnapshotFailure;
+use super::initialize_diagnostic::{InitializeDiagnostic, InitializeFailures};
 use super::target_call_failure::{
     TargetFailureInventory, TargetOutput, TargetOutputTicket, TargetProducerFailure,
     TargetProducerLoan,
@@ -87,6 +88,7 @@ impl Drop for TestReply {
 /// The fixed MAX_CALLS child/handoff metadata inventory is admitted before
 /// target opening. Its charge remains installed through shutdown.
 pub(super) struct TargetCallJobs {
+    pub(super) initialize_failures: InitializeFailures,
     budget: BackgroundWorkBudget,
     closed: AtomicBool,
     registry: AsyncMutex<Registry>,
@@ -185,12 +187,20 @@ impl TargetCallJobs {
                 report: DrainReport::default(),
             }),
             failures,
+            initialize_failures: Default::default(),
         })
     }
 
     pub(super) fn required_bytes() -> Result<u64> {
         BackgroundWorkBudget::required_bytes(MAX_CALLS as usize, 1)?
             .checked_add(TargetFailureInventory::required_bytes(MAX_CALLS as usize)?)
+            // One stage per admitted call and one failure summary per installed target.
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<(
+                    InitializeFailures,
+                    [InitializeDiagnostic; MAX_CALLS as usize],
+                )>() as u64)
+            })
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
     }
 

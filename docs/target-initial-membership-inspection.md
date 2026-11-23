@@ -21,6 +21,13 @@ membership proposal. The consumed proof submits one typed first membership entry
 carrying those canonical signed bytes. OpenRaft assigns its protocol first log
 identity; it does not accept a caller-selected committed position.
 
+If an accepted Initialize returns an error, the installed target retains its
+phase ID, last execution stage and typed failure codes. The target monitor or
+shutdown writes the first such failure for that runtime to a mode-0600 file.
+The `target_initialize_failed` daemon event gives its path and write status.
+The stage identifies where execution returned an error. Membership recovery
+still requires the durable evidence described below.
+
 The native entry adapter requires an explicit initialization field. Its only
 permitted non-null value is a bounded, verified signed cause on the first
 membership. A narrow vendored `initialize_with_entry` path retains that typed
