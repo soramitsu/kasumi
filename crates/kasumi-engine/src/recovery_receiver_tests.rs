@@ -2505,6 +2505,13 @@ fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_ac
 #[test]
 fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
     let (mut state, mut operation, _) = fixture_state();
+    // The reducer fixture builds its ledger directly on genesis. Model the
+    // Control policy installation that the retained intents already reference.
+    state.policy_epoch = state
+        .lifecycle_control
+        .as_ref()
+        .unwrap()
+        .installation_policy_epoch;
     let initialized = operation.initialization.take().unwrap();
     let original = state
         .recovery_control
@@ -2645,6 +2652,9 @@ fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
             )
             .unwrap()
         );
+        let mut stale_policy = state.clone();
+        stale_policy.policy_epoch += 1;
+        assert!(!read(&stale_policy, &operation, 160));
         let mut stale_generation = state.clone();
         std::sync::Arc::make_mut(stale_generation.lifecycle_control.as_mut().unwrap())
             .installation
