@@ -158,6 +158,10 @@ def target_member(target, config, nodes, request, leaf):
             and leaf not in {node["certificate"]["leaf_sha256"] for node in nodes},
             "recovery target TLS identity is not its own distinct pinned leaf")
     roots = list(config["persistent_disk"]["roots"].values())
+    generation_root = absolute(config["target_recovery"].get("generation_root"),
+                               "installed target generation root")
+    require(any(Path(generation_root).is_relative_to(root) for root in roots),
+            "target generation root is outside installed persistent storage")
     scratch = config["scratch_disk"]["directory"]
     for root in [*roots, scratch]:
         absolute(root, "recovery target storage root")
@@ -168,6 +172,7 @@ def target_member(target, config, nodes, request, leaf):
                         "recovery target storage overlaps an HA process")
     return {"id": target["id"], "config": target["config"], "node_id": node_id,
             "leaf_sha256": leaf, "roots": sorted(roots), "scratch": scratch,
+            "generation_root": generation_root,
             "control_observer": bool(config["target_recovery"].get("phase_observation_bearer_file"))}
 
 
@@ -702,19 +707,31 @@ def forward(d, ctx, operation, value, facts):
 
 
 def storage(d, ctx):
-    return {target["id"]: {root: d.listing(root) for root in target["roots"]}
+    return {target["id"]: {root: d.listing(root) for root in
+                           sorted({*target["roots"], target["generation_root"]})}
             for target in ctx.targets}
 
 
-def created(before, after):
-    """Entries present now that the earlier listing did not have, by physical identity."""
-    result = {}
-    for target, roots in after.items():
-        for root, entries in roots.items():
-            for name, identity in entries.items():
-                if before[target][root].get(name) != identity:
-                    result[root + "/" + name] = identity
-    return result
+def generation_entries(snapshot, targets, request, *, materialized=False):
+    """Match the installed runner's tenant digest and target incarnation on every voter."""
+    tenant = json.dumps(request["tenant"], ensure_ascii=False).encode("utf-8")
+    name = hashlib.sha256(tenant).hexdigest() + "." + request["target_incarnation"] + ".kv"
+    found, directories = {}, set()
+    for target in targets:
+        root = target["generation_root"]
+        entries = snapshot[target["id"]][root]
+        members = {path: identity for path, identity in entries.items()
+                   if path == name or path.startswith(name + "/")}
+        if materialized:
+            directory = members.get(name, {})
+            require(directory.get("type") == "dir"
+                    and any(identity["type"] == "file" for identity in members.values()),
+                    "missing materialized generation on " + target["id"])
+            key = directory["device"], directory["inode"]
+            require(key not in directories, "recovery targets share a physical generation")
+            directories.add(key)
+        found.update({str(Path(root) / path): identity for path, identity in members.items()})
+    return found
 
 
 def surviving(before, after):
@@ -762,6 +779,8 @@ def script(d, ctx):
             path = root + "/unrelated-" + ctx.attempt_id
             planted[path] = d.plant(path, ("unrelated " + path + "\n").encode())
     before = storage(d, ctx)
+    require(not generation_entries(before, ctx.targets, ctx.stopped),
+            "stopped generation already exists before materialization")
     stopped = ctx.stopped["operation_id"]
     reply = d.json("stopped-start", ctx.recovery("start", ctx.plan["stopped_request"],
                                                   d.custody("home/recovery-stopped.json"),
@@ -776,25 +795,24 @@ def script(d, ctx):
     else:
         raise ValueError("the first recovery never materialized")
     materialized = storage(d, ctx)
-    own = created(before, materialized)
-    require(any(identity["type"] == "file" for identity in own.values()),
-            "materialization created no target storage")
+    own = generation_entries(materialized, ctx.targets, ctx.stopped, materialized=True)
     d.json("stopped-stop", ctx.recovery("stop", stopped, d.custody("home/recovery-stopped-stop.json"),
                                         str(ctx.timeout)))
     final, phases = drive(d, ctx, stopped, "stopped", "stopped", facts)
     after = storage(d, ctx)
     kept = all(d.inspect(path) == {**identity, "sha256": hashlib.sha256(
         ("unrelated " + path + "\n").encode()).hexdigest()} for path, identity in planted.items())
-    deleted = [name for name, identity in own.items() if identity["type"] == "file"
-               and identity == created(before, after).get(name)]
-    facts["stopped"] = {"phases": phases, "created": own, "remaining": deleted,
+    remaining = sorted(generation_entries(after, ctx.targets, ctx.stopped))
+    facts["stopped"] = {"phases": phases, "created": own, "remaining": remaining,
                         "unrelated_kept": kept, "survived": surviving(before, after)}
-    if kept and not deleted and facts["stopped"]["survived"]:
+    if kept and not remaining and facts["stopped"]["survived"]:
         d.json("stopped-final", ctx.status(stopped), ["unrelated-file-isolation"])
 
     # The second recovery finishes through every fault.
     operation = ctx.finished["operation_id"]
     before = storage(d, ctx)
+    require(not generation_entries(before, ctx.targets, ctx.finished),
+            "finished generation already exists before materialization")
     reply = d.json("finished-start", ctx.recovery("start", ctx.plan["request"],
                                                    d.custody("home/recovery-finished.json"),
                                                    str(ctx.timeout)))
@@ -817,7 +835,7 @@ def script(d, ctx):
 
     # Physical bindings survive a clean restart of a target.
     bound = storage(d, ctx)
-    generation = created(before, bound)
+    generation = generation_entries(bound, ctx.targets, ctx.finished, materialized=True)
     first = ctx.targets[0]
     d.stop(first["id"])
     ctx.live.discard(first["node_id"])

@@ -258,7 +258,9 @@ def phase_id(state, kind):
 
 
 def generation(target, request):
-    return Path(registry["target_roots"][str(target)]) / "generations" / request["target_incarnation"]
+    digest = hashlib.sha256(json.dumps(request["tenant"]).encode()).hexdigest()
+    return (Path(registry["target_roots"][str(target)]) / "generations"
+            / (digest + "." + request["target_incarnation"] + ".kv"))
 
 
 def complete(state):
@@ -806,7 +808,9 @@ class RecoveryFixture(FaultFixture):
             node_id = 11 + index
             name = f"target-{index + 1}"
             home, config = self.node(installed, name, "data", node_id, manifest, peers)
-            config["target_recovery"] = {"enabled": True}
+            generation_root = home / "persistent/generations"
+            generation_root.mkdir()
+            config["target_recovery"] = {"generation_root": str(generation_root)}
             configs.append((home, config))
             targets.append({"id": name, "config": str(home / "config.json")})
             registry["roles"][str(node_id)] = "data"
@@ -1032,6 +1036,38 @@ class RecoveryTests(RecoveryFixture):
 
 
 class DeletionObservationTests(unittest.TestCase):
+    def test_stopped_cleanup_follows_each_installed_generation(self):
+        request = {"tenant": "unit", "target_incarnation": INCARNATION}
+        name = hashlib.sha256(b'"unit"').hexdigest() + "." + INCARNATION + ".kv"
+        targets = [{"id": str(n), "generation_root": "/installed/" + str(n)} for n in range(3)]
+        snapshots = {}
+        for n, target in enumerate(targets):
+            directory = {"type": "dir", "device": 1, "inode": 10 * n + 1}
+            snapshots[target["id"]] = {target["generation_root"]: {
+                name: directory, name + "/root.kvroot": {**directory, "type": "file",
+                                                         "inode": 10 * n + 2},
+                "tenant-audit-archives": {**directory, "inode": 10 * n + 3}}}
+        def entries(materialized=False):
+            return recovery.generation_entries(snapshots, targets, request,
+                                               materialized=materialized)
+        self.assertEqual(len(entries(True)), 6)
+        last = snapshots["2"]["/installed/2"]
+        last[name]["inode"] = snapshots["1"]["/installed/1"][name]["inode"]
+        with self.assertRaisesRegex(ValueError, "share a physical generation"):
+            entries(True)
+        last.pop(name + "/root.kvroot")
+        with self.assertRaisesRegex(ValueError, "missing materialized generation on 2"):
+            entries(True)
+        for n in (0, 1):
+            root = "/installed/" + str(n)
+            snapshots[str(n)][root].pop(name)
+            snapshots[str(n)][root].pop(name + "/root.kvroot")
+        self.assertEqual(list(entries()), ["/installed/2/" + name])
+        last[name] = {"type": "other", "device": 1, "inode": 900}
+        self.assertTrue(entries())
+        last.pop(name)
+        self.assertEqual(entries(), {})
+
     def test_crash_interruption_requires_a_live_original_client_at_the_signal(self):
         receipt = {"process_group": 17, "leader_birth": "linux:123"}
         witness = {"step": "original", "group": 17, "birth": "linux:123", "live": True}
