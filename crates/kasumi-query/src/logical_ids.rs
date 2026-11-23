@@ -1,6 +1,8 @@
 //! Logical document IDs of an installed collection without structured fields.
 use crate::QueryIndexes;
-use kasumi_types::{ArchivedDocument, CollectionState, DocumentSlot, Error, ErrorCode, Result};
+use kasumi_types::{
+    ArchivedDocument, CollectionState, DocumentSlot, Error, ErrorCode, Paging, QueryRequest, Result,
+};
 use std::{collections::BTreeMap, fmt, ops::Bound, sync::Arc};
 
 /// The exact selected physical header directory of a detached ordinary reader.
@@ -145,15 +147,38 @@ impl QueryIndexes {
     #[doc(hidden)]
     pub fn for_query_collection_with_primary(
         &self,
-        name: &str,
+        request: &QueryRequest,
         reader: impl FnOnce() -> Arc<dyn PrimaryIdPages>,
     ) -> Option<Self> {
+        let name = &request.collection;
         let mut scoped = self.for_query_collection(name)?;
         let index = scoped.collections.get_mut(name)?;
         if index.structured.fields.is_empty() {
             let local = Arc::make_mut(index);
             local.structured.ids.clear();
             local.logical_ids = Some(LogicalIds::Directory(reader()));
+        } else if request.paging == Paging::Snapshot
+            && request.filter.is_all()
+            && request.sort.is_empty()
+            && request.search.is_none()
+            && request.aggregate.is_empty()
+            && request.group_by.is_empty()
+        {
+            // Plain snapshot pages use the ordered ID root to enforce the
+            // candidate limit and retain cursor IDs. No field posting, unique
+            // tuple or text index participates in that operation.
+            *index = Arc::new(crate::CollectionIndexes {
+                validator: Arc::clone(&index.validator),
+                schema_sha256: index.schema_sha256,
+                definition_sha256: index.definition_sha256,
+                structured: crate::Structured {
+                    fields: BTreeMap::new(),
+                    ids: index.structured.ids.clone(),
+                    unique: BTreeMap::new(),
+                },
+                logical_ids: None,
+                text: None,
+            });
         }
         Some(scoped)
     }

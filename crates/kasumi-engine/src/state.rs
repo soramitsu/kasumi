@@ -222,7 +222,7 @@ impl Generation {
         if !admit(bytes)? {
             return Ok(None);
         }
-        let Some(indexes) = self.indexes.for_query_collection_with_primary(name, || {
+        let Some(indexes) = self.indexes.for_query_collection_with_primary(request, || {
             Arc::new(crate::document_source::NativeIdPages::new(self, name))
         }) else {
             return Ok(None);

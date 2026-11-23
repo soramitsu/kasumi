@@ -75,6 +75,53 @@ fn run(
 }
 
 #[test]
+fn plain_indexed_page_shares_only_the_ordered_ids() {
+    let rows = collection(
+        definition(&[("/n", ScalarType::Number)]),
+        vec![json!({"n": 3}), json!({"n": 1}), json!({"n": 2})],
+    );
+    let original = QueryIndexes::build_fixture(&rows).unwrap();
+    let request = request();
+    let worker = original
+        .for_query_collection_with_primary(&request, || panic!("already holds indexed IDs"))
+        .unwrap();
+    let before = &original.collections["docs"].structured;
+    let after = &worker.collections["docs"].structured;
+    assert!(!before.fields.is_empty());
+    assert!(after.fields.is_empty() && after.ids.ptr_eq(&before.ids));
+    assert_eq!(
+        worker.structured_layout_sha256(),
+        original.structured_layout_sha256()
+    );
+    let limits = Limits::default();
+    assert_eq!(
+        worker.execute_fixture(&rows, &request, &limits).unwrap(),
+        original.execute_fixture(&rows, &request, &limits).unwrap()
+    );
+    let strict = Limits {
+        max_query_candidates: 2,
+        ..limits
+    };
+    assert_eq!(
+        worker
+            .execute_fixture(&rows, &request, &strict)
+            .unwrap_err(),
+        original
+            .execute_fixture(&rows, &request, &strict)
+            .unwrap_err()
+    );
+
+    let sorted = request.sort_desc("/n");
+    let worker = original
+        .for_query_collection_with_primary(&sorted, || panic!("sorted query uses field postings"))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &worker.collections["docs"],
+        &original.collections["docs"]
+    ));
+}
+
+#[test]
 fn indexed_boolean_filters_match_independent_reference_evaluator() {
     let collections = collection(definition(&[("/n", ScalarType::Number), ("/tag", ScalarType::String), ("/tags", ScalarType::StringArray)]),
         (0..180).map(|i| json!({"n":i % 37, "tag":if i % 3 == 0 { "a" } else { "b" }, "tags":[format!("{}",i % 4)]})).collect());
