@@ -652,9 +652,9 @@ impl AcceptedGeneration<'_> {
         &mut self,
         selection: &crate::application_sources::SelectedApplication,
     ) -> anyhow::Result<Option<Arc<crate::document_store::LocatedRows>>> {
-        let rows = self
+        let mut rows = self
             .candidate
-            .next_located_rows(selection, self.owner.previous.located_rows());
+            .next_located_rows(selection, &self.owner.previous);
         if !rows
             .as_ref()
             .is_some_and(|rows| rows.current_at(&self.candidate.state))
@@ -666,7 +666,13 @@ impl AcceptedGeneration<'_> {
         let Some(candidate) = Arc::get_mut(&mut self.candidate) else {
             return Ok(rows);
         };
-        if crate::document_store::compact_changed(&mut candidate.state, &self.delta.changed) > 0
+        let changed =
+            crate::document_store::compact_changed(&mut candidate.state, &self.delta.changed);
+        let replayed = rows
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .map_or(0, |rows| rows.compact_page(&mut candidate.state));
+        if (changed > 0 || replayed > 0)
             && let Some(indexes) = candidate
                 .indexes
                 .with_collection_id_sources(&candidate.state.collections)

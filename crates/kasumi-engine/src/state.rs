@@ -202,16 +202,22 @@ impl Generation {
 
     /// The rows from which this generation, once it selects `selected`, can
     /// resolve located slots: that selection's own primary directory when it
-    /// is current at exactly this state, and otherwise the `inherited` rows
-    /// its unchanged located slots were compacted from. Failing to prove the
-    /// selected directory keeps the inherited rows.
+    /// is current at exactly this state, or the previous generation's rows
+    /// while a stale directory catches up. A continuous current directory
+    /// carries the bounded replay-compaction cursor across publications.
     pub(crate) fn next_located_rows(
         &self,
         selected: &crate::application_sources::SelectedApplication,
-        inherited: Option<Arc<crate::document_store::LocatedRows>>,
+        previous: &Generation,
     ) -> Option<Arc<crate::document_store::LocatedRows>> {
+        let inherited = previous.located_rows();
         match crate::document_store::LocatedRows::serving(selected, &self.state) {
-            Ok(Some(rows)) => Some(rows),
+            Ok(Some(mut rows)) => {
+                if let Some(prior) = inherited.as_ref().filter(|r| r.current_at(&previous.state)) {
+                    rows.continue_compaction_from(prior);
+                }
+                Some(Arc::new(rows))
+            }
             Ok(None) | Err(_) => inherited,
         }
     }
@@ -1211,7 +1217,8 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             // this revision, keep only their located form resident.
             let located = crate::document_store::LocatedRows::serving(&selected, &generation.state)
                 .ok()
-                .flatten();
+                .flatten()
+                .map(Arc::new);
             if located.is_some()
                 && crate::document_store::compact_reopened(&mut generation.state) > 0
                 && let Some(indexes) = generation
@@ -1747,7 +1754,7 @@ impl TenantEngine {
         let Some(selected) = sources.rebase(selection, bootstrap)? else {
             return Ok(false);
         };
-        let located = previous.next_located_rows(&selected, previous.located_rows());
+        let located = previous.next_located_rows(&selected, previous);
         let resolver =
             previous.resolver_for_selection(sources.clone(), selected.clone(), located)?;
         self.publish_generation(Some(Arc::new(Generation {

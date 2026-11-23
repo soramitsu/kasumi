@@ -1,5 +1,5 @@
-//! A published generation whose selected primary directory is current keeps
-//! each live descriptor only in its located form. Reads and ordinary writes
+//! A published generation with a current primary directory compacts its
+//! changed descriptors and a bounded page of replayed rows. Reads and ordinary writes
 //! resolve the rest of the descriptor from the authenticated directory rows,
 //! across later generations, a cold reopen and a reopen from a Raft snapshot.
 //! A change feed record of the current version shares the located slot; a
@@ -145,7 +145,10 @@ async fn assert_located(db: &Database, expected: &[(usize, String)], stage: &str
     for (i, email) in expected {
         let slot = &documents[&id(*i)];
         let DocumentSlot::Located(located) = slot.as_ref() else {
-            panic!("{stage}: published descriptor {} stayed complete: {slot:?}", id(*i));
+            panic!(
+                "{stage}: published descriptor {} stayed complete: {slot:?}",
+                id(*i)
+            );
         };
         assert!(slot.stored().is_err(), "a located slot names no body alone");
         let descriptor = fixture_descriptor(&generation, "accounts", &id(*i)).unwrap();
@@ -252,12 +255,7 @@ async fn assert_feed_readable(db: &Database) -> usize {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn published_descriptors_stay_located_across_writes_and_reopens() {
-    let root = kasumi_store::test_utils::private_tempdir().unwrap();
-    let path = root.path().join("node.kv");
-    let physical = common::PhysicalFixture::new(&path, Default::default());
-    let (db, audit, node) = open(&physical, &path, true).await;
+async fn create_accounts(db: &Database) {
     let generation = db.engine().generation().unwrap();
     db.activate_schema(
         context(),
@@ -274,6 +272,15 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     .await
     .unwrap();
     drop(generation);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn published_descriptors_stay_located_across_writes_and_reopens() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = root.path().join("node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let (db, audit, node) = open(&physical, &path, true).await;
+    create_accounts(&db).await;
     mutate(
         &db,
         "seed",
@@ -392,5 +399,63 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     expected.iter_mut().find(|(i, _)| *i == 2).unwrap().1 = "moved@example.test".into();
     assert_located(&db, &expected, "first write after snapshot restart").await;
     assert!(assert_feed_readable(&db).await > 0);
+    close(db, audit, node).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_descriptors_resume_across_bounded_publications() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = root.path().join("node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let (db, audit, node) = open(&physical, &path, true).await;
+    create_accounts(&db).await;
+    const COUNT: usize = 150;
+    mutate(
+        &db,
+        "seed-pages",
+        (0..COUNT)
+            .map(|i| put(i, &email(i), Precondition::Absent))
+            .collect(),
+    )
+    .await
+    .unwrap();
+    close(db, audit, node).await;
+    let (db, audit, node) = open(&physical, &path, false).await;
+    let remaining = || {
+        let generation = db.engine().generation().unwrap();
+        generation.state.collections["accounts"]
+            .documents
+            .values()
+            .filter(|slot| matches!(slot.as_ref(), DocumentSlot::Stored(_)))
+            .count()
+    };
+    let mut before = remaining();
+    for step in 0..3 {
+        let i = COUNT + step;
+        mutate(
+            &db,
+            &format!("advance-{step}"),
+            vec![put(i, &email(i), Precondition::Absent)],
+        )
+        .await
+        .unwrap();
+        let after = remaining();
+        assert!(
+            after <= before && before - after <= 64,
+            "complete descriptors {before} -> {after}"
+        );
+        before = after;
+    }
+    assert_eq!(before, 0);
+    let generation = db.engine().generation().unwrap();
+    for i in [0, 62, 63, 125, COUNT - 1] {
+        assert_eq!(
+            fixture_document(&generation, "accounts", &id(i))
+                .unwrap()
+                .body["email"],
+            email(i)
+        );
+    }
+    drop(generation);
     close(db, audit, node).await;
 }
