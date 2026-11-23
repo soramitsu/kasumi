@@ -138,14 +138,14 @@ async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>, node: kasumi_store:
 
 /// Every live slot is located, resolves to the exact directory row and
 /// lends its body; reads and the unique index see the same documents.
-async fn assert_located(db: &Database, expected: &[(usize, String)]) {
+async fn assert_located(db: &Database, expected: &[(usize, String)], stage: &str) {
     let generation = db.engine().generation().unwrap();
     let documents = &generation.state.collections["accounts"].documents;
     assert_eq!(documents.len(), expected.len());
     for (i, email) in expected {
         let slot = &documents[&id(*i)];
         let DocumentSlot::Located(located) = slot.as_ref() else {
-            panic!("published descriptor {} stayed complete: {slot:?}", id(*i));
+            panic!("{stage}: published descriptor {} stayed complete: {slot:?}", id(*i));
         };
         assert!(slot.stored().is_err(), "a located slot names no body alone");
         let descriptor = fixture_descriptor(&generation, "accounts", &id(*i)).unwrap();
@@ -284,7 +284,7 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     .await
     .unwrap();
     let mut expected: Vec<(usize, String)> = (0..SEEDED).map(|i| (i, email(i))).collect();
-    assert_located(&db, &expected).await;
+    assert_located(&db, &expected, "seed").await;
 
     // The ordered writer checks located versions, patches a located body and
     // replaces old index keys read from the directory rows.
@@ -348,7 +348,7 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     .await
     .unwrap_err();
     assert_eq!(taken.code, ErrorCode::Conflict);
-    assert_located(&db, &expected).await;
+    assert_located(&db, &expected, "ordered changes").await;
     assert_feed(&db);
     let events = assert_feed_readable(&db).await;
     assert!(events >= SEEDED + 3);
@@ -365,7 +365,7 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     .await
     .unwrap();
     expected.push((SEEDED + 1, email(SEEDED + 1)));
-    assert_located(&db, &expected).await;
+    assert_located(&db, &expected, "first write after cold restart").await;
     assert_eq!(assert_feed_readable(&db).await, events + 1);
 
     // A reopen from a Raft snapshot restores the verified snapshot directory
@@ -376,7 +376,7 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     }
     close(db, audit, node).await;
     let (db, audit, node) = open(&physical, &path, false).await;
-    assert_located(&db, &expected).await;
+    assert_located(&db, &expected, "snapshot restart").await;
     mutate(
         &db,
         "after-snapshot",
@@ -390,7 +390,7 @@ async fn published_descriptors_stay_located_across_writes_and_reopens() {
     .await
     .unwrap();
     expected.iter_mut().find(|(i, _)| *i == 2).unwrap().1 = "moved@example.test".into();
-    assert_located(&db, &expected).await;
+    assert_located(&db, &expected, "first write after snapshot restart").await;
     assert!(assert_feed_readable(&db).await > 0);
     close(db, audit, node).await;
 }

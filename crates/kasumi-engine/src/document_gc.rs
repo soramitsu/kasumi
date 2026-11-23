@@ -1593,7 +1593,8 @@ mod tests {
             .collect();
         let mut walk = Walk {
             disk_documents: None,
-            documents: vec![documents],
+            located_rows: None,
+            documents: vec![("docs".into(), documents)],
             disk_feed: None,
             _collection_roots: None,
             feed,
