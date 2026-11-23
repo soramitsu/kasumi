@@ -18,9 +18,12 @@ if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
     raise SystemExit("OCI smoke runner requires native Python -I -S -B")
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import signal
 import tempfile
 import time
 
@@ -51,6 +54,7 @@ CONTROL = "/opt/kasumi/bin/kasumictl"
 TENANT = "smoke"
 TIMEOUT = 600
 READY_POLLS = 300
+OWNER_LABEL = "io.kasumi.smoke.owner"
 MCP_FILES = ("kasumi.json", "profiles/mcp.json", "profiles/mcp.token",
              "profiles/client.pem", "profiles/client-key.pem", "tls/ca.pem", "tls/mcp.pem")
 POLICIES = {"directory-policy": {"extent_bytes": 10485760, "max_entries": 32768},
@@ -65,10 +69,30 @@ def init_inputs(port):
         "native_listen": f"127.0.0.1:{port + 1}", "admin_listen": f"127.0.0.1:{port + 2}"}}
 
 
+def resource_owner(parameters):
+    # The private export directory is fresh for each invocation. Replay uses
+    # its retained name without requiring the credential files to still exist.
+    seed = json.dumps([parameters["attempt_id"], parameters["export"]]).encode()
+    return hashlib.sha256(seed).hexdigest()
+
+
+def census(parameters):
+    runtime = parameters["runtime"]
+    selector = ["--filter", "label=" + OWNER_LABEL + "=" + resource_owner(parameters)]
+    return {
+        "containers": [runtime, "container", "ls", "--all", "--no-trunc", *selector,
+                       "--format", "{{.ID}}"],
+        "volumes": [runtime, "volume", "ls", *selector, "--format", "{{.Name}}"]}
+
+
 def plan(parameters, image, python, probe):
     """Every step in order: (id, scenario, command). ``ready-*`` steps are polled."""
     runtime, port = parameters["runtime"], parameters["base_port"]
-    name = "kasumi-smoke-" + parameters["attempt_id"].lower()
+    owner = resource_owner(parameters)
+    name = "kasumi-smoke-" + owner
+    label = ["--label", OWNER_LABEL + "=" + owner]
+    volume_owner = [runtime, "volume", "inspect", "--format",
+                    '{{index .Labels "' + OWNER_LABEL + '"}}', name]
     volume = name + ":/var/lib/kasumi"
     reference = image["reference"]
     inputs = init_inputs(port)
@@ -88,15 +112,16 @@ def plan(parameters, image, python, probe):
     return [
         ("load", "load-image", [runtime, "load", "--input", parameters["image"]]),
         ("identify", "load-image", [runtime, "image", "inspect", "--format", "{{.Id}}", reference]),
-        ("volume", "fresh-install", [runtime, "volume", "create", name]),
-        ("inputs", "fresh-install", [runtime, "run", "--rm", "--network", "none", "--volume", volume,
+        ("volume", "fresh-install", [runtime, "volume", "create", *label, name]),
+        ("volume-owner", "fresh-install", volume_owner),
+        ("inputs", "fresh-install", [runtime, "run", "--rm", *label, "--network", "none", "--volume", volume,
                                      "--entrypoint", "/bin/sh", reference, "-c", write]),
         ("init", "fresh-install", [
-            runtime, "run", "--rm", "--network", "none", "--volume", volume, reference,
+            runtime, "run", "--rm", *label, "--network", "none", "--volume", volume, reference,
             "init", "--mode", "standalone", INSTALLATION,
             *[part for key in sorted(inputs) for part in ("--" + key, INPUTS + "/" + key + ".json")],
             "--tenant", TENANT]),
-        ("start", "native", [runtime, "run", "--detach", "--name", name, "--network", "host",
+        ("start", "native", [runtime, "run", "--detach", *label, "--name", name, "--network", "host",
                              "--volume", volume, reference]),
         ("ready-start", None, ready),
         ("native", "native", native),
@@ -109,14 +134,25 @@ def plan(parameters, image, python, probe):
         ("exit", "clean-stop", [runtime, "inspect", "--format",
                                 "{{.State.ExitCode}} {{.State.OOMKilled}}", name]),
         ("remove", None, [runtime, "rm", name]),
+        ("remove-volume-owner", None, volume_owner),
         ("remove-volume", None, [runtime, "volume", "rm", name]),
+        *[("remaining-" + kind, None, command) for kind, command in census(parameters).items()],
     ]
 
 
-def check_outputs(image, outputs):
+def check_step(parameters, image, step, output):
+    if step == "identify":
+        require(output.decode().strip() in (image["manifest_digest"], image["config_digest"]),
+                "runtime loaded another image than the verified archive")
+    elif step in ("volume-owner", "remove-volume-owner"):
+        require(output.decode().strip() == resource_owner(parameters),
+                "smoke volume belongs to another owner")
+    elif step.startswith("remaining-"):
+        require(not output.strip(), "smoke resources survived removal: " + step)
+
+
+def check_outputs(outputs):
     """The domain verdicts read from the original standard outputs."""
-    require(outputs["identify"].decode().strip() in (image["manifest_digest"], image["config_digest"]),
-            "runtime loaded another image than the verified archive")
     for step in ("native", "native-restarted"):
         document = json.loads(outputs[step])
         require(document.get("ok") is True and isinstance(document.get("result"), dict),
@@ -141,6 +177,42 @@ def check_record(record, image, target, image_sha256, sbom_sha256):
             and record.get("image", {}).get("sha256") == image_sha256
             and record.get("image_sbom", {}).get("sha256") == sbom_sha256,
             "image assembly record differs from the verified image")
+
+
+def cleanup_resources(run, parameters):
+    """Reconcile detached daemon resources even if the creating client failed."""
+    commands = census(parameters)
+    runtime = parameters["runtime"]
+    name = "kasumi-smoke-" + resource_owner(parameters)
+    errors = []
+
+    def invoke(step, command):
+        try:
+            return run.command("cleanup-" + step, command, 90).read_text().splitlines()
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+            return []
+
+    containers = invoke("containers", commands["containers"])
+    if len(containers) > 3 or any(not re.fullmatch("[0-9a-f]{64}", cid) for cid in containers):
+        errors.append("unexpected smoke container census")
+    else:
+        for i, cid in enumerate(containers):
+            invoke(f"stop-{i}", [runtime, "stop", "--time", "60", cid])
+        # Ephemeral --rm containers disappear when stopped.
+        remaining = invoke("stopped-containers", commands["containers"])
+        for i, cid in enumerate(containers):
+            if cid in remaining:
+                invoke(f"remove-{i}", [runtime, "rm", "--force", cid])
+    volumes = invoke("volumes", commands["volumes"])
+    if volumes == [name]:
+        invoke("remove-volume", [runtime, "volume", "rm", name])
+    elif volumes:
+        errors.append("unexpected smoke volume census")
+    for kind, command in commands.items():
+        if invoke("remaining-" + kind, command):
+            errors.append("smoke resources survived cleanup: " + kind)
+    return errors
 
 
 def execute(run, parameters, image_path, sbom_path, record_path, pause):
@@ -174,25 +246,55 @@ def execute(run, parameters, image_path, sbom_path, record_path, pause):
             (mapped / subdir).mkdir(mode=0o700)
     steps = plan(parameters, image, details["tools"]["python"]["path"],
                  str(run.source / "scripts/mcp_probe.py"))
+    received = []
+    handlers = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        for n in handlers:
+            signal.signal(n, lambda number, _: received.append(number))
+        run_steps(run, parameters, image, steps, outputs, pause, received)
+        check_outputs(outputs)
+        if received:
+            raise KeyboardInterrupt("OCI smoke interrupted")
+    except BaseException:
+        if any(row["id"] == "identify" for row in run.report["processes"]):
+            try:
+                details["cleanup_errors"] = cleanup_resources(run, parameters)
+            except Exception as cleanup:
+                details["cleanup_errors"] = [repr(cleanup)]
+        raise
+    finally:
+        for n, handler in handlers.items():
+            signal.signal(n, handler)
+    run.passed(details)
+
+
+def run_steps(run, parameters, image, steps, outputs, pause, received):
     for step, scenario, command in steps:
+        if received:
+            raise KeyboardInterrupt("OCI smoke interrupted")
         if step.startswith("ready-"):
             for poll in range(READY_POLLS):
+                if received:
+                    raise KeyboardInterrupt("OCI smoke interrupted")
                 item = owned.run_owned(run.output, f"{step}-{poll:04d}", command, str(run.source),
                                        run.environment, TIMEOUT)
-                if owned.read(owned.check_ref(run.output, item["receipt"]))["exit_code"] == 0:
+                result = owned.read(owned.check_ref(run.output, item["receipt"]))
+                if result["exit_code"] == 0:
                     run.report["processes"].append({
                         "id": step, "receipt": item["receipt"], "log": item["stdout"],
                         "executable": item["executable"]})
                     run.save()
                     break
-                details["ready_polls"].append(item["receipt"])
+                run.report["details"]["ready_polls"].append(item["receipt"])
+                run.save()
+                if result["received_signals"]:
+                    raise KeyboardInterrupt("OCI readiness probe interrupted")
                 time.sleep(pause)
             else:
                 raise ValueError("container daemon never became ready: " + step)
         else:
             outputs[step] = run.command(step, command, TIMEOUT, scenario=scenario).read_bytes()
-    check_outputs(image, outputs)
-    run.passed(details)
+            check_step(parameters, image, step, outputs[step])
 
 
 def main(argv=None):
@@ -271,11 +373,12 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 and receipts[step]["exit_code"] == 0,
                 "OCI smoke step differs from its planned runtime command: " + step)
         outputs[step] = acceptance.reference(custody, logs[step]).read_bytes()
+        check_step(parameters, image, step, outputs[step])
         if scenario is not None:
             attributed.setdefault(scenario, []).append(step)
     require({name: [row["step"] for row in rows] for name, rows in facts["scenarios"].items()}
             == attributed, "OCI smoke scenarios differ from the planned steps")
-    check_outputs(image, outputs)
+    check_outputs(outputs)
     return facts["evidence"]
 
 
