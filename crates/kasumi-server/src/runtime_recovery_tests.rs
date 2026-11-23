@@ -2152,6 +2152,28 @@ impl Fixture {
             recovery_database_progress(&self.source_observer)
         )
     }
+    async fn start_and_observe(
+        &self,
+        client: &mut kasumi_client::KasumiRecoveryPool,
+        request: &RecoveryStart,
+    ) -> RecoveryRecord {
+        match client.start(request, Duration::from_secs(5)).await {
+            Ok(record) => record,
+            Err(error)
+                if error.grpc_code() == tonic::Code::DeadlineExceeded
+                    || error.code() == Some(ErrorCode::UnknownOutcome) =>
+            {
+                let context = format!("resolving original Start: {}", recovery_step_error(&error));
+                eprintln!("{context}");
+                self.status(client, &context).await
+            }
+            Err(error) => panic!(
+                "Control Start failed: {}; {}",
+                recovery_step_error(&error),
+                self.control_failure_context()
+            ),
+        }
+    }
     async fn status(
         &self,
         client: &mut kasumi_client::KasumiRecoveryPool,
@@ -2292,33 +2314,18 @@ impl Fixture {
                 .await
                 .is_err()
         );
-        let started = match client.start(request, Duration::from_secs(5)).await {
-            Ok(record) => record,
-            Err(error) if error.grpc_code() == tonic::Code::DeadlineExceeded
-                || error.code() == Some(ErrorCode::UnknownOutcome) =>
-            {
-                let context = format!("resolving original Start: {}", recovery_step_error(&error));
-                eprintln!("{context}");
-                self.status(&mut client, &context).await
-            }
-            Err(error) => panic!("Control Start failed: {}; {}",
-                recovery_step_error(&error), self.control_failure_context()),
-        };
+        let started = self.start_and_observe(&mut client, request).await;
         assert_eq!(started.request, *request);
         if resumed_initial_inspection {
             assert_eq!(started.phase, RecoveryPhase::Complete);
-            let retained = client
-                .read_phase(
-                    &RecoveryPhaseRequest {
-                        operation_id: started.request.operation_id,
-                        phase_id: started
-                            .initialization
-                            .expect("positive initial inspection required"),
-                    },
-                    Duration::from_secs(5),
+            let retained = self
+                .inspection_phase(
+                    &mut client,
+                    started
+                        .initialization
+                        .expect("positive initial inspection required"),
                 )
-                .await
-                .unwrap();
+                .await;
             assert!(
                 matches!(retained.outcome, Some(RecoveryDispatchOutcome::Target(response))
                 if matches!(response.outcome, TargetRuntimeOutcome::InitialMembershipStatus(_))),
@@ -2328,11 +2335,7 @@ impl Fixture {
             assert!(started.initialization.is_none());
         }
         assert_eq!(
-            client
-                .start(request, Duration::from_secs(5))
-                .await
-                .unwrap()
-                .request,
+            self.start_and_observe(&mut client, request).await.request,
             *request
         );
         self.assert_control_member_failover(&mut client, networks)
