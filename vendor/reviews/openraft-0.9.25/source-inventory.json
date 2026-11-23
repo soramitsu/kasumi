@@ -3348,10 +3348,10 @@
     "sha256": "94c05f4bac3ee29aaae1fad8d8a2631f524ac72c175437bcfcc32adb54b09f83"
   },
   {
-    "bytes": 2509,
+    "bytes": 2773,
     "mode": "0o644",
     "path": "tests/tests/membership/t31_add_remove_follower.rs",
-    "sha256": "88dda583c23b854740dff570180279bbbca7f9ed446296c897fc1639b11ba4fc"
+    "sha256": "1a727384800f58f6fb9316869742e9bf0a9283f1d4345de94dbe60d2c29834c0"
   },
   {
     "bytes": 8534,
