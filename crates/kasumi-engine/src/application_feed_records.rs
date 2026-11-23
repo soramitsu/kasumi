@@ -199,7 +199,8 @@ impl<'a, 'view> SnapshotFeed<'a, 'view> {
                         let record = ChangeRecord {
                             collection,
                             id,
-                            document: document.map(|v| Arc::new(DocumentSlot::Stored(v))),
+                            document: document
+                                .map(|v| Arc::new(DocumentSlot::stored_descriptor(v))),
                         };
                         Ok(visit(sequence, revision, ordinal as usize, count, &record))
                     })

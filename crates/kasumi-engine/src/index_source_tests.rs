@@ -377,9 +377,10 @@ fn stored_headers_do_not_decode_and_missing_selected_source_is_local_failure() {
         panic!("expected pending fixture")
     };
     let descriptor = StoredDocument::from_document(document, [7; 32], 128, 1 << 20, 4096).unwrap();
-    collection
-        .documents
-        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
     let selected = &state.collections["docs"];
     let header = header(selected, "a", state.revision).unwrap().unwrap();
     assert_eq!((header.id, header.version), ("a", 1));
@@ -428,9 +429,10 @@ fn schema_replacement_reads_each_stored_body_once_for_schema_and_once_for_unique
         document: SharedDocument::from_admitted_owner(Arc::new(Owner(selected.clone()))),
         reads: AtomicUsize::new(0),
     };
-    collection
-        .documents
-        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
     let prepare = |state: &TenantState| {
         let collection = &state.collections["docs"];
         crate::state::schema::prepare_collection(
@@ -486,9 +488,10 @@ fn schema_only_replacement_propagates_the_original_selected_body_failure() {
         selected.clone(),
     ))));
     let descriptor = StoredDocument::from_document(selected, [7; 32], 128, 1 << 20, 4096).unwrap();
-    collection
-        .documents
-        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
     let residency = kasumi_query::TextResidency::Directory;
     let indexes = build_with_resolver(&old, Some(&resolver), residency).unwrap();
     let mut new = old.clone();

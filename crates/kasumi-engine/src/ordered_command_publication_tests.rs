@@ -259,16 +259,16 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
     selected(&fixture, &input1)?;
     let accepted = fixture.engine.generation()?;
     let slot = &accepted.state.collections["docs"].documents[&id(0, false)];
-    slot.stored()?;
+    slot.descriptor("docs", &id(0, false), accepted.document_resolver())?;
     assert_eq!(
-        accepted.load_document(slot)?.body,
+        accepted.load_document_at("docs", &id(0, false), slot)?.body,
         json!({"accepted": true})
     );
     for commit in accepted.state.change_feed.commits.values() {
         for event in &commit.records {
             if let Some(slot) = &event.document {
-                slot.stored()?;
-                let _verified = accepted.load_document(slot)?;
+                slot.descriptor(&event.collection, &event.id, accepted.document_resolver())?;
+                let _verified = accepted.load_document_at(&event.collection, &event.id, slot)?;
             }
         }
     }

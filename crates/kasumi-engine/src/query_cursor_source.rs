@@ -200,7 +200,7 @@ impl CursorDocuments {
                                 "cursor lost its selected live point",
                             ));
                         };
-                        if slot.id() != id || slot.version() != version {
+                        if !slot.has_id(id) || slot.version() != version {
                             return Err(Error::new(
                                 ErrorCode::Corruption,
                                 "cursor live point identity differs",

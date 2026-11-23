@@ -167,21 +167,23 @@ impl ControlPlane {
             .ok_or_else(|| corrupt("installed Control topology is missing"))?;
         let document = match document.as_ref() {
             DocumentSlot::Pending(document) => DocumentLoan::Pending(document),
-            DocumentSlot::Stored(document) => DocumentLoan::Stored(
-                document
-                    .load(resolver.ok_or_else(|| {
+            slot => slot
+                .load_at(
+                    &collection.definition.name,
+                    DOCUMENT,
+                    resolver.ok_or_else(|| {
                         Error::new(
                             ErrorCode::Unavailable,
                             "Control document resolver is unavailable",
                         )
-                    })?)
-                    .map_err(|_| {
-                        Error::new(
-                            ErrorCode::Unavailable,
-                            "Control document storage is unavailable",
-                        )
                     })?,
-            ),
+                )
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "Control document storage is unavailable",
+                    )
+                })?,
         };
         let topology: ControlTopology =
             <ControlTopology as serde::Deserialize>::deserialize(&document.body)

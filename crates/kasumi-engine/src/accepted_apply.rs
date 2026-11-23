@@ -446,6 +446,8 @@ impl AcceptedGeneration<'_> {
             store,
             &self.owner.previous.state,
             &self.candidate.state,
+            // Located slots the candidate shares resolve from its predecessor.
+            self.owner.previous.document_resolver(),
             &self.delta.changed,
             Some(crate::application_primary::entry_applied(position)?),
             |manifest| match self.owner.previous.application_selection.get() {
@@ -494,6 +496,28 @@ impl AcceptedGeneration<'_> {
         roots: &crate::application_sources::SourceRootsRef,
         first_revision: u64,
     ) -> anyhow::Result<Option<crate::document_store::PreparedDocuments>> {
+        // A change supersedes the version a located change record names:
+        // before this publication commits, give that record its complete
+        // descriptor from the predecessor's rows.
+        let previous = &self.owner.previous;
+        if self.delta.changed.iter().any(|(name, ids)| {
+            previous.state.collections.get(name).is_some_and(|old| {
+                ids.iter().any(|id| {
+                    old.documents
+                        .get(id)
+                        .is_some_and(|slot| matches!(slot.as_ref(), DocumentSlot::Located(_)))
+                })
+            })
+        }) {
+            let candidate = Arc::get_mut(&mut self.candidate)
+                .ok_or_else(|| anyhow::anyhow!("unpublished document candidate escaped"))?;
+            crate::document_store::rehydrate_superseded(
+                &previous.state,
+                previous.document_resolver(),
+                &mut candidate.state,
+                &self.delta.changed,
+            )?;
+        }
         // Metadata, rejection, replay and deletion-only publications have no
         // new after-image. They must not obtain a new body grant after commit.
         let feed = &self.candidate.state.change_feed.commits;
@@ -561,7 +585,7 @@ impl AcceptedGeneration<'_> {
                 };
                 if let DocumentSlot::Pending(document) = slot.as_ref() {
                     let descriptor = prepared.stage(document)?;
-                    let stored = Arc::new(DocumentSlot::Stored(descriptor));
+                    let stored = Arc::new(DocumentSlot::stored_descriptor(descriptor));
                     staged.insert(Arc::as_ptr(slot), stored.clone());
                     replaced.push(slot.clone());
                     collection.documents.insert(id.clone(), stored);
@@ -587,11 +611,15 @@ impl AcceptedGeneration<'_> {
                     Some(stored) => stored.clone(),
                     None => match slot.as_ref() {
                         DocumentSlot::Pending(document) => {
-                            let stored = Arc::new(DocumentSlot::Stored(prepared.stage(document)?));
+                            let stored = Arc::new(DocumentSlot::stored_descriptor(
+                                prepared.stage(document)?,
+                            ));
                             staged.insert(Arc::as_ptr(&slot), stored.clone());
                             stored
                         }
-                        DocumentSlot::Stored(_) => slot.clone(),
+                        // Feed records keep complete descriptors; the
+                        // stored() check below rejects anything else.
+                        DocumentSlot::Stored(_) | DocumentSlot::Located(_) => slot.clone(),
                     },
                 };
                 stored.stored()?;
@@ -613,6 +641,41 @@ impl AcceptedGeneration<'_> {
 
     pub(super) fn candidate(&self) -> &Generation {
         &self.candidate
+    }
+
+    /// After the candidate's paired publication committed under `selection`:
+    /// the primary rows from which its located slots resolve. When that
+    /// selection serves a directory current at the candidate's own revision,
+    /// the descriptors this publication stored keep only their located form.
+    /// Unchanged complete descriptors remain directly readable.
+    pub(super) fn locate_published(
+        &mut self,
+        selection: &crate::application_sources::SelectedApplication,
+    ) -> anyhow::Result<Option<Arc<crate::document_store::LocatedRows>>> {
+        let rows = self
+            .candidate
+            .next_located_rows(selection, self.owner.previous.located_rows());
+        if !rows
+            .as_ref()
+            .is_some_and(|rows| rows.current_at(&self.candidate.state))
+        {
+            return Ok(rows);
+        }
+        // The paired publication has committed: compaction only saves memory
+        // and must never fail it. Complete descriptors remain valid.
+        let Some(candidate) = Arc::get_mut(&mut self.candidate) else {
+            return Ok(rows);
+        };
+        if crate::document_store::compact_changed(&mut candidate.state, &self.delta.changed) > 0
+            && let Some(indexes) = candidate
+                .indexes
+                .with_collection_id_sources(&candidate.state.collections)
+        {
+            // Fieldless ID sources follow the compacted roots, so the
+            // complete descriptors they replaced are released with them.
+            candidate.indexes = Arc::new(indexes);
+        }
+        Ok(rows)
     }
 
     /// Join the ordinary structured directory's edit and manifest for this
@@ -679,10 +742,12 @@ impl AcceptedGeneration<'_> {
             owner,
         } = self;
         // Descriptors this publication displaced become collection candidates.
-        owner
-            .engine
-            .object_gc
-            .displaced(&owner.previous.state, &candidate.state, &delta.changed);
+        owner.engine.object_gc.displaced(
+            &owner.previous.state,
+            owner.previous.document_resolver(),
+            &candidate.state,
+            &delta.changed,
+        );
         owner.engine.publish_generation(Some(candidate));
         // Preserve the moved exact IDs until the actual visible swap completes.
         drop(delta.changed);

@@ -152,7 +152,7 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
                 || record
                     .document
                     .as_ref()
-                    .is_some_and(|doc| doc.id() != record.id || doc.version() != commit.revision)
+                    .is_some_and(|doc| !doc.has_id(&record.id) || doc.version() != commit.revision)
             {
                 return Err(Error::new(
                     ErrorCode::Corruption,

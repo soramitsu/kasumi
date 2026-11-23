@@ -137,24 +137,35 @@ struct StreamWork {
 #[path = "full_backup_encoding_tests.rs"]
 mod encoding_tests;
 
-fn document_source_peak(tenant_bytes: usize, slot: &DocumentSlot) -> anyhow::Result<u64> {
-    let decoded_peak = crate::document_store::source_workspace(slot)?;
-    let DocumentSlot::Stored(document) = slot else {
-        return Ok(decoded_peak);
+fn document_source_peak(tenant_bytes: usize, id: &str, slot: &DocumentSlot) -> anyhow::Result<u64> {
+    let decoded_peak = crate::document_store::source_workspace(id, slot)?;
+    // A located slot keeps the exact charges of its complete descriptor.
+    let (body_bytes, body_object_bytes, body_manifest_work) = match slot {
+        DocumentSlot::Pending(_) => return Ok(decoded_peak),
+        DocumentSlot::Stored(document) => (
+            document.body_bytes,
+            document.body_object_bytes,
+            document.body_manifest_work,
+        ),
+        DocumentSlot::Located(document) => (
+            document.body_bytes(),
+            document.body_object_bytes(),
+            document.body_manifest_work(),
+        ),
     };
-    let manifest = usize::try_from(document.body_object_bytes)?;
+    let manifest = usize::try_from(body_object_bytes)?;
     let manifest_point = kasumi_store::plaintext_get_workspace_bytes(
         tenant_bytes,
         crate::document_store::BODIES.len(),
         64,
         manifest,
     )?;
-    let blob_point = if document.body_bytes >= crate::document_encoding::STRING_THRESHOLD as u64 {
+    let blob_point = if body_bytes >= crate::document_encoding::STRING_THRESHOLD as u64 {
         kasumi_store::plaintext_get_workspace_bytes(
             tenant_bytes,
             crate::document_store::BLOBS.len(),
             64,
-            usize::try_from(document.body_bytes)?.min(crate::document_encoding::BLOB_CHUNK_BYTES),
+            usize::try_from(body_bytes)?.min(crate::document_encoding::BLOB_CHUNK_BYTES),
         )?
     } else {
         0
@@ -164,13 +175,12 @@ fn document_source_peak(tenant_bytes: usize, slot: &DocumentSlot) -> anyhow::Res
     // temporary native point peak may exceed the final decoded-body peak.
     let native_peak = (64u64 << 10)
         .checked_add(
-            document
-                .body_bytes
+            body_bytes
                 .checked_mul(2)
                 .context("backup source wire overflow")?,
         )
-        .and_then(|bytes| bytes.checked_add(document.body_object_bytes.checked_mul(2)?))
-        .and_then(|bytes| bytes.checked_add(document.body_manifest_work))
+        .and_then(|bytes| bytes.checked_add(body_object_bytes.checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(body_manifest_work))
         .and_then(|bytes| bytes.checked_add(manifest_point.max(blob_point)))
         .context("backup native document workspace overflow")?;
     Ok(decoded_peak.max(native_peak))
@@ -356,17 +366,18 @@ impl Database {
         let source_bytes = state
             .collections
             .values()
-            .flat_map(|collection| collection.documents.values())
+            .flat_map(|collection| collection.documents.iter())
+            .map(|(id, slot)| (id.as_str(), slot))
             .chain(
                 state
                     .change_feed
                     .commits
                     .values()
                     .flat_map(|commit| commit.records.iter())
-                    .filter_map(|record| record.document.as_ref()),
+                    .filter_map(|record| Some((record.id.as_str(), record.document.as_ref()?))),
             )
-            .try_fold(0u64, |maximum, slot| {
-                document_source_peak(state.tenant.len(), slot).map(|bytes| maximum.max(bytes))
+            .try_fold(0u64, |maximum, (id, slot)| {
+                document_source_peak(state.tenant.len(), id, slot).map(|bytes| maximum.max(bytes))
             })
             .map_err(document_load_error)?;
         // Staged readers carry wire, manifest and decoded native lease tokens

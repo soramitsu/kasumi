@@ -154,7 +154,7 @@ impl SnapshotIndexBuilder {
                     if position.is_multiple_of(256) {
                         check()?;
                     }
-                    if slot.id() != id {
+                    if !slot.has_id(id) {
                         return Err(
                             invalid("snapshot index stored document identity differs").into()
                         );

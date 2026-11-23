@@ -171,7 +171,7 @@ pub fn change_event_clone_bytes(record: &ChangeRecord, decoded: Option<&Document
             .as_ref()
             .zip(decoded)
             .is_some_and(|(stored, document)| {
-                stored.id() != document.id || stored.version() != document.version
+                !stored.has_id(&document.id) || stored.version() != document.version
             })
     {
         return Err(Error::new(

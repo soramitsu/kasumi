@@ -159,7 +159,7 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .unwrap()
         .expect("document exists");
     let stored = generation.state.collections["docs"].documents["a"]
-        .stored()
+        .descriptor("docs", "a", generation.document_resolver())
         .unwrap();
     assert_eq!(earlier.id, stored.id);
     assert_eq!(earlier.version, stored.version);
@@ -530,6 +530,14 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
     // Loads through this wrapper, one view each, so it can pause one.
     impl crate::document_store::GenerationDocuments for PausedNativeDocument {}
     impl DocumentResolver for PausedNativeDocument {
+        fn locate(
+            &self,
+            collection: &str,
+            id: &str,
+            located: &kasumi_types::LocatedDocument,
+        ) -> anyhow::Result<StoredDocument> {
+            self.original.locate(collection, id, located)
+        }
         fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
             let document = self.original.load(descriptor)?;
             if let Some(entered) = self.entered.lock().unwrap().take() {
@@ -557,7 +565,10 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
     let slot = original_generation.state.collections["docs"].documents["point"].clone();
     let mut selected = original_generation.lease_view();
     drop(original_generation);
-    assert!(matches!(slot.as_ref(), DocumentSlot::Stored(_)));
+    assert!(matches!(
+        slot.as_ref(),
+        DocumentSlot::Stored(_) | DocumentSlot::Located(_)
+    ));
     let original = selected.document_sources.take().unwrap();
     assert!(
         selected
@@ -599,9 +610,15 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         .unwrap();
     let waiter = tokio::spawn(async move {
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        read.read_native(slot, tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT, permit, &cancellation, point_read::PointRead::owned)
-            .await
-            .map(|_| ())
+        read.read_native(
+            slot,
+            tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
+            permit,
+            &cancellation,
+            point_read::PointRead::owned,
+        )
+        .await
+        .map(|_| ())
     });
     tokio::time::timeout(Duration::from_secs(2), entry)
         .await

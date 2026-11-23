@@ -118,12 +118,13 @@ impl LocalControlSelection<'_> {
             self.check_access()?;
             return Ok(None);
         };
-        if let DocumentSlot::Stored(document) = document.as_ref() {
+        if let DocumentSlot::Stored(_) | DocumentSlot::Located(_) = document.as_ref() {
             let resolver = self
                 .generation
                 .document_resolver()
                 .ok_or_else(|| anyhow::anyhow!("selected Control document resolver is absent"))?;
-            let document = document.load(resolver)?;
+            let descriptor = document.descriptor(collection, id, Some(resolver))?;
+            let document = descriptor.load(resolver)?;
             self.check_access()?;
             return Ok(Some(document));
         }

@@ -1,4 +1,4 @@
-use kasumi_engine::test_utils::{SnapshotFixture, fixture_document};
+use kasumi_engine::test_utils::{SnapshotFixture, fixture_descriptor, fixture_document};
 mod common;
 
 use common::FixtureEngine;
@@ -1721,9 +1721,15 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
         .unwrap()
         .expect("document exists");
     let generation = db.engine().generation().unwrap();
-    let descriptor = generation.state.collections["people"].documents["a"]
-        .stored()
-        .expect("published generations retain compact descriptors");
+    // A published generation keeps a compact descriptor; a located one
+    // resolves the rest from the selected primary directory.
+    assert!(
+        generation.state.collections["people"].documents["a"]
+            .located()
+            .is_some(),
+        "published generations retain compact descriptors"
+    );
+    let descriptor = fixture_descriptor(&generation, "people", "a").unwrap();
     assert_eq!(descriptor.id, shared.id);
     assert_eq!(descriptor.version, shared.version);
     assert_eq!(

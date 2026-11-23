@@ -197,8 +197,13 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                     else {
                         return Ok(());
                     };
-                    let resolver =
-                        candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+                    let located = accepted.locate_published(&selection)?;
+                    let candidate = accepted.candidate();
+                    let resolver = candidate.resolver_for_selection(
+                        sources.clone(),
+                        selection.clone(),
+                        located,
+                    )?;
                     candidate.document_sources.set(resolver).map_err(|_| {
                         anyhow::anyhow!("candidate document source already installed")
                     })?;
@@ -484,8 +489,13 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                 else {
                     return Ok(());
                 };
-                let resolver =
-                    candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+                let located = accepted.locate_published(&selection)?;
+                let candidate = accepted.candidate();
+                let resolver = candidate.resolver_for_selection(
+                    sources.clone(),
+                    selection.clone(),
+                    located,
+                )?;
                 candidate
                     .document_sources
                     .set(resolver)

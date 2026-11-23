@@ -29,7 +29,7 @@ use kasumi_store::{
     ordered_pages::{self, Direction, Edit, PageSource, TreeReader, TreeRoot},
     primary_manifest::{self as primary, PrimaryApplied, PrimaryManifest, PrimaryStatus},
 };
-use kasumi_types::TenantState;
+use kasumi_types::{DocumentResolver, TenantState};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
@@ -169,6 +169,7 @@ pub(crate) fn verify_rows(
     source: &dyn PageSource,
     manifest: &PrimaryManifest,
     state: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     memory: &Arc<dyn NodeDiskMemoryAdmission>,
 ) -> Result<()> {
     ensure!(
@@ -186,7 +187,7 @@ pub(crate) fn verify_rows(
     let mut remaining_rows = manifest.records.count();
     let mut remaining_bytes = manifest.records.bytes();
     let mut expected = Sha256::new();
-    application_records::visit_primary(state, memory, |key, value| {
+    application_records::visit_primary(state, located, memory, |key, value| {
         remaining_rows = remaining_rows
             .checked_sub(1)
             .context("primary directory row count differs")?;
@@ -239,6 +240,7 @@ impl std::error::Error for RebuildByteBudget {}
 fn rebuild(
     store: &Arc<TenantStore>,
     state: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     applied: Option<PrimaryApplied>,
     mut byte_budget: usize,
     ordinary_owner: Option<&PrimaryOwner>,
@@ -250,7 +252,7 @@ fn rebuild(
     };
     let memory = store.plaintext_memory_owner().clone();
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
-        application_records::visit_primary(state, &memory, |key, value| {
+        application_records::visit_primary(state, located, &memory, |key, value| {
             byte_budget = byte_budget
                 .checked_sub(key.len())
                 .and_then(|remaining| remaining.checked_sub(value.len()))
@@ -309,12 +311,20 @@ pub(crate) fn prepare_restore(
                 .zip(applied.as_ref())
                 .is_some_and(|(selected, snapshot)| selected.same_position(snapshot))
             && (manifest.rebuild().is_some()
-                || verify_rows(&**store, &manifest, state, store.plaintext_memory_owner()).is_ok())
+                || verify_rows(
+                    &**store,
+                    &manifest,
+                    state,
+                    None,
+                    store.plaintext_memory_owner(),
+                )
+                .is_ok())
         {
             return Ok(());
         }
     }
-    writes.extend(rebuild(store, state, applied, usize::MAX, None)?);
+    // A restored state holds only complete descriptors until its publication.
+    writes.extend(rebuild(store, state, None, applied, usize::MAX, None)?);
     Ok(())
 }
 
@@ -481,11 +491,15 @@ fn visit_changed_ids(
 /// stale directory. Every other failure to follow the candidate,
 /// including a replayed boundary that differs, publishes a stale manifest;
 /// errors are reserved for failing to read the selected manifest itself.
+///
+/// `located` resolves the located slots the candidate shares with `previous`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_publication_at(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     previous: &TenantState,
     candidate: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     changed: &ChangedIds,
     applied: Option<PrimaryApplied>,
     matches_predecessor: impl FnOnce(&PrimaryManifest) -> Result<bool>,
@@ -505,7 +519,7 @@ pub(crate) fn prepare_publication_at(
     }
     let base = match step(manifest.as_ref(), previous, candidate) {
         Step::Nothing | Step::Covered => return Ok(None),
-        Step::Replace if may_replace => return replace(owner, store, candidate, applied),
+        Step::Replace if may_replace => return replace(owner, store, candidate, located, applied),
         Step::Replace => return Ok(None),
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
@@ -529,6 +543,7 @@ pub(crate) fn prepare_publication_at(
                     &**store,
                     &manifest,
                     candidate,
+                    located,
                     store.plaintext_memory_owner(),
                 )
             } else {
@@ -587,7 +602,7 @@ pub(crate) fn prepare_publication_at(
             owner,
             store,
             &base,
-            candidate,
+            (candidate, located),
             (previous, changed),
             applied.clone(),
             advance_cursor,
@@ -618,6 +633,7 @@ pub(crate) fn maintain(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     state: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     applied: &PrimaryApplied,
 ) -> Result<bool> {
     ensure!(
@@ -654,7 +670,7 @@ pub(crate) fn maintain(
                 owner,
                 store,
                 &m,
-                state,
+                (state, located),
                 (state, &ChangedIds::new()),
                 Some(applied.clone()),
                 true,
@@ -665,6 +681,7 @@ pub(crate) fn maintain(
                 Some(PrimaryPublication::only(rebuild(
                     store,
                     state,
+                    located,
                     Some(applied.clone()),
                     MAX_EDIT_BYTES,
                     Some(owner),
@@ -689,6 +706,7 @@ fn replace(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     candidate: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     applied: Option<PrimaryApplied>,
 ) -> Result<Option<PrimaryPublication>> {
     if candidate.revision < owner.rebuild_after.load(Ordering::Acquire) {
@@ -707,7 +725,14 @@ fn replace(
         };
         remaining = count;
     }
-    match rebuild(store, candidate, applied, MAX_EDIT_BYTES, Some(owner)) {
+    match rebuild(
+        store,
+        candidate,
+        located,
+        applied,
+        MAX_EDIT_BYTES,
+        Some(owner),
+    ) {
         Ok(writes) => Ok(Some(PrimaryPublication::only(writes))),
         Err(error) => {
             if let Err(access) = store.check_access() {
@@ -783,12 +808,13 @@ fn edit(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     base: &PrimaryManifest,
-    candidate: &TenantState,
+    candidate: (&TenantState, Option<&dyn DocumentResolver>),
     delta: (&TenantState, &ChangedIds),
     applied: Option<PrimaryApplied>,
     advance_cursor: bool,
 ) -> Result<PrimaryPublication> {
     let (previous, changed) = delta;
+    let (candidate, located) = candidate;
     let memory = store.plaintext_memory_owner();
     let mut status = base.status.clone();
     // A single decision covers pages created and then displaced in this same
@@ -834,6 +860,7 @@ fn edit(
                     candidate.collections.get(name),
                     id,
                     candidate.revision,
+                    located,
                     memory,
                     &mut rows,
                     &mut leases,

@@ -68,7 +68,7 @@ mod shared_document;
 pub use shared_document::{AdmittedDocumentOwner, SharedDocument};
 mod stored_document;
 pub use stored_document::{
-    DocumentLoan, DocumentResolver, DocumentSlot, OwnedDocument, StoredDocument,
+    DocumentLoan, DocumentResolver, DocumentSlot, LocatedDocument, OwnedDocument, StoredDocument,
 };
 mod retirement;
 pub use retirement::*;

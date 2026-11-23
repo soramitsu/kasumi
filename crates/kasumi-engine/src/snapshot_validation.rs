@@ -1235,7 +1235,9 @@ mod tests {
     fn pending_document_mut(slot: &mut Arc<DocumentSlot>) -> &mut Document {
         match Arc::make_mut(slot) {
             DocumentSlot::Pending(document) => Arc::make_mut(document),
-            DocumentSlot::Stored(_) => panic!("expected pending snapshot fixture"),
+            DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
+                panic!("expected pending snapshot fixture")
+            }
         }
     }
 
@@ -1286,7 +1288,7 @@ mod tests {
             .values()
             .map(|doc| ChangeRecord {
                 collection: "rows".into(),
-                id: doc.id().to_owned(),
+                id: doc.id().unwrap().to_owned(),
                 document: Some(doc.clone()),
             })
             .collect();

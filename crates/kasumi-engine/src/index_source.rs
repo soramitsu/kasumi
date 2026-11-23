@@ -104,7 +104,7 @@ pub(crate) fn header<'a>(
     // Zero is a valid restored version, as in the snapshot and primary codecs.
     // The selected source still cannot lend a version newer than its revision.
     let valid_version = |version| version <= revision;
-    if live.is_some_and(|document| document.id() != id || !valid_version(document.version()))
+    if live.is_some_and(|document| !document.has_id(id) || !valid_version(document.version()))
         || archived.is_some_and(|reference| !valid_version(reference.version))
     {
         return Err(corruption("source document identity/version differs"));
@@ -141,17 +141,14 @@ pub(crate) fn record<'a>(
     if let Some(document) = collection.documents.get(id) {
         let loan = match document.as_ref() {
             DocumentSlot::Pending(document) => DocumentLoan::Pending(document),
-            DocumentSlot::Stored(document) => {
+            slot => {
                 let resolver = resolver.ok_or_else(|| {
                     ReadFailure::Source(DocumentSourceFailure(anyhow::anyhow!(
                         "stored document has no selected resolver"
                     )))
                 })?;
-                DocumentLoan::Stored(
-                    document
-                        .load(resolver)
-                        .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?,
-                )
+                slot.load_at(&collection.definition.name, id, resolver)
+                    .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?
             }
         };
         return Ok(Some(RecordLoan::Live(loan)));

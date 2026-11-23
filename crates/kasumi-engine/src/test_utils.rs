@@ -861,7 +861,25 @@ pub fn fixture_document(
         .get(collection)
         .and_then(|collection| collection.documents.get(id))
         .ok_or_else(|| anyhow::anyhow!("fixture document absent"))?;
-    slot.load_owned(generation.document_resolver())
+    slot.load_owned_at(collection, id, generation.document_resolver())
+}
+
+/// The complete descriptor of a fixture's published document, resolving a
+/// located slot through the generation's selected primary rows.
+pub fn fixture_descriptor(
+    generation: &crate::Generation,
+    collection: &str,
+    id: &str,
+) -> anyhow::Result<kasumi_types::StoredDocument> {
+    let slot = generation
+        .state
+        .collections
+        .get(collection)
+        .and_then(|collection| collection.documents.get(id))
+        .ok_or_else(|| anyhow::anyhow!("fixture document absent"))?;
+    Ok(slot
+        .descriptor(collection, id, generation.document_resolver())?
+        .into_owned())
 }
 
 #[cfg(test)]

@@ -148,10 +148,12 @@ pub(crate) fn document_slot_heap(document: &DocumentSlot, budget: usize) -> Resu
             Ok(bytes)
         }
         DocumentSlot::Stored(document) => {
-            let mut bytes = std::mem::size_of::<DocumentSlot>() + 128;
+            let mut bytes =
+                std::mem::size_of::<DocumentSlot>() + std::mem::size_of::<StoredDocument>() + 128;
             add(&mut bytes, document.id.capacity(), budget)?;
             Ok(bytes)
         }
+        DocumentSlot::Located(_) => Ok(std::mem::size_of::<DocumentSlot>() + 128),
     }
 }
 fn archive_reference_heap(document: &ArchivedDocument, budget: usize) -> Result<usize> {
