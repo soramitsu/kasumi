@@ -818,7 +818,7 @@ async fn claim_and_publish(inst: &Installation, plan: &Plan, ordinal: u64) -> an
         principal: context.principal.clone(),
         request_id: context.request_id.clone(),
     };
-    let bytes = inst
+    let claim = inst
         .source
         .claim_backup_intent(
             &context,
@@ -827,12 +827,90 @@ async fn claim_and_publish(inst: &Installation, plan: &Plan, ordinal: u64) -> an
             &generation,
             Some(ALIAS),
         )
+        .await;
+    publish_claim_result(inst, &context, &intent, claim).await
+}
+
+async fn publish_claim_result(
+    inst: &Installation,
+    context: &RequestContext,
+    intent: &BackupSessionIntent,
+    claim: Result<kasumi_store::AdmittedBackupBundle>,
+) -> anyhow::Result<()> {
+    let error = match claim {
+        Ok(bytes) => {
+            return inst
+                .destination
+                .session_put(intent.session_id, BackupSessionSlot::Intent, bytes.into())
+                .await
+                .context("intent publication");
+        }
+        Err(error) if error.code == ErrorCode::UnknownOutcome => anyhow::Error::new(error),
+        Err(error) => return Err(anyhow::Error::new(error).context("Control claim")),
+    };
+    eprintln!(
+        "backup floor request {} Control claim: {error:#}",
+        intent.request_id
+    );
+    // A committed claim can exist before the intent object. Prove the selected
+    // Control input before publishing its original randomized bytes.
+    let selected = inst
+        .source
+        .selected_backup(context, inst.destination.as_ref(), intent.session_id)
         .await
-        .native("Control claim")?;
-    inst.destination
-        .session_put(id, BackupSessionSlot::Intent, bytes.into())
-        .await
-        .native("intent publication")?;
+        .context("read Control after uncertain population claim")?;
+    let Some(selected) = selected else {
+        return Err(error.context("no committed population claim to publish"));
+    };
+    let row = &selected.record;
+    if selected.terminal.is_some()
+        || row.claim.intent() != *intent
+        || row.claim.destination_alias.as_deref() != Some(ALIAS)
+        || row.claim.source_purpose_sha256
+            != kasumi_types::staged_digest(inst.source.store.storage_access().purpose())?.0
+    {
+        return Err(error.context("Control did not select the exact pending population claim"));
+    }
+    // Status can prove Control ownership even when the destination is empty.
+    // Inspect the authenticated object itself before accepting publication.
+    let published = || async {
+        let Some(session) = inst
+            .source
+            .backup_session(context, inst.destination.as_ref(), intent.session_id)
+            .await
+            .context("verify population intent readback")?
+        else {
+            return Ok(false);
+        };
+        anyhow::ensure!(
+            session.intent() == intent
+                && session.intent_ciphertext_sha256() == row.claim.intent_ciphertext_sha256
+                && session.outcome().is_none(),
+            "destination differs from the exact pending population claim"
+        );
+        anyhow::Ok(true)
+    };
+    if !published().await? {
+        let bytes = inst
+            .source
+            .original_backup_intent_for_effect(context, row)
+            .await
+            .context("verify original committed population intent")?;
+        if let Err(original) = inst
+            .destination
+            .session_put(intent.session_id, BackupSessionSlot::Intent, bytes.into())
+            .await
+        {
+            eprintln!(
+                "backup floor request {} intent publication: {original:#}",
+                intent.request_id
+            );
+        }
+        anyhow::ensure!(
+            published().await?,
+            "original committed population intent awaits destination publication"
+        );
+    }
     Ok(())
 }
 
@@ -2767,6 +2845,116 @@ fn interrupted_population_plan() -> Plan {
         cleanup_objects: 300,
         page_limit: 8,
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uncertain_population_claim_requires_the_exact_committed_input() -> anyhow::Result<()> {
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = interrupted_population_plan();
+    let inst = Installation::open(&root, &plan).await?;
+    let ordinal = 5;
+    assert_eq!(plan.kind(ordinal), Kind::Aborted);
+    let id = plan.session_id(ordinal);
+    let context = inst.context(ordinal);
+    let generation = inst.source.engine.generation()?;
+    let intent = BackupSessionIntent {
+        session_id: id,
+        tenant: context.tenant.clone(),
+        source_incarnation: generation.incarnation().into(),
+        revision: generation.state.revision,
+        principal: context.principal.clone(),
+        request_id: context.request_id.clone(),
+    };
+    // Replace only the response at the Control proposal boundary. Every read,
+    // permanent claim, external create and terminal decision uses real stores.
+    let lost = || {
+        Err(Error::new(
+            ErrorCode::UnknownOutcome,
+            "forced lost Control claim reply",
+        ))
+    };
+    let object = || {
+        inst.destination.session_get(
+            id,
+            BackupSessionSlot::Intent,
+            kasumi_store::MAX_ENCRYPTED_SESSION_RECORD_BYTES,
+        )
+    };
+    let before = inst.head()?;
+    let missing = publish_claim_result(&inst, &context, &intent, lost())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing.downcast_ref::<Error>().unwrap().code,
+        ErrorCode::UnknownOutcome
+    );
+    assert!(
+        missing
+            .to_string()
+            .contains("no committed population claim")
+    );
+    assert_eq!(inst.head()?, before);
+    assert!(object().await?.is_none());
+
+    let bytes = inst
+        .source
+        .claim_backup_intent(
+            &context,
+            inst.destination.as_ref(),
+            &intent,
+            &generation,
+            Some(ALIAS),
+        )
+        .await?;
+    drop(generation);
+    let claimed = inst.head()?;
+    assert_eq!(claimed.count, before.count + 1);
+    assert!(object().await?.is_none());
+    let mut other = context.clone();
+    other.request_id.push_str("-other");
+    let wrong = BackupSessionIntent {
+        request_id: other.request_id.clone(),
+        ..intent.clone()
+    };
+    let denied = publish_claim_result(&inst, &other, &wrong, lost())
+        .await
+        .unwrap_err();
+    assert!(
+        denied
+            .to_string()
+            .contains("exact pending population claim")
+    );
+    assert_eq!(inst.head()?, claimed);
+    assert!(object().await?.is_none());
+
+    // A newer source generation cannot become this session's snapshot.
+    advance_population_source(&inst, ordinal + 1).await?;
+    assert!(inst.source.engine.generation()?.state.revision > intent.revision);
+    publish_claim_result(&inst, &context, &intent, lost()).await?;
+    assert_eq!(object().await?.as_deref(), Some(bytes.as_bytes()));
+    publish_claim_result(&inst, &context, &intent, lost()).await?;
+    assert_eq!(object().await?.as_deref(), Some(bytes.as_bytes()));
+    let pending = interrupted_abort_status(&inst, &plan, ordinal)
+        .await?
+        .unwrap();
+    assert_eq!(pending.intent, intent);
+    assert!(pending.outcome.is_none());
+    assert_eq!(inst.head()?, claimed);
+    let terminal = abort(&inst, &plan, ordinal).await?;
+    assert_eq!(terminal.intent, intent);
+    assert!(
+        matches!(&terminal.outcome, Some(BackupSessionOutcome::Aborted {
+        reason, intent_ciphertext_sha256, ..
+    }) if *reason == abort_reason(ordinal) && *intent_ciphertext_sha256 == hex::encode(Sha256::digest(bytes.as_bytes())))
+    );
+    let ended = inst.head()?;
+    assert_eq!(ended.count, claimed.count + 1);
+    let replay = run_session(&inst, &plan, ordinal, "populate", true).await?;
+    assert_eq!(replay.outcome, terminal.outcome);
+    assert_eq!(inst.head()?, ended);
+    inst.close().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
