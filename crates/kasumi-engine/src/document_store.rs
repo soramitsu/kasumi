@@ -446,12 +446,16 @@ impl LocatedRows {
 /// Commit revisions increase with their keys, so a bisection over the key
 /// range finds it in logarithmically many ordered lookups.
 pub(crate) fn feed_commit_at(feed: &kasumi_types::ChangeFeedState, revision: u64) -> Option<u64> {
+    let (last, newest) = feed.commits.get_max()?;
+    if revision >= newest.revision {
+        return (revision == newest.revision).then_some(*last);
+    }
     let (first, commit) = feed.commits.get_min()?;
     if commit.revision > revision {
         return None;
     }
     // `low` is a key whose commit is at or before `revision`; `high` a key.
-    let (mut low, mut high) = (*first, feed.commits.get_max()?.0);
+    let (mut low, mut high) = (*first, *last);
     while low < high {
         let middle = low + (high - low) / 2 + 1;
         let (&key, commit) = feed.commits.range(middle..=high).next()?;
@@ -475,11 +479,20 @@ fn feed_record_mut<'a>(
 ) -> Option<&'a mut Option<Arc<kasumi_types::DocumentSlot>>> {
     let key = feed_commit_at(feed, revision)?;
     let commit = feed.commits.get(&key)?;
-    let index = commit.records.iter().position(|record| {
-        record.collection == collection
-            && record.id == id
+    let identity = (collection, id);
+    let same_slot = |record: &kasumi_types::ChangeRecord| {
+        (record.collection.as_str(), record.id.as_str()) == identity
             && record.document.as_ref().is_some_and(&matches)
-    })?;
+    };
+    // New commits append records in collection and document ID order. A
+    // restored commit retains its original sequence even when its IDs are
+    // unordered, so an unsuccessful ordered lookup still checks the record.
+    let index = commit
+        .records
+        .binary_search_by(|record| (record.collection.as_str(), record.id.as_str()).cmp(&identity))
+        .ok()
+        .filter(|&index| same_slot(&commit.records[index]))
+        .or_else(|| commit.records.iter().position(same_slot))?;
     let commit = Arc::make_mut(feed.commits.get_mut(&key)?);
     Some(&mut commit.records[index].document)
 }

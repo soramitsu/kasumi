@@ -200,6 +200,45 @@ fn next(
 }
 
 #[test]
+fn changed_documents_share_their_original_records_in_an_unordered_restored_commit() {
+    let empty = genesis();
+    let (mut state, changed) = next(
+        &empty,
+        empty.revision_base + 1,
+        "docs",
+        &["a", "b", "c"],
+        &[],
+    );
+    let revision = state.collections["docs"].documents["a"].version();
+    let records = ["c", "a", "b"]
+        .into_iter()
+        .map(|id| kasumi_types::ChangeRecord {
+            collection: "docs".into(),
+            id: id.into(),
+            document: Some(state.collections["docs"].documents[id].clone()),
+        })
+        .collect();
+    state.change_feed.commits.insert(
+        12,
+        Arc::new(kasumi_types::ChangeCommit {
+            revision,
+            first_sequence: 12,
+            record_bytes: 0,
+            records,
+        }),
+    );
+    assert_eq!(
+        crate::document_store::compact_changed(&mut state, &changed),
+        3
+    );
+    for record in &state.change_feed.commits[&12].records {
+        let slot = &state.collections["docs"].documents[&record.id];
+        assert!(matches!(slot.as_ref(), DocumentSlot::Located(_)));
+        assert!(Arc::ptr_eq(record.document.as_ref().unwrap(), slot));
+    }
+}
+
+#[test]
 fn cold_compaction_only_shares_a_feed_after_image_with_the_same_complete_descriptor() {
     let empty = genesis();
     let names: Vec<_> = (0..145).map(|i| format!("doc-{i:03}")).collect();
