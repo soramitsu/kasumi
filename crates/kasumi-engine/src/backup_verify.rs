@@ -535,9 +535,16 @@ impl ResidentStaging {
         }
         // Decryption retains the 32-byte integrity prefix in the Vec's
         // capacity. Allow a page for the prefix, digest and child bookkeeping.
-        match admission.reserve_waiting(CHUNK_BYTES as u64 + 4096, cancellation) {
+        match admission.reserve_waiting(CHUNK_BYTES as u64 + 4096, cancellation.clone()) {
             Ok(credit) => Ok(Some(credit)),
-            Err(error) if error.code == ErrorCode::ResourceExhausted => Ok(None),
+            Err(error) if error.code == ErrorCode::ResourceExhausted => {
+                // Cancellation and ordinary budget pressure share this code.
+                // Only a live request may fall back to sequential staging.
+                if let Some(token) = cancellation {
+                    token.check()?;
+                }
+                Ok(None)
+            }
             Err(error) => Err(error),
         }
     }
@@ -1221,7 +1228,11 @@ mod tests {
         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         let token = kasumi_query::QueryCancellation::default();
         token.cancel();
-        assert!(ResidentStaging::reserve_overlap(&admission, 2, Some(token)).is_err());
+        let error = ResidentStaging::reserve_overlap(&admission, 2, Some(token.clone()))
+            .err()
+            .expect("cancelled requests cannot fall back to sequential staging");
+        assert_eq!(error, token.check().unwrap_err());
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 
     fn staged_chunk(bytes: &[u8], digest_of: &[u8]) -> AuthenticatedChunk {
