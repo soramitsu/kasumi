@@ -739,6 +739,71 @@ pub async fn open_local(
     .await
 }
 
+/// The audit facade and its snapshot startup slot travel together until the
+/// local group takes ownership. Enrollment can claim the slot before recording
+/// its permanent creation intent or initializing either catalog.
+pub struct LocalDatabaseStartup {
+    audit: Arc<SecurityAudit>,
+    buffers: Option<Arc<kasumi_raft::SnapshotBufferOwner>>,
+}
+
+impl LocalDatabaseStartup {
+    pub fn reserve(audit: Arc<SecurityAudit>) -> anyhow::Result<Self> {
+        let buffers = audit.admission().snapshot_buffer_owner()?;
+        Ok(Self {
+            audit,
+            buffers: Some(buffers),
+        })
+    }
+
+    fn unreserved(audit: Arc<SecurityAudit>) -> Self {
+        Self {
+            audit,
+            buffers: None,
+        }
+    }
+
+    fn construction(self, stores: Arc<TenantStorageSet>) -> anyhow::Result<DatabaseConstruction> {
+        let construction = DatabaseConstruction::new(stores, self.audit)?;
+        Ok(match self.buffers {
+            Some(buffers) => construction.with_local_buffers(buffers),
+            None => construction,
+        })
+    }
+
+    pub async fn reopen(
+        self,
+        stores: Arc<TenantStorageSet>,
+        expected_incarnation: uuid::Uuid,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        let database = open_existing_local_as_stored(stores, self, expected_incarnation).await?;
+        // A data operation: never serialized behind the bootstrap gate.
+        store_embedded_after_reference_reopen(&database).await?;
+        Ok(database)
+    }
+
+    pub async fn initialize(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+            Ok(())
+        })?;
+        open_local_inner(
+            self.construction(stores)?,
+            initial_policy,
+            initial_limits,
+            Some(incarnation),
+            LocalRuntime::Production,
+        )
+        .await
+    }
+}
+
 /// Reopen an initialized local deployment using only its authenticated bootstrap.
 /// Missing deployment, bootstrap or custody commitment is corruption, never a
 /// request to generate a new incarnation or install default policy and limits.
@@ -747,20 +812,18 @@ pub async fn open_existing_local(
     security_audit: Arc<SecurityAudit>,
     expected_incarnation: uuid::Uuid,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    let database =
-        open_existing_local_as_stored(stores, security_audit, expected_incarnation).await?;
-    // A data operation: never serialized behind the bootstrap gate.
-    store_embedded_after_reference_reopen(&database).await?;
-    Ok(database)
+    LocalDatabaseStartup::unreserved(security_audit)
+        .reopen(stores, expected_incarnation)
+        .await
 }
 
 /// [`open_existing_local`] before any change of the stored snapshot's form.
 async fn open_existing_local_as_stored(
     stores: Arc<TenantStorageSet>,
-    security_audit: Arc<SecurityAudit>,
+    startup: LocalDatabaseStartup,
     expected_incarnation: uuid::Uuid,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
+    let construction = startup.construction(stores.clone())?;
     crate::SnapshotFailure::ordinary(|| {
         anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
         Ok(())
@@ -856,18 +919,9 @@ pub async fn open_local_with_incarnation(
     security_audit: Arc<SecurityAudit>,
     incarnation: uuid::Uuid,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
-        Ok(())
-    })?;
-    open_local_inner(
-        DatabaseConstruction::new(stores, security_audit)?,
-        initial_policy,
-        initial_limits,
-        Some(incarnation),
-        LocalRuntime::Production,
-    )
-    .await
+    LocalDatabaseStartup::unreserved(security_audit)
+        .initialize(stores, initial_policy, initial_limits, incarnation)
+        .await
 }
 
 /// Open only an explicit encrypted application fixture using one paired clock.

@@ -76,6 +76,13 @@ exclusive operator request resolving the original operation identity.
 
 ## Approve, prepare, initialize and activate
 
+Set `admission.max_snapshot_startups` to cover the local Control group and
+each tenant group that will run concurrently. An installation serving 100
+tenants needs at least 101 slots. Each live group holds its slot through drain.
+When the inventory is full, preparing a new tenant returns `ResourceExhausted`
+before it records creation or opens either catalog. After capacity is available,
+retry the same approved preparation.
+
 Restart the daemon with the updated configuration. The staged tenant stays dormant.
 Use the existing mTLS management endpoint with the private Control credential. A
 `kasumictl` client configuration takes these values from `profiles/control.json`:

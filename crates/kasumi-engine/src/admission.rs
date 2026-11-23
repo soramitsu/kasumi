@@ -1417,7 +1417,12 @@ impl NodeAdmission {
         let slot = owners
             .iter_mut()
             .find(|slot| slot.is_none())
-            .ok_or_else(|| anyhow::anyhow!("snapshot startup inventory exhausted"))?;
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot startup inventory exhausted",
+                )
+            })?;
         let buffers = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
         let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?
             .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<

@@ -63,6 +63,7 @@ impl Administration {
                 "original local creation is incomplete; retry cannot recreate it"
             );
         } else {
+            let startup = kasumi_engine::LocalDatabaseStartup::reserve(self.audit.clone())?;
             let mut record = node_enrollment::dispatch_tenant(
                 self.audit.store(),
                 proposal.clone(),
@@ -90,11 +91,10 @@ impl Administration {
             self.check_enrollment(&prepared.invocation)?;
             let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, tenant)?;
             let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
-            let database = constructor_seat.run_snapshot(kasumi_engine::open_local_with_incarnation(
+            let database = constructor_seat.run_snapshot(startup.initialize(
                 stores.clone(),
                 proposal.initial_policy.clone(),
                 proposal.initial_limits.clone(),
-                self.audit.clone(),
                 incarnation,
             )
             ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
@@ -125,6 +125,20 @@ impl Administration {
             prepared.resources = Default::default();
         }
         self.check_enrollment(&prepared.invocation)?;
+        // A fresh attempt has already created and verified its catalog. If
+        // final publication must wait, preserve that uncertainty for its caller.
+        let startup =
+            kasumi_engine::LocalDatabaseStartup::reserve(self.audit.clone()).map_err(|error| {
+                if existing.is_none() {
+                    anyhow::anyhow!(kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::UnknownOutcome,
+                        "tenant creation was recorded; retry the same approved preparation",
+                    ))
+                    .context(error)
+                } else {
+                    error
+                }
+            })?;
         prepared.resources.borrowed_nodes.push(self.node.clone());
         let stores = TenantStorageSet::open_existing(
             self.node.clone(),
@@ -150,7 +164,7 @@ impl Administration {
                 tenant,
             )?;
         let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
-        let database = constructor_seat.run_snapshot(kasumi_engine::open_existing_local(stores.clone(), self.audit.clone(), incarnation)
+        let database = constructor_seat.run_snapshot(startup.reopen(stores.clone(), incarnation)
                 ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
         prepared.resources.databases.push(database.clone());
         for (alias, destination) in &self.destinations {

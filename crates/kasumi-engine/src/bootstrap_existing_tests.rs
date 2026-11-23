@@ -2149,7 +2149,7 @@ async fn a_conversion_refused_for_capacity_serves_on_its_reference_snapshot()
     let fixture = Rooted::open_on(root, storage).await?;
     let reopened = super::open_existing_local_as_stored(
         fixture.stores.clone(),
-        fixture.audit.clone(),
+        super::LocalDatabaseStartup::unreserved(fixture.audit.clone()),
         fixture.incarnation,
     )
     .await
