@@ -353,6 +353,8 @@ class Attempt:
                               "executable": output / "tools" / "cargo"}
         self.dispatch_started = True
         before = release_gate.memory_observation()
+        resources = output / (PROCESS + "-resources.json")
+        release_gate.write_json(resources, {"before": before, "after": None})
         try:
             with self.process_paths["log"].open("xb") as stream:
                 process = gate_process.run(
@@ -362,8 +364,7 @@ class Attempt:
             process["outputs_stable"] = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
             release_gate.write_json(self.process_paths["receipt"], process)
         finally:
-            release_gate.write_json(output / (PROCESS + "-resources.json"),
-                                    {"before": before, "after": release_gate.memory_observation()})
+            release_gate.write_json(resources, {"before": before, "after": release_gate.memory_observation()})
         require(process["executable"] in (None, executable),
                 "owned Cargo dispatch differs from the retained preflight executable")
         return process

@@ -300,7 +300,9 @@ class ReleaseGateTests(unittest.TestCase):
     def test_resource_record_matches_the_limits_inherited_by_the_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            command = [sys.executable, "-c", "import json, resource; print(json.dumps({"
+            command = [sys.executable, "-c", "import json, resource; from pathlib import Path; "
+                       "assert json.loads(Path('limits-resources.json').read_bytes())['after'] is None; "
+                       "print(json.dumps({"
                        "name: resource.getrlimit(getattr(resource, 'RLIMIT_' + name)) "
                        "for name in ('AS', 'CPU', 'FSIZE', 'NOFILE', 'STACK')}))"]
             result = release_gate.run_gate("limits", command, root, root, os.environ.copy())

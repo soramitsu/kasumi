@@ -333,12 +333,16 @@ class IndependentBuildTests(unittest.TestCase):
 
     def test_cancellation_is_an_original_interrupted_attempt(self):
         self.mode(sleep=30)
+        resources = self.native / "independent-cancelled" / "production-resources.json"
+        opening = []
 
         def cancel():
             deadline = time.monotonic() + 20
             while not self.started.exists() and time.monotonic() < deadline:
                 time.sleep(.05)
             if self.started.exists():
+                if resources.is_file():
+                    opening.append(json.loads(resources.read_bytes()))
                 os.kill(os.getpid(), signal.SIGINT)
 
         thread = threading.Thread(target=cancel)
@@ -352,6 +356,9 @@ class IndependentBuildTests(unittest.TestCase):
         self.assertEqual(outcome["products"], [])
         process = json.loads((self.native / "independent-cancelled" / "production-process.json").read_text())
         self.assertEqual((process["received_signals"], process["cleanup"]["drained"]), ([signal.SIGINT], True))
+        final = json.loads(resources.read_bytes())
+        self.assertEqual(opening, [{"before": final["before"], "after": None}])
+        self.assertIsNotNone(final["after"])
         self.transport({})
 
     def test_cli_requires_isolated_python_and_reports_the_anchorable_head(self):

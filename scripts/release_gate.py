@@ -313,6 +313,8 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
     compiled_packages = {}
     target = (Path(output) / "target").resolve()
     memory_before = memory_observation()
+    resources = Path(output) / (name + "-resources.json")
+    write_json(resources, {"before": memory_before, "after": None})
     process = None
     try:
         with log.open("wb") as stream:
@@ -350,8 +352,7 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
                 error.add_note("original gate process group has not drained")
         raise
     finally:
-        write_json(Path(output) / (name + "-resources.json"),
-                   {"before": memory_before, "after": memory_observation()})
+        write_json(resources, {"before": memory_before, "after": memory_observation()})
     return {
         "name": name, "command": command, "exit_code": process["exit_code"],
         "duration_seconds": process["duration_seconds"],
@@ -361,8 +362,7 @@ def run_gate(name, command, source, output, environment, timeout_seconds=14400):
         "process_cleanup": process["cleanup"], "timed_out": process["timed_out"],
         "received_signals": process["received_signals"], "process_error": process["error"],
         "timeout_seconds": timeout_seconds,
-        "resources": name + "-resources.json",
-        "resources_sha256": sha256(Path(output) / (name + "-resources.json")),
+        "resources": resources.name, "resources_sha256": sha256(resources),
     }
 
 
