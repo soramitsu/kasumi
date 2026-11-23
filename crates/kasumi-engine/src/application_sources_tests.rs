@@ -3042,6 +3042,7 @@ async fn ordinary_primary_round_trip(
     async fn start(
         fixture: &Fixture,
         audit: &Arc<crate::SecurityAudit>,
+        clock: &Arc<kasumi_clock::EpochClock>,
         group: &str,
         initialize: bool,
     ) -> crate::test_fixture_failure::FixtureResult<(Arc<TenantEngine>, Arc<crate::Database>)> {
@@ -3051,9 +3052,10 @@ async fn ordinary_primary_round_trip(
             &fixture.image,
         )?);
         engine.install_storage_access(fixture.stores.application())?;
-        let db = crate::service::construction::DatabaseConstruction::new(
+        let db = crate::service::construction::DatabaseConstruction::with_fixture_clock(
             fixture.stores.clone(),
             audit.clone(),
+            clock.clone(),
         )?
         .start_replicated(
             engine.clone(),
@@ -3135,13 +3137,20 @@ async fn ordinary_primary_round_trip(
         Ok(())
     }
 
+    // Keep the cursor and its fixed RSS sample live across the storage checks.
+    // Both leases normally age while this test waits for disk I/O and Raft.
+    let elapsed = Arc::new(kasumi_store::test_utils::ManualClock::new());
+    let clock = Arc::new(kasumi_clock::EpochClock::new(
+        elapsed.clone(),
+        Arc::new(kasumi_store::test_utils::AwakeWallClock),
+    )?);
     let mut fixture = Fixture::with_admission(1, None, |mut config| {
         // The original 256 MiB payload budget protects required work and the
         // installed audit ledger. Leave those protections in place in both runs.
         if grant_cache {
             config.max_inflight_bytes = config.max_inflight_bytes.map(|cap| cap + (256 << 20));
         }
-        NodeAdmission::with_fixed_memory(config, 2 << 30, 0)
+        NodeAdmission::with_fixed_memory_clock(config, 2 << 30, 0, elapsed.clone())
     })
     .await?;
     let group = format!(
@@ -3152,7 +3161,7 @@ async fn ordinary_primary_round_trip(
             .incarnation
     );
     let first_audit = audit(&fixture.node, &fixture.storage.admission, false).await?;
-    let (engine, db) = start(&fixture, &first_audit, &group, true).await?;
+    let (engine, db) = start(&fixture, &first_audit, &clock, &group, true).await?;
     let store = fixture.stores.application().clone();
     let context = kasumi_types::RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -3402,7 +3411,7 @@ async fn ordinary_primary_round_trip(
     assert!(kept.is_current() && kept.revision >= before.revision);
     assert_eq!(kept.records.tree, before.records.tree);
     let second_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
-    let (engine, db) = start(&fixture, &second_audit, &group, false).await?;
+    let (engine, db) = start(&fixture, &second_audit, &clock, &group, false).await?;
     let reopened = current(&engine, &store)?;
     assert_eq!(reopened.records.tree, before.records.tree);
     assert_eq!(reopened.page_space, before.page_space);
@@ -3427,7 +3436,7 @@ async fn ordinary_primary_round_trip(
     )])?;
     assert_eq!(PrimaryManifest::load(&store)?, None);
     let third_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
-    let (engine, db) = start(&fixture, &third_audit, &group, false).await?;
+    let (engine, db) = start(&fixture, &third_audit, &clock, &group, false).await?;
     let rebuilt = current(&engine, &store)?;
     assert_ne!(rebuilt.records.tree, before.records.tree);
     assert_ne!(rebuilt.page_space, before.page_space);

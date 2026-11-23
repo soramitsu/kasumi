@@ -1375,6 +1375,15 @@ impl NodeAdmission {
         capacity: u64,
         resident: u64,
     ) -> anyhow::Result<Arc<Self>> {
+        Self::with_fixed_memory_clock(config, capacity, resident, Arc::new(SystemLeaseClock))
+    }
+    #[cfg(test)]
+    pub(crate) fn with_fixed_memory_clock(
+        config: AdmissionConfig,
+        capacity: u64,
+        resident: u64,
+        clock: Arc<dyn LeaseClock>,
+    ) -> anyhow::Result<Arc<Self>> {
         struct FixedMemory(u64);
         impl MemorySource for FixedMemory {
             fn resident_bytes(&self) -> anyhow::Result<u64> {
@@ -1382,12 +1391,7 @@ impl NodeAdmission {
             }
         }
         let high = config.resolve_high_water(capacity)?;
-        Self::create(
-            config,
-            high,
-            Arc::new(FixedMemory(resident)),
-            Arc::new(SystemLeaseClock),
-        )
+        Self::create(config, high, Arc::new(FixedMemory(resident)), clock)
     }
     pub fn snapshot_buffer_owner(
         self: &Arc<Self>,
