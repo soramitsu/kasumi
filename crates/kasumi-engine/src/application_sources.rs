@@ -1127,11 +1127,13 @@ impl SourceRootsRef {
             )
         } else {
             let baseline = cell_bytes()?;
-            // Only a nonpublishing reader may spend the read workflow's exact
-            // source slice. Canonical selections retain their own admission.
+            // A descriptor lookup during committed apply must fund its reader
+            // cell from the original proposal, even if native traffic has
+            // since filled every slot. A scoped read uses its own grant.
             let credit = if !canonical
-                && crate::admission::DocumentReadBudget::current_for(self.admission.memory())
-                    .is_some()
+                && (crate::admission::ApplyEscrow::current_for(self.admission.memory()).is_some()
+                    || crate::admission::DocumentReadBudget::current_for(self.admission.memory())
+                        .is_some())
             {
                 SourceCredit::document_read(crate::admission::DocumentWorkspace::new(
                     &self.admission,
