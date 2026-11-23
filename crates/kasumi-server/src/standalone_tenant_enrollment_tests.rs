@@ -48,9 +48,14 @@ async fn installation() -> Result<(
     crate::runtime_memory::RuntimeStorage,
 )> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone_with_policy(
         &root.path().join("installed"),
         "tenant-a",
+        kasumi_engine::admission::AdmissionConfig {
+            // Two live groups plus the one being enrolled.
+            max_snapshot_startups: 3,
+            ..Default::default()
+        },
     )
     .await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
@@ -217,6 +222,39 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
             .await
             .context("replay approval after withheld response")?;
     }
+    // A live group keeps its startup slot through final drain. Hold the
+    // remaining slots to reproduce a full installed roster before preparation.
+    let occupied = manager.admission().snapshot_buffer_owner()?;
+    let Err(full) = manager.admission().snapshot_buffer_owner() else {
+        anyhow::bail!("Control and the resident tenant must own two startup slots")
+    };
+    assert!(
+        full.to_string()
+            .contains("snapshot startup inventory exhausted")
+    );
+    let refused = manage(
+        &control_profile,
+        ManagementCommand::PrepareTenant {
+            tenant: staged.tenant.clone(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        refused.downcast_ref::<tonic::Status>().unwrap().code(),
+        tonic::Code::ResourceExhausted
+    );
+    assert!(
+        crate::node_enrollment::tenant_record(manager.security_audit().store(), &staged.tenant)?
+            .is_none()
+    );
+    assert!(!kasumi_store::CustodyStore::catalog_installed(
+        &manager.node_for_enrollment_test(),
+        &staged.tenant
+    )?);
+    assert!(!manager.test_original_recoveries().retained().await);
+    drop(occupied);
+
     for command in [
         ManagementCommand::PrepareTenant {
             tenant: staged.tenant.clone(),

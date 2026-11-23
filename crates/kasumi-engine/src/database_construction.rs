@@ -11,6 +11,7 @@ pub(crate) struct DatabaseConstruction {
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     clocks: DatabaseClocks,
+    local_buffers: Option<Arc<kasumi_raft::SnapshotBufferOwner>>,
 }
 
 impl DatabaseConstruction {
@@ -31,6 +32,7 @@ impl DatabaseConstruction {
             return Ok(Self {
                 stores,
                 audit,
+                local_buffers: None,
                 clocks: DatabaseClocks {
                     elapsed: clock.elapsed_clock(),
                     command: Arc::new(super::FixtureCommandClock(clock)),
@@ -41,6 +43,7 @@ impl DatabaseConstruction {
             stores,
             audit,
             clocks: DatabaseClocks::default(),
+            local_buffers: None,
         })
     }
 
@@ -91,6 +94,14 @@ impl DatabaseConstruction {
         Ok(construction)
     }
 
+    pub(crate) fn with_local_buffers(
+        mut self,
+        buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
+    ) -> Self {
+        self.local_buffers = Some(buffers);
+        self
+    }
+
     pub(crate) fn stores(&self) -> &Arc<TenantStorageSet> {
         &self.stores
     }
@@ -100,13 +111,16 @@ impl DatabaseConstruction {
     }
 
     pub(crate) async fn start_local(
-        self,
+        mut self,
         engine: Arc<TenantEngine>,
         image: &kasumi_store::SnapshotImage,
         node_id: u64,
         name: String,
     ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-        let buffers = self.admission().snapshot_buffer_owner()?;
+        let buffers = match self.local_buffers.take() {
+            Some(buffers) => buffers,
+            None => self.admission().snapshot_buffer_owner()?,
+        };
         let (sources, binding) = crate::application_sources::SourceRoots::new(
             self.stores.clone(),
             self.admission().clone(),
