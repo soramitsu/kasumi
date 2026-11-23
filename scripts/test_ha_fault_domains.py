@@ -296,8 +296,20 @@ def complete(state):
             for target in request["target_nodes"]:
                 directory = generation(target, request)
                 if directory.exists():
+                    inode = directory.stat().st_ino
                     (directory / "store.kv").unlink()
                     directory.rmdir()
+                    phase = phase_id(state, "cleanup-" + target)
+                    state["voters"][target]["cleanup"] = phase
+                    journal = directory.parents[1] / "stopped-journal.json"
+                    journal.write_text(json.dumps({
+                        "query": {"operation_id": request["operation_id"], "phase_id": phase,
+                                  "target_incarnation": request["target_incarnation"],
+                                  "node_id": int(target)},
+                        "intent_id": request["operation_id"], "attempt_id": phase,
+                        "stop_receipt_sha256": hashlib.sha256(phase.encode()).hexdigest(),
+                        "binding_sha256": hashlib.sha256(str(inode).encode()).hexdigest(),
+                        "progress": "deleted"}))
         index = stages.index(state["stage"])
         if index + 1 < len(stages):
             state["stage"] = stages[index + 1]
@@ -350,6 +362,13 @@ if args[:1] == ["control-recovery"]:
         sys.exit(0)
     if action == "phase":
         print(json.dumps(recovery_state(operation)["phases"][args[4]]))
+        sys.exit(0)
+    if action == "target-deletion-via-control":
+        target = args[6]
+        if not alive(int(target)):
+            fail("target is unavailable")
+        journal = Path(registry["target_roots"][target]) / "stopped-journal.json"
+        print(journal.read_text())
         sys.exit(0)
     if action == "stop":
         with Lock():
@@ -947,6 +966,9 @@ class RecoveryTests(RecoveryFixture):
         self.assertEqual(facts["forward"]["stop_exit"], 1)
         self.assertEqual(facts["stopped"]["remaining"], [])
         self.assertTrue(facts["stopped"]["unrelated_kept"])
+        self.assertTrue(facts["stopped"]["persisted"])
+        self.assertEqual(set(facts["stopped"]["journals"]), {"target-1", "target-2", "target-3"})
+        self.assertEqual(facts["stopped"]["journals"], facts["stopped"]["reopened_journals"])
         record, identity, configs = self.gate(custody, recovery.gate_details(
             self.root, custody / "report.json"))
         self.assertEqual(record["details"]["source_voters"], 3)
@@ -1130,6 +1152,21 @@ class DeletionObservationTests(unittest.TestCase):
         ctx.recovery.assert_called_once_with("target-deletion-via-control", self.operation,
                                              self.phase, self.incarnation, "11", "9000")
         observer.attempt.assert_called_once_with("cleanup", ["routed"])
+
+    def test_materialized_terminal_requires_its_original_physical_binding(self):
+        ctx = SimpleNamespace(timeout=1000, polls=2, pause=0, recovery=Mock(return_value=["routed"]),
+                              stopped={"operation_id": self.operation,
+                                       "target_incarnation": self.incarnation})
+        target = {"id": "target-11", "node_id": 11}
+        final = {"voters": {"11": {"cleanup": self.phase}}}
+        original = self.observed(11, "deleted")
+        for reported, expected in ((original, original), ({**original, "binding_sha256": None}, None),
+                                   ({**original, "progress": "parent_synced"}, None)):
+            observer = Mock()
+            observer.attempt.side_effect = [(1, b"starting"), (0, json.dumps(reported).encode())]
+            self.assertEqual(recovery.stopped_deletion(observer, ctx, final, target, "cold"),
+                             expected)
+            self.assertEqual(observer.attempt.call_count, 2)
 
     def test_caller_disconnection_requires_unchanged_original_pending_journal(self):
         original = self.observed(11)

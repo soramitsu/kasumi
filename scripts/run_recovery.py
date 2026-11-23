@@ -406,7 +406,7 @@ def can_observe_deletion(target):
 def deletion_view(d, ctx, query, target, label):
     args = (query["operation_id"], query["phase_id"], query["target_incarnation"],
             str(query["node_id"]), str(ctx.timeout))
-    if target.get("control_observer"):
+    if target.get("control_observer") or "observer_profile" not in target:
         argv = ctx.recovery("target-deletion-via-control", *args)
     else:
         argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"], *args)
@@ -428,6 +428,23 @@ def deletion_view(d, ctx, query, target, label):
             or (binding is None and status["progress"] not in {"deleting", "unlinked", "parent_synced"}),
             "target deletion lacks its bound generation")
     return status, raw
+
+
+def stopped_deletion(d, ctx, final, target, label):
+    """Read the completed cleanup from the enrolled target's durable journal."""
+    node = target["node_id"]
+    phase = (final["voters"].get(str(node)) or {}).get("cleanup")
+    if not isinstance(phase, str) or not UUID.fullmatch(phase):
+        return None
+    query = {"operation_id": ctx.stopped["operation_id"], "phase_id": phase,
+             "target_incarnation": ctx.stopped["target_incarnation"], "node_id": node}
+    for poll in range(min(ctx.polls, 16)):
+        view, _ = deletion_view(d, ctx, query, target, f"{label}-{node}-{poll}")
+        if view is not None:
+            # Every target in this experiment had a materialized generation.
+            return view if view["progress"] == "deleted" and view["binding_sha256"] else None
+        d.pause(ctx.pause)
+    return None
 
 
 def issuer_view(d, ctx, phase, query, label):
@@ -799,13 +816,24 @@ def script(d, ctx):
     d.json("stopped-stop", ctx.recovery("stop", stopped, d.custody("home/recovery-stopped-stop.json"),
                                         str(ctx.timeout)))
     final, phases = drive(d, ctx, stopped, "stopped", "stopped", facts)
+    hot, cold = {}, {}
+    for target in ctx.targets:
+        member = target["id"]
+        hot[member] = stopped_deletion(d, ctx, final, target, "stopped-journal")
+        if hot[member] is not None:
+            d.stop(member)
+            ctx.live.discard(target["node_id"])
+            spawn(d, ctx, target["node_id"])
+            cold[member] = stopped_deletion(d, ctx, final, target, "stopped-journal-reopened")
+    persisted = len(cold) == len(ctx.targets) and hot == cold
     after = storage(d, ctx)
     kept = all(d.inspect(path) == {**identity, "sha256": hashlib.sha256(
         ("unrelated " + path + "\n").encode()).hexdigest()} for path, identity in planted.items())
     remaining = sorted(generation_entries(after, ctx.targets, ctx.stopped))
     facts["stopped"] = {"phases": phases, "created": own, "remaining": remaining,
-                        "unrelated_kept": kept, "survived": surviving(before, after)}
-    if kept and not remaining and facts["stopped"]["survived"]:
+                        "unrelated_kept": kept, "survived": surviving(before, after),
+                        "journals": hot, "reopened_journals": cold, "persisted": persisted}
+    if kept and not remaining and facts["stopped"]["survived"] and persisted:
         d.json("stopped-final", ctx.status(stopped), ["unrelated-file-isolation"])
 
     # The second recovery finishes through every fault.
@@ -909,7 +937,8 @@ def open_cells(facts):
               "forward-after-activation": facts.get("forward") is not None,
               "physical-bindings": (facts.get("bindings") or {}).get("preserved") is True,
               "unrelated-file-isolation": (facts.get("stopped") or {}).get("unrelated_kept") is True
-              and not facts["stopped"]["remaining"] and facts["stopped"]["survived"],
+              and not facts["stopped"]["remaining"] and facts["stopped"]["survived"]
+              and facts["stopped"]["persisted"],
               "independent-source-target-authorization": facts.get("authorization") is True}
     result.extend({"cell": name, "reason": "the product witness did not hold"}
                   for name, held in checks.items() if not held)
