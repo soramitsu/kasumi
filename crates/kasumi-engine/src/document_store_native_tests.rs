@@ -1668,3 +1668,45 @@ async fn document_store_native_bootstrap_shared_read_uses_one_selected_reader()
 
 #[path = "document_gc_native_tests.rs"]
 mod collection;
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The physical fixture retains the original native failure custody."
+)]
+async fn unchanged_snapshot_reconciles_without_a_correction_buffer()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let store = fixture.stores.application();
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(2 << 20, 128);
+    let scratch = crate::codec_fixture::ScratchScope::new(memory.clone())?;
+    let empty =
+        crate::document_restore::StagedDocuments::empty(&scratch.disk, TENANT, &incarnation())?;
+    let before = memory.snapshot();
+    empty.reconcile(store)?;
+    assert_eq!(memory.snapshot(), before);
+
+    let key = crate::document_store::Scope::new(TENANT, &incarnation())?
+        .key(<sha2::Sha256 as sha2::Digest>::digest(b"previous body").into());
+    store.write_batch(&[WriteOp::put(BODIES, key, b"previous body")])?;
+    let original = published_objects(store)?;
+    let failure = empty.reconcile(store).unwrap_err();
+    assert_eq!(
+        failure
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::OutOfMemory)
+    );
+    assert_eq!(published_objects(store)?, original);
+    assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
+    let admitted = crate::document_restore::StagedDocuments::empty(
+        fixture.image.disk(),
+        TENANT,
+        &incarnation(),
+    )?;
+    admitted.reconcile(store)?;
+    assert!(published_objects(store)?.is_empty());
+    drop(admitted);
+    drop(empty);
+    fixture.close().await
+}

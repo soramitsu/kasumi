@@ -702,33 +702,46 @@ struct Correction<'a> {
     operations: Vec<WriteOp>,
     bytes: usize,
     // LAST: the buffer and its copies retire before their credit.
-    _grant: DiskMemoryLease,
+    grant: Option<DiskMemoryLease>,
 }
 impl<'a> Correction<'a> {
     fn new(
         store: &'a Arc<TenantStore>,
         memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
         namespace: &'static str,
-    ) -> Result<Self> {
-        // Each operation owns its namespace and key copies besides its slot.
-        let entry = std::mem::size_of::<WriteOp>() + namespace.len() + 64 + 128;
+    ) -> Self {
+        Self {
+            store,
+            memory,
+            namespace,
+            operations: Vec::new(),
+            bytes: 0,
+            grant: None,
+        }
+    }
+
+    // A snapshot that already matches the published objects needs no edit buffer.
+    // Hold the first batch's admission until its reusable allocation retires.
+    fn reserve_batch(&mut self) -> Result<()> {
+        if self.grant.is_some() {
+            return Ok(());
+        }
+        let entry = std::mem::size_of::<WriteOp>() + self.namespace.len() + 64 + 128;
         let bytes = CORRECTION_ENTRIES
             .checked_mul(entry)
             .and_then(|bytes| bytes.checked_add(CORRECTION_BYTES))
             .context("document correction workspace overflow")?;
-        let grant = memory.clone().reserve_installed(u64::try_from(bytes)?)?;
-        let mut operations = Vec::new();
-        operations.try_reserve_exact(CORRECTION_ENTRIES)?;
-        Ok(Self {
-            store,
-            memory,
-            namespace,
-            operations,
-            bytes: 0,
-            _grant: grant,
-        })
+        let grant = self
+            .memory
+            .clone()
+            .reserve_installed(u64::try_from(bytes)?)?;
+        self.operations.try_reserve_exact(CORRECTION_ENTRIES)?;
+        self.grant = Some(grant);
+        Ok(())
     }
+
     fn delete(&mut self, key: &[u8]) -> Result<()> {
+        self.reserve_batch()?;
         if self.operations.len() == CORRECTION_ENTRIES {
             self.flush()?;
         }
@@ -748,6 +761,7 @@ impl<'a> Correction<'a> {
                 .store
                 .write_batch(&[WriteOp::put(self.namespace, key, value)]);
         }
+        self.reserve_batch()?;
         if self.operations.len() == CORRECTION_ENTRIES
             || self.bytes + value.len() > CORRECTION_BYTES
         {
@@ -903,7 +917,7 @@ impl StagedDocuments {
     pub(crate) fn write_missing(&self, store: &Arc<TenantStore>) -> Result<()> {
         for (namespace, table, _) in self.namespaces() {
             if let Some(table) = table {
-                Correction::new(store, self.tables.disk.memory(), namespace)?
+                Correction::new(store, self.tables.disk.memory(), namespace)
                     .write_missing(table)?;
             }
         }
@@ -930,7 +944,7 @@ impl StagedDocuments {
         }
         let memory = self.tables.disk.memory();
         for (namespace, table, max_bytes) in self.namespaces() {
-            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut correction = Correction::new(store, memory, namespace);
             let mut kept = 0u64;
             // The view keeps its selected root while earlier batches commit.
             let view = store.read_view()?;
@@ -968,7 +982,7 @@ impl StagedDocuments {
     /// manifests again before it collects any chunk.
     fn clear_chunk_owners(&self, store: &Arc<TenantStore>) -> Result<()> {
         let mut correction =
-            Correction::new(store, self.tables.disk.memory(), crate::document_gc::LINKS)?;
+            Correction::new(store, self.tables.disk.memory(), crate::document_gc::LINKS);
         crate::document_gc::clear_links(store, |key| correction.delete(key))?;
         correction.flush()
     }
@@ -988,7 +1002,7 @@ impl StagedDocuments {
             let names = published.names(namespace == BODIES);
             let counts = names.counts();
             let table = table.context("reopened document staging table missing")?;
-            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut correction = Correction::new(store, memory, namespace);
             let mut held = 0usize;
             let view = store.read_view()?;
             view.visit(namespace, max_bytes, |key, value| {
