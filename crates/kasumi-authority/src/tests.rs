@@ -1151,6 +1151,11 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
         .await;
     fixture.clock.0.store(1000, Ordering::SeqCst);
     assert!(stores.application().get("payload", b"journal").is_err());
+    assert_eq!(
+        stores.application().key_lease_failure_class(),
+        Some("access_revoked")
+    );
+    assert_eq!(stores.custody().store().key_lease_failure_class(), None);
     assert!(
         stores
             .application()

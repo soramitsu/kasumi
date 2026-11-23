@@ -2445,16 +2445,21 @@ impl TenantStore {
 
     pub fn check_access(&self) -> Result<()> {
         let state = self.state.read();
-        if self.valid(&state) {
+        let access = self.access.check();
+        if access.is_ok() && self.keys_valid(&state) {
             return Ok(());
         }
-        // An unsealed lease past its deadline expired without a successful
-        // probe. An explicit seal or shutdown is not a lease failure.
+        // Preserve the gate that failed on this access before sealing the
+        // cached keys. An explicit seal or shutdown has its own cause.
         if !state.sealed
             && !self.shutdown_requested.load(Ordering::Acquire)
-            && self.clock.now() >= state.deadline
+            && self.access_epoch.load(Ordering::Acquire) & 1 == 0
         {
-            self.lease_failed(LeaseFailure::LeaseExpired);
+            if access.is_err() {
+                self.lease_failed(LeaseFailure::AccessRevoked);
+            } else if self.clock.now() >= state.deadline {
+                self.lease_failed(LeaseFailure::LeaseExpired);
+            }
         }
         drop(state);
         self.seal();
@@ -2480,9 +2485,8 @@ impl TenantStore {
             .and_then(|index| LEASE_FAILURE_CLASSES.get(index).copied())
     }
 
-    fn valid(&self, state: &KeyState) -> bool {
-        self.access.check().is_ok()
-            && !self.shutdown_requested.load(Ordering::Acquire)
+    fn keys_valid(&self, state: &KeyState) -> bool {
+        !self.shutdown_requested.load(Ordering::Acquire)
             && self.access_epoch.load(Ordering::Acquire) & 1 == 0
             && !state.sealed
             && !state.keys.is_empty()
@@ -2490,7 +2494,7 @@ impl TenantStore {
     }
 
     fn require_access(&self, state: &KeyState) -> Result<()> {
-        if self.valid(state) {
+        if self.access.check().is_ok() && self.keys_valid(state) {
             Ok(())
         } else {
             Err(KeyAccessDenied::new().into())
