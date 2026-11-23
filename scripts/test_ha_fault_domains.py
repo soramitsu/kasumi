@@ -634,6 +634,16 @@ class HaFaultTests(FaultFixture):
         self.assertEqual(report["status"], "passed")
         self.assertEqual({item["id"] for item in report["scenarios"]},
                          acceptance.SCENARIOS["ha-faults"])
+        # Each majority write and read must address its observed surviving leader.
+        actions = [json.loads(line) for line in (custody / driver.LEDGER).read_bytes().splitlines()]
+        for observation, probe in (("leader-loss-elected", "leader-loss-write"),
+                                   ("partition-majority", "partition-write")):
+            sample, = (item for item in report["processes"] if item["id"].endswith("-" + observation))
+            leader = owned.read(owned.check_ref(custody, sample["log"]))["leader"]
+            for verb in ("put", "get"):
+                call, = (row for row in actions if row["kind"] == "call"
+                         and row["step"].endswith("-" + probe + "-" + verb))
+                self.assertEqual(call["argv"][2], self.plan["members"][str(leader)])
         # The nine originals are the topology; restarts are separate executions.
         self.assertEqual(len(report["topology"]), 9)
         dispositions = {}

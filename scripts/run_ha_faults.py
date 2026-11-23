@@ -311,15 +311,16 @@ def view(d, ctx, label, node, voters, leaders=None, *, scenarios=()):
     return value
 
 
-def probe(d, ctx, label, step, scenarios):
+def probe(d, ctx, label, step, scenarios, *, profile=None):
     """One authenticated durable write and its exact read-back."""
+    profile = profile or ctx.plan["data_profile"]
     document = "fault-" + str(step)
     expected = body(ctx.attempt_id, step)
-    put = d.json(label + "-put", ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"],
-                                          document, json.dumps(expected, sort_keys=True), "--if",
-                                          "any"), scenarios)
+    put = d.json(label + "-put", ctx.ctl(profile, "put", ctx.plan["collection"],
+                                          document, json.dumps(expected, sort_keys=True),
+                                          "--if", "any"), scenarios)
     require(put.get("ok") is True, "authenticated write was not acknowledged")
-    got = d.json(label + "-get", ctx.ctl(ctx.plan["data_profile"], "get", ctx.plan["collection"],
+    got = d.json(label + "-get", ctx.ctl(profile, "get", ctx.plan["collection"],
                                           document), scenarios)
     require(got.get("ok") is True and got["result"]["document"]["body"] == expected,
             "read-back differs from the acknowledged write")
@@ -346,7 +347,7 @@ def leader_loss(d, ctx):
     survivors = [node for node in ctx.voters if node != lost]
     after = view(d, ctx, "leader-loss-elected", survivors[0], ctx.voters, survivors,
                  scenarios=scenario)
-    probe(d, ctx, "leader-loss-write", 1, scenario)
+    probe(d, ctx, "leader-loss-write", 1, scenario, profile=ctx.member(after["leader"]))
     d.spawn(ctx.name(lost), ctx.node(lost)["executable"], ctx.node(lost)["config"])
     rejoined = view(d, ctx, "leader-loss-rejoined", lost, ctx.voters, [after["leader"]],
                     scenarios=scenario)
@@ -360,7 +361,7 @@ def leader_loss(d, ctx):
     d.poll("control-loss-elected-poll", status,
            lambda value: settled(value, ctx, ctx.voters) and value["control_leader"] in others,
            limit=ctx.polls, pause=ctx.pause)
-    probe(d, ctx, "control-loss-write", 2, scenario)
+    probe(d, ctx, "control-loss-write", 2, scenario, profile=ctx.member(rejoined["leader"]))
     node = ctx.node(control)
     d.spawn(node["id"], node["executable"], node["config"])
     observed = ctx.ctl(ctx.control_member(control), "manage", ctx.status)
@@ -388,7 +389,7 @@ def partition(d, ctx):
         return value["raft_applied_index"]
 
     position = minority("partition-minority-before-write")
-    revision = probe(d, ctx, "partition-write", 3, scenario)
+    revision = probe(d, ctx, "partition-write", 3, scenario, profile=ctx.member(majority["leader"]))
     require(position < revision, "minority already applied the purported partition write")
     majority_status = ctx.ctl(ctx.member(majority["leader"]), "manage", ctx.status)
     d.poll("partition-applied-poll", majority_status,
