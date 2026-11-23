@@ -3423,6 +3423,13 @@ async fn ordinary_primary_round_trip(
     let rebuilt = current(&engine, &store)?;
     assert_ne!(rebuilt.records.tree, before.records.tree);
     assert_ne!(rebuilt.page_space, before.page_space);
+    // Publish one descriptor through the rebuilt directory. This document is
+    // unchanged across the later stale-primary write and must remain reachable.
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 6})),
+    )
+    .await?;
     let generation = engine.generation()?;
     assert_eq!(
         generation.state.collections["docs"]
