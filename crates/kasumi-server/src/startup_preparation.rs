@@ -50,12 +50,15 @@ pub(crate) fn record_failure(stage: &'static str, class: &'static str, error: &d
 }
 
 fn write_private_failure(path: &std::path::Path, error: &dyn fmt::Debug) -> std::io::Result<()> {
-    write_private_text(path, &format!("{error:#?}"))
+    write_private_text(path, format_args!("{error:#?}"))
 }
 
 /// Write at most 64 KiB of `text` to a new 0600 file; never follows or replaces
 /// an existing path.
-pub(crate) fn write_private_text(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private_text(
+    path: &std::path::Path,
+    text: impl fmt::Display,
+) -> std::io::Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     struct BoundedFile(std::fs::File, usize);
     impl Write for BoundedFile {
@@ -132,6 +135,33 @@ mod tests {
         sync::{Arc, OnceLock},
     };
     use tokio::sync::Notify;
+
+    #[test]
+    fn the_private_file_receives_diagnostic_bytes_while_the_error_is_formatted() {
+        struct Detail<'a> {
+            path: &'a std::path::Path,
+            observed: std::cell::Cell<Option<u64>>,
+        }
+        impl fmt::Debug for Detail<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let chunk = "a".repeat(1024);
+                for _ in 0..128 {
+                    f.write_str(&chunk)?;
+                }
+                self.observed
+                    .set(std::fs::metadata(self.path).ok().map(|m| m.len()));
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("startup.log");
+        let detail = Detail {
+            path: &path,
+            observed: Default::default(),
+        };
+        write_private_failure(&path, &detail).unwrap();
+        assert_eq!(detail.observed.get(), Some(64 << 10));
+    }
 
     #[test]
     fn startup_failure_detail_is_private_bounded_and_never_overwritten() {

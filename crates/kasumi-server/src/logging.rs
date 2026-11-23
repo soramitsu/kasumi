@@ -55,7 +55,7 @@ pub fn install_panic_hook() {
         let thread = std::thread::current();
         let path = crate::startup_preparation::diagnostic_path("panic");
         let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < PANIC_DIAGNOSTICS
-            && crate::startup_preparation::write_private_text(&path, &panic_text(panic)).is_ok();
+            && write_panic_detail(&path, panic).is_ok();
         tracing::error!(
             event = "panic",
             thread = thread.name().unwrap_or("unnamed"),
@@ -69,22 +69,30 @@ pub fn install_panic_hook() {
 }
 
 /// Everything the default hook would have printed, for the private file only.
-fn panic_text(panic: &std::panic::PanicHookInfo<'_>) -> String {
+fn write_panic_detail(
+    path: &std::path::Path,
+    panic: &std::panic::PanicHookInfo<'_>,
+) -> std::io::Result<()> {
     let payload = panic.payload();
     let message = payload
         .downcast_ref::<&str>()
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("the panic payload is not a string");
-    let mut text = match panic.location() {
-        Some(at) => format!("panicked at {at}:\n{message}"),
-        None => format!("panicked:\n{message}"),
-    };
-    let backtrace = std::backtrace::Backtrace::capture();
-    if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
-        text.push_str(&format!("\n{backtrace}"));
-    }
-    text
+    crate::startup_preparation::write_private_text(
+        path,
+        std::fmt::from_fn(|f| {
+            match panic.location() {
+                Some(at) => write!(f, "panicked at {at}:\n{message}")?,
+                None => write!(f, "panicked:\n{message}")?,
+            }
+            let backtrace = std::backtrace::Backtrace::capture();
+            if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+                write!(f, "\n{backtrace}")?;
+            }
+            Ok(())
+        }),
+    )
 }
 
 /// Private diagnostic files one process writes for drain failures. A drain
@@ -110,7 +118,7 @@ pub(crate) fn drain_failed(
         .join(",");
     let path = crate::startup_preparation::diagnostic_path("drain");
     let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < DRAIN_DIAGNOSTICS
-        && crate::startup_preparation::write_private_text(&path, &failure.to_string()).is_ok();
+        && crate::startup_preparation::write_private_text(&path, failure).is_ok();
     tracing::error!(
         event,
         completion = ?failure.completion(),
@@ -139,7 +147,7 @@ pub(crate) fn process_drain_failed(registry: &'static str, error: &anyhow::Error
     }
     let path = crate::startup_preparation::diagnostic_path("drain");
     let written =
-        crate::startup_preparation::write_private_text(&path, &format!("{error:?}")).is_ok();
+        crate::startup_preparation::write_private_text(&path, format_args!("{error:?}")).is_ok();
     tracing::error!(
         event = "process_drain_failed",
         registry,
@@ -193,7 +201,7 @@ pub fn daemon_failed(error: &anyhow::Error) {
     let classes = failure_classes(error);
     let path = crate::startup_preparation::diagnostic_path("daemon");
     let written =
-        crate::startup_preparation::write_private_text(&path, &format!("{error:?}")).is_ok();
+        crate::startup_preparation::write_private_text(&path, format_args!("{error:?}")).is_ok();
     tracing::error!(
         event = "daemon_failed",
         failure_classes = %classes.join(","),
