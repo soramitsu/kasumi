@@ -574,26 +574,16 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         (256 << 10) + 16000,
     )
     .await;
-    let service = f.leader().await;
     let t = target(Uuid::new_v4());
     let first = c.intent(&f, &t, 1_050_000);
-    service
-        .execute_lifecycle(f.context("operator"), request(&first))
-        .await
-        .unwrap();
+    accepted_on_current_leader(&f, request(&first)).await;
     let mut exhausted = false;
     for _ in 0..20 {
         let next = c.intent(&f, &t, 1_050_000);
-        match service
-            .execute_lifecycle(f.context("operator"), request(&next))
-            .await
-        {
-            Ok(_) => {}
-            Err(error) => {
-                assert_eq!(error.code, ErrorCode::ResourceExhausted);
-                exhausted = true;
-                break;
-            }
+        if let Err(code) = exact_lifecycle_outcome(&f, request(&next)).await {
+            assert_eq!(code, ErrorCode::ResourceExhausted);
+            exhausted = true;
+            break;
         }
     }
     assert!(
@@ -601,10 +591,7 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         "small byte budget must exhaust before count quota"
     );
     let stop = LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&first)));
-    service
-        .execute_lifecycle(f.context("operator"), stop.clone())
-        .await
-        .unwrap();
+    let (service, _) = accepted_on_current_leader(&f, stop.clone()).await;
     use kasumi_raft::StateMachineBackend;
     let mut snapshot = Vec::new();
     service.backend.snapshot(&mut snapshot).unwrap();
