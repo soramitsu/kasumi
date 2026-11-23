@@ -170,6 +170,21 @@ impl Generation {
         self.close_with_witness(cluster, registry, None, None).await
     }
 
+    /// A new phase may replace this generation once its census completed:
+    /// every child joined and the node retirement is proved. Issues from that
+    /// census stay in this report for the final shutdown drain; only an owner
+    /// that is still retained refuses the replacement.
+    async fn close_for_replacement(
+        &mut self,
+        cluster: &ClusterNetwork,
+        registry: &crate::api::DatabaseRegistry,
+    ) -> DrainResult {
+        match self.close(cluster, registry).await {
+            Err(failure) if failure.completion() == DrainCompletion::Complete => Ok(()),
+            other => other,
+        }
+    }
+
     async fn close_with_witness(
         &mut self,
         cluster: &ClusterNetwork,
@@ -1517,7 +1532,7 @@ impl TargetRecoveryRuntime {
             let closed = admission
                 .run::<_, SnapshotFailure>(async {
                     generation
-                        .close(&self.cluster, &self.registry)
+                        .close_for_replacement(&self.cluster, &self.registry)
                         .await
                         .map_err(Into::into)
                 })
@@ -1658,14 +1673,19 @@ impl TargetRecoveryRuntime {
             if !expired {
                 continue;
             }
-            admission
+            let closed = admission
                 .run::<_, anyhow::Error>(async {
-                    generation
-                        .close(&self.cluster, &self.registry)
-                        .await
-                        .map_err(Into::into)
+                    Ok(generation.close(&self.cluster, &self.registry).await)
                 })
                 .await?;
+            match closed {
+                Ok(()) => {}
+                // Every owner joined, but the census recorded an issue. The
+                // generation stays mapped as that evidence's owner and a later
+                // phase may replace it; this request is not refused.
+                Err(failure) if failure.completion() == DrainCompletion::Complete => continue,
+                Err(failure) => return Err(failure.into()),
+            }
             drop(generation);
             let mut all = admission
                 .run::<_, anyhow::Error>(async { Ok(self.generations.lock().await) })
