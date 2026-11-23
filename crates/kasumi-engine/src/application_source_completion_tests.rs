@@ -292,7 +292,7 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
     let current = fixture.engine.generation()?;
     assert_eq!(
         current.state.collections["docs"].documents["row"]
-            .load_owned(current.document_resolver())?
+            .load_owned_at("docs", "row", current.document_resolver())?
             .body,
         json!({"accepted":true})
     );
@@ -734,9 +734,11 @@ async fn ordinary_completion_outer_finish_panic_retains_original_response_after_
         let row = &generation.state.collections["docs"].documents["row"];
         assert!(matches!(
             row.as_ref(),
-            kasumi_types::DocumentSlot::Stored(_)
+            kasumi_types::DocumentSlot::Stored(_) | kasumi_types::DocumentSlot::Located(_)
         ));
-        let loaded = row.load_owned(generation.document_resolver()).unwrap();
+        let loaded = row
+            .load_owned_at("docs", "row", generation.document_resolver())
+            .unwrap();
         assert_eq!(loaded.body, body);
         assert_eq!(loaded.version, generation.state.revision);
         drop(loaded);

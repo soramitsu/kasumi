@@ -1119,7 +1119,25 @@ impl BootstrapDocuments {
         })
     }
 }
+impl BootstrapDocuments {
+    /// Resolve located slots from `rows` through the selected generation.
+    pub(crate) fn locating(
+        mut self,
+        rows: Option<Arc<crate::document_store::LocatedRows>>,
+    ) -> Self {
+        self.selected = self.selected.locating(rows);
+        self
+    }
+}
 impl DocumentResolver for BootstrapDocuments {
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &kasumi_types::LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.selected.locate(collection, id, located)
+    }
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
         if !self.bootstrap.has_bodies {
             // The selected resolver already retains and checks its exact
@@ -1137,6 +1155,9 @@ impl DocumentResolver for BootstrapDocuments {
     }
 }
 impl GenerationDocuments for BootstrapDocuments {
+    fn located_rows(&self) -> Option<Arc<crate::document_store::LocatedRows>> {
+        self.selected.located_rows().cloned()
+    }
     fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
         let selected = self.selected.shared_reader();
         Ok(Some(if self.bootstrap.has_bodies {
@@ -1157,6 +1178,14 @@ struct BootstrapRead {
     selected: SelectedRead,
 }
 impl DocumentResolver for BootstrapRead {
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &kasumi_types::LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.selected.locate_shared(collection, id, located)
+    }
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
         self.selected.with_source(|| {
             if self.bootstrap.contains(descriptor)? {

@@ -351,13 +351,25 @@ pub(crate) enum PrimaryPoint {
 }
 
 impl PrimaryPoint {
+    /// The resident point of `id`. A located live slot is lent with its
+    /// complete descriptor, resolved through `resolver`, so a caller loads
+    /// its body without the collection context.
     pub(crate) fn resident(
         collection: &CollectionState,
         id: &str,
         revision: u64,
+        resolver: Option<&dyn DocumentResolver>,
     ) -> kasumi_types::Result<Self> {
         crate::index_source::header(collection, id, revision)?;
         Ok(if let Some(slot) = collection.documents.get(id) {
+            if let DocumentSlot::Located(_) = slot.as_ref() {
+                let descriptor = slot
+                    .descriptor(&collection.definition.name, id, resolver)
+                    .map_err(crate::service::document_load_error)?;
+                return Ok(Self::Live(Arc::new(DocumentSlot::stored_descriptor(
+                    descriptor.into_owned(),
+                ))));
+            }
             Self::Live(slot.clone())
         } else if let Some(reference) = collection.archived_documents.get(id) {
             Self::Archived(reference.clone())
@@ -459,16 +471,32 @@ pub(crate) fn snapshot_point(
         },
     )?;
     Ok(match (live, archived) {
-        (Some(descriptor), _) => PrimaryPoint::Live(Arc::new(DocumentSlot::Stored(descriptor))),
+        (Some(descriptor), _) => {
+            PrimaryPoint::Live(Arc::new(DocumentSlot::stored_descriptor(descriptor)))
+        }
         (None, Some(reference)) => PrimaryPoint::Archived(Arc::new(reference)),
         (None, None) => PrimaryPoint::Missing,
     })
+}
+
+/// The complete descriptor of a published slot, resolving a located one.
+fn complete<'a>(
+    slot: &'a DocumentSlot,
+    collection: &str,
+    id: &str,
+    located: Option<&dyn DocumentResolver>,
+) -> Result<std::borrow::Cow<'a, StoredDocument>> {
+    match slot {
+        DocumentSlot::Located(_) => slot.descriptor(collection, id, located),
+        _ => stored(slot).map(std::borrow::Cow::Borrowed),
+    }
 }
 
 fn stored(slot: &DocumentSlot) -> Result<&StoredDocument> {
     match slot {
         DocumentSlot::Stored(descriptor) => Ok(descriptor),
         DocumentSlot::Pending(_) => anyhow::bail!("snapshot descriptor has an unstored document"),
+        DocumentSlot::Located(_) => slot.stored(),
     }
 }
 
@@ -533,12 +561,12 @@ pub(crate) fn visit_all(
             ),
         )?;
     }
+    // Located slots resolve through the generation's own primary rows.
+    let located = generation.document_resolver();
     for (name, collection) in &state.collections {
         for (id, slot) in &collection.documents {
-            visit(
-                document_key(name, id),
-                DurableRecord::Document(stored(slot)?),
-            )?;
+            let descriptor = complete(slot, name, id, located)?;
+            visit(document_key(name, id), DurableRecord::Document(&descriptor))?;
         }
     }
     for (name, collection) in &state.collections {
@@ -583,7 +611,12 @@ pub(crate) fn visit_all(
                 DurableRecord::ChangeItem(
                     &record.collection,
                     &record.id,
-                    record.document.as_deref().map(stored).transpose()?,
+                    record
+                        .document
+                        .as_deref()
+                        .map(|slot| complete(slot, &record.collection, &record.id, located))
+                        .transpose()?
+                        .as_deref(),
                 ),
             )?;
         }
@@ -742,15 +775,19 @@ fn header_value(header: &kasumi_query::Header<'_>) -> [u8; 9] {
 /// Every primary row of `state` in key order: live descriptors, archived
 /// references, then the header directory. These are exactly the rows of the
 /// same keys in a snapshot tree, so the same readers serve both.
+///
+/// A located slot contributes its row resolved through `located`.
 pub(crate) fn visit_primary(
     state: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
 ) -> Result<()> {
     let _framing = memory.clone().reserve_installed(64 << 10)?;
     for (name, collection) in &state.collections {
         for (id, slot) in &collection.documents {
-            let value = encode_primary(&DurableRecord::Document(stored(slot)?), memory)?;
+            let descriptor = complete(slot, name, id, located)?;
+            let value = encode_primary(&DurableRecord::Document(&descriptor), memory)?;
             emit(&document_key(name, id), &value.bytes)?;
         }
     }
@@ -774,17 +811,18 @@ pub(crate) fn visit_primary(
     Ok(())
 }
 
-/// The three primary rows of one document at `revision`: each key with its
+/// The three primary rows of one document at the candidate revision: each key with its
 /// value, or `None` where the row must be absent. Returns the bytes added.
 pub(crate) fn primary_rows(
+    candidate: &TenantState,
     name: &str,
-    collection: Option<&CollectionState>,
     id: &str,
-    revision: u64,
+    located: Option<&dyn DocumentResolver>,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     rows: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     leases: &mut Vec<kasumi_store::DiskMemoryLease>,
 ) -> Result<usize> {
+    let collection = candidate.collections.get(name);
     let mut added = 0usize;
     let mut insert = |key: Vec<u8>, value: Option<Vec<u8>>| {
         added = added
@@ -799,7 +837,10 @@ pub(crate) fn primary_rows(
     };
     let live = collection
         .and_then(|collection| collection.documents.get(id))
-        .map(|slot| -> Result<Vec<u8>> { encode(DurableRecord::Document(stored(slot)?)) })
+        .map(|slot| -> Result<Vec<u8>> {
+            let descriptor = complete(slot, name, id, located)?;
+            encode(DurableRecord::Document(&descriptor))
+        })
         .transpose()?;
     insert(document_key(name, id), live);
     let archived = collection
@@ -808,7 +849,7 @@ pub(crate) fn primary_rows(
         .transpose()?;
     insert(archive_key(name, id), archived);
     let header = collection
-        .map(|collection| crate::index_source::header(collection, id, revision))
+        .map(|collection| crate::index_source::header(collection, id, candidate.revision))
         .transpose()?
         .flatten()
         .map(|header| header_value(&header).to_vec());

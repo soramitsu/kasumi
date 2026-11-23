@@ -10,14 +10,18 @@ pub(crate) fn pending(document: Document) -> Arc<DocumentSlot> {
 pub(crate) fn pending_document(slot: &DocumentSlot) -> &Document {
     match slot {
         DocumentSlot::Pending(document) => document,
-        DocumentSlot::Stored(_) => panic!("resident fixture contains a stored document"),
+        DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
+            panic!("resident fixture contains a stored document")
+        }
     }
 }
 
 pub(crate) fn pending_document_mut(slot: &mut Arc<DocumentSlot>) -> &mut Document {
     match Arc::make_mut(slot) {
         DocumentSlot::Pending(document) => Arc::make_mut(document),
-        DocumentSlot::Stored(_) => panic!("resident fixture contains a stored document"),
+        DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
+            panic!("resident fixture contains a stored document")
+        }
     }
 }
 

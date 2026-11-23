@@ -132,7 +132,7 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
     let current = fixture.engine.generation()?;
     assert_eq!(
         current.state.collections["docs"].documents["row"]
-            .load_owned(current.document_resolver())?
+            .load_owned_at("docs", "row", current.document_resolver())?
             .body,
         json!({"n": 1})
     );
@@ -165,7 +165,11 @@ async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_pr
     applied(&fixture.apply(&initial, || {})?)?;
     {
         let generation = fixture.engine.generation()?;
-        let descriptor = generation.state.collections["docs"].documents["row"].stored()?;
+        let descriptor = generation.state.collections["docs"].documents["row"].descriptor(
+            "docs",
+            "row",
+            generation.document_resolver(),
+        )?;
         assert!(
             descriptor.body_decode_work > descriptor.body_bytes * 128,
             "dense fixture must exceed the discarded canonical-byte multiplier"
@@ -211,9 +215,9 @@ async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_pr
         let slot = &generation.state.collections["docs"].documents["row"];
         assert!(matches!(
             slot.as_ref(),
-            kasumi_types::DocumentSlot::Stored(_)
+            kasumi_types::DocumentSlot::Stored(_) | kasumi_types::DocumentSlot::Located(_)
         ));
-        let document = generation.load_document(slot)?;
+        let document = generation.load_document_at("docs", "row", slot)?;
         assert_eq!(document.body["dense"], json!(vec![1; 8192]));
         assert_eq!(document.body["proof"], json!(hex::encode(&raw)));
         assert_eq!(
@@ -300,10 +304,11 @@ async fn committed_staged_dense_documents_share_transient_publication_credit()
         DOCUMENTS
     );
     for row in 0..DOCUMENTS {
-        let slot = &generation.state.collections["docs"].documents[&format!("row-{row:02}")];
-        let descriptor = slot.stored()?;
+        let id = format!("row-{row:02}");
+        let slot = &generation.state.collections["docs"].documents[&id];
+        let descriptor = slot.descriptor("docs", &id, generation.document_resolver())?;
         assert!(descriptor.body_decode_work > descriptor.body_bytes * 128);
-        let document = generation.load_document(slot)?;
+        let document = generation.load_document_at("docs", &id, slot)?;
         assert_eq!(document.version, receipt.revision);
         assert_eq!(
             document.body,

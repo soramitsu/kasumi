@@ -379,7 +379,7 @@ async fn authenticated_retirement_keeps_exact_document_and_snapshot_reads() {
     let before = fixture.db.engine.generation().unwrap();
     assert!(matches!(
         before.state.collections["docs"].documents["retained-proof"].as_ref(),
-        kasumi_types::DocumentSlot::Stored(_)
+        kasumi_types::DocumentSlot::Stored(_) | kasumi_types::DocumentSlot::Located(_)
     ));
     let prepared = retirement_input(&fixture, "retained-documents", u64::MAX).await;
     fixture
@@ -393,7 +393,7 @@ async fn authenticated_retirement_keeps_exact_document_and_snapshot_reads() {
     // reads them through that selection's document reader.
     assert!(retired.application_selection.get().is_some());
     let retained = retired.state.collections["docs"].documents["retained-proof"]
-        .load_owned(retired.document_resolver())
+        .load_owned_at("docs", "retained-proof", retired.document_resolver())
         .unwrap();
     assert_eq!(retained.body, body);
     assert_eq!(
@@ -460,8 +460,11 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     };
     let validate_image = || {
         crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
-            source_image.clone(), 128 << 20, || Ok(()),
-        ).unwrap()
+            source_image.clone(),
+            128 << 20,
+            || Ok(()),
+        )
+        .unwrap()
     };
     let target_incarnation = uuid::Uuid::new_v4().to_string();
     let files = fixture.storage.scratch.snapshot().live_files;
@@ -469,16 +472,25 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     let reads = AtomicUsize::new(0);
     let stopped = Error::new(ErrorCode::ResourceExhausted, "original restore deadline");
     let interrupted = TenantEngine::materialize_verified_restore(
-        validate_image(), &fixture.context.tenant, target_incarnation.clone(), checkpoint.clone(), None,
+        validate_image(),
+        &fixture.context.tenant,
+        target_incarnation.clone(),
+        checkpoint.clone(),
+        None,
         || Ok(()),
         &|| {
-            if reads.fetch_add(1, Ordering::Relaxed) == 5 { return Err(stopped.clone().into()); }
+            if reads.fetch_add(1, Ordering::Relaxed) == 5 {
+                return Err(stopped.clone().into());
+            }
             Ok(())
         },
-    ).err().expect("blocked genesis reader must release partial staging");
+    )
+    .err()
+    .expect("blocked genesis reader must release partial staging");
     assert!(
         crate::backup_verify::WorkerFailure::matches_stop(&interrupted, &stopped),
-        "restore returned {interrupted:?} after {} checks", reads.load(Ordering::Relaxed)
+        "restore returned {interrupted:?} after {} checks",
+        reads.load(Ordering::Relaxed)
     );
     assert_eq!(reads.load(Ordering::Relaxed), 6);
     assert_eq!(fixture.storage.scratch.snapshot().live_files, files);
@@ -498,7 +510,9 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     // The independent ordinary writer reloads target-scoped physical objects.
     // Its complete framing, rebound metadata and feed must match the image
     // that copied the verified source's unchanged document record classes.
-    let conventional = target_engine.logical_snapshot(&fixture.storage.scratch).unwrap();
+    let conventional = target_engine
+        .logical_snapshot(&fixture.storage.scratch)
+        .unwrap();
     assert_eq!(target_image.sha256(), conventional.sha256());
     assert_eq!(target_image.len(), conventional.len());
     drop(conventional);
@@ -506,11 +520,11 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     assert_eq!(before_install.state.incarnation, target_incarnation);
     assert!(matches!(
         before_install.state.collections["docs"].documents["restored-proof"].as_ref(),
-        DocumentSlot::Stored(_)
+        DocumentSlot::Stored(_) | DocumentSlot::Located(_)
     ));
     assert_eq!(
         before_install.state.collections["docs"].documents["restored-proof"]
-            .load_owned(before_install.document_resolver())
+            .load_owned_at("docs", "restored-proof", before_install.document_resolver())
             .unwrap()
             .body,
         body
@@ -549,7 +563,7 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
             .unwrap();
     let installed = target_engine.generation().unwrap();
     let document = installed.state.collections["docs"].documents["restored-proof"]
-        .load_owned(installed.document_resolver())
+        .load_owned_at("docs", "restored-proof", installed.document_resolver())
         .unwrap();
     assert_eq!(document.body, body);
     assert_eq!(
@@ -564,7 +578,10 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
             .values()
             .flat_map(|commit| &commit.records)
             .filter_map(|record| record.document.as_ref())
-            .all(|slot| matches!(slot.as_ref(), DocumentSlot::Stored(_)))
+            .all(|slot| matches!(
+                slot.as_ref(),
+                DocumentSlot::Stored(_) | DocumentSlot::Located(_)
+            ))
     );
     drop(document);
     drop(installed);

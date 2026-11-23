@@ -218,7 +218,9 @@ fn typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones() {
     fn decoded(record: &ChangeRecord) -> Option<&Document> {
         record.document.as_deref().map(|slot| match slot {
             DocumentSlot::Pending(document) => document.as_ref(),
-            DocumentSlot::Stored(_) => panic!("expected pending fixture"),
+            DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
+                panic!("expected pending fixture")
+            }
         })
     }
     let collections = BTreeSet::from(["docs".to_owned(), "other".to_owned()]);

@@ -409,16 +409,16 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     .as_ref()
                     .map(|slot| match slot.as_ref() {
                         DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
-                        DocumentSlot::Stored(document) => {
+                        // A located record names its document's current
+                        // version, resolved from the selected directory.
+                        slot => {
                             let resolver = input.resolver.as_deref().ok_or_else(|| {
                                 Error::new(
                                     ErrorCode::Unavailable,
                                     "change feed document resolver is unavailable",
                                 )
                             })?;
-                            document
-                                .load(resolver)
-                                .map(DocumentLoan::Stored)
+                            slot.load_at(&record.collection, &record.id, resolver)
                                 .map_err(document_load_error)
                         }
                     })

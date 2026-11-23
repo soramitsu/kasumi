@@ -111,7 +111,10 @@ fn stored(base: &Generation, resolver: Arc<dyn GenerationDocuments>) -> Generati
         panic!("fixture document is already stored");
     };
     let descriptor = StoredDocument::from_document(document, [42; 32], 100, 1 << 20, 4096).unwrap();
-    documents.insert("one".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    documents.insert(
+        "one".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
     let document_sources = OnceLock::new();
     assert!(document_sources.set(resolver).is_ok());
     Generation {

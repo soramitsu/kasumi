@@ -3104,6 +3104,7 @@ async fn ordinary_primary_round_trip(
             &**store,
             &manifest,
             &generation.state,
+            generation.document_resolver(),
             store.plaintext_memory_owner(),
         )?;
         Ok(manifest)
@@ -3430,6 +3431,13 @@ async fn ordinary_primary_round_trip(
     let rebuilt = current(&engine, &store)?;
     assert_ne!(rebuilt.records.tree, before.records.tree);
     assert_ne!(rebuilt.page_space, before.page_space);
+    // Publish one descriptor through the rebuilt directory. This document is
+    // unchanged across the later stale-primary write and must remain reachable.
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 9})),
+    )
+    .await?;
     let generation = engine.generation()?;
     assert_eq!(
         generation.state.collections["docs"]
@@ -3450,6 +3458,10 @@ async fn ordinary_primary_round_trip(
     )
     .await?;
     let incomplete = engine.generation()?;
+    crate::document_gc::check_gc_after_primary_falls_behind(
+        &incomplete,
+        &fixture.storage.admission,
+    )?;
     let idle_revision = incomplete.state.revision;
     let incomplete_selection = incomplete.application_selection.get().unwrap();
     assert!(

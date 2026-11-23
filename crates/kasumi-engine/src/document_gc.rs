@@ -161,8 +161,8 @@ impl DiskFeed {
             for row in rows {
                 let proceed = match row.as_deref() {
                     Some(DocumentSlot::Stored(descriptor)) => visit(descriptor)?,
-                    Some(DocumentSlot::Pending(_)) => {
-                        anyhow::bail!("pending descriptor in persisted GC feed")
+                    Some(DocumentSlot::Pending(_) | DocumentSlot::Located(_)) => {
+                        anyhow::bail!("incomplete descriptor in persisted GC feed")
                     }
                     None => true,
                 };
@@ -270,7 +270,8 @@ impl DiskDocuments {
 /// A resumable position in a frozen copy of the document and feed roots.
 /// The persistent maps share their nodes with the published state.
 struct Walk {
-    documents: Vec<Documents>,
+    documents: Vec<(String, Documents)>,
+    located_rows: Option<Arc<crate::document_store::LocatedRows>>,
     disk_documents: Option<Box<DiskDocuments>>,
     _collection_roots: Option<Reservation>,
     feed: Feed,
@@ -286,6 +287,7 @@ impl Walk {
     fn freeze(
         state: &TenantState,
         selection: &crate::application_sources::SelectedApplication,
+        located_rows: Option<Arc<crate::document_store::LocatedRows>>,
         admission: &Arc<NodeAdmission>,
     ) -> Result<Option<Self>> {
         // A sparse log tail can share its original commit allocations. Bound the
@@ -319,17 +321,21 @@ impl Walk {
             && selection
                 .with_serving_primary(None, state, |_, _, _| Ok(()))?
                 .is_some();
-        let roots_bytes = if use_primary {
-            state.collections.keys().try_fold(1536usize, |bytes, name| {
-                bytes.checked_add(std::mem::size_of::<(String, usize)>() + name.len())
-            })
+        // Keep one named root per collection. A located slot in a stale directory
+        // is resolved against the frozen generation's pinned predecessor as the
+        // cursor reaches it, under the same page budget as a disk walk.
+        let (initial, per_collection) = if use_primary {
+            (1536usize, std::mem::size_of::<(String, usize)>())
         } else {
-            state
-                .collections
-                .len()
-                .checked_mul(std::mem::size_of::<Documents>())
-        }
-        .context("GC collection root size overflow")?;
+            (0usize, std::mem::size_of::<(String, Documents)>())
+        };
+        let roots_bytes = state
+            .collections
+            .keys()
+            .try_fold(initial, |bytes, name| {
+                bytes.checked_add(per_collection)?.checked_add(name.len())
+            })
+            .context("GC collection root size overflow")?;
         let bytes = roots_bytes
             .checked_add(if disk_end.is_some() {
                 4096 + MAX_TAIL * 256
@@ -375,7 +381,12 @@ impl Walk {
             {
                 return Ok(None);
             }
-            documents.extend(state.collections.values().map(|c| c.documents.clone()));
+            documents.extend(
+                state
+                    .collections
+                    .iter()
+                    .map(|(name, c)| (name.clone(), c.documents.clone())),
+            );
             None
         };
         let (feed, disk_feed) = match disk_end {
@@ -398,6 +409,7 @@ impl Walk {
         };
         Ok(Some(Self {
             documents,
+            located_rows: if use_primary { None } else { located_rows },
             disk_documents,
             _collection_roots: grant,
             feed,
@@ -430,8 +442,11 @@ impl Walk {
             self.documents_done = true;
             self.disk_documents = None;
         }
+        if self.located_rows.is_some() {
+            budget = budget.min(DISK_WALK_PAGE);
+        }
         while !self.documents_done && budget > 0 {
-            let Some(documents) = self.documents.get(self.collection) else {
+            let Some((name, documents)) = self.documents.get(self.collection) else {
                 self.documents_done = true;
                 break;
             };
@@ -450,15 +465,23 @@ impl Walk {
                     break (false, Ok(true));
                 }
                 budget -= 1;
-                if let DocumentSlot::Stored(descriptor) = slot.as_ref() {
-                    match visit(descriptor) {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            last = Some(id);
-                            break (false, Ok(false));
-                        }
-                        Err(error) => break (false, Err(error)),
+                let visited = match slot.as_ref() {
+                    DocumentSlot::Stored(descriptor) => visit(descriptor),
+                    DocumentSlot::Located(located) => self
+                        .located_rows
+                        .as_ref()
+                        .context("located GC descriptor has no pinned source")
+                        .and_then(|rows| rows.locate(None, name, id, located))
+                        .and_then(|descriptor| visit(&descriptor)),
+                    DocumentSlot::Pending(_) => Ok(true),
+                };
+                match visited {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        last = Some(id);
+                        break (false, Ok(false));
                     }
+                    Err(error) => break (false, Err(error)),
                 }
                 last = Some(id);
             };
@@ -505,6 +528,10 @@ impl Walk {
                 let record = &commit.records[self.next_record];
                 let proceed = match record.document.as_deref() {
                     Some(DocumentSlot::Stored(descriptor)) => visit(descriptor)?,
+                    // A located record names its document's current version,
+                    // whose body the live document walk of this same frozen
+                    // state visits; a superseded record is complete again.
+                    Some(DocumentSlot::Located(_)) => true,
                     _ => true,
                 };
                 self.after_commit = Some(sequence);
@@ -527,6 +554,48 @@ impl Walk {
 }
 
 #[cfg(test)]
+pub(crate) fn check_gc_after_primary_falls_behind(
+    generation: &crate::Generation,
+    admission: &Arc<NodeAdmission>,
+) -> Result<()> {
+    let selection = generation
+        .application_selection
+        .get()
+        .context("absent selection")?;
+    let rows = generation
+        .located_rows()
+        .context("absent pinned predecessor")?;
+    let mut walk = Walk::freeze(&generation.state, selection, Some(rows), admission)?
+        .context("GC walk admission")?;
+    anyhow::ensure!(
+        walk.disk_documents.is_none(),
+        "fixture still serves a current primary"
+    );
+    let documents = &generation.state.collections["docs"].documents;
+    anyhow::ensure!(
+        documents
+            .values()
+            .any(|s| matches!(s.as_ref(), DocumentSlot::Located(_))),
+        "fixture needs an unchanged located document"
+    );
+    let mut remaining: BTreeSet<_> = documents
+        .iter()
+        .map(|(id, slot)| {
+            let descriptor = slot.descriptor("docs", id, generation.document_resolver())?;
+            Ok((id.clone(), descriptor.version, descriptor.body_object))
+        })
+        .collect::<Result<_>>()?;
+    while !walk.documents_done {
+        walk.advance(1, |stored| {
+            remaining.remove(&(stored.id.clone(), stored.version, stored.body_object));
+            Ok(true)
+        })?;
+    }
+    anyhow::ensure!(remaining.is_empty(), "GC missed live predecessor objects");
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn check_snapshot_feed_walk(
     generation: &crate::Generation,
     admission: &Arc<NodeAdmission>,
@@ -537,18 +606,24 @@ pub(crate) fn check_snapshot_feed_walk(
         .application_selection
         .get()
         .context("no selected source")?;
-    let mut walk = Walk::freeze(state, selection, admission)?.context("GC walk admission")?;
+    let mut walk = Walk::freeze(state, selection, generation.located_rows(), admission)?
+        .context("GC walk admission")?;
     anyhow::ensure!(
         walk.documents.is_empty() && walk.disk_documents.is_some(),
         "physical test requires a primary GC cursor"
     );
+    let resolver = generation.document_resolver();
     let expected_documents: Vec<_> = state
         .collections
-        .values()
-        .flat_map(|c| c.documents.values())
-        .map(|slot| match slot.as_ref() {
-            DocumentSlot::Stored(stored) => (stored.id.clone(), stored.version, stored.body_object),
-            DocumentSlot::Pending(_) => panic!("published GC test document is pending"),
+        .iter()
+        .flat_map(|(name, c)| c.documents.iter().map(move |(id, slot)| (name, id, slot)))
+        .map(|(name, id, slot)| {
+            assert!(
+                !matches!(slot.as_ref(), DocumentSlot::Pending(_)),
+                "published GC test document is pending"
+            );
+            let stored = slot.descriptor(name, id, resolver).unwrap();
+            (stored.id.clone(), stored.version, stored.body_object)
         })
         .collect();
     assert!(!expected_documents.is_empty());
@@ -573,14 +648,25 @@ pub(crate) fn check_snapshot_feed_walk(
         .context("native snapshot must own this feed prefix")?;
     assert!(walk.feed.keys().all(|first| *first >= disk.end));
     assert_eq!(!walk.feed.is_empty(), expect_log_tail);
+    let tail = disk.end;
+    // The persisted prefix holds complete descriptors. In the resident tail a
+    // located record names its current document, which the live walk visits.
     let expected: Vec<_> = state
         .change_feed
         .commits
-        .values()
-        .flat_map(|commit| &commit.records)
-        .filter_map(|record| match record.document.as_deref() {
-            Some(DocumentSlot::Stored(stored)) => Some((stored.version, stored.body_object)),
-            _ => None,
+        .iter()
+        .flat_map(|(sequence, commit)| commit.records.iter().map(move |record| (*sequence, record)))
+        .filter_map(|(sequence, record)| {
+            let slot = record.document.as_deref()?;
+            if matches!(slot, DocumentSlot::Pending(_))
+                || (sequence >= tail && matches!(slot, DocumentSlot::Located(_)))
+            {
+                return None;
+            }
+            let stored = slot
+                .descriptor(&record.collection, &record.id, resolver)
+                .unwrap();
+            Some((stored.version, stored.body_object))
         })
         .collect();
     assert!(expected.len() >= 2);
@@ -658,6 +744,7 @@ struct State {
 pub(crate) struct Step<'a> {
     pub state: &'a TenantState,
     pub selection: &'a crate::application_sources::SelectedApplication,
+    pub located_rows: Option<Arc<crate::document_store::LocatedRows>>,
     /// Logical revision of the selected durable snapshot, when there is one.
     pub snapshot_revision: &'a dyn Fn() -> Result<Option<u64>>,
     pub store: &'a Arc<TenantStore>,
@@ -885,26 +972,25 @@ impl ObjectGc {
     pub(crate) fn displaced(
         &self,
         previous: &TenantState,
+        previous_resolver: Option<&dyn kasumi_types::DocumentResolver>,
         next: &TenantState,
         changed: &BTreeMap<String, BTreeSet<String>>,
     ) {
         let Some(admission) = self.admission.get() else {
             return;
         };
-        let mut state = self.lock();
-        if state.suspended {
-            return;
-        }
-        let record = |state: &mut State, slot: &DocumentSlot| {
-            let DocumentSlot::Stored(descriptor) = slot else {
-                return;
-            };
-            state.record_candidate(
-                admission,
+        // Resolve located predecessors before taking the collector's lock.
+        // Failing to read one only keeps its object until a later restore,
+        // as any missed hint does.
+        let mut displaced = Vec::new();
+        let mut record = |descriptor: &kasumi_types::StoredDocument| {
+            displaced.push((
                 descriptor.body_object,
                 descriptor.body_bytes >= document_encoding::STRING_THRESHOLD as u64,
-            );
+            ));
         };
+        // One version of a document names one body, however its descriptor
+        // is held: complete, or located in the generation's primary rows.
         let still_named = |documents: Option<&Documents>, id: &str, before: &Arc<DocumentSlot>| {
             documents
                 .and_then(|current| current.get(id))
@@ -912,7 +998,9 @@ impl ObjectGc {
                     (DocumentSlot::Stored(before), DocumentSlot::Stored(after)) => {
                         before.body_object == after.body_object
                     }
-                    _ => Arc::ptr_eq(before, after),
+                    (before_slot, after_slot) => {
+                        Arc::ptr_eq(before, after) || before_slot.same_descriptor(after_slot)
+                    }
                 })
         };
         for (name, ids) in changed {
@@ -924,8 +1012,10 @@ impl ObjectGc {
                 let Some(before) = old.documents.get(id) else {
                     continue;
                 };
-                if !still_named(current, id, before) {
-                    record(&mut state, before);
+                if !still_named(current, id, before)
+                    && let Ok(descriptor) = before.descriptor(name, id, previous_resolver)
+                {
+                    record(&descriptor);
                 }
             }
         }
@@ -944,11 +1034,21 @@ impl ObjectGc {
                         .collections
                         .get(&change.collection)
                         .map(|group| &group.documents);
-                    if !still_named(current, &change.id, slot) {
-                        record(&mut state, slot);
+                    if !still_named(current, &change.id, slot)
+                        && let Ok(descriptor) =
+                            slot.descriptor(&change.collection, &change.id, previous_resolver)
+                    {
+                        record(&descriptor);
                     }
                 }
             }
+        }
+        let mut state = self.lock();
+        if state.suspended {
+            return;
+        }
+        for (object, large) in displaced {
+            state.record_candidate(admission, object, large);
         }
         self.rearm(&state);
     }
@@ -1121,7 +1221,13 @@ impl State {
     }
 
     fn begin(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) -> Result<()> {
-        let Some(walk) = Walk::freeze(step.state, step.selection, admission)? else {
+        let Some(walk) = Walk::freeze(
+            step.state,
+            step.selection,
+            step.located_rows.clone(),
+            admission,
+        )?
+        else {
             return Ok(());
         };
         let candidates = std::mem::take(&mut self.pending);
@@ -1139,7 +1245,13 @@ impl State {
     /// after-image staged after the census began is queued by its own apply.
     fn take_census(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) -> Result<()> {
         if matches!(self.census, Census::Idle) {
-            let Some(walk) = Walk::freeze(step.state, step.selection, admission)? else {
+            let Some(walk) = Walk::freeze(
+                step.state,
+                step.selection,
+                step.located_rows.clone(),
+                admission,
+            )?
+            else {
                 return Ok(());
             };
             self.census = Census::Walking(walk);
@@ -1440,7 +1552,7 @@ mod tests {
                     ChangeRecord {
                         collection: "docs".into(),
                         id: id.clone(),
-                        document: Some(Arc::new(DocumentSlot::Stored(StoredDocument {
+                        document: Some(Arc::new(DocumentSlot::stored_descriptor(StoredDocument {
                             id,
                             version,
                             body_bytes: 1,
@@ -1474,7 +1586,8 @@ mod tests {
             .collect();
         let mut walk = Walk {
             disk_documents: None,
-            documents: vec![documents],
+            located_rows: None,
+            documents: vec![("docs".into(), documents)],
             disk_feed: None,
             _collection_roots: None,
             feed,

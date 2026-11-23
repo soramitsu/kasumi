@@ -294,10 +294,13 @@ mod proof_documents {
         for ordinal in 1..=ROWS {
             let id = format!("proof-{ordinal:04}");
             let slot = &generation.state.collections["proofs"].documents[&id];
-            let DocumentSlot::Stored(descriptor) = slot.as_ref() else {
-                panic!("current proof stayed decoded")
-            };
-            let document = slot.load_owned(generation.document_resolver()).unwrap();
+            assert!(
+                !matches!(slot.as_ref(), DocumentSlot::Pending(_)),
+                "current proof stayed decoded"
+            );
+            let resolver = generation.document_resolver();
+            let descriptor = slot.descriptor("proofs", &id, resolver).unwrap();
+            let document = slot.load_owned_at("proofs", &id, resolver).unwrap();
             assert_eq!(document.id, id);
             assert_eq!(document.version, ordinal);
             assert_eq!(document.body["ordinal"], ordinal);
@@ -309,11 +312,13 @@ mod proof_documents {
             let commit = &generation.state.change_feed.commits[&ordinal];
             assert_eq!(commit.records.len(), 1);
             let after = commit.records[0].document.as_ref().unwrap();
-            let DocumentSlot::Stored(feed_descriptor) = after.as_ref() else {
-                panic!("feed proof stayed decoded")
-            };
+            assert!(
+                !matches!(after.as_ref(), DocumentSlot::Pending(_)),
+                "feed proof stayed decoded"
+            );
+            let feed_descriptor = after.descriptor("proofs", &id, resolver).unwrap();
             assert_eq!(feed_descriptor, descriptor);
-            let after = after.load_owned(generation.document_resolver()).unwrap();
+            let after = after.load_owned_at("proofs", &id, resolver).unwrap();
             assert_eq!(after.id, id);
             assert_eq!(after.version, ordinal);
             assert_eq!(after.body["ordinal"], ordinal);

@@ -269,9 +269,11 @@ fn pinned_slot_bytes(document: &DocumentSlot) -> Result<u64> {
     match document {
         DocumentSlot::Pending(document) => Ok(crate::retained_document_bytes(document)? as u64),
         DocumentSlot::Stored(document) => (std::mem::size_of::<DocumentSlot>() as u64)
-            .checked_add(document.id.len() as u64)
+            .checked_add(std::mem::size_of::<StoredDocument>() as u64)
+            .and_then(|bytes| bytes.checked_add(document.id.len() as u64))
             .and_then(|bytes| bytes.checked_add(128))
             .ok_or_else(query_workspace_overflow),
+        DocumentSlot::Located(_) => Ok(std::mem::size_of::<DocumentSlot>() as u64 + 128),
     }
 }
 

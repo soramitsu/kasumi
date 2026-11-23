@@ -226,7 +226,7 @@ fn bench_per_row_costs() {
     time("map lookup + Arc clone", &mut || {
         let pinned: Vec<_> = rows
             .iter()
-            .map(|row| documents.get(row.id()).unwrap().clone())
+            .map(|row| documents.get(row.id().unwrap()).unwrap().clone())
             .collect();
         std::hint::black_box(pinned);
     });

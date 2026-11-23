@@ -87,11 +87,52 @@ impl Generation {
         })
     }
 
+    /// Fixtures lend a slot of this generation without naming it. A located
+    /// slot is found by identity in this generation's maps or retained feed;
+    /// production loads always name their collection and ID.
+    #[cfg(test)]
     pub(crate) fn load_document<'a>(
         &self,
         slot: &'a DocumentSlot,
     ) -> anyhow::Result<DocumentLoan<'a>> {
+        if let DocumentSlot::Located(_) = slot {
+            for (name, collection) in &self.state.collections {
+                if let Some((id, _)) = collection
+                    .documents
+                    .iter()
+                    .find(|(_, held)| std::ptr::eq(held.as_ref(), slot))
+                {
+                    return loan_document_at(name, id, slot, self.document_resolver());
+                }
+            }
+            for commit in self.state.change_feed.commits.values() {
+                for record in &commit.records {
+                    if record
+                        .document
+                        .as_deref()
+                        .is_some_and(|held| std::ptr::eq(held, slot))
+                    {
+                        return loan_document_at(
+                            &record.collection,
+                            &record.id,
+                            slot,
+                            self.document_resolver(),
+                        );
+                    }
+                }
+            }
+        }
         loan_document(slot, self.document_resolver())
+    }
+    /// [`Self::load_document`] for a slot found under `id` in `collection`,
+    /// resolving a located slot through this generation's selected directory.
+    pub(crate) fn load_document_at<'a>(
+        &self,
+        collection: &str,
+        id: &str,
+        slot: &'a DocumentSlot,
+    ) -> anyhow::Result<DocumentLoan<'a>> {
+        loan_document_at(collection, id, slot, self.document_resolver())
     }
     pub(crate) fn document_resolver(&self) -> Option<&dyn DocumentResolver> {
         self.document_sources
@@ -127,22 +168,58 @@ impl Generation {
         &self,
         roots: crate::application_sources::SourceRootsRef,
         selected: crate::application_sources::SelectedApplication,
+        located: Option<Arc<crate::document_store::LocatedRows>>,
     ) -> anyhow::Result<Arc<dyn crate::document_store::GenerationDocuments>> {
         Ok(match &self.staged_documents {
-            Some(staged) => Arc::new(crate::document_restore::BootstrapDocuments::new(
-                staged.clone(),
-                roots,
-                selected,
-                &self.state.tenant,
-                &self.state.incarnation,
-            )?),
-            None => Arc::new(crate::document_store::SelectedDocuments::new(
-                roots,
-                selected,
-                &self.state.tenant,
-                &self.state.incarnation,
-            )?),
+            Some(staged) => Arc::new(
+                crate::document_restore::BootstrapDocuments::new(
+                    staged.clone(),
+                    roots,
+                    selected,
+                    &self.state.tenant,
+                    &self.state.incarnation,
+                )?
+                .locating(located),
+            ),
+            None => Arc::new(
+                crate::document_store::SelectedDocuments::new(
+                    roots,
+                    selected,
+                    &self.state.tenant,
+                    &self.state.incarnation,
+                )?
+                .locating(located),
+            ),
         })
+    }
+
+    /// The primary rows this generation's located slots resolve from.
+    pub(crate) fn located_rows(&self) -> Option<Arc<crate::document_store::LocatedRows>> {
+        self.document_sources
+            .get()
+            .and_then(|resolver| resolver.located_rows())
+    }
+
+    /// The rows from which this generation, once it selects `selected`, can
+    /// resolve located slots: that selection's own primary directory when it
+    /// is current at exactly this state, or the previous generation's rows
+    /// while a stale directory catches up. A continuous current directory
+    /// carries the bounded replay-compaction cursor across publications.
+    pub(crate) fn next_located_rows(
+        &self,
+        selected: &crate::application_sources::SelectedApplication,
+        previous: &Generation,
+    ) -> Option<Arc<crate::document_store::LocatedRows>> {
+        let inherited = previous.located_rows();
+        match crate::document_store::LocatedRows::serving(selected, &self.state) {
+            Ok(Some(mut rows)) => {
+                if let Some(prior) = inherited.as_ref().filter(|r| r.current_at(&previous.state)) {
+                    rows.continue_compaction_from(prior);
+                }
+                Some(Arc::new(rows))
+            }
+            Ok(None) | Err(_) => inherited,
+        }
     }
     pub(crate) fn clone_application_selection(
         &self,
@@ -1013,6 +1090,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                     &self.primary,
                     store,
                     &generation.state,
+                    generation.document_resolver(),
                     &context.meta,
                     context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
                     &mut writes,
@@ -1135,12 +1213,28 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
                 .application_sources
                 .get()
                 .ok_or_else(|| anyhow::anyhow!("restored document roots absent"))?;
+            // A restored state's descriptors are the rows of the selected
+            // snapshot or current directory. When it serves them at exactly
+            // this revision, keep only their located form resident.
+            let located = crate::document_store::LocatedRows::serving(&selected, &generation.state)
+                .ok()
+                .flatten()
+                .map(Arc::new);
+            if located.is_some()
+                && crate::document_store::compact_reopened(&mut generation.state) > 0
+                && let Some(indexes) = generation
+                    .indexes
+                    .with_collection_id_sources(&generation.state.collections)
+            {
+                generation.indexes = Arc::new(indexes);
+            }
             let resolver = crate::document_store::SelectedDocuments::new(
                 roots.clone(),
                 selected.clone(),
                 &generation.state.tenant,
                 &generation.state.incarnation,
-            )?;
+            )?
+            .locating(located);
             generation.staged_documents = None;
             generation
                 .document_sources
@@ -1214,7 +1308,9 @@ impl TenantEngine {
             kasumi_raft::ApplicationBoundaryRef::Bootstrap(image),
             generation.state.retired,
         )?;
-        let resolver = generation.resolver_for_selection(sources.clone(), selection.clone())?;
+        // Bootstrap precedes every compaction: no slot is located yet.
+        let resolver =
+            generation.resolver_for_selection(sources.clone(), selection.clone(), None)?;
         generation
             .document_sources
             .set(resolver)
@@ -1263,6 +1359,7 @@ impl TenantEngine {
         };
         self.object_gc.step(&crate::document_gc::Step {
             selection,
+            located_rows: current.located_rows(),
             state: &current.state,
             snapshot_revision: &|| {
                 selection.with_base_snapshot_records(None, &current.state, |_, _, _, revision| {
@@ -1436,6 +1533,7 @@ impl TenantEngine {
             &self.primary,
             store,
             &current.state,
+            current.document_resolver(),
             &meta,
             false,
             &mut writes,
@@ -1498,6 +1596,7 @@ impl TenantEngine {
             &self.primary,
             sources.primary_installation().0.application(),
             &current.state,
+            current.document_resolver(),
             &applied,
         )? {
             if selection
@@ -1657,7 +1756,9 @@ impl TenantEngine {
         let Some(selected) = sources.rebase(selection, bootstrap)? else {
             return Ok(false);
         };
-        let resolver = previous.resolver_for_selection(sources.clone(), selected.clone())?;
+        let located = previous.next_located_rows(&selected, previous);
+        let resolver =
+            previous.resolver_for_selection(sources.clone(), selected.clone(), located)?;
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             receipts: previous.receipts.clone(),
@@ -1811,7 +1912,7 @@ impl TenantEngine {
                     .get(collection)
                     .and_then(|c| c.documents.get(id))
                 {
-                    maximum = maximum.max(crate::document_store::source_workspace(slot)?);
+                    maximum = maximum.max(crate::document_store::source_workspace(id, slot)?);
                     if matches!(mutation, Mutation::Patch { .. }) {
                         patched = patched
                             .checked_add(slot.body_bytes()?)
@@ -1834,16 +1935,15 @@ impl TenantEngine {
                 maximum = state
                     .collections
                     .values()
-                    .flat_map(|c| c.documents.values())
-                    .chain(
-                        state
-                            .change_feed
-                            .commits
-                            .values()
-                            .flat_map(|c| c.records.iter().filter_map(|r| r.document.as_ref())),
-                    )
-                    .try_fold(0_u64, |maximum, slot| -> anyhow::Result<u64> {
-                        Ok(maximum.max(crate::document_store::source_workspace(slot)?))
+                    .flat_map(|c| c.documents.iter())
+                    .map(|(id, slot)| (id.as_str(), slot))
+                    .chain(state.change_feed.commits.values().flat_map(|c| {
+                        c.records
+                            .iter()
+                            .filter_map(|r| Some((r.id.as_str(), r.document.as_ref()?)))
+                    }))
+                    .try_fold(0_u64, |maximum, (id, slot)| -> anyhow::Result<u64> {
+                        Ok(maximum.max(crate::document_store::source_workspace(id, slot)?))
                     })?;
             }
             // Two exact structural source quotes cover the simultaneously lent
@@ -1954,7 +2054,10 @@ impl TenantEngine {
                     ),
                     candidate.state.retired,
                 )?;
-            let resolver = candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+            let located = accepted.locate_published(&selection)?;
+            let candidate = accepted.candidate();
+            let resolver =
+                candidate.resolver_for_selection(sources.clone(), selection.clone(), located)?;
             candidate
                 .document_sources
                 .set(resolver)
@@ -3757,7 +3860,7 @@ impl TenantEngine {
             for (id, document) in &collection.documents {
                 check()?;
                 validate_name(id)?;
-                if id != document.id() || document.version() > collection.data_epoch {
+                if !document.has_id(id) || document.version() > collection.data_epoch {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "invalid document identity/version",
@@ -4031,15 +4134,33 @@ impl TenantEngine {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn loan_document<'a>(
     slot: &'a DocumentSlot,
     resolver: Option<&dyn DocumentResolver>,
 ) -> anyhow::Result<DocumentLoan<'a>> {
     match slot {
         DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
-        DocumentSlot::Stored(document) => Ok(DocumentLoan::Stored(document.load(
+        slot => slot
+            .load(resolver.ok_or_else(|| anyhow::anyhow!("selected document resolver missing"))?),
+    }
+}
+
+/// [`loan_document`] for a slot found under `id` in `collection`, which may be
+/// located in the resolver's selected primary directory.
+pub(crate) fn loan_document_at<'a>(
+    collection: &str,
+    id: &str,
+    slot: &'a DocumentSlot,
+    resolver: Option<&dyn DocumentResolver>,
+) -> anyhow::Result<DocumentLoan<'a>> {
+    match slot {
+        DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
+        slot => slot.load_at(
+            collection,
+            id,
             resolver.ok_or_else(|| anyhow::anyhow!("selected document resolver missing"))?,
-        )?)),
+        ),
     }
 }
 
@@ -4437,7 +4558,7 @@ fn validate_merge_patch_expansion(
             // Preserve ordinary missing-document/precondition validation below.
             continue;
         };
-        let document = loan_document(document, resolver)
+        let document = loan_document_at(collection, id, document, resolver)
             .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
         encoded = encoded
             .checked_add(encoded_len(&document.body)?)
@@ -4535,7 +4656,7 @@ fn apply_mutations(
                     )
                     .into());
                 };
-                let old = loan_document(old, resolver)
+                let old = loan_document_at(name, id, old, resolver)
                     .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
                 let mut body = old.body.clone();
                 kasumi_types::apply_merge_patch(&mut body, patch)?;
