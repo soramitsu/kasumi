@@ -260,6 +260,11 @@ class IndependentBuildTests(unittest.TestCase):
                           str(self.sysroot / "bin/rustc"), str(self.root / "rustup"), "true", "0"))
         self.assertNotIn("RUSTFLAGS", variables)
         self.assertNotIn("KASUMI_UNIT_AMBIENT", variables)
+        flags = variables["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        self.assertIn(f"--remap-path-prefix={output / 'build/target'}=/kasumi-build/target", flags)
+        self.assertIn(f"--remap-path-prefix={self.cargo_home / 'registry'}=/kasumi-build/registry", flags)
+        with tarfile.open(output / "source.tar", "r:") as archive:
+            self.assertEqual(variables["SOURCE_DATE_EPOCH"], str(int(archive.getmember("Cargo.lock").mtime)))
 
         selection = "independent-1/" + producer.RECORD
         bundle = self.transport({selection: "independent-build"})
@@ -330,6 +335,24 @@ class IndependentBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fresh absolute path"):
             self.build("taken")
         self.assertEqual(attempt_index.head(self.native), before)
+
+    def test_disconnected_dictionary_build_receives_only_its_declared_archive(self):
+        archive = self.inventory.parent / producer.IPADIC_ARCHIVE
+        archive.write_bytes(b"test dictionary source")
+        (archive.parent / "lindera-ipadic").mkdir()
+        declared = self.declaration()
+        digest = release_gate.sha256(archive)
+        declared["host_files"].append({"path": str(archive), "sha256": digest})
+        refused = self.build("dictionary-rejected", declaration=declared)
+        self.assertIn("declared IPADIC archive digest differs", refused["error"])
+        self.assertFalse(self.observed.exists())
+        with patch.object(producer, "IPADIC_SHA256", digest):
+            summary = self.build("dictionary-offline", declaration=declared)
+        self.assertEqual(summary["status"], "passed", summary["error"])
+        variables = json.loads(self.observed.read_bytes())["environment"]
+        version = Path(variables["LINDERA_BUILD_DICTIONARY_CACHE_DIR"]) / "5.3.0-fmt2"
+        self.assertEqual(list(version.iterdir()), [version / archive.name])
+        self.assertEqual((version / archive.name).read_bytes(), archive.read_bytes())
 
     def test_cancellation_is_an_original_interrupted_attempt(self):
         self.mode(sleep=30)

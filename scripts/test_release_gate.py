@@ -26,6 +26,27 @@ WRITE_OPENRAFT_LOG = ("from pathlib import Path; log = Path(" + repr(OPENRAFT_LO
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_release_rustflags_preserve_arguments_and_map_generated_and_registry_sources(self):
+        with tempfile.TemporaryDirectory(prefix="native build ") as temporary:
+            root = Path(temporary).resolve()
+            source, target = root / "source", root / "target"
+            cargo = root / "cargo"
+            alias = root / "cache"
+            cargo.mkdir()
+            alias.symlink_to(cargo, target_is_directory=True)
+            supplied = {"CARGO_HOME": str(alias), "RUSTFLAGS": "--cap-lints allow",
+                        "CARGO_ENCODED_RUSTFLAGS": "--cfg\x1ffeature=\"with space\""}
+            for platform in ("darwin", "linux"):
+                with self.subTest(platform=platform), patch.object(sys, "platform", platform):
+                    actual = release_gate.production_environment(supplied, source, target)
+                    flags = actual["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+                    self.assertEqual(flags[:2], ["--cfg", 'feature="with space"'])
+                    for path, name in ((source, "source"), (target, "target"),
+                                       (cargo / "registry", "registry"), (alias / "registry", "registry")):
+                        self.assertIn(f"--remap-path-prefix={path}=/kasumi-build/{name}", flags)
+                    self.assertEqual("link-arg=-Wl,-S,-reproducible" in flags, platform == "darwin")
+            self.assertEqual(supplied["CARGO_ENCODED_RUSTFLAGS"], '--cfg\x1ffeature="with space"')
+
     def dispatch(self, root, gates, prepare=None):
         """Dispatch gates against a minimal frozen source and keep the record terminal."""
         output = root / "run"

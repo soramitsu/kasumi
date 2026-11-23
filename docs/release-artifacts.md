@@ -148,9 +148,14 @@ so the producer runs Rustup's `cargo` proxy from the declaration's
 `cargo_home/bin`. Declare the Rustup executable behind that proxy, such as
 `~/.cargo/bin/rustup`, in `host_files` with its SHA-256. The declared
 `rust-sysroot` must be `<RUSTUP_HOME>/toolchains/1.97.1-<target>`. Cargo
-receives the declaration's explicit offline environment plus
-`CARGO_TARGET_DIR`, `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`. No ambient
-Cargo, Rustup or Python setting reaches it.
+uses the declared registry offline, the attempt's target directory, the
+pinned Rustup installation and the frozen commit's `SOURCE_DATE_EPOCH`.
+For a disconnected build, include `mecab-ipadic-2.7.0-20250920.tar.gz` in
+`host_files` with SHA-256
+`a7ba9f645ffe7094e56ae1c4a81d100df8fbb1e28bbe1792622e9728e162db3d`.
+The producer copies this archive into the attempt's empty dictionary cache.
+Lindera builds the Japanese dictionary there. Without a declared archive its
+build script needs access to its upstream dictionary server.
 
 The attempt is admitted before its output exists. Every input is copied into
 the output and read only from that copy. The archive is extracted into a fresh
@@ -274,11 +279,12 @@ license conclusion. Where upstream offers alternatives and this distribution
 selects one, the pinned supplement states that choice and keeps the original
 declaration.
 
-Archive order, file modes, owners, tar timestamps and gzip headers are normalized
-to the source commit's timestamp. This makes assembly reproducible for identical
-inputs. It does not prove bit-identical recompilation: compiler, linker, system
-packages and path-remapping need a separately pinned build environment and an
-actual second-build comparison.
+The packager normalizes archive order, file modes, owners, tar timestamps and
+gzip headers using the source commit's timestamp. Both native production
+builds use that timestamp and map the workspace, Cargo target directory and
+registry to stable paths in compiled code. On macOS the linker removes debug
+map entries before generating the image UUID. Qualification compares the
+SHA-256 of each delivered executable with its independent build.
 
 ## Candidate workflow
 

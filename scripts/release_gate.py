@@ -479,6 +479,27 @@ def retain_generated_outputs(name, source, output):
     return retained
 
 
+def production_environment(environment, source, target):
+    """Give generated Rust sources and registry dependencies stable paths in native products."""
+    source = Path(source).resolve()
+    cargo_home = environment.get("CARGO_HOME") or str(Path(environment.get("HOME", Path.home())) / ".cargo")
+    registry = source / cargo_home / "registry"
+    locations = ((source, "source"), (Path(target).resolve(), "target"), (registry, "registry"))
+    if "CARGO_ENCODED_RUSTFLAGS" in environment:
+        encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
+        flags = encoded.split("\x1f") if encoded else []
+    else:
+        flags = environment.get("RUSTFLAGS", "").split()
+    for location, name in locations:
+        for spelling in dict.fromkeys((location, location.resolve())):
+            flags.append(f"--remap-path-prefix={spelling}=/kasumi-build/{name}")
+    if sys.platform == "darwin":
+        # Remove linker debug-map entries before ld hashes the image's UUID.
+        # Stripping them afterwards leaves a build-location-dependent UUID.
+        flags.extend(("-C", "link-arg=-Wl,-S,-reproducible"))
+    return {**environment, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
+
+
 def dispatch_gates(gates, source, output, environment, timeout_seconds, record, original):
     """Run gates in order and set the terminal status only after the last one.
 
@@ -492,7 +513,11 @@ def dispatch_gates(gates, source, output, environment, timeout_seconds, record, 
             raise ValueError("frozen source contains a generated gate output: " + relative)
     for name, command in gates:
         print("Running " + name + " (" + str(Path(output) / (name + ".log")) + ")", flush=True)
-        result = run_gate(name, command, source, output, environment, timeout_seconds)
+        child_environment = environment
+        if name in ("network-driver", "production"):
+            child_environment = production_environment(environment, source, Path(output) / "target")
+            record["release_rustflags"] = child_environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        result = run_gate(name, command, source, output, child_environment, timeout_seconds)
         if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (Path(output) / result["log"]).read_text()):
             result["fixture_feature_violation"] = True
             result["exit_code"] = result["exit_code"] or 1
