@@ -75,6 +75,18 @@ fn milliseconds(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Documents staged so far by an authenticated restore decode. A count only:
+/// no tenant, key, identifier or payload. It makes the progress of a decode that
+/// reaches its deadline observable.
+pub(crate) fn decode_progress(documents: u64) {
+    tracing::debug!(
+        target: TARGET,
+        event = "restore_decode_progress",
+        documents,
+        "restore decode progress"
+    );
+}
+
 /// Numeric framing diagnostics only: no tenant, key, identifier or payload.
 /// This uses the already inspected layout and performs no additional reads.
 pub(super) fn snapshot_layout(layout: &crate::snapshot_codec::StreamSummary) {

@@ -1368,6 +1368,9 @@ fn read_placed(
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let mut documents: Option<crate::document_restore::Builder> = None;
     let mut document_table_limit = None;
+    // Bounded progress diagnostics for an authenticated restore decode only.
+    const DECODE_PROGRESS_DOCUMENTS: u64 = 4096;
+    let mut decoded_documents = 0u64;
     let accept = |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -1537,6 +1540,12 @@ fn read_placed(
                             document.id.clone(),
                             Arc::new(DocumentSlot::Stored(descriptor)),
                         );
+                    if target.is_some() {
+                        decoded_documents += 1;
+                        if decoded_documents.is_multiple_of(DECODE_PROGRESS_DOCUMENTS) {
+                            crate::backup_verify::decode_progress(decoded_documents);
+                        }
+                    }
                 }
                 Record::Archived(k, id, reference) => {
                     state
