@@ -31,7 +31,7 @@ use crate::directory::{
 };
 use crate::reclaim::WALK_WORK_PER_UNIT;
 use crate::root::{CompactionCursor, CompactionPhase, CompactionRecord};
-use crate::segment::{MaintenanceOp, VALUE_RECORD_OVERHEAD_BYTES, maintenance_operation_bytes};
+use crate::segment::{MaintenanceOp, estimated_live_value_bytes, maintenance_operation_bytes};
 
 #[path = "disk_density.rs"]
 mod density;
@@ -211,17 +211,16 @@ impl Survey {
             ..
         } = self;
         let mut overflowed = false;
-        let walked = walker.step(
+        let walked = walker.step_with_keys(
             directory,
             units.saturating_mul(WALK_WORK_PER_UNIT),
             |_| Ok(()),
-            |value| {
-                // Table and key bytes are not counted: a segment of small
-                // values looks emptier and is emptied sooner, never later.
+            |key, value| {
+                let key_bytes = key.table.len() + key.row.expect("validated row").len();
                 if value.segment_id <= *cutoff
                     && !live.add(
                         value.segment_id,
-                        u64::from(value.len) + VALUE_RECORD_OVERHEAD_BYTES,
+                        estimated_live_value_bytes(value.len, key_bytes),
                     )?
                 {
                     // Stop the walk: what it would add is no longer used.

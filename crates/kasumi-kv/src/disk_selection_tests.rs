@@ -332,6 +332,50 @@ fn selection_rule_is_exact_and_independent_of_survey_order() {
 }
 
 #[test]
+fn a_segment_filled_with_live_long_keys_stays_in_place_after_reopen() {
+    let group = InMemoryGroup::new();
+    let admission = Admission::new(64 << 20);
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    geometry(&mut state, PERCENT);
+    state
+        .commit(&[Operation::create_table("accounts")])
+        .unwrap();
+    let mut keys = Vec::new();
+    while active_segment(&state) == 1 {
+        let operations: Vec<_> = (0..10)
+            .map(|_| {
+                let mut key = vec![0; MAX_KEY_BYTES];
+                key[..2].copy_from_slice(&(keys.len() as u16).to_be_bytes());
+                keys.push(key.clone());
+                Operation::put("accounts", key, b"x")
+            })
+            .collect();
+        state.commit(&operations).unwrap();
+    }
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
+    finish_survey(&mut state);
+    let (_, segments, kept) = surveyed(state.compact.selection_for_test());
+    assert_eq!(segments, [1]);
+    assert_eq!(
+        kept,
+        [1],
+        "the table, key and put prefix remain live with each value"
+    );
+
+    let (group, mut state) = reopen(state, &group, &admission, PERCENT);
+    finish_survey(&mut state);
+    assert_eq!(surveyed(state.compact.selection_for_test()).2, [1]);
+    let (_, totals) = run_cycle(&mut state, STEP);
+    assert_eq!(totals.relocated, 0);
+    assert!(group.exists(GroupFile::segment(1)).unwrap());
+    let pin = state.snapshot().unwrap();
+    for key in keys {
+        assert_eq!(value(&mut state, &pin, &key).as_deref(), Some(&b"x"[..]));
+    }
+}
+
+#[test]
 fn mostly_live_store_relocates_only_the_sparse_segment() {
     let Fixture {
         group,
@@ -350,7 +394,7 @@ fn mostly_live_store_relocates_only_the_sparse_segment() {
     let mut sparse_bytes = 0u64;
     for location in before.values() {
         *live.entry(location.segment_id).or_default() +=
-            u64::from(location.len) + segment::VALUE_RECORD_OVERHEAD_BYTES;
+            segment::estimated_live_value_bytes(location.len, "accounts".len() + size_of::<u32>());
         if location.segment_id == SPARSE {
             sparse_bytes += u64::from(location.len);
         }
@@ -753,8 +797,10 @@ fn premises(
     let mut sparse_bytes = 0;
     for location in locations(state, model).values() {
         if location.segment_id <= cutoff {
-            *live.entry(location.segment_id).or_default() +=
-                u64::from(location.len) + segment::VALUE_RECORD_OVERHEAD_BYTES;
+            *live.entry(location.segment_id).or_default() += segment::estimated_live_value_bytes(
+                location.len,
+                "accounts".len() + size_of::<u32>(),
+            );
             if sparse.contains(&location.segment_id) {
                 sparse_bytes += u64::from(location.len);
             }
