@@ -407,11 +407,15 @@ impl TargetCallJobs {
                 }
             }
         }
-        if self.failures.retained() && retained.is_none() {
+        // Name the actual paid cell and a fixed class of what it still holds.
+        // The original itself stays resident in that cell.
+        if retained.is_none()
+            && let Some((index, class)) = self.failures.first_retained()
+        {
             retained = Some(DrainFailure::retained(registry.report.record(
                 "target call failure custody",
-                0,
-                anyhow!("original target failure remains admitted"),
+                index,
+                anyhow!("original target failure remains admitted ({class})"),
             )));
         }
         registry.report.outcome(retained)
@@ -1682,5 +1686,207 @@ mod tests {
         drop(jobs);
         drop(children);
         assert_eq!(panic_drops.load(Ordering::SeqCst), 0);
+    }
+
+    /// A real installed authority pool. A zero budget exhausts locally before
+    /// any credential read or connection attempt, exactly as StopLocal's
+    /// lifecycle lease acquisition did when no member replied in time.
+    fn authority_pool() -> kasumi_client::KasumiAuthorityPool {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let identity = kasumi_transport::TlsIdentity::from_pem(
+            certificate.pem().as_bytes(),
+            key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        let root_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let root =
+            kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(&root_key.serialize_der())
+                .unwrap();
+        let trust = kasumi_serving::AuthorityTrust::install(kasumi_serving::AuthorityManifest {
+            authority_id: uuid::Uuid::new_v4(),
+            lifecycle_controls: std::collections::BTreeMap::new(),
+            partitions: std::collections::BTreeMap::from([(
+                0,
+                kasumi_serving::AuthorityPartition {
+                    group: "issuer".into(),
+                    public_key: root.public_key(),
+                },
+            )]),
+            max_lease_ms: 5000,
+            clock_rate_error_ppm: 0,
+        })
+        .unwrap();
+        let pin = identity.certificate_pin();
+        let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> =
+            Arc::new(|| -> anyhow::Result<zeroize::Zeroizing<String>> {
+                anyhow::bail!("a zero budget reads no credential")
+            });
+        kasumi_client::KasumiAuthorityPool::new(
+            std::collections::BTreeMap::from([(
+                1,
+                kasumi_client::KasumiClientConfig {
+                    endpoint: "https://localhost:1".into(),
+                    identity,
+                    trusted_ca_pem: certificate.pem().into_bytes(),
+                    server_certificate_pins: std::collections::BTreeSet::from([pin]),
+                },
+            )]),
+            trust,
+            credential,
+        )
+        .unwrap()
+    }
+
+    async fn local_deadline(pool: &mut kasumi_client::KasumiAuthorityPool) -> anyhow::Error {
+        let error = pool
+            .receipt("tenant", uuid::Uuid::new_v4(), Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            kasumi_client::ClientError::LocalDeadline(_)
+        ));
+        assert_eq!(error.grpc_code(), tonic::Code::DeadlineExceeded);
+        assert_eq!(
+            error.to_string(),
+            kasumi_client::ClientError::Transport(tonic::Status::deadline_exceeded(
+                "installed authority operation deadline elapsed"
+            ))
+            .to_string()
+        );
+        error.into()
+    }
+
+    /// Counts drops of an owner that a failure may still hold.
+    #[derive(Debug)]
+    struct Owner(Arc<AtomicUsize>);
+    impl std::fmt::Display for Owner {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("installed authority operation deadline elapsed")
+        }
+    }
+    impl std::error::Error for Owner {}
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    async fn failed_call(
+        jobs: &TargetCallJobs,
+        original: anyhow::Error,
+    ) -> (TargetCallFailure, usize) {
+        let loan = submission::<()>(jobs, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let identity = loan.seat().identity();
+        let receive = loan
+            .submit(async move { Err::<(), _>(SnapshotFailure::Source(original)) })
+            .unwrap();
+        let failure = jobs
+            .await_reply(Instant::now() + Duration::from_secs(5), receive)
+            .await
+            .unwrap_err();
+        (failure, identity)
+    }
+
+    #[tokio::test]
+    async fn genuine_local_authority_deadline_settles_its_cell_and_lets_shutdown_drain() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let baseline = admission.snapshot().reserved_bytes;
+        let jobs = TargetCallJobs::new(&admission).unwrap();
+        let original = local_deadline(&mut authority_pool()).await;
+        let address = {
+            let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
+            outer as *const _ as *const () as usize
+        };
+        let (failure, identity) = failed_call(&jobs, original).await;
+        // The response still releases the same retriable marker class, and the
+        // whole original stays resident until that release finishes.
+        assert_eq!(failure.marker().code, ErrorCode::UnknownOutcome);
+        assert!(!failure.unresolved_custody());
+        failure.with_original(|original| {
+            let outer: &(dyn std::error::Error + Send + Sync + 'static) =
+                original.unwrap().source_error().unwrap().as_ref();
+            assert_eq!(outer as *const _ as *const () as usize, address);
+        });
+        drop(failure);
+        // Claiming the response leaves its child in the registry until the
+        // supervisor joins it. Reap it as the next submission would.
+        {
+            let mut registry = jobs.registry.lock().await;
+            let job = registry.jobs.iter().flatten().next().unwrap();
+            assert_eq!(job._seat.identity(), identity);
+            job.child.drain().await.unwrap();
+            jobs.observe_claimed(&mut registry).await;
+            assert!(registry.jobs.iter().all(Option::is_none));
+        }
+        assert!(jobs.original_failure(0).is_none());
+        let reused = jobs.acquire_failure().unwrap();
+        assert_eq!(reused.identity(), identity);
+        drop(reused);
+        jobs.drain().await.unwrap();
+        drop(jobs);
+        // Nothing stayed resident: the whole inventory charge returns.
+        assert_eq!(admission.snapshot().reserved_bytes, baseline);
+    }
+
+    #[tokio::test]
+    async fn opaque_transport_json_and_contextual_failures_stay_retained_by_actual_cell() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let jobs = TargetCallJobs::new(&admission).unwrap();
+        let charged = admission.snapshot().reserved_bytes;
+        let mut pool = authority_pool();
+        // A live seat holds cell 0, so the failures land in cells 1 through 5.
+        let held = jobs.acquire_failure().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        // The same code and text with a source that owns something.
+        let mut owned =
+            tonic::Status::deadline_exceeded("installed authority operation deadline elapsed");
+        owned.set_source(Arc::new(Owner(drops.clone())));
+        // A peer can send the same code and text without any local expiry.
+        let peer =
+            tonic::Status::deadline_exceeded("installed authority operation deadline elapsed");
+        let originals = [
+            anyhow::Error::from(kasumi_client::ClientError::Transport(owned)),
+            anyhow::Error::from(kasumi_client::ClientError::Transport(peer)),
+            anyhow::Error::from(kasumi_client::ClientError::Json(serde_json::Error::io(
+                std::io::Error::other(Owner(drops.clone())),
+            ))),
+            local_deadline(&mut pool)
+                .await
+                .context(Owner(drops.clone())),
+            anyhow::Error::from(kasumi_client::ClientError::Connection(anyhow!(Owner(
+                drops.clone()
+            )))),
+        ];
+        for (index, original) in originals.into_iter().enumerate() {
+            let (failure, _) = failed_call(&jobs, original).await;
+            assert!(failure.unresolved_custody(), "{index}");
+            drop(failure);
+            assert!(jobs.original_failure(index + 1).is_some(), "{index}");
+        }
+        assert!(jobs.original_failure(0).is_none());
+        let failure = jobs.drain().await.unwrap_err();
+        assert_eq!(failure.completion(), DrainCompletion::Retained);
+        let text = failure.to_string();
+        assert!(
+            text.contains(
+                "target call failure custody[1]: original target failure remains admitted (source)"
+            ),
+            "{text}"
+        );
+        // Every owner stays resident in its original paid cell.
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(held);
+        drop(pool);
+        drop(jobs);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        // Retained cells keep their originals and the paid inventory charge.
+        assert_eq!(admission.snapshot().reserved_bytes, charged);
     }
 }

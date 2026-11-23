@@ -861,9 +861,12 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .unwrap()
             .is_none()
     );
+    // Classified by its documented gRPC code: the pool's own deadline is a
+    // typed local reason, never a transport status a peer could have sent.
     assert!(matches!(
         unavailable.discover_lease(&discovery, Duration::ZERO).await,
-        Err(kasumi_client::ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded
+        Err(error @ kasumi_client::ClientError::LocalDeadline(_))
+            if error.grpc_code() == tonic::Code::DeadlineExceeded
     ));
     let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
     let source = current_credential.clone();

@@ -568,12 +568,15 @@ fn unresolved_lifecycle() -> ClientError {
         "original lifecycle issuer effect remains unresolved; read exact receipt",
     )
 }
+/// The pool measured its own budget; no member reply produced this outcome.
 fn deadline() -> ClientError {
-    tonic::Status::deadline_exceeded("installed authority operation deadline elapsed").into()
+    ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_AUTHORITY)
 }
 fn retryable(error: &ClientError) -> bool {
     match error {
         ClientError::Connection(_) => false,
+        // The same classification as the `DeadlineExceeded` status it replaces.
+        ClientError::LocalDeadline(_) => true,
         ClientError::Transport(status) => matches!(
             status.code(),
             tonic::Code::Unavailable
@@ -625,5 +628,20 @@ mod tests {
         assert!(retryable(&ClientError::Transport(
             tonic::Status::unavailable("leader changed")
         )));
+    }
+
+    #[test]
+    fn the_local_deadline_keeps_its_status_code_display_and_retry_class() {
+        let local = deadline();
+        let status = ClientError::Transport(tonic::Status::deadline_exceeded(
+            "installed authority operation deadline elapsed",
+        ));
+        assert!(matches!(
+            local,
+            ClientError::LocalDeadline(reason) if reason == crate::LocalDeadline::INSTALLED_AUTHORITY
+        ));
+        assert_eq!(retryable(&local), retryable(&status));
+        assert_eq!(local.grpc_code(), tonic::Code::DeadlineExceeded);
+        assert_eq!(local.to_string(), status.to_string());
     }
 }
