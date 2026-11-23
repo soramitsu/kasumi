@@ -511,17 +511,53 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     assert_ne!(fixture.current().page_space, primary::INITIAL_SPACE[0]);
     // Reopen keeps a current directory at or ahead of its snapshot.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
-    prepare_restore(&owner, store, &s3, &snapshot_meta(&s3), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s3,
+        None,
+        &snapshot_meta(&s3),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     // An installation always rebuilds from its snapshot.
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), false, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        false,
+        &mut writes,
+    )
+    .unwrap();
     assert!(!writes.is_empty());
     drop(writes);
     // The replaced space is reclaimed at the next restore.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     let view = store.read_view().unwrap();
     let mut initial = 0;
@@ -622,7 +658,16 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     drop(owner);
     let owner = PrimaryOwner::default();
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s7, &snapshot_meta(&s7), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s7,
+        None,
+        &snapshot_meta(&s7),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     fixture.publish(prepare_publication(&owner, store, &s8, &s9, &delta, applied(&s9, 1)).unwrap());
     let advanced = fixture.current();
@@ -692,6 +737,7 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
         &owner,
         store,
         &state,
+        None,
         &snapshot_meta(&state),
         false,
         &mut writes,
@@ -762,7 +808,16 @@ async fn a_single_document_edit_rewrites_only_its_paths() {
     let (s1, changed) = next(&s0, s0.revision + 1, "docs", &ids, &[]);
     // A pristine directory's first large edit goes through restore instead.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s1, &snapshot_meta(&s1), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s1,
+        None,
+        &snapshot_meta(&s1),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     store.write_batch(&writes).unwrap();
     drop((writes, changed));
     fixture.verify(&s1);

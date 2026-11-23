@@ -283,6 +283,7 @@ pub(crate) fn prepare_restore(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     state: &TenantState,
+    located: Option<&dyn DocumentResolver>,
     meta: &kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
     reopen: bool,
     writes: &mut Vec<WriteOp>,
@@ -315,7 +316,7 @@ pub(crate) fn prepare_restore(
                     &**store,
                     &manifest,
                     state,
-                    None,
+                    located,
                     store.plaintext_memory_owner(),
                 )
                 .is_ok())
@@ -323,8 +324,7 @@ pub(crate) fn prepare_restore(
             return Ok(());
         }
     }
-    // A restored state holds only complete descriptors until its publication.
-    writes.extend(rebuild(store, state, None, applied, usize::MAX, None)?);
+    writes.extend(rebuild(store, state, located, applied, usize::MAX, None)?);
     Ok(())
 }
 
