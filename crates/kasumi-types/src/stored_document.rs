@@ -40,25 +40,108 @@ pub struct StoredDocument {
 /// failures are local failures, not deterministic replicated command rejections.
 pub trait DocumentResolver: Send + Sync {
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument>;
+
+    /// The canonical live descriptor that a [`LocatedDocument`] of `id` in
+    /// `collection` stands for, read from the authenticated primary directory
+    /// this resolver selected. A resolver without such a directory cannot
+    /// lend located slots, and a miss there is corruption, never absence.
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        let _ = (collection, id, located);
+        anyhow::bail!("located document has no selected primary directory")
+    }
+}
+
+/// The resident remainder of a published descriptor whose canonical copy is
+/// the live row of an authenticated primary directory the enclosing
+/// generation selected. The ordered writer's preconditions, the logical,
+/// document and snapshot byte charges and the structural source quotes need
+/// only these fields. Anything that names the body (its object and digests)
+/// resolves the row through the generation's resolver, which checks every
+/// resident field against it. The document ID is the key of the slot's
+/// collection map. Charges are narrowed to `u32`: a descriptor whose charges do
+/// not fit has no located form and stays complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocatedDocument {
+    version: u64,
+    body_bytes: u32,
+    document_bytes: u32,
+    body_object_bytes: u32,
+    body_decode_work: u32,
+    body_manifest_work: u32,
+}
+
+impl LocatedDocument {
+    /// The located form of `descriptor`, if its charges fit.
+    pub fn of(descriptor: &StoredDocument) -> Option<Self> {
+        Some(Self {
+            version: descriptor.version,
+            body_bytes: descriptor.body_bytes.try_into().ok()?,
+            document_bytes: descriptor.document_bytes.try_into().ok()?,
+            body_object_bytes: descriptor.body_object_bytes.try_into().ok()?,
+            body_decode_work: descriptor.body_decode_work.try_into().ok()?,
+            body_manifest_work: descriptor.body_manifest_work.try_into().ok()?,
+        })
+    }
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    pub fn body_bytes(&self) -> u64 {
+        self.body_bytes.into()
+    }
+    pub fn document_bytes(&self) -> u64 {
+        self.document_bytes.into()
+    }
+    pub fn body_object_bytes(&self) -> u64 {
+        self.body_object_bytes.into()
+    }
+    pub fn body_decode_work(&self) -> u64 {
+        self.body_decode_work.into()
+    }
+    pub fn body_manifest_work(&self) -> u64 {
+        self.body_manifest_work.into()
+    }
+
+    /// Accept a resolved row only when it is the exact descriptor this slot
+    /// was compacted from: the same identity, version and charges.
+    pub fn check(&self, id: &str, descriptor: StoredDocument) -> Result<StoredDocument> {
+        descriptor.validate()?;
+        ensure!(
+            descriptor.id == id && Self::of(&descriptor).as_ref() == Some(self),
+            "located document row differs from its resident descriptor"
+        );
+        Ok(descriptor)
+    }
 }
 
 /// An unpublished bounded mutation can still own a decoded after-image while
-/// its indexes and durable body object are prepared. A published collection or
-/// retained feed must contain only `Stored` slots. There is deliberately no
+/// its indexes and durable body object are prepared. A published collection
+/// contains only `Stored` and `Located` slots, and a retained feed only
+/// `Stored` ones. A `Located` slot exists only in a generation whose resolver
+/// selected a primary directory holding its exact row; resolving it needs the
+/// collection name and the slot's map key. There is deliberately no
 /// context-free serialization of stored bodies, `Deref`, or body-returning
 /// convenience method. Portable snapshots and responses must explicitly select
 /// and lend their DTO; deserialization produces unpublished pending input only.
+///
+/// The complete descriptor is boxed so that a located slot, the resident form
+/// of every unchanged published document, stays a small allocation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentSlot {
     Pending(Arc<Document>),
-    Stored(StoredDocument),
+    Stored(Box<StoredDocument>),
+    Located(LocatedDocument),
 }
 
 impl Serialize for DocumentSlot {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Self::Pending(document) => document.serialize(serializer),
-            Self::Stored(_) => Err(serde::ser::Error::custom(
+            Self::Stored(_) | Self::Located(_) => Err(serde::ser::Error::custom(
                 "stored document serialization requires its selected resolver",
             )),
         }
@@ -137,24 +220,82 @@ impl std::ops::Deref for DocumentLoan<'_> {
 }
 
 impl DocumentSlot {
-    pub fn id(&self) -> &str {
+    /// A complete published descriptor.
+    pub fn stored_descriptor(descriptor: StoredDocument) -> Self {
+        Self::Stored(Box::new(descriptor))
+    }
+
+    /// The slot's own copy of its identity. A located slot has none: its ID is
+    /// the key under which its collection map holds it.
+    pub fn id(&self) -> Option<&str> {
         match self {
-            Self::Pending(document) => &document.id,
-            Self::Stored(document) => &document.id,
+            Self::Pending(document) => Some(&document.id),
+            Self::Stored(document) => Some(&document.id),
+            Self::Located(_) => None,
         }
+    }
+
+    /// Whether a slot found under map key `id` can belong to it.
+    pub fn has_id(&self, id: &str) -> bool {
+        self.id().is_none_or(|own| own == id)
     }
 
     pub fn version(&self) -> u64 {
         match self {
             Self::Pending(document) => document.version,
             Self::Stored(document) => document.version,
+            Self::Located(located) => located.version(),
         }
     }
 
+    /// The resident complete descriptor. A located slot fails closed: callers
+    /// that can meet one resolve it with [`Self::descriptor`].
     pub fn stored(&self) -> Result<&StoredDocument> {
         match self {
             Self::Stored(document) => Ok(document),
             Self::Pending(_) => anyhow::bail!("published document still owns a decoded body"),
+            Self::Located(_) => Err(unresolved_located()),
+        }
+    }
+
+    /// The complete descriptor of a published slot found under `id` in
+    /// `collection`, resolving a located slot through `resolver`.
+    pub fn descriptor(
+        &self,
+        collection: &str,
+        id: &str,
+        resolver: Option<&dyn DocumentResolver>,
+    ) -> Result<std::borrow::Cow<'_, StoredDocument>> {
+        match self {
+            Self::Located(located) => {
+                let resolver = resolver
+                    .ok_or_else(|| anyhow::anyhow!("located document has no selected resolver"))?;
+                Ok(std::borrow::Cow::Owned(
+                    located.check(id, resolver.locate(collection, id, located)?)?,
+                ))
+            }
+            _ => self.stored().map(std::borrow::Cow::Borrowed),
+        }
+    }
+
+    /// The located form of a complete descriptor, if it has one.
+    pub fn located(&self) -> Option<LocatedDocument> {
+        match self {
+            Self::Stored(document) => LocatedDocument::of(document),
+            Self::Located(located) => Some(*located),
+            Self::Pending(_) => None,
+        }
+    }
+
+    /// Whether two published slots of one document name the same descriptor.
+    /// A version identifies exactly one after-image of a document, so a
+    /// located slot equals any complete descriptor of its version.
+    pub fn same_descriptor(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pending(left), Self::Pending(right)) => Arc::ptr_eq(left, right),
+            (Self::Pending(_), _) | (_, Self::Pending(_)) => false,
+            (Self::Stored(left), Self::Stored(right)) => left == right,
+            (left, right) => left.located().is_some() && left.located() == right.located(),
         }
     }
 
@@ -171,6 +312,24 @@ impl DocumentSlot {
         match self {
             Self::Pending(document) => Ok(DocumentLoan::Pending(document)),
             Self::Stored(document) => Ok(DocumentLoan::Stored(document.load(resolver)?)),
+            Self::Located(_) => Err(unresolved_located()),
+        }
+    }
+
+    /// [`Self::load`] for a slot found under `id` in `collection`, which may
+    /// be located.
+    pub fn load_at<'a>(
+        &'a self,
+        collection: &str,
+        id: &str,
+        resolver: &dyn DocumentResolver,
+    ) -> Result<DocumentLoan<'a>> {
+        match self {
+            Self::Located(_) => Ok(DocumentLoan::Stored(
+                self.descriptor(collection, id, Some(resolver))?
+                    .load(resolver)?,
+            )),
+            _ => self.load(resolver),
         }
     }
 
@@ -182,6 +341,25 @@ impl DocumentSlot {
                     .ok_or_else(|| anyhow::anyhow!("stored document has no selected resolver"))?;
                 Ok(OwnedDocument::Stored(document.load(resolver)?))
             }
+            Self::Located(_) => Err(unresolved_located()),
+        }
+    }
+
+    /// [`Self::load_owned`] for a slot found under `id` in `collection`.
+    pub fn load_owned_at(
+        &self,
+        collection: &str,
+        id: &str,
+        resolver: Option<&dyn DocumentResolver>,
+    ) -> Result<OwnedDocument> {
+        match self {
+            Self::Located(_) => {
+                let descriptor = self.descriptor(collection, id, resolver)?;
+                let resolver = resolver
+                    .ok_or_else(|| anyhow::anyhow!("stored document has no selected resolver"))?;
+                Ok(OwnedDocument::Stored(descriptor.load(resolver)?))
+            }
+            _ => self.load_owned(resolver),
         }
     }
 
@@ -190,6 +368,7 @@ impl DocumentSlot {
         match self {
             Self::Pending(document) => canonical_len(&CanonicalJsonValue(&document.body)),
             Self::Stored(document) => Ok(document.body_bytes),
+            Self::Located(located) => Ok(located.body_bytes()),
         }
     }
 
@@ -197,8 +376,13 @@ impl DocumentSlot {
         match self {
             Self::Pending(document) => canonical_len(document.as_ref()),
             Self::Stored(document) => Ok(document.document_bytes),
+            Self::Located(located) => Ok(located.document_bytes()),
         }
     }
+}
+
+fn unresolved_located() -> anyhow::Error {
+    anyhow::anyhow!("located document descriptor requires its selected primary directory")
 }
 
 impl StoredDocument {
@@ -496,7 +680,7 @@ mod tests {
     fn pending_slots_cannot_be_treated_as_published_storage() {
         let (descriptor, resolver) = fixture();
         let slot = DocumentSlot::Pending(Arc::new(resolver.document.clone()));
-        assert_eq!(slot.id(), descriptor.id);
+        assert_eq!(slot.id(), Some(descriptor.id.as_str()));
         assert_eq!(slot.version(), descriptor.version);
         assert_eq!(slot.body_bytes().unwrap(), descriptor.body_bytes);
         assert!(slot.stored().is_err());
@@ -505,7 +689,7 @@ mod tests {
             assert_eq!(resolver.alive.load(Ordering::SeqCst), 0);
         })
         .unwrap();
-        let slot = DocumentSlot::Stored(descriptor.clone());
+        let slot = DocumentSlot::stored_descriptor(descriptor.clone());
         assert_eq!(slot.stored().unwrap(), &descriptor);
     }
 
@@ -518,13 +702,15 @@ mod tests {
         let decoded: DocumentSlot = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, pending);
         assert!(decoded.stored().is_err());
-        assert!(serde_json::to_vec(&DocumentSlot::Stored(descriptor)).is_err());
+        assert!(serde_json::to_vec(&DocumentSlot::stored_descriptor(descriptor.clone())).is_err());
+        let located = DocumentSlot::Located(LocatedDocument::of(&descriptor).unwrap());
+        assert!(serde_json::to_vec(&located).is_err());
     }
 
     #[test]
     fn owned_wire_record_retains_charge_without_cloning_body() {
         let (descriptor, resolver) = fixture();
-        let slot = DocumentSlot::Stored(descriptor);
+        let slot = DocumentSlot::stored_descriptor(descriptor);
         let first = slot.load_owned(Some(&resolver)).unwrap();
         let second = first.clone();
         assert!(std::ptr::eq(first.as_ref(), second.as_ref()));
@@ -539,5 +725,98 @@ mod tests {
         assert_eq!(resolver.alive.load(Ordering::SeqCst), 1);
         drop(second);
         assert_eq!(resolver.alive.load(Ordering::SeqCst), 0);
+    }
+
+    /// A directory resolver over one canonical row.
+    struct Directory {
+        inner: Resolver,
+        collection: &'static str,
+        row: StoredDocument,
+        located: AtomicUsize,
+    }
+    impl DocumentResolver for Directory {
+        fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+            self.inner.load(descriptor)
+        }
+        fn locate(
+            &self,
+            collection: &str,
+            id: &str,
+            _: &LocatedDocument,
+        ) -> Result<StoredDocument> {
+            self.located.fetch_add(1, Ordering::SeqCst);
+            ensure!(
+                collection == self.collection && id == self.row.id,
+                "row absent"
+            );
+            Ok(self.row.clone())
+        }
+    }
+
+    #[test]
+    fn located_slots_keep_charges_and_resolve_only_their_exact_row() {
+        let (descriptor, inner) = fixture();
+        let compact = LocatedDocument::of(&descriptor).unwrap();
+        let slot = DocumentSlot::Located(compact);
+        // A located slot and its two Arc counters fit one 64-byte allocation.
+        assert!(std::mem::size_of::<DocumentSlot>() + 16 <= 64);
+        assert_eq!(slot.id(), None);
+        assert!(slot.has_id("anything"));
+        assert_eq!(slot.version(), descriptor.version);
+        assert_eq!(slot.body_bytes().unwrap(), descriptor.body_bytes);
+        assert_eq!(slot.document_bytes().unwrap(), descriptor.document_bytes);
+        assert_eq!(slot.located(), Some(compact));
+        // Without the selected directory every body-naming use fails closed.
+        assert!(slot.stored().is_err());
+        assert!(slot.load(&inner).is_err());
+        assert!(slot.load_owned(Some(&inner)).is_err());
+        assert!(slot.descriptor("docs", "proof", None).is_err());
+        assert!(slot.load_at("docs", "proof", &inner).is_err());
+
+        let directory = Directory {
+            inner,
+            collection: "docs",
+            row: descriptor.clone(),
+            located: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            slot.descriptor("docs", "proof", Some(&directory))
+                .unwrap()
+                .as_ref(),
+            &descriptor
+        );
+        let loan = slot.load_at("docs", "proof", &directory).unwrap();
+        assert_eq!(loan.version, descriptor.version);
+        drop(loan);
+        let owned = slot
+            .load_owned_at("docs", "proof", Some(&directory))
+            .unwrap();
+        assert_eq!(owned.id, "proof");
+        drop(owned);
+        assert_eq!(directory.inner.alive.load(Ordering::SeqCst), 0);
+        assert_eq!(directory.located.load(Ordering::SeqCst), 3);
+        // Another document's row, or a row of another version, is corruption.
+        assert!(slot.descriptor("other", "proof", Some(&directory)).is_err());
+        let newer = DocumentSlot::Located(
+            LocatedDocument::of(&StoredDocument {
+                version: descriptor.version + 1,
+                ..descriptor.clone()
+            })
+            .unwrap(),
+        );
+        assert!(newer.descriptor("docs", "proof", Some(&directory)).is_err());
+        // One version names one after-image, however it is held.
+        let stored = DocumentSlot::stored_descriptor(descriptor.clone());
+        assert!(slot.same_descriptor(&stored) && stored.same_descriptor(&slot));
+        assert!(!newer.same_descriptor(&stored));
+        let pending = DocumentSlot::Pending(Arc::new(directory.inner.document.clone()));
+        assert!(!pending.same_descriptor(&slot));
+        // Charges beyond the narrowed range keep the complete descriptor.
+        let wide = StoredDocument {
+            body_decode_work: u64::from(u32::MAX) + 1,
+            ..descriptor
+        };
+        assert!(LocatedDocument::of(&wide).is_none());
+        assert_eq!(DocumentSlot::stored_descriptor(wide).located(), None);
     }
 }

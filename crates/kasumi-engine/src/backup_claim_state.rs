@@ -89,7 +89,7 @@ pub(crate) fn route_version(
         .documents
         .get("current")
         .context("current Control topology absent")?;
-    let document = generation.load_document(slot)?;
+    let document = generation.load_document_at(&collection.definition.name, "current", slot)?;
     let route = document
         .body
         .get("tenants")

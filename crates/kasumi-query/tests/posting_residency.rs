@@ -136,7 +136,7 @@ impl DocumentChanges for Change<'_> {
                 .get(self.id)
                 .map(|slot| match slot.as_ref() {
                     DocumentSlot::Pending(document) => document.clone(),
-                    DocumentSlot::Stored(_) => unreachable!(),
+                    DocumentSlot::Stored(_) | DocumentSlot::Located(_) => unreachable!(),
                 })
         };
         let (old, new) = (record(self.old), record(self.new));
@@ -295,38 +295,48 @@ fn measure_resident_structured_postings() {
 }
 
 /// The installed collection's descriptor map, which every generation also
-/// retains: one stored descriptor per live document, keyed by its ID.
+/// retains: one slot per live document, keyed by its ID. A complete
+/// descriptor is what an unpublished candidate and a retained feed record
+/// hold; a published generation whose primary directory is current keeps the
+/// located form, whose body identity is read from that directory's row.
 fn descriptors() {
-    let (documents, counts) = measure(|| {
-        (0..DOCUMENTS)
-            .map(|i| {
-                let id = format!("doc-{i:08}");
-                let slot = std::sync::Arc::new(DocumentSlot::Stored(StoredDocument {
-                    id: id.clone(),
-                    version: 1,
-                    body_bytes: 64,
-                    document_bytes: 96,
-                    body_sha256: [7; 32],
-                    body_object: [9; 32],
-                    body_object_bytes: 80,
-                    body_decode_work: 64,
-                    body_manifest_work: 80,
-                }));
-                (id, slot)
+    for case in ["stored_descriptor_map", "located_descriptor_map"] {
+        let (documents, counts) = measure(|| {
+            (0..DOCUMENTS)
+                .map(|i| {
+                    let id = format!("doc-{i:08}");
+                    let descriptor = StoredDocument {
+                        id: id.clone(),
+                        version: 1,
+                        body_bytes: 64,
+                        document_bytes: 96,
+                        body_sha256: [7; 32],
+                        body_object: [9; 32],
+                        body_object_bytes: 80,
+                        body_decode_work: 64,
+                        body_manifest_work: 80,
+                    };
+                    let slot = if case == "stored_descriptor_map" {
+                        DocumentSlot::stored_descriptor(descriptor)
+                    } else {
+                        DocumentSlot::Located(LocatedDocument::of(&descriptor).unwrap())
+                    };
+                    (id, std::sync::Arc::new(slot))
+                })
+                .collect::<DocumentMap>()
+        });
+        assert_eq!(documents.len(), DOCUMENTS);
+        println!(
+            "KASUMI_DESCRIPTOR_RESIDENCY {}",
+            json!({
+                "case": case,
+                "documents": DOCUMENTS,
+                "retained_bytes": counts.live,
+                "retained_bytes_per_document": counts.live as f64 / DOCUMENTS as f64,
+                "allocations": counts.allocations,
             })
-            .collect::<DocumentMap>()
-    });
-    assert_eq!(documents.len(), DOCUMENTS);
-    println!(
-        "KASUMI_DESCRIPTOR_RESIDENCY {}",
-        json!({
-            "case": "stored_descriptor_map",
-            "documents": DOCUMENTS,
-            "retained_bytes": counts.live,
-            "retained_bytes_per_document": counts.live as f64 / DOCUMENTS as f64,
-            "allocations": counts.allocations,
-        })
-    );
+        );
+    }
 }
 
 /// The type of `CollectionState::documents`.

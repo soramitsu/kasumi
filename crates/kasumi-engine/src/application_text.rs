@@ -399,8 +399,11 @@ fn has_text(state: &TenantState) -> bool {
 
 /// Lends live bodies for indexing.
 pub(crate) trait TextBodies {
+    /// Lend the body of the slot found under `id` in `collection`.
     fn with_body(
         &self,
+        collection: &str,
+        id: &str,
         slot: &DocumentSlot,
         visit: &mut dyn FnMut(&Document) -> Result<()>,
     ) -> Result<()>;
@@ -411,10 +414,12 @@ pub(crate) struct ResolverBodies<'a>(pub(crate) Option<&'a dyn DocumentResolver>
 impl TextBodies for ResolverBodies<'_> {
     fn with_body(
         &self,
+        collection: &str,
+        id: &str,
         slot: &DocumentSlot,
         visit: &mut dyn FnMut(&Document) -> Result<()>,
     ) -> Result<()> {
-        let loan = crate::state::loan_document(slot, self.0)?;
+        let loan = crate::state::loan_document_at(collection, id, slot, self.0)?;
         visit(loan.as_ref())
     }
 }
@@ -424,6 +429,7 @@ impl TextBodies for ResolverBodies<'_> {
 fn build_shards<'a>(
     memory: &Arc<dyn NodeDiskMemoryAdmission>,
     layout: &TextShardLayout,
+    collection: &str,
     rows: impl Iterator<Item = (&'a str, &'a DocumentSlot)>,
     bodies: &dyn TextBodies,
     mut emit: impl FnMut(BuiltTextShard) -> Result<()>,
@@ -437,7 +443,7 @@ fn build_shards<'a>(
             .reserve_document_decode(TextShardWriter::ARENA_BYTES as u64)?;
         let mut writer = TextShardWriter::new(layout)?;
         for (id, slot) in rows.by_ref() {
-            bodies.with_body(slot, &mut |document| {
+            bodies.with_body(collection, id, slot, &mut |document| {
                 ensure!(document.id == id, "text body identity differs");
                 Ok(writer.add(id, document.version, &document.body)?)
             })?;
@@ -817,6 +823,7 @@ fn stage_generation(
             build_shards(
                 store.plaintext_memory_owner(),
                 &layout,
+                name,
                 rows,
                 bodies,
                 |built| {
@@ -1161,7 +1168,7 @@ impl CollectionEdit<'_, '_> {
                 live_version(self.collection, id)?;
                 Some((id.as_str(), self.collection.documents.get(id)?.as_ref()))
             });
-            build_shards(self.memory, self.layout, rows, bodies, |shard| {
+            build_shards(self.memory, self.layout, self.name, rows, bodies, |shard| {
                 let seq = descriptor.next_shard;
                 descriptor.next_shard += 1;
                 descriptor.add(shard.documents, shard.bytes(), &shard.tokens)?;

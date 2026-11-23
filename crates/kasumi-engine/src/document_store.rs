@@ -15,7 +15,8 @@ use kasumi_store::{
     primary_manifest::{MAX_MANIFEST_BYTES, PrimaryManifest},
 };
 use kasumi_types::{
-    AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
+    AdmittedDocumentOwner, Document, DocumentResolver, LocatedDocument, SharedDocument,
+    StoredDocument,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -124,24 +125,37 @@ impl<'a> DocumentMeasurement<'a> {
     }
 }
 
-pub(crate) fn source_workspace(slot: &kasumi_types::DocumentSlot) -> Result<u64> {
-    match slot {
+/// The structural workspace of lending the source found under `id`. A
+/// located slot keeps the exact charges of the descriptor it stands for.
+pub(crate) fn source_workspace(id: &str, slot: &kasumi_types::DocumentSlot) -> Result<u64> {
+    let (body, object, manifest, decode) = match slot {
         kasumi_types::DocumentSlot::Pending(document) => {
-            crate::snapshot_codec::inspect_typed_json_work(document)
+            return crate::snapshot_codec::inspect_typed_json_work(document);
         }
         kasumi_types::DocumentSlot::Stored(document) => {
             document.validate()?;
-            document
-                .body_bytes
-                .checked_mul(2)
-                .and_then(|bytes| bytes.checked_add(document.body_object_bytes.checked_mul(4)?))
-                .and_then(|bytes| bytes.checked_add(document.body_manifest_work))
-                .and_then(|bytes| bytes.checked_add(document.body_decode_work))
-                .and_then(|bytes| bytes.checked_add((document.id.len() as u64).checked_mul(2)?))
-                .and_then(|bytes| bytes.checked_add(FLOOR + 4096))
-                .context("document source workspace overflow")
+            ensure!(document.id == id, "document source identity differs");
+            (
+                document.body_bytes,
+                document.body_object_bytes,
+                document.body_manifest_work,
+                document.body_decode_work,
+            )
         }
-    }
+        kasumi_types::DocumentSlot::Located(document) => (
+            document.body_bytes(),
+            document.body_object_bytes(),
+            document.body_manifest_work(),
+            document.body_decode_work(),
+        ),
+    };
+    body.checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(object.checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(manifest))
+        .and_then(|bytes| bytes.checked_add(decode))
+        .and_then(|bytes| bytes.checked_add((id.len() as u64).checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(FLOOR + 4096))
+        .context("document source workspace overflow")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -346,6 +360,10 @@ pub(crate) trait GenerationDocuments: DocumentResolver {
     fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
         Ok(None)
     }
+    /// The primary rows this resolver locates compacted slots from.
+    fn located_rows(&self) -> Option<Arc<LocatedRows>> {
+        None
+    }
 }
 
 /// One bounded read's loans through a single exact selected source view,
@@ -357,6 +375,277 @@ pub(crate) trait SharedRead: DocumentResolver {
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
+/// The authenticated primary rows that a generation's located slots stand
+/// for: a pinned selection whose primary directory, or exact base snapshot,
+/// held every live descriptor of the boundary's state. A slot is compacted
+/// only from such rows and stays located only while its document is
+/// unchanged, so its row here is its exact descriptor at any later revision.
+/// A later generation keeps these rows until its own selection serves a
+/// current directory, which then holds the same rows; a stale directory never
+/// strands a located slot.
+pub(crate) struct LocatedRows {
+    selection: SelectedApplication,
+    boundary: crate::application_sources::SnapshotBoundary<String>,
+}
+
+impl LocatedRows {
+    /// The rows of `selection` at `state`, when it serves a primary directory
+    /// with document headers at exactly that revision.
+    pub(crate) fn serving(
+        selection: &SelectedApplication,
+        state: &kasumi_types::TenantState,
+    ) -> Result<Option<Arc<Self>>> {
+        use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
+        let layout = selection.with_serving_primary(None, state, |_, _, layout| Ok(layout))?;
+        Ok(layout
+            .filter(|layout| *layout >= DOCUMENT_HEADERS_LAYOUT)
+            .map(|_| {
+                Arc::new(Self {
+                    selection: selection.clone(),
+                    boundary: state.into(),
+                })
+            }))
+    }
+
+    /// Whether these rows are the current directory of `state` itself.
+    pub(crate) fn current_at(&self, state: &kasumi_types::TenantState) -> bool {
+        self.boundary == crate::application_sources::SnapshotBoundary::<String>::from(state)
+    }
+
+    pub(crate) fn locate(
+        &self,
+        shared: Option<&SelectedRead>,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        // A shared read may lend its pages only for its own selection.
+        let shared = shared.filter(|read| read.documents.selected.same_selection(&self.selection));
+        let point = self
+            .selection
+            .with_primary_boundary(shared, &self.boundary, |tree, memory, _| {
+                let (point, _decode, _) = crate::application_records::admitted_snapshot_point(
+                    tree,
+                    memory,
+                    collection,
+                    id,
+                    self.boundary.revision,
+                    || Ok(()),
+                )?;
+                Ok(point)
+            })?
+            .context("located document directory is no longer served")?;
+        let crate::application_records::PrimaryPoint::Live(slot) = point else {
+            anyhow::bail!("located document has no live primary row")
+        };
+        located.check(id, slot.stored()?.clone())
+    }
+}
+
+/// The sequence key of the retained change commit at exactly `revision`.
+/// Commit revisions increase with their keys, so a bisection over the key
+/// range finds it in logarithmically many ordered lookups.
+pub(crate) fn feed_commit_at(feed: &kasumi_types::ChangeFeedState, revision: u64) -> Option<u64> {
+    let (first, commit) = feed.commits.get_min()?;
+    if commit.revision > revision {
+        return None;
+    }
+    // `low` is a key whose commit is at or before `revision`; `high` a key.
+    let (mut low, mut high) = (*first, feed.commits.get_max()?.0);
+    while low < high {
+        let middle = low + (high - low) / 2 + 1;
+        let (&key, commit) = feed.commits.range(middle..=high).next()?;
+        if commit.revision <= revision {
+            low = key;
+        } else {
+            high = *feed.commits.range(low..key).next_back()?.0;
+        }
+    }
+    (feed.commits.get(&low)?.revision == revision).then_some(low)
+}
+
+/// The record of `id` in `collection` within the retained commit at
+/// `revision`, if it holds a slot that `matches`.
+fn feed_record_mut<'a>(
+    feed: &'a mut kasumi_types::ChangeFeedState,
+    revision: u64,
+    collection: &str,
+    id: &str,
+    matches: impl Fn(&Arc<kasumi_types::DocumentSlot>) -> bool,
+) -> Option<&'a mut Option<Arc<kasumi_types::DocumentSlot>>> {
+    let key = feed_commit_at(feed, revision)?;
+    let commit = feed.commits.get(&key)?;
+    let index = commit.records.iter().position(|record| {
+        record.collection == collection
+            && record.id == id
+            && record.document.as_ref().is_some_and(&matches)
+    })?;
+    let commit = Arc::make_mut(feed.commits.get_mut(&key)?);
+    Some(&mut commit.records[index].document)
+}
+
+/// Compact newly published documents only. Unchanged IDs can still use their
+/// complete descriptors when a previously stale primary first becomes current.
+pub(crate) fn compact_changed(
+    state: &mut kasumi_types::TenantState,
+    changed: &crate::application_primary::ChangedIds,
+) -> usize {
+    use kasumi_types::DocumentSlot;
+    let mut compacted = 0;
+    for (name, ids) in changed {
+        let Some(collection) = state.collections.get_mut(name) else {
+            continue;
+        };
+        for id in ids {
+            let Some(slot) = collection.documents.get_mut(id) else {
+                continue;
+            };
+            let DocumentSlot::Stored(descriptor) = slot.as_ref() else {
+                continue;
+            };
+            let Some(located) = LocatedDocument::of(descriptor) else {
+                continue;
+            };
+            let complete = std::mem::replace(slot, Arc::new(DocumentSlot::Located(located)));
+            if let Some(record) = feed_record_mut(
+                &mut state.change_feed,
+                complete.version(),
+                name,
+                id,
+                |record| Arc::ptr_eq(record, &complete),
+            ) {
+                *record = Some(slot.clone());
+            }
+            compacted += 1;
+        }
+    }
+    compacted
+}
+
+/// Compact a reopened generation whose primary covers this exact revision.
+/// Compare both complete descriptors before sharing a live change record.
+/// A historical record with different content keeps its own body reference.
+pub(crate) fn compact_reopened(state: &mut kasumi_types::TenantState) -> usize {
+    use kasumi_types::DocumentSlot;
+    fn shared_location(
+        collections: &BTreeMap<String, kasumi_types::CollectionState>,
+        record: &kasumi_types::ChangeRecord,
+    ) -> Option<LocatedDocument> {
+        let current = collections
+            .get(&record.collection)?
+            .documents
+            .get(&record.id)?;
+        let saved = record.document.as_ref()?;
+        match (current.as_ref(), saved.as_ref()) {
+            (DocumentSlot::Stored(left), DocumentSlot::Stored(right))
+                if Arc::ptr_eq(current, saved) || left == right =>
+            {
+                LocatedDocument::of(left)
+            }
+            _ => None,
+        }
+    }
+
+    let mut compacted = 0;
+    let collections = &mut state.collections;
+    let commits = &mut state.change_feed.commits;
+    let mut next = commits.get_min().map(|(&key, _)| key);
+    while let Some(key) = next {
+        next = key
+            .checked_add(1)
+            .and_then(|after| commits.get_next(&after).map(|(&key, _)| key));
+        if commits.get(&key).is_none_or(|commit| {
+            !commit
+                .records
+                .iter()
+                .any(|record| shared_location(collections, record).is_some())
+        }) {
+            continue;
+        }
+        if let Some(commit) = commits.get_mut(&key) {
+            for record in &mut Arc::make_mut(commit).records {
+                if let Some(located) = shared_location(collections, record)
+                    && let Some(slot) = collections
+                        .get_mut(&record.collection)
+                        .and_then(|c| c.documents.get_mut(&record.id))
+                {
+                    *slot = Arc::new(DocumentSlot::Located(located));
+                    record.document = Some(slot.clone());
+                    compacted += 1;
+                }
+            }
+        }
+    }
+    for collection in collections.values_mut() {
+        // Drop the borrowed root after each page, so copy-on-write never
+        // pins a second complete document map during compaction.
+        let mut after: Option<String> = None;
+        loop {
+            use std::ops::Bound::{Excluded, Unbounded};
+            let before = collection.documents.clone();
+            let lower = after.as_ref().map_or(Unbounded, Excluded);
+            let mut last = None;
+            for (id, original) in before.range::<_, String>((lower, Unbounded)).take(64) {
+                if let DocumentSlot::Stored(descriptor) = original.as_ref()
+                    && let Some(located) = LocatedDocument::of(descriptor)
+                    && let Some(slot) = collection.documents.get_mut(id)
+                {
+                    *slot = Arc::new(DocumentSlot::Located(located));
+                    compacted += 1;
+                }
+                last = Some(id);
+            }
+            let Some(last) = last else { break };
+            after = Some(last.clone());
+        }
+    }
+    compacted
+}
+
+/// Give each retained change record that still names the located slot a
+/// change of `changed` supersedes its complete descriptor, read from the
+/// `previous` generation's rows through `resolver`. A located record must
+/// always name its document's current version, which a later directory row
+/// resolves; this keeps a superseded after-image readable and collectable.
+pub(crate) fn rehydrate_superseded(
+    previous: &kasumi_types::TenantState,
+    resolver: Option<&dyn DocumentResolver>,
+    candidate: &mut kasumi_types::TenantState,
+    changed: &crate::application_primary::ChangedIds,
+) -> Result<usize> {
+    use kasumi_types::DocumentSlot;
+    let mut rehydrated = 0;
+    for (name, ids) in changed {
+        let Some(old) = previous.collections.get(name) else {
+            continue;
+        };
+        for id in ids {
+            let Some(slot) = old.documents.get(id) else {
+                continue;
+            };
+            if !matches!(slot.as_ref(), DocumentSlot::Located(_)) {
+                continue;
+            }
+            let Some(record) = feed_record_mut(
+                &mut candidate.change_feed,
+                slot.version(),
+                name,
+                id,
+                |record| {
+                    matches!(record.as_ref(), DocumentSlot::Located(_))
+                        && record.version() == slot.version()
+                },
+            ) else {
+                continue;
+            };
+            let descriptor = slot.descriptor(name, id, resolver)?.into_owned();
+            *record = Some(Arc::new(DocumentSlot::stored_descriptor(descriptor)));
+            rehydrated += 1;
+        }
+    }
+    Ok(rehydrated)
+}
+
 /// Each operation borrows the exact selected native source. It never opens
 /// latest and releases its native loan before returning an admitted body.
 #[derive(Clone)]
@@ -364,6 +653,7 @@ pub(crate) struct SelectedDocuments {
     selected: SelectedApplication,
     roots: SourceRootsRef,
     scope: Scope,
+    located: Option<Arc<LocatedRows>>,
 }
 impl SelectedDocuments {
     pub(crate) fn new(
@@ -378,7 +668,31 @@ impl SelectedDocuments {
             selected,
             roots,
             scope,
+            located: None,
         })
+    }
+
+    /// Resolve located slots from `rows`.
+    pub(crate) fn locating(mut self, rows: Option<Arc<LocatedRows>>) -> Self {
+        self.located = rows;
+        self
+    }
+
+    pub(crate) fn located_rows(&self) -> Option<&Arc<LocatedRows>> {
+        self.located.as_ref()
+    }
+
+    fn locate_with(
+        &self,
+        shared: Option<&SelectedRead>,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.located
+            .as_ref()
+            .context("located document has no selected primary rows")?
+            .locate(shared, collection, id, located)
     }
 
     /// Bootstrap materialization remains governed by this generation's exact
@@ -586,10 +900,21 @@ impl DocumentResolver for SelectedDocuments {
         reader.close()?;
         Ok(decoded.into_shared())
     }
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.locate_with(None, collection, id, located)
+    }
 }
 impl GenerationDocuments for SelectedDocuments {
     fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
         Ok(Some(Box::new(self.shared_reader())))
+    }
+    fn located_rows(&self) -> Option<Arc<LocatedRows>> {
+        self.located.clone()
     }
 }
 
@@ -676,7 +1001,26 @@ impl SelectedRead {
         checked_completion(result, self.with_reader(|reader| reader.check_access()))
     }
 }
+impl SelectedRead {
+    pub(crate) fn locate_shared(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.documents
+            .locate_with(Some(self), collection, id, located)
+    }
+}
 impl DocumentResolver for SelectedRead {
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.locate_shared(collection, id, located)
+    }
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
         let prepared = self.documents.prepare(descriptor)?;
         self.with_reader(|reader| {

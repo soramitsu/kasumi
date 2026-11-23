@@ -3096,6 +3096,7 @@ async fn ordinary_primary_round_trip(
             &**store,
             &manifest,
             &generation.state,
+            generation.document_resolver(),
             store.plaintext_memory_owner(),
         )?;
         Ok(manifest)
@@ -3442,6 +3443,10 @@ async fn ordinary_primary_round_trip(
     )
     .await?;
     let incomplete = engine.generation()?;
+    crate::document_gc::check_gc_after_primary_falls_behind(
+        &incomplete,
+        &fixture.storage.admission,
+    )?;
     let idle_revision = incomplete.state.revision;
     let incomplete_selection = incomplete.application_selection.get().unwrap();
     assert!(

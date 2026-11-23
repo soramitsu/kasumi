@@ -486,7 +486,8 @@ impl Database {
         };
         let mut chunk_bytes = crate::accounting::encoded_len(&chunk)?.saturating_add(16);
         let mut chunk_clone_bytes = 0u64;
-        for document in selected.into_values() {
+        let name = &request.collection;
+        for (id, document) in selected {
             cancellation.check()?;
             let bytes = usize::try_from(document.document_bytes().map_err(document_load_error)?)
                 .map_err(|_| query_workspace_overflow())?
@@ -521,9 +522,9 @@ impl Database {
             chunk_bytes += bytes;
             match document.as_ref() {
                 DocumentSlot::Pending(document) => chunk.documents.push(document.clone()),
-                DocumentSlot::Stored(_) => {
+                DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
                     let document = generation
-                        .load_document(&document)
+                        .load_document_at(name, &id, &document)
                         .map_err(document_load_error)?;
                     cancellation.check()?;
                     chunk_clone_bytes = chunk_clone_bytes

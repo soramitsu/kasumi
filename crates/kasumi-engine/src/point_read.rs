@@ -142,15 +142,18 @@ impl PointRead {
             .expect("selected point generation")
             .clone();
         let state = &generation.state;
-        let resident = |state: &TenantState, collection: &str, id: &str| {
+        let resident = |state: &TenantState,
+                        collection: &str,
+                        id: &str,
+                        resolver: Option<&dyn DocumentResolver>| {
             let selected = state
                 .collections
                 .get(collection)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
-            PrimaryPoint::resident(selected, id, state.revision)
+            PrimaryPoint::resident(selected, id, state.revision, resolver)
         };
         if generation.application_selection.get().is_none() {
-            let point = resident(state, collection, id)?;
+            let point = resident(state, collection, id, generation.document_resolver())?;
             return Ok((self, permit, point));
         }
         if validate_name(id).is_err() {
@@ -208,7 +211,7 @@ impl PointRead {
                 // Snapshots written by deployed revisions precede the directory.
                 let point = match point {
                     Some(point) => point,
-                    None => resident(state, &collection, &id)?,
+                    None => resident(state, &collection, &id, generation.document_resolver())?,
                 };
                 if let (Some(source), PrimaryPoint::Live(slot)) = (reads.shared(), &point) {
                     token.check()?;

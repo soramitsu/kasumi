@@ -807,6 +807,14 @@ async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_can
     // Loads through this wrapper, one view each, so it can pause one.
     impl crate::document_store::GenerationDocuments for PausedNativeDocument {}
     impl DocumentResolver for PausedNativeDocument {
+        fn locate(
+            &self,
+            collection: &str,
+            id: &str,
+            located: &kasumi_types::LocatedDocument,
+        ) -> anyhow::Result<StoredDocument> {
+            self.original.locate(collection, id, located)
+        }
         fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
             // Resolve the actual encrypted selected body and hold its original
             // decoded owner; the gate never substitutes a fixture document.
@@ -856,7 +864,7 @@ async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_can
             CursorDocuments::Generation(generation) => {
                 assert!(rows.rows.iter().all(|row| matches!(
                     generation.state.collections["docs"].documents[row.id.as_ref()].as_ref(),
-                    DocumentSlot::Stored(_)
+                    DocumentSlot::Stored(_) | DocumentSlot::Located(_)
                 )));
                 let mut selected = generation.lease_view();
                 let original = selected.document_sources.take().unwrap();

@@ -274,7 +274,7 @@ impl GenerationDocumentSource<'_> {
                 if let PrimaryPoint::Archived(reference) = &point
                     && let Some(hydrated) = self.collection().documents.get(id)
                 {
-                    if hydrated.id() != id || hydrated.version() != reference.version {
+                    if !hydrated.has_id(id) || hydrated.version() != reference.version {
                         return Err(
                             corruption("hydrated record differs from selected archive").into()
                         );
@@ -285,7 +285,7 @@ impl GenerationDocumentSource<'_> {
             }
         }
         lend(
-            PrimaryPoint::resident(self.collection(), id, state.revision)?,
+            PrimaryPoint::resident(self.collection(), id, state.revision, self.resolver())?,
             0,
         )
     }
@@ -815,7 +815,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                         if kind == kasumi_query::RecordKind::Archived
                             && let Some(live) = self.collection().documents.get(id)
                         {
-                            if live.id() != id || live.version() != *version {
+                            if !live.has_id(id) || live.version() != *version {
                                 return Err(corruption(
                                     "hydrated header differs from selected version",
                                 ));

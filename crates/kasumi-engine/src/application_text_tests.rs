@@ -238,7 +238,7 @@ fn next(previous: &TenantState, put: &[(&str, &str)], remove: &[&str]) -> (Tenan
 }
 
 fn stored(id: &str, version: u64) -> Arc<DocumentSlot> {
-    Arc::new(DocumentSlot::Stored(StoredDocument {
+    Arc::new(DocumentSlot::stored_descriptor(StoredDocument {
         id: id.into(),
         version,
         body_bytes: 10,
@@ -275,6 +275,7 @@ fn expanded_unicode_text_cuts_the_persisted_shard_at_its_normalized_byte_limit()
     build_shards(
         &provider,
         &layout,
+        "docs",
         documents.iter().map(|(id, slot)| (id.as_str(), slot)),
         &ResolverBodies(None),
         |shard| {
@@ -294,6 +295,8 @@ fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
     impl TextBodies for FailAtBody<'_> {
         fn with_body(
             &self,
+            _: &str,
+            _: &str,
             _: &DocumentSlot,
             _: &mut dyn FnMut(&Document) -> Result<()>,
         ) -> Result<()> {
@@ -313,6 +316,7 @@ fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
         build_shards(
             &provider,
             &layout,
+            "docs",
             std::iter::empty(),
             &bodies,
             |_| unreachable!(),
@@ -322,6 +326,7 @@ fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
         let error = build_shards(
             &provider,
             &layout,
+            "docs",
             [("one", slot.as_ref())].into_iter(),
             &bodies,
             |_| unreachable!(),

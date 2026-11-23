@@ -805,7 +805,7 @@ mod cold_document_accounting_tests {
                     version,
                     body: body.clone(),
                 });
-                let stored = Arc::new(DocumentSlot::Stored(
+                let stored = Arc::new(DocumentSlot::stored_descriptor(
                     StoredDocument::from_document(&document, [42; 32], 100, 1 << 20, 4096).unwrap(),
                 ));
                 let original =

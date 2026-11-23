@@ -231,7 +231,7 @@ pub(super) fn local_topology(
         .get("topology")
         .and_then(|collection| collection.documents.get("current"))
         .context("control topology unavailable")?;
-    let document = generation.load_document(document)?;
+    let document = generation.load_document_at("topology", "current", document)?;
     let mut decode = Decode::new(database.admission(), &document.body)?;
     if let Err(error) = decode.decode(database.admission(), document.version, &document.body) {
         drop(document);
@@ -298,7 +298,7 @@ pub(super) fn selected_topology(
         return Ok(None);
     }
     let document = document
-        .map(|document| generation.load_document(document))
+        .map(|document| generation.load_document_at("topology", "current", document))
         .transpose()?;
     let body = document
         .as_ref()

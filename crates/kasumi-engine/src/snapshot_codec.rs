@@ -167,7 +167,7 @@ impl WireChangeRecord {
             document: record
                 .document
                 .as_ref()
-                .map(|slot| slot.load_owned(resolver))
+                .map(|slot| slot.load_owned_at(&record.collection, &record.id, resolver))
                 .transpose()?,
         })
     }
@@ -230,8 +230,11 @@ pub(crate) fn records_with_resolver<'a>(
                 .iter()
                 .filter(move |(name, _)| primary.as_ref().is_none_or(|p| p == *name))
                 .flat_map(move |(name, collection)| {
-                    collection.documents.values().map(move |slot| {
-                        Ok(Record::Document(name.clone(), slot.load_owned(resolver)?))
+                    collection.documents.iter().map(move |(id, slot)| {
+                        Ok(Record::Document(
+                            name.clone(),
+                            slot.load_owned_at(name, id, resolver)?,
+                        ))
                     })
                 }),
         ));
@@ -1538,7 +1541,7 @@ fn read_placed(
                         .documents
                         .insert(
                             document.id.clone(),
-                            Arc::new(DocumentSlot::Stored(descriptor)),
+                            Arc::new(DocumentSlot::stored_descriptor(descriptor)),
                         );
                     if target.is_some() {
                         decoded_documents += 1;
@@ -1614,7 +1617,9 @@ fn read_placed(
                                 .as_mut()
                                 .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
                                 .push(document)
-                                .map(|descriptor| Arc::new(DocumentSlot::Stored(descriptor)))
+                                .map(|descriptor| {
+                                    Arc::new(DocumentSlot::stored_descriptor(descriptor))
+                                })
                         })
                         .transpose()?;
                     let commit = state

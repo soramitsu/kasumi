@@ -27,7 +27,10 @@ async fn query_pages_and_snapshot_reads_load_their_documents_through_one_reader(
         generation.state.collections["docs"]
             .documents
             .values()
-            .all(|slot| matches!(slot.as_ref(), DocumentSlot::Stored(_)))
+            .all(|slot| matches!(
+                slot.as_ref(),
+                DocumentSlot::Stored(_) | DocumentSlot::Located(_)
+            ))
     );
     drop(generation);
     let roots = fixture

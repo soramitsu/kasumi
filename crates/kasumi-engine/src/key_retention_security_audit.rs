@@ -288,7 +288,7 @@ impl SecurityAudit {
                 )
             })?;
         let document = generation
-            .load_document(document)
+            .load_document_at("topology", "current", document)
             .map_err(document_load_error)?;
         let size =
             crate::service::control_topology_service::topology_workspace_bytes(&document.body)?;
