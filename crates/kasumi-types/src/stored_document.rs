@@ -120,8 +120,9 @@ impl LocatedDocument {
 
 /// An unpublished bounded mutation can still own a decoded after-image while
 /// its indexes and durable body object are prepared. A published collection
-/// contains only `Stored` and `Located` slots, and a retained feed only
-/// `Stored` ones. A `Located` slot exists only in a generation whose resolver
+/// contains only `Stored` and `Located` slots. A retained feed record can
+/// share its current document's located slot until that document changes.
+/// A `Located` slot exists only in a generation whose resolver
 /// selected a primary directory holding its exact row; resolving it needs the
 /// collection name and the slot's map key. There is deliberately no
 /// context-free serialization of stored bodies, `Deref`, or body-returning

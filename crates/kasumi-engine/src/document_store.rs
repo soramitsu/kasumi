@@ -549,7 +549,7 @@ pub(crate) fn compact_reopened(state: &mut kasumi_types::TenantState) -> usize {
     let mut compacted = 0;
     let collections = &mut state.collections;
     let commits = &mut state.change_feed.commits;
-    let mut next = commits.get_min().map(|(&key, _)| key);
+    let mut next = commits.get_min().map(|(key, _)| *key);
     while let Some(key) = next {
         next = key
             .checked_add(1)
