@@ -3435,7 +3435,7 @@ async fn ordinary_primary_round_trip(
     // unchanged across the later stale-primary write and must remain reachable.
     db.mutate(
         context.clone(),
-        kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 6})),
+        kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 9})),
     )
     .await?;
     let generation = engine.generation()?;
