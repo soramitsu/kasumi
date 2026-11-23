@@ -386,6 +386,9 @@ pub(crate) trait SharedRead: DocumentResolver {
 pub(crate) struct LocatedRows {
     selection: SelectedApplication,
     boundary: crate::application_sources::SnapshotBoundary<String>,
+    // Inclusive next collection and document from the cold replay. Repeated
+    // publications advance this cursor without retaining the visited keys.
+    next_compaction: Option<(String, Option<String>)>,
 }
 
 impl LocatedRows {
@@ -394,22 +397,60 @@ impl LocatedRows {
     pub(crate) fn serving(
         selection: &SelectedApplication,
         state: &kasumi_types::TenantState,
-    ) -> Result<Option<Arc<Self>>> {
+    ) -> Result<Option<Self>> {
         use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
         let layout = selection.with_serving_primary(None, state, |_, _, layout| Ok(layout))?;
         Ok(layout
             .filter(|layout| *layout >= DOCUMENT_HEADERS_LAYOUT)
-            .map(|_| {
-                Arc::new(Self {
-                    selection: selection.clone(),
-                    boundary: state.into(),
-                })
+            .map(|_| Self {
+                selection: selection.clone(),
+                boundary: state.into(),
+                next_compaction: Some((String::new(), None)),
             }))
     }
 
     /// Whether these rows are the current directory of `state` itself.
     pub(crate) fn current_at(&self, state: &kasumi_types::TenantState) -> bool {
         self.boundary == crate::application_sources::SnapshotBoundary::<String>::from(state)
+    }
+
+    pub(crate) fn continue_compaction_from(&mut self, previous: &Self) {
+        self.next_compaction.clone_from(&previous.next_compaction);
+    }
+
+    /// Replayed writes can leave complete descriptors until the selected
+    /// directory catches up. Charge both document visits and empty collections
+    /// to the same fixed budget on each subsequent publication.
+    pub(crate) fn compact_page(&mut self, state: &mut kasumi_types::TenantState) -> usize {
+        use std::ops::Bound::{Included, Unbounded};
+        let Some((first, first_id)) = self.next_compaction.take() else {
+            return 0;
+        };
+        let mut changed = crate::application_primary::ChangedIds::new();
+        let mut remaining = 64;
+        'collections: for (name, collection) in state.collections.range(first.clone()..) {
+            if remaining == 0 {
+                self.next_compaction = Some((name.clone(), None));
+                break;
+            }
+            remaining -= 1;
+            let lower = if *name == first {
+                first_id.as_ref().map_or(Unbounded, Included)
+            } else {
+                Unbounded
+            };
+            for (id, slot) in collection.documents.range::<_, String>((lower, Unbounded)) {
+                if remaining == 0 {
+                    self.next_compaction = Some((name.clone(), Some(id.clone())));
+                    break 'collections;
+                }
+                remaining -= 1;
+                if matches!(slot.as_ref(), kasumi_types::DocumentSlot::Stored(_)) {
+                    changed.entry(name.clone()).or_default().insert(id.clone());
+                }
+            }
+        }
+        compact_changed(state, &changed)
     }
 
     pub(crate) fn locate(
@@ -525,7 +566,7 @@ pub(crate) fn compact_changed(
                 complete.version(),
                 name,
                 id,
-                |record| Arc::ptr_eq(record, &complete),
+                |record| Arc::ptr_eq(record, &complete) || record.as_ref() == complete.as_ref(),
             ) {
                 *record = Some(slot.clone());
             }
