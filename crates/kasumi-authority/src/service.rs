@@ -565,6 +565,20 @@ impl IndependentAuthority {
         caller: AuthenticatedNode,
         request: LeaseDiscovery,
     ) -> Result<(ServingIdentity, AuthorityResponseFence)> {
+        let (observation, fence) = self.discover_state(caller, request).await?;
+        match observation {
+            LeaseDiscoveryObservation::Serving(identity) => Ok((identity, fence)),
+            LeaseDiscoveryObservation::Fenced { .. } => Err(Error::new(
+                ErrorCode::Forbidden,
+                "requested incarnation is not available to this node",
+            )),
+        }
+    }
+    pub async fn discover_state(
+        self: &Arc<Self>,
+        caller: AuthenticatedNode,
+        request: LeaseDiscovery,
+    ) -> Result<(LeaseDiscoveryObservation, AuthorityResponseFence)> {
         let permit = self.permit()?;
         let signer = self.request_signer()?;
         request
@@ -587,7 +601,7 @@ impl IndependentAuthority {
             ));
         }
         let term = self.barrier(&context).await?;
-        let identity = self.backend.discover(&request).map_err(|_| {
+        let observation = self.backend.discover(&request).map_err(|_| {
             Error::new(
                 ErrorCode::Forbidden,
                 "requested incarnation is not available to this node",
@@ -595,26 +609,24 @@ impl IndependentAuthority {
         })?;
         // This private observation is only a final current-state fence. It is
         // never signed or returned as a lease and creates no client clock anchor.
-        let observation = LeaseRequest {
-            manifest_digest: self.installation().manifest.digest().map_err(unavailable)?,
-            identity: identity.clone(),
-            boot_id: Uuid::new_v4(),
-            attempt_id: Uuid::new_v4(),
-            purpose: request.purpose,
+        let lease = match &observation {
+            LeaseDiscoveryObservation::Serving(identity) => Some(LeaseRequest {
+                manifest_digest: self.installation().manifest.digest().map_err(unavailable)?,
+                identity: identity.clone(),
+                boot_id: Uuid::new_v4(),
+                attempt_id: Uuid::new_v4(),
+                purpose: request.purpose,
+            }),
+            // An exact source fence or a superseded immutable enrollment is
+            // permanent. Response release still checks quorum, term and caller.
+            LeaseDiscoveryObservation::Fenced { .. } => None,
         };
         if self.barrier(&context).await? != term {
             return Err(unavailable("discovery term changed"));
         }
-        let fence = self.fence(
-            permit,
-            signer.clone(),
-            context,
-            None,
-            Some(observation),
-            term,
-        );
+        let fence = self.fence(permit, signer.clone(), context, None, lease, term);
         fence.check()?;
-        Ok((identity, fence))
+        Ok((observation, fence))
     }
     pub async fn acquire(
         self: &Arc<Self>,

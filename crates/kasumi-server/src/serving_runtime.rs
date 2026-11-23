@@ -292,10 +292,19 @@ impl RuntimeLease {
             trust.clone(),
             Arc::new(move || credential(&path)),
         )?;
-        let identity = client
-            .discover_lease_before_deadline(&discovery, Duration::from_secs(5))
+        let observation = client
+            .discover_state_before_deadline(&discovery, Duration::from_secs(5))
             .await?
             .ok_or_else(lease_acquisition_deadline)?;
+        let kasumi_serving::LeaseDiscoveryObservation::Serving(identity) = observation else {
+            // This is a verified negative reply before creating any boot,
+            // key provider, lease worker or physical storage owner.
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Sealed,
+                "enrolled serving incarnation is permanently fenced",
+            )
+            .into());
+        };
         let mut boot = ServingBoot::new(trust, identity)?;
         if purpose == LeasePurpose::RestorePreparation {
             boot = boot.for_restore_preparation();

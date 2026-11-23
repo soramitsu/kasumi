@@ -406,6 +406,19 @@ impl KasumiAuthorityPool {
         })
         .await
     }
+    /// Only an authenticated exact closed observation is a fenced incarnation.
+    /// A local timeout, transport failure or unrelated rejection remains separate.
+    pub async fn discover_state_before_deadline(
+        &mut self,
+        request: &LeaseDiscovery,
+        timeout: Duration,
+    ) -> Result<Option<kasumi_serving::LeaseDiscoveryObservation>, ClientError> {
+        self.routed_request_before_deadline(None, timeout, |client, token| {
+            let request = request.clone();
+            Box::pin(async move { client.discovery(token, &request, true).await })
+        })
+        .await
+    }
     pub async fn acquire_lease(
         &mut self,
         attempt: &LeaseAttempt,

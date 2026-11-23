@@ -441,21 +441,49 @@ impl KasumiAuthorityClient {
         bearer: &str,
         request: &LeaseDiscovery,
     ) -> Result<ServingIdentity, ClientError> {
+        match self.discovery(bearer, request, false).await? {
+            kasumi_serving::LeaseDiscoveryObservation::Serving(identity) => Ok(identity),
+            kasumi_serving::LeaseDiscoveryObservation::Fenced { .. } => {
+                Err(ClientError::InvalidResponse("unsolicited serving fence"))
+            }
+        }
+    }
+    pub(crate) async fn discovery(
+        &mut self,
+        bearer: &str,
+        request: &LeaseDiscovery,
+        observe_fence: bool,
+    ) -> Result<kasumi_serving::LeaseDiscoveryObservation, ClientError> {
         request.validate()?;
         if request.node.certificate_sha256 != self.certificate_sha256 {
             return Err(anyhow::anyhow!("discovery differs from client TLS identity").into());
         }
-        let response = self
-            .inner
-            .discover_lease(self.authorized(
-                bearer,
-                proto::AuthorityJsonRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        let identity: ServingIdentity = serde_json::from_slice(&response.response_json)?;
+        let mut rpc = self.authorized(
+            bearer,
+            proto::AuthorityJsonRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        if observe_fence {
+            rpc.metadata_mut().insert(
+                kasumi_serving::DISCOVERY_FENCE_METADATA,
+                "1".parse().unwrap(),
+            );
+        }
+        let response = self.inner.discover_lease(rpc).await?.into_inner();
+        let observation: kasumi_serving::LeaseDiscoveryObservation =
+            serde_json::from_slice(&response.response_json)?;
+        let kasumi_serving::LeaseDiscoveryObservation::Serving(identity) = &observation else {
+            if observe_fence
+                && request.purpose == kasumi_serving::LeasePurpose::Serving
+                && matches!(&observation, kasumi_serving::LeaseDiscoveryObservation::Fenced { fenced } if fenced == request)
+            {
+                return Ok(observation);
+            }
+            return Err(ClientError::InvalidResponse(
+                "serving fence differs from discovery",
+            ));
+        };
         identity.validate()?;
         if identity.tenant != request.tenant
             || identity.incarnation != request.incarnation
@@ -465,7 +493,7 @@ impl KasumiAuthorityClient {
                 anyhow::anyhow!("discovery returned a different requested identity").into(),
             );
         }
-        Ok(identity)
+        Ok(observation)
     }
     /// Returned signed wire records describe immutable outcomes. They do not
     /// reopen data access; acquire_lease supplies the separate live capability.

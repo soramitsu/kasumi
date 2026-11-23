@@ -1335,6 +1335,49 @@ async fn encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnati
         .unwrap()
         .0
         .receipt;
+    let expected_fence = LeaseDiscoveryObservation::Fenced {
+        fenced: discovery.clone(),
+    };
+    let (proof, release) = service
+        .discover_state(caller(), discovery.clone())
+        .await
+        .unwrap();
+    assert_eq!(proof, expected_fence);
+    release.release().await.unwrap();
+    drop(release);
+    let mut wrong = discovery.clone();
+    wrong.node.verifier.installation_id = Uuid::new_v4();
+    assert_eq!(
+        service
+            .discover_state(caller(), wrong)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Forbidden
+    );
+    let mut absent = discovery.clone();
+    absent.incarnation = Uuid::new_v4();
+    assert_eq!(
+        service
+            .discover_state(caller(), absent)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Forbidden
+    );
+    let mut preparation = discovery.clone();
+    preparation.purpose = LeasePurpose::RestorePreparation;
+    assert_eq!(
+        service
+            .discover_state(caller(), preparation)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Forbidden
+    );
     let replacement = target(source);
     let activate = fixture.command(AuthorityAction::Activate {
         fence_id: fenced.command.command_id,
@@ -1389,6 +1432,31 @@ async fn encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnati
             ..
         }
     ));
+    let enrolled_caller = || {
+        AuthenticatedNode::from_verified_transport(
+            fixture.context("node-1"),
+            discovery.node.certificate_sha256.clone(),
+        )
+        .unwrap()
+    };
+    let (proof, release) = service
+        .discover_state(enrolled_caller(), discovery.clone())
+        .await
+        .unwrap();
+    assert_eq!(proof, expected_fence);
+    release.release().await.unwrap();
+    drop(release);
+    let mut wrong = discovery.clone();
+    wrong.node.verifier.installation_id = Uuid::new_v4();
+    assert_eq!(
+        service
+            .discover_state(enrolled_caller(), wrong)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Forbidden
+    );
     let caller = AuthenticatedNode::from_verified_transport(
         fixture.context("node-1"),
         discovery.node.certificate_sha256.clone(),

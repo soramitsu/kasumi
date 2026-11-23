@@ -1798,6 +1798,51 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
+    // Fence only after every live lease and signing rotation observation.
+    let mut fence_source = command.clone();
+    fence_source.command_id = uuid::Uuid::new_v4();
+    fence_source.expected_policy_epoch = 3;
+    fence_source.not_after_ms = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .now_ms()
+        .unwrap()
+        + 60_000;
+    fence_source.action = AuthorityAction::Fence {
+        incarnation,
+        authority_epoch: 1,
+    };
+    let accepted = client.execute(&successor, &fence_source).await.unwrap();
+    assert!(matches!(
+        accepted.receipt.outcome,
+        AuthorityOutcome::Fenced { .. }
+    ));
+    assert_eq!(
+        pool.discover_state_before_deadline(&discovery, crate::runtime_storage_fixtures::LIVENESS)
+            .await
+            .unwrap(),
+        Some(kasumi_serving::LeaseDiscoveryObservation::Fenced {
+            fenced: discovery.clone()
+        })
+    );
+    // Legacy discovery still rejects the request. A different physical
+    // verifier cannot discover another node's permanent fence.
+    assert_eq!(
+        client
+            .discover_lease(&node_token, &discovery)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(kasumi_types::ErrorCode::Forbidden)
+    );
+    let mut wrong = discovery.clone();
+    wrong.node.verifier.installation_id = uuid::Uuid::new_v4();
+    assert_eq!(
+        pool.discover_state_before_deadline(&wrong, crate::runtime_storage_fixtures::LIVENESS)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(kasumi_types::ErrorCode::Forbidden)
+    );
     shadow_stop.send_replace(true);
     shadow_task.await.unwrap().unwrap();
     follower_stop.send_replace(true);
