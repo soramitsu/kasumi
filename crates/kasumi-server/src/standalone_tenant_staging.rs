@@ -1,6 +1,7 @@
 //! Explicit stopped-installation staging. Key files and the configuration are
 //! owned by a durable operation; no tenant catalog or credential is created here.
 use super::*;
+use crate::runtime::MAX_CONFIG_BYTES;
 use sha2::{Digest, Sha256};
 
 const NS: &str = "standalone.tenant-staging";
@@ -306,6 +307,21 @@ pub(crate) async fn tenant_stage_status_with_storage(
     })
     .await
 }
+fn encode_staged_configuration(config: &RuntimeConfig) -> Result<String> {
+    let pretty = serde_json::to_string_pretty(config)?;
+    if pretty.len() <= MAX_CONFIG_BYTES {
+        return Ok(pretty);
+    }
+
+    drop(pretty);
+    let compact = serde_json::to_string(config)?;
+    ensure!(
+        compact.len() <= MAX_CONFIG_BYTES,
+        "staged configuration exceeds budget"
+    );
+    Ok(compact)
+}
+
 async fn stage_owned(
     owner: &OperatorState,
     configuration: &Path,
@@ -326,7 +342,7 @@ async fn stage_owned(
         owner.config.database_id,
         crate::node_enrollment::Kind::Data,
     )?;
-    let current = private_files::read(configuration, 2 << 20)?;
+    let current = private_files::read(configuration, MAX_CONFIG_BYTES)?;
     let original = load(owner, request.operation_id)?;
     let mut record = match original {
         Some(record) => {
@@ -392,11 +408,7 @@ async fn stage_owned(
                 "staged tenant already has an audit placement"
             );
             after.validate()?;
-            let after_json = serde_json::to_string_pretty(&after)?;
-            ensure!(
-                after_json.len() <= 2 << 20,
-                "staged configuration exceeds budget"
-            );
+            let after_json = encode_staged_configuration(&after)?;
             let mut record = Record {
                 format: 1,
                 database_id: owner.config.database_id,
@@ -467,7 +479,7 @@ async fn stage_owned(
     #[cfg(test)]
     tests::checkpoint(owner.config.database_id, "files-ready").await?;
     verify_files(&record, application_sha256, custody_sha256)?;
-    let current = private_files::read(configuration, 2 << 20)?;
+    let current = private_files::read(configuration, MAX_CONFIG_BYTES)?;
     if current.as_slice() != record.after_json.as_bytes() {
         ensure!(
             digest(&current) == record.before_sha256,

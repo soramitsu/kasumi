@@ -37,7 +37,7 @@ pub use kasumi_engine::{
     TransportAuditMetadata,
 };
 pub const CONTROL_TENANT: &str = "__kasumi_control";
-const MAX_CONFIG_BYTES: usize = 2 << 20;
+pub(crate) const MAX_CONFIG_BYTES: usize = 2 << 20;
 const MAX_PEM_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
