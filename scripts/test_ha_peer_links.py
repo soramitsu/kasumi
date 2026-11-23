@@ -1,13 +1,16 @@
 """Exercise the network cut on real, separately owned client sockets."""
+import asyncio
 import contextlib
+import errno
 from pathlib import Path
 import socketserver
 import subprocess
 import sys
 import threading
 import unittest
+from unittest.mock import Mock
 
-from ha_peer_links import Links, routes
+from ha_peer_links import Links, copy_stream, routes
 
 
 CLIENT = """
@@ -33,6 +36,22 @@ class Echo(socketserver.StreamRequestHandler):
                 self.wfile.write(str(self.server.node).encode())
         except ConnectionError:
             return
+
+
+class HalfCloseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnected_half_close_preserves_other_socket_errors(self):
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = Mock(spec=asyncio.StreamWriter)
+        writer.can_write_eof.return_value = True
+        writer.write_eof.side_effect = OSError(errno.ENOTCONN, "disconnected")
+        await copy_stream(reader, writer)
+        writer.write_eof.assert_called_once()
+        failure = OSError(errno.EIO, "I/O failure")
+        writer.write_eof.side_effect = failure
+        with self.assertRaises(OSError) as caught:
+            await copy_stream(reader, writer)
+        self.assertIs(caught.exception, failure)
 
 
 class PeerLinksTests(unittest.TestCase):

@@ -1,5 +1,6 @@
 """Opaque TCP links between the installed Data peer endpoints and their TLS listeners."""
 import asyncio
+import errno
 import ipaddress
 import os
 from pathlib import Path
@@ -83,7 +84,12 @@ async def copy_stream(reader, writer):
         writer.write(block)
         await writer.drain()
     if writer.can_write_eof():
-        writer.write_eof()
+        try:
+            writer.write_eof()
+        except OSError as error:
+            # A peer can disconnect between the final read and shutdown(SHUT_WR).
+            if error.errno != errno.ENOTCONN:
+                raise
 
 
 class Links:
