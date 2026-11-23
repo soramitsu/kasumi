@@ -133,39 +133,6 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
     let mut substituted = signed;
     substituted.observation.drain_ms = 0;
     assert!(trust.verify_target_stop(substituted, &reference).is_err());
-    let never_prepared = target(source);
-    let stop = fixture.command(AuthorityAction::StopTarget {
-        source_incarnation: source,
-        source_epoch: 1,
-        target: never_prepared.clone(),
-    });
-    let stopped = fixture.exact_administrative(stop).await;
-    assert!(matches!(
-        stopped.outcome,
-        AuthorityOutcome::TargetStopped { .. }
-    ));
-    let delayed = fixture
-        .exact_administrative(fixture.command(AuthorityAction::PrepareTarget {
-            source_incarnation: source,
-            source_epoch: 1,
-            target: never_prepared.clone(),
-        }))
-        .await;
-    assert!(matches!(
-        delayed.outcome,
-        AuthorityOutcome::Rejected { .. }
-    ));
-    let changed = fixture
-        .exact_administrative(fixture.command(AuthorityAction::StopTarget {
-            source_incarnation: source,
-            source_epoch: 2,
-            target: replacement.clone(),
-        }))
-        .await;
-    assert!(matches!(
-        changed.outcome,
-        AuthorityOutcome::Rejected { .. }
-    ));
     drop(service);
     let service = fixture.leader().await;
     use kasumi_raft::StateMachineBackend;
@@ -225,6 +192,41 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
             .target(),
         &replacement
     );
+    // A later stop can replace the bounded member-local observation. Exercise
+    // the other targets after checking the original issuer across restart.
+    let never_prepared = target(source);
+    let stop = fixture.command(AuthorityAction::StopTarget {
+        source_incarnation: source,
+        source_epoch: 1,
+        target: never_prepared.clone(),
+    });
+    let stopped = fixture.exact_administrative(stop).await;
+    assert!(matches!(
+        stopped.outcome,
+        AuthorityOutcome::TargetStopped { .. }
+    ));
+    let delayed = fixture
+        .exact_administrative(fixture.command(AuthorityAction::PrepareTarget {
+            source_incarnation: source,
+            source_epoch: 1,
+            target: never_prepared.clone(),
+        }))
+        .await;
+    assert!(matches!(
+        delayed.outcome,
+        AuthorityOutcome::Rejected { .. }
+    ));
+    let changed = fixture
+        .exact_administrative(fixture.command(AuthorityAction::StopTarget {
+            source_incarnation: source,
+            source_epoch: 2,
+            target: replacement.clone(),
+        }))
+        .await;
+    assert!(matches!(
+        changed.outcome,
+        AuthorityOutcome::Rejected { .. }
+    ));
     let fenced = fixture
         .exact_administrative(fixture.command(AuthorityAction::Fence {
             incarnation: source,
