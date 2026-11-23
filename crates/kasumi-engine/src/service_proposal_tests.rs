@@ -275,11 +275,11 @@ async fn shutdown_finishes_an_accepted_compact_body_patch_before_sealing_sources
     assert!(fixture.db.closing.load(Ordering::Acquire));
     // Closing request admission must not revoke an accepted writer's source.
     let generation = fixture.db.engine().generation().unwrap();
-    let document = generation.state.collections["docs"].documents["shutdown-body"]
-        .load(
-            generation
-                .document_resolver()
-                .expect("installed compact source"),
+    let document = generation
+        .load_document_at(
+            "docs",
+            "shutdown-body",
+            &generation.state.collections["docs"].documents["shutdown-body"],
         )
         .unwrap();
     assert_eq!(document.body["version"], 1);

@@ -562,13 +562,21 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let original_generation = fixture.db.engine().generation().unwrap();
-    let slot = original_generation.state.collections["docs"].documents["point"].clone();
+    // read_native receives the complete descriptor selected by the point lookup.
+    let crate::application_records::PrimaryPoint::Live(slot) =
+        crate::application_records::PrimaryPoint::resident(
+            &original_generation.state.collections["docs"],
+            "point",
+            original_generation.state.revision,
+            original_generation.document_resolver(),
+        )
+        .unwrap()
+    else {
+        panic!("expected the committed point document");
+    };
     let mut selected = original_generation.lease_view();
     drop(original_generation);
-    assert!(matches!(
-        slot.as_ref(),
-        DocumentSlot::Stored(_) | DocumentSlot::Located(_)
-    ));
+    assert!(matches!(slot.as_ref(), DocumentSlot::Stored(_)));
     let original = selected.document_sources.take().unwrap();
     assert!(
         selected
