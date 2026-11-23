@@ -1100,8 +1100,20 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_i
         failed.status.last_failure.as_deref(),
         Some(original.to_string().as_str())
     );
-    // Read the error through the independent cold operator before invoking
-    // resume: its outer failure handler has never run for this direct attempt.
+    // Seal the operator store after the real target failure. The reporting
+    // error must leave the original cause reachable, and the cold journal
+    // must still contain the diagnostic written before the store was sealed.
+    let original_cause = original.root_cause().to_string();
+    operator.store().seal();
+    let reported = operator
+        .report_step_failure(request.operation_id, original)
+        .await;
+    assert!(
+        reported
+            .to_string()
+            .contains("key-access lease unavailable or expired")
+    );
+    assert_eq!(reported.root_cause().to_string(), original_cause);
     crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);
     let cold = status_with_storage(&configuration, request.operation_id, storage.clone())
