@@ -63,8 +63,11 @@ fn trace_owned_stage<T, E: std::fmt::Display>(
 #[path = "target_call_jobs.rs"]
 mod target_call_jobs;
 use target_call_jobs::TargetCallJobs;
+#[path = "target_initialize_diagnostic.rs"]
+mod initialize_diagnostic;
 #[path = "target_call_failure.rs"]
 mod target_call_failure;
+pub(crate) use initialize_diagnostic::InitializeDiagnostic;
 pub(crate) use target_call_failure::TargetCallFailure;
 pub use target_call_failure::TargetCallReport;
 use target_call_failure::{TargetCallSeat, TargetTaskFailure};
@@ -1241,9 +1244,23 @@ impl TargetRecoveryRuntime {
         let failure = submission.seat().clone();
         let this = self.clone();
         let receive = submission.submit(async move {
+            let mut diagnostic = InitializeDiagnostic::default();
             let mut reply = this
-                .execute_owned(context, bearer, envelope, admission, failure)
-                .await?;
+                .clone()
+                .execute_owned(
+                    context,
+                    bearer,
+                    envelope,
+                    admission,
+                    failure,
+                    &mut diagnostic,
+                )
+                .await
+                .inspect_err(|original| {
+                    this.call_jobs
+                        .initialize_failures
+                        .record(&diagnostic, original)
+                })?;
             reply.permit = Some(permit);
             Ok::<_, TargetTaskFailure>(reply)
         })?;
@@ -1273,6 +1290,7 @@ impl TargetRecoveryRuntime {
         envelope: TargetExecuteRequest,
         admission: TargetRequestAdmission,
         failure: TargetCallSeat,
+        diagnostic: &mut InitializeDiagnostic,
     ) -> TargetTaskResult<TargetRuntimeReply> {
         let bearer = self.phase_observation_credential(bearer)?;
         let TargetExecuteRequest {
@@ -1307,6 +1325,7 @@ impl TargetRecoveryRuntime {
             Zeroizing::new(bearer.to_string()),
             &request,
             initial_dispatch.as_ref(),
+            diagnostic,
             #[cfg(test)]
             &self.marked_first_membership_reads,
             &admission,
@@ -1315,6 +1334,7 @@ impl TargetRecoveryRuntime {
         #[cfg(test)]
         trace_owned_stage(request.command_id, "acquire_phase", started, &phase);
         let (phase, initial_start) = phase?;
+        diagnostic.stage = "validate_input";
         let intent = phase.original().observation().intent.clone();
         snapshot_ensure!(
             intent.request.tenant == request.tenant,
@@ -1343,12 +1363,14 @@ impl TargetRecoveryRuntime {
         let key = (request.tenant.clone(), intent.request.target_incarnation);
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "prune_generations";
         let pruned = self.prune_expired(&admission).await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "prune_expired", started, &pruned);
         pruned?;
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "find_generation";
         let target = admission
             .run::<_, SnapshotFailure>(async {
                 let mut all = self.generations.lock().await;
@@ -1375,6 +1397,7 @@ impl TargetRecoveryRuntime {
         let target = target?;
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "lock_generation";
         let locked = admission
             .run::<_, SnapshotFailure>(async { Ok(target.lock().await) })
             .await;
@@ -1450,6 +1473,7 @@ impl TargetRecoveryRuntime {
         let phase = if let Some(old) = continuing {
             #[cfg(test)]
             let started = std::time::Instant::now();
+            diagnostic.stage = "discard_redundant_phase";
             let shutdown = phase.shutdown().await;
             #[cfg(test)]
             trace_owned_stage(request.command_id, "discard_new_phase", started, &shutdown);
@@ -1474,6 +1498,7 @@ impl TargetRecoveryRuntime {
             );
             #[cfg(test)]
             let started = std::time::Instant::now();
+            diagnostic.stage = "close_previous_generation";
             let closed = admission
                 .run::<_, SnapshotFailure>(async {
                     generation
@@ -1495,11 +1520,14 @@ impl TargetRecoveryRuntime {
         };
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "check_request";
         let checked = phase.check_request(&admission, &context, &bearer).await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "check_request", started, &checked);
         checked?;
+        diagnostic.stage = "begin_followup";
         let operation = phase.scope().begin_followup(admission)?;
+        diagnostic.stage = "prepare_journal";
         self.journal
             .prepare_runtime(
                 &operation,
@@ -1526,6 +1554,7 @@ impl TargetRecoveryRuntime {
         // unresolved effect. No caller infers abort from absence or an RPC error.
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "prepare_generation_node";
         let performed =
             match self.prepare_generation_node(&mut generation, &operation, &request.step, &key) {
                 Ok(()) => {
@@ -1539,6 +1568,7 @@ impl TargetRecoveryRuntime {
                         initial_dispatch.as_ref(),
                         &request,
                         &bearer,
+                        diagnostic,
                     )
                     .await
                 }
@@ -1571,6 +1601,7 @@ impl TargetRecoveryRuntime {
         };
         #[cfg(test)]
         let started = std::time::Instant::now();
+        diagnostic.stage = "release_response";
         let released = reply.release_inner().await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "release_reply", started, &released);
@@ -1789,6 +1820,7 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&'a TargetInitialDispatchIdentity>,
         request: &'a TargetRuntimeRequest,
         bearer: &'a Zeroizing<String>,
+        diagnostic: &'a mut InitializeDiagnostic,
     ) -> TargetPerformFuture<'a> {
         // Select one existing boxed dispatch allocation. Materialization must
         // not carry the other recovery steps' poll temporaries while retiring
@@ -1815,6 +1847,7 @@ impl TargetRecoveryRuntime {
                 initial_dispatch,
                 request,
                 bearer,
+                diagnostic,
             )),
         }
     }
@@ -2087,7 +2120,9 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&TargetInitialDispatchIdentity>,
         request: &TargetRuntimeRequest,
         bearer: &Zeroizing<String>,
+        diagnostic: &mut InitializeDiagnostic,
     ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
+        diagnostic.stage = "prepare_replica_stores";
         let intent = &phase.original().observation().intent;
         let key = (
             intent.request.tenant.clone(),
@@ -2150,6 +2185,7 @@ impl TargetRecoveryRuntime {
             ) || g.replica.is_none(),
             "accepted Start cannot replace a live target child"
         );
+        diagnostic.stage = "require_original_start_child";
         snapshot_ensure!(
             !matches!(step, TargetRuntimeStep::Initialize(_)) || g.replica.is_some(),
             "Initialize requires the continuously owned original Start child"
@@ -2248,9 +2284,11 @@ impl TargetRecoveryRuntime {
                 ResponseEvidence::Started(stores.clone()),
             )),
             TargetRuntimeStep::Initialize(_) => {
+                diagnostic.stage = "bind_initialize";
                 let permit = initial_candidate
                     .ok_or_else(|| missing_target_owner("accepted Initialize candidate absent"))?
                     .bind_initialize(&self.journal, op, replica)?;
+                diagnostic.stage = "read_original_control";
                 let identity = initial_dispatch
                     .ok_or_else(|| missing_target_owner("Initialize dispatch identity absent"))?;
                 let (original, marked) = observe_initial_dispatch_from_control(
@@ -2265,6 +2303,7 @@ impl TargetRecoveryRuntime {
                     &self.marked_first_membership_reads,
                 )
                 .await?;
+                diagnostic.stage = "prove_association";
                 let association = permit.prove(
                     replica,
                     self.journal.clone(),
@@ -2272,10 +2311,13 @@ impl TargetRecoveryRuntime {
                     marked.clone(),
                     op,
                 )?;
+                diagnostic.stage = "sign_association";
                 let signed = self
                     .signer
                     .sign_initialization_association(&association, op)?;
+                diagnostic.stage = "commit_membership";
                 association.commit(&signed, op).await?;
+                diagnostic.stage = "record_membership_history";
                 self.journal
                     .record_initial_membership_history(
                         &original, &marked, identity, request, &stores,
@@ -2567,7 +2609,9 @@ impl TargetRecoveryRuntime {
         if retained.is_some() {
             return report.outcome(retained);
         }
-        if let Err(error) = self.call_jobs.drain().await {
+        let calls = self.call_jobs.drain().await;
+        self.call_jobs.initialize_failures.export();
+        if let Err(error) = calls {
             report.merge(&error);
             if error.completion() == DrainCompletion::Retained {
                 retained = Some(error);

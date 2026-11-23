@@ -29,6 +29,7 @@ pub(crate) struct PhaseCallback {
     node: LifecycleNode,
     command: Uuid,
     historical_intent: Option<Uuid>,
+    initial_dispatch: Option<(Uuid, Uuid)>,
     phases: Vec<(Uuid, Uuid)>,
     original: RequestContext,
     fence: ResponseFence<'static>,
@@ -98,6 +99,12 @@ impl PhaseCallbacks {
             node: node.clone(),
             command: request.command_id,
             historical_intent,
+            initial_dispatch: matches!(
+                &request.step,
+                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                    | TargetRuntimeStep::Initialize(_)
+            )
+            .then_some(phase),
             phases,
             original: original.clone(),
             fence,
@@ -109,6 +116,37 @@ impl PhaseCallbacks {
             callbacks: self,
             callback,
         })
+    }
+
+    pub(crate) fn find_initial_start_reader(
+        &self,
+        reader: &RequestContext,
+        peer: &[u8; 32],
+        command: Uuid,
+        database: &Database,
+    ) -> Result<Option<Arc<PhaseCallback>>> {
+        let callback = {
+            let live = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut active = live
+                .values()
+                .filter(|c| c.initial_dispatch.is_some() && c.command == command);
+            let Some(callback) = active.next().cloned() else {
+                return Ok(None);
+            };
+            if active.next().is_some() {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "original Start observation is ambiguous",
+                ));
+            }
+            callback
+        };
+        if callback.current_initial_intent_reader(reader, peer, command, database)? {
+            callback.check(reader, database)?;
+            Ok(Some(callback))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn find(
@@ -141,18 +179,75 @@ impl PhaseCallbacks {
             ));
         }
         drop(live);
-        callback.check(reader, database)?;
+        if let Observation::Intent(command) = observation {
+            callback.release_intent(reader, peer, command, database)?;
+        } else {
+            callback.check(reader, database)?;
+        }
         Ok(Some(callback))
     }
 }
 impl PhaseCallback {
+    fn current_initial_intent_reader(
+        &self,
+        reader: &RequestContext,
+        peer: &[u8; 32],
+        command: Uuid,
+        database: &Database,
+    ) -> Result<bool> {
+        let Some((operation, pending)) = self.initial_dispatch else {
+            return Ok(false);
+        };
+        if self.command != command {
+            return Ok(false);
+        }
+        database.is_current_initial_intent_reader(
+            operation,
+            pending,
+            command,
+            &self.original,
+            reader,
+            &hex::encode(peer),
+        )
+    }
+
+    pub(crate) fn release_intent(
+        &self,
+        reader: &RequestContext,
+        peer: &[u8; 32],
+        command: Uuid,
+        database: &Database,
+    ) -> Result<()> {
+        self.check(reader, database)?;
+        if self.initial_dispatch.is_some() {
+            if self.current_initial_intent_reader(reader, peer, command, database)? {
+                // The ledger checks the applicable original caps after loading
+                // the rows. Recheck the live dispatch guard last.
+                return self.check_active();
+            }
+        } else if self.node.principal == reader.principal
+            && self.node.certificate_sha256 == hex::encode(peer)
+            && (self.command == command || self.historical_intent == Some(command))
+        {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorCode::Unavailable,
+            "original Start observation is no longer current",
+        ))
+    }
+
+    fn check_active(&self) -> Result<()> {
+        if !self.active.load(Ordering::Acquire) || Instant::now() >= self.deadline {
+            return Err(Error::new(ErrorCode::Unavailable, "target dispatch closed"));
+        }
+        Ok(())
+    }
     pub(crate) fn original(&self) -> &RequestContext {
         &self.original
     }
     pub(crate) fn check(&self, reader: &RequestContext, database: &Database) -> Result<()> {
-        if !self.active.load(Ordering::Acquire) || Instant::now() >= self.deadline {
-            return Err(Error::new(ErrorCode::Unavailable, "target dispatch closed"));
-        }
+        self.check_active()?;
         if reader.scopes.len() != 1 || !reader.scopes.contains(&Action::Read) {
             return Err(Error::new(
                 ErrorCode::Forbidden,

@@ -305,7 +305,9 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .map_err(status)?;
         proof.release().await.map_err(status)?;
         if let Some(active) = callback {
-            active.check(&context, &self.database).map_err(status)?;
+            active
+                .release_intent(&context, &peer, id, &self.database)
+                .map_err(status)?;
         }
         Ok(Response::new(response))
     }

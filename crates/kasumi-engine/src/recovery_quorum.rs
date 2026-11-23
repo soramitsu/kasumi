@@ -46,6 +46,117 @@ pub(crate) fn started_for(
         (RecoveryDispatch::Target {node_id,request},Some(RecoveryDispatchOutcome::Target(response)))
         if *node_id==node && request.command_id==intent_id && response.node_id==node && matches!(response.outcome,TargetRuntimeOutcome::Started{..})))
 }
+pub(crate) fn current_initial_intent_reader(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    pending: Uuid,
+    command: Uuid,
+    dispatch_principal: &str,
+    sender: (&str, &str),
+    now: impl FnOnce() -> Result<u64>,
+) -> Result<bool> {
+    if operation.phase != RecoveryPhase::Initialize
+        || operation.pending_phase != Some(pending)
+        || operation.current_intent != Some(command)
+        || operation.initialization.is_some()
+        || operation.stop_request.is_some()
+    {
+        return Ok(false);
+    }
+    let active = phase(state, operation, pending)?;
+    let RecoveryDispatch::Target {
+        node_id: receiving_node,
+        request,
+    } = &active.input
+    else {
+        return Ok(false);
+    };
+    let (TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum))
+    | TargetRuntimeStep::Initialize(quorum)) = &request.step
+    else {
+        return Ok(false);
+    };
+    let current = intent(state, operation, command)?;
+    let Some(control) = &state.lifecycle_control else {
+        return Ok(false);
+    };
+    if control.retired
+        || control.pending_change.is_some()
+        || control.installation.generation != current.installation_generation
+        || control.installation.root.control_incarnation != current.control_incarnation
+        || state.policy_epoch != current.request.expected_policy_epoch
+        || active.principal != dispatch_principal
+        || active.principal != current.original_principal
+        || active.phase != RecoveryPhase::Initialize
+        || active.outcome.is_some()
+        || active
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .is_none_or(|attempt| attempt.input_sha256 != active.input_sha256)
+        || request.command_id != command
+        || request.tenant != operation.request.tenant
+        || current.request.phase != LifecyclePhase::Initialize
+        || current.request.target_incarnation != operation.request.target_incarnation
+        || current.request.tenant != request.tenant
+        || current.request.target_nodes != operation.request.target_nodes
+        || current.request.phase_input_sha256 != quorum.digest()?
+    {
+        return Ok(false);
+    }
+    let (principal, certificate_sha256) = sender;
+    let Some(reader) =
+        current.request.target_nodes.values().find(|node| {
+            node.principal == principal && node.certificate_sha256 == certificate_sha256
+        })
+    else {
+        return Ok(false);
+    };
+    let dispatch_cap =
+        effect_dispatch_limit(operation, active)?.min(current.original_credential_expires_at_ms);
+    if reader.node_id == *receiving_node
+        && matches!(
+            &request.step,
+            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+        )
+    {
+        return Ok(now()? < dispatch_cap);
+    }
+    let Some(started) = operation
+        .voters
+        .get(&reader.node_id)
+        .and_then(|progress| progress.started)
+    else {
+        return Ok(false);
+    };
+    let start = phase(state, operation, started)?;
+    let (
+        RecoveryDispatch::Target {
+            node_id,
+            request: original,
+        },
+        Some(RecoveryDispatchOutcome::Target(reply)),
+    ) = (&start.input, &start.outcome)
+    else {
+        return Ok(false);
+    };
+    let cap = effect_dispatch_limit(operation, start)?.min(dispatch_cap);
+    Ok(start.phase == RecoveryPhase::Initialize
+        && start.principal == current.original_principal
+        && start.resolved_revision.is_some()
+        && start
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .is_some_and(|attempt| attempt.input_sha256 == start.input_sha256)
+        && *node_id == reader.node_id
+        && original.command_id == command
+        && original.tenant == request.tenant
+        && matches!(&original.step, TargetRuntimeStep::Start(TargetReplicaInput::Quorum(input)) if input == quorum)
+        && reply.command_id == command
+        && reply.node_id == reader.node_id
+        && matches!(&reply.outcome, TargetRuntimeOutcome::Started {origin_sha256} if origin_sha256 == &quorum.origin_sha256)
+        && now()? < cap)
+}
+
 pub(crate) fn all_started(
     state: &TenantState,
     operation: &RecoveryRecord,

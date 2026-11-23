@@ -230,6 +230,7 @@ impl RuntimeTargetPhase {
         original_bearer: Zeroizing<String>,
         request: &TargetRuntimeRequest,
         initial_dispatch: Option<&TargetInitialDispatchIdentity>,
+        diagnostic: &mut crate::target_runtime::InitializeDiagnostic,
         #[cfg(test)] marked_read_count: &AtomicU64,
         admission: &TargetRequestAdmission,
     ) -> Result<(Arc<Self>, Option<kasumi_engine::VerifiedInitialMembership>)> {
@@ -373,10 +374,18 @@ impl RuntimeTargetPhase {
                 )
                 .into());
             };
+            if matches!(
+                &request.step,
+                kasumi_types::TargetRuntimeStep::Initialize(_)
+            ) {
+                diagnostic.phase = Some(identity.phase_id);
+                diagnostic.stage = "verify_reserved_membership";
+            }
             admission.check()?;
             initial_start =
                 Some(prebind.verify_initial_membership(node_id, LifecyclePhase::Initialize)?);
         }
+        diagnostic.stage = "configure_issuer";
         let connections = endpoints
             .iter()
             .map(|(id, endpoint)| {
@@ -418,6 +427,7 @@ impl RuntimeTargetPhase {
         // Give the original one-shot issuer effect more time to resolve through
         // its exact receipt. The enclosing admission still enforces the original
         // target deadline and credential lifetime; this does not replay an effect.
+        diagnostic.stage = "issuer_accept";
         admission
             .run(async {
                 Ok::<_, anyhow::Error>(
@@ -427,6 +437,7 @@ impl RuntimeTargetPhase {
                 )
             })
             .await?;
+        diagnostic.stage = "acquire_lifecycle_grant";
         let boot = LifecycleBoot::new(trust.clone(), node)?;
         // Anchored before credential acquisition and dispatch; retries construct
         // distinct attempts, never reset the deadline of an earlier response.
@@ -446,6 +457,7 @@ impl RuntimeTargetPhase {
         let purpose = lease.signed().claims.application_purpose;
         let gate = LifecycleGate::new(original_context, lease)?;
         let scope = TargetOperationScope::new(TargetLifecycleInvocation::from_verified(gate)?)?;
+        diagnostic.stage = "acquire_storage_grant";
         let serving = if intent.request.phase == LifecyclePhase::StopLocal {
             None
         } else {
@@ -476,8 +488,10 @@ impl RuntimeTargetPhase {
             renewal: Default::default(),
             drain_report: Default::default(),
         });
+        diagnostic.stage = "observe_current_control";
         let budget = ObservationBudget::Admission(admission);
         admission.run(runtime.check_current(&budget)).await?;
+        diagnostic.stage = "start_renewal";
         let weak = Arc::downgrade(&runtime);
         let wake = runtime.renewal.wake();
         let partition = runtime
@@ -702,6 +716,13 @@ impl RuntimeTargetPhase {
                     .min(Duration::from_secs(5)),
             )
             .await?;
+        drop(issuer);
+        if self.original.observation().intent.request.phase == LifecyclePhase::Initialize {
+            // A sibling dispatch can finish, abort or be superseded while the
+            // issuer is answering. Only an independently current original
+            // Control read may publish this renewal into the existing live gate.
+            self.check_current(&budget).await?;
+        }
         self.scope.invocation().gate().renew(lease)?;
         Ok(())
     }
