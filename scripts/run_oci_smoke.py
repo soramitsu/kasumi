@@ -169,6 +169,52 @@ def check_outputs(outputs):
             "container daemon did not exit zero on its stop signal")
 
 
+def ready_response(output):
+    result = json.loads(output)
+    require(isinstance(result, dict) and type(result.get("ready")) is bool
+            and isinstance(result.get("lifecycle"), str), "invalid protected readiness reply")
+    return result["ready"] and result["lifecycle"] == "serving"
+
+
+def verify_polls(acceptance, custody, report, steps):
+    retries = report["details"]["ready_polls"]
+    require(isinstance(retries, list) and len(retries) <= 2 * (READY_POLLS - 1)
+            and all(isinstance(ref, dict) for ref in retries), "invalid OCI readiness poll roster")
+    pending = iter(retries)
+    successful = {p["id"]: p["receipt"] for p in report["processes"]}
+    runtime = report["details"]["tools"]["runtime"]
+    for step, _, command in steps:
+        if not step.startswith("ready-"):
+            continue
+        for poll in range(READY_POLLS):
+            expected = f"{step}-{poll:04d}/process.json"
+            last = successful[step]["path"] == expected
+            ref = successful[step] if last else next(pending, None)
+            require(isinstance(ref, dict) and ref.get("path") == expected,
+                    "missing or reordered OCI readiness poll")
+            record = acceptance.json_reference(custody, ref)
+            code = record["exit_code"]
+            require(type(code) is int and 0 <= code <= 255 and record["executable"] == runtime
+                    and record["working_directory"] == str(Path(report["evidence_root"]) / "source"),
+                    "OCI readiness poll used another runtime or source")
+            gate = {"command": command, "process": expected, "process_sha256": ref["sha256"],
+                    "process_cleanup": record["cleanup"], "timeout_seconds": TIMEOUT,
+                    "received_signals": [], "timed_out": False, "process_error": None}
+            acceptance.package.verify_process_receipt(custody, gate, TIMEOUT, expected_exit=code)
+            directory = Path(expected).parent
+            for stream in ("stdout", "stderr"):
+                require(record[stream]["path"] == (directory / (stream + ".log")).as_posix(),
+                        "OCI readiness poll named another output")
+                acceptance.reference(custody, record[stream])
+            ready = code == 0 and ready_response((custody / record["stdout"]["path"]).read_bytes())
+            require(ready == last, "OCI readiness polls disagree with the protected replies")
+            if last:
+                break
+        else:
+            raise ValueError("OCI readiness poll count exceeds the runner limit")
+    require(next(pending, None) is None, "unexpected extra OCI readiness poll")
+
+
 def check_record(record, image, target, image_sha256, sbom_sha256):
     """The assembly record names exactly the verified image and SBOM bytes."""
     require(isinstance(record, dict) and record.get("schema") == oci_image.SCHEMA
@@ -279,16 +325,22 @@ def run_steps(run, parameters, image, steps, outputs, pause, received):
                 item = owned.run_owned(run.output, f"{step}-{poll:04d}", command, str(run.source),
                                        run.environment, TIMEOUT)
                 result = owned.read(owned.check_ref(run.output, item["receipt"]))
-                if result["exit_code"] == 0:
+                polls = run.report["details"]["ready_polls"]
+                polls.append(item["receipt"])
+                run.save()
+                if result["received_signals"]:
+                    raise KeyboardInterrupt("OCI readiness probe interrupted")
+                require(result["outputs_stable"] and not result["timed_out"] and not result["error"]
+                        and result["exit_code"] == result["process_exit_code"],
+                        "OCI readiness probe did not complete cleanly")
+                if result["exit_code"] == 0 and ready_response(
+                        owned.check_ref(run.output, item["stdout"]).read_bytes()):
+                    polls.pop()
                     run.report["processes"].append({
                         "id": step, "receipt": item["receipt"], "log": item["stdout"],
                         "executable": item["executable"]})
                     run.save()
                     break
-                run.report["details"]["ready_polls"].append(item["receipt"])
-                run.save()
-                if result["received_signals"]:
-                    raise KeyboardInterrupt("OCI readiness probe interrupted")
                 time.sleep(pause)
             else:
                 raise ValueError("container daemon never became ready: " + step)
@@ -364,6 +416,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     custody = facts["custody"]
     roster = [item["id"] for item in report["processes"]]
     require(roster == [step for step, _, _ in steps], "OCI smoke process roster differs from its plan")
+    verify_polls(acceptance, custody, report, steps)
     outputs, attributed = {}, {}
     logs = {item["id"]: item["log"] for item in report["processes"]}
     for step, scenario, command in steps:

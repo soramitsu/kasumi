@@ -91,7 +91,10 @@ elif args[0] == "rm":
 elif args[0] == "exec" and args[-1] == "ready":
     memory["polls"] = memory.get("polls", 0) + 1
     state.write_text(json.dumps(memory))
-    sys.exit(0 if memory["polls"] > behavior.get("ready_failures", 0) else 1)
+    if memory["polls"] <= behavior.get("ready_failures", 0):
+        sys.exit(1)
+    ready = memory["polls"] > behavior.get("ready_failures", 0) + behavior.get("not_ready", 0)
+    print(json.dumps({"ready": ready, "lifecycle": "serving" if ready else "starting"}))
 elif args[0] == "exec" and args[-1] == "collections":
     if behavior.get("client_error"):
         print("injected native failure", file=sys.stderr)
@@ -437,12 +440,12 @@ class SmokeTests(ImageFixture):
         return record, identity, configs, delivered, candidates
 
     def test_delivered_image_is_loaded_exercised_restarted_and_stopped(self):
-        self.behave_runtime(ready_failures=2)
+        self.behave_runtime(ready_failures=2, not_ready=1)
         custody = self.smoke("oci-1")
         report = json.loads((custody / "report.json").read_text())
         self.assertEqual({item["id"] for item in report["scenarios"]},
                          {"load-image", "fresh-install", "native", "mcp", "restart", "clean-stop"})
-        self.assertEqual(len(report["details"]["ready_polls"]), 2)
+        self.assertEqual(len(report["details"]["ready_polls"]), 3)
         self.assertEqual([request[2] for request in self.requests], ["tools/list", "tools/list"])
         self.assertTrue(all(request[:2] == ("/mcp", "Bearer unit-token") for request in self.requests))
         copied = json.loads((self.runtime.parent / "runtime-state.json").read_text())["copied"]
@@ -458,6 +461,13 @@ class SmokeTests(ImageFixture):
         record, identity, configs, delivered, candidates = self.bundle(custody)
         self.assertEqual(self.accept(record, identity, configs, delivered, candidates),
                          ("oci-smoke", "runs/oci-1/outcome.json"))
+        altered = copy.deepcopy(report)
+        altered["details"]["ready_polls"].pop(0)
+        steps = smoke.plan(report["invocation"]["parameters"], report["details"]["image"],
+                           report["details"]["tools"]["python"]["path"],
+                           str(self.source / "scripts/mcp_probe.py"))
+        with self.assertRaisesRegex(ValueError, "missing or reordered OCI readiness poll"):
+            smoke.verify_polls(acceptance, custody, altered, steps)
 
         def rejected(message, change):
             altered = copy.deepcopy((record, identity, configs, delivered, candidates))
