@@ -1988,18 +1988,7 @@ impl Administration {
 
     fn record_drain_issues(&self, tenant: &str, incarnation: &str, failure: &DrainFailure) {
         let names = component_names(failure);
-        let raft_failure_class = failure
-            .issues()
-            .iter()
-            .find_map(|issue| kasumi_raft::raft_failure_class(issue.error()))
-            .unwrap_or("none");
-        tracing::warn!(
-            tenant,
-            event = "original_tenant_drain_completed_with_issues",
-            components = joined(&names),
-            raft_failure_class,
-            "closed original tenant drained with recorded issues"
-        );
+        crate::logging::original_tenant_drain_completed(tenant, &joined(&names), failure);
         if let Ok(mut pending) = self.pending_admission.write()
             && let Some(record) = pending.get_mut(&(tenant.to_owned(), incarnation.to_owned()))
         {

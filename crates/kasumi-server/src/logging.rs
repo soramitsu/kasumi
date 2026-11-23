@@ -99,6 +99,52 @@ fn write_panic_detail(
 /// that is retried logs each attempt; only these many write a file.
 const DRAIN_DIAGNOSTICS: usize = 32;
 
+fn private_drain_diagnostic(
+    failure: &kasumi_types::drain::DrainFailure,
+) -> (std::path::PathBuf, bool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+    let path = crate::startup_preparation::diagnostic_path("drain");
+    let details = std::fmt::from_fn(|f| {
+        write!(f, "drain {:?}", failure.completion())?;
+        for issue in failure.issues() {
+            write!(
+                f,
+                "; {}[{}]: {:#}",
+                issue.component(),
+                issue.instance(),
+                issue.error()
+            )?;
+        }
+        Ok(())
+    });
+    let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < DRAIN_DIAGNOSTICS
+        && crate::startup_preparation::write_private_text(&path, details).is_ok();
+    (path, written)
+}
+
+pub(crate) fn original_tenant_drain_completed(
+    tenant: &str,
+    components: &str,
+    failure: &kasumi_types::drain::DrainFailure,
+) {
+    let raft_failure_class = failure
+        .issues()
+        .iter()
+        .find_map(|issue| kasumi_raft::raft_failure_class(issue.error()))
+        .unwrap_or("none");
+    let (path, written) = private_drain_diagnostic(failure);
+    tracing::warn!(
+        tenant,
+        event = "original_tenant_drain_completed_with_issues",
+        components,
+        raft_failure_class,
+        diagnostic_written = written,
+        diagnostic_path = %path.display(),
+        "closed original tenant drained with recorded issues"
+    );
+}
+
 /// A drain failure's completion and component names are fixed labels. The
 /// text of its issues is not: a joined worker's error, for one, quotes that
 /// worker's panic message. The journal line carries the labels, and the text
@@ -108,17 +154,13 @@ pub(crate) fn drain_failed(
     failure: &kasumi_types::drain::DrainFailure,
     retry_after_secs: Option<u64>,
 ) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
     let components = failure
         .issues()
         .iter()
         .map(|issue| format!("{}[{}]", issue.component(), issue.instance()))
         .collect::<Vec<_>>()
         .join(",");
-    let path = crate::startup_preparation::diagnostic_path("drain");
-    let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < DRAIN_DIAGNOSTICS
-        && crate::startup_preparation::write_private_text(&path, failure).is_ok();
+    let (path, written) = private_drain_diagnostic(failure);
     tracing::error!(
         event,
         completion = ?failure.completion(),
@@ -506,6 +548,17 @@ mod tests {
             );
             let failure = kasumi_types::drain::DrainFailure::retained(issue);
             drain_failed("fixture_drain_retained", &failure, Some(4));
+            let mut recovered = kasumi_types::drain::DrainReport::default();
+            recovered.record(
+                "background work result",
+                0,
+                anyhow::anyhow!("private-storage-cause").context("worker returned"),
+            );
+            original_tenant_drain_completed(
+                "corpus",
+                "background work result",
+                &recovered.complete().unwrap_err(),
+            );
             credential_renewal_budget_spent(uuid::Uuid::nil());
             return;
         }
@@ -530,6 +583,7 @@ mod tests {
                 "vault.internal",
                 "private-repeated",
                 "private-drain-payload",
+                "private-storage-cause",
             ] {
                 assert!(!printed.contains(private), "{private}");
             }
@@ -589,6 +643,18 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("drain Retained; background worker[3]: "));
         assert!(text.contains("private-drain-payload"));
+        let recovered = event("original_tenant_drain_completed_with_issues");
+        assert_eq!(recovered["level"], "WARN");
+        let fields = &recovered["fields"];
+        assert_eq!(fields["components"], "background work result");
+        assert_eq!(fields["diagnostic_written"], true);
+        let path = std::path::Path::new(fields["diagnostic_path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(directory.path()));
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "drain Complete; background work result[0]: worker returned: private-storage-cause\n"
+        );
         let spent = event("credential_renewal_budget_spent");
         assert_eq!(spent["level"], "WARN");
         assert_eq!(
@@ -606,10 +672,10 @@ mod tests {
                 .count()
         };
         assert_eq!(files("kasumi-panic-"), PANIC_DIAGNOSTICS);
-        assert_eq!(files("kasumi-drain-"), 1);
+        assert_eq!(files("kasumi-drain-"), 2);
         assert_eq!(
             std::fs::read_dir(directory.path()).unwrap().count(),
-            PANIC_DIAGNOSTICS + 1
+            PANIC_DIAGNOSTICS + 2
         );
     }
 
