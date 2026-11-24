@@ -160,6 +160,7 @@ struct Fixture {
     signing: kasumi_serving::test_utils::FixtureAuthority,
     signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
+    replayed_unknown_replies: Option<Mutex<Vec<(String, kasumi_types::drain::DrainIssueRef)>>>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -398,8 +399,9 @@ impl Fixture {
     ) -> kasumi_serving::SignedAuthorityReceipt {
         let context = self.context("operator");
         let expected_digest = command.digest().unwrap();
+        let mut unknown_replies = Vec::new();
         let deadline = tokio::time::Instant::now() + FIXTURE_OBSERVATION_WINDOW;
-        loop {
+        let receipt = loop {
             let current = self.leader().await;
             // A previous dispatch may have committed while its reply or leader
             // changed. Read that exact permanent identity before any retry.
@@ -411,7 +413,7 @@ impl Fixture {
                     assert_eq!(receipt.receipt.command, command);
                     assert_eq!(receipt.receipt.command_digest, expected_digest);
                     if fence.release().await.is_ok() {
-                        return receipt;
+                        break receipt;
                     }
                 }
                 Ok((None, fence)) => {
@@ -434,18 +436,46 @@ impl Fixture {
                 Ok((receipt, fence)) if fence.release().await.is_ok() => {
                     assert_eq!(receipt.receipt.command, command);
                     assert_eq!(receipt.receipt.command_digest, expected_digest);
-                    return receipt;
+                    break receipt;
                 }
                 Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
+                Err(error) if error.code == ErrorCode::UnknownOutcome => {
+                    if let Some(original) = self.original_unknown_reply(&current).await {
+                        unknown_replies.push(original);
+                    }
+                }
+                Err(error) if error.code == ErrorCode::Unavailable => {}
                 Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        };
+        self.record_resolved_replies(unknown_replies, &expected_digest);
+        receipt
+    }
+    async fn original_unknown_reply(
+        &self,
+        service: &IndependentAuthority,
+    ) -> Option<kasumi_types::drain::DrainIssueRef> {
+        self.replayed_unknown_replies.as_ref()?;
+        tokio::time::timeout(
+            FIXTURE_OBSERVATION_WINDOW,
+            service
+                .request_jobs
+                .original_unknown_reply(&service.requests),
+        )
+        .await
+        .expect("original issuer request did not drain")
+    }
+    fn record_resolved_replies(
+        &self,
+        issues: Vec<kasumi_types::drain::DrainIssueRef>,
+        digest: &str,
+    ) {
+        let Some(replies) = &self.replayed_unknown_replies else {
+            return;
+        };
+        let mut replies = replies.lock().unwrap();
+        replies.extend(issues.into_iter().map(|issue| (digest.to_owned(), issue)));
     }
     async fn new() -> Self {
         Self::with_controls(BTreeMap::new()).await
@@ -567,6 +597,7 @@ impl Fixture {
             signing,
             signing_root,
             readiness,
+            replayed_unknown_replies: None,
         };
         fixture.services[0].initialize().await.unwrap();
         fixture.leader().await;
@@ -669,6 +700,9 @@ impl Fixture {
         for service in &self.services {
             service.shutdown().await.unwrap();
         }
+        self.close_storage().await;
+    }
+    async fn close_storage(&self) {
         for store in &self.stores {
             store.shutdown().await.unwrap();
         }
