@@ -224,7 +224,7 @@ fn cold_local_restore_resolves_the_original_start_audit_before_advancing() {
                 .enable_all()
                 .build()
                 .unwrap();
-            if let Some(config) = std::env::var_os(CHILD) {
+            if let Some(root) = std::env::var_os(CHILD) {
                 use tracing_subscriber::prelude::*;
                 struct CrashBeforeAudit;
                 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CrashBeforeAudit {
@@ -264,36 +264,29 @@ fn cold_local_restore_resolves_the_original_start_audit_before_advancing() {
                     }
                 }
                 tracing_subscriber::registry().with(CrashBeforeAudit).init();
-                let config = PathBuf::from(config);
-                let settings = RuntimeConfig::load(&config).unwrap();
-                let policy = settings.admission;
-                let storage = crate::runtime_memory::RuntimeStorage::fixture(
-                    policy.clone(),
-                    kasumi_engine::admission::MemoryCore::new(policy).unwrap(),
-                )
-                .unwrap();
-                let operation = std::env::var("KASUMI_TEST_LOCAL_RESTORE_OPERATION")
-                    .unwrap()
-                    .parse()
+                let root = PathBuf::from(root);
+                runtime.block_on(Box::pin(async {
+                    let (config, request, _, storage) = backup(&root).await;
+                    let started = start_with_storage(&config, request.clone(), storage.clone())
+                        .await
+                        .unwrap();
+                    let original = (config.clone(), &request, started.phase_id);
+                    std::fs::write(
+                        root.join("original.json"),
+                        serde_json::to_vec(&original).unwrap(),
+                    )
                     .unwrap();
-                runtime
-                    .block_on(Box::pin(resume_with_storage(&config, operation, storage)))
-                    .unwrap();
+                    resume_with_storage(&config, request.operation_id, storage)
+                        .await
+                        .unwrap();
+                }));
                 panic!("restore returned before the physical crash cut");
             }
             runtime.block_on(Box::pin(async {
                 let root = kasumi_store::test_utils::private_tempdir().unwrap();
-                let (configuration, request, _, storage) = backup(root.path()).await;
-                let started = start_with_storage(&configuration, request.clone(), storage.clone())
-                    .await
-                    .unwrap();
                 let child = std::process::Command::new(executable)
                     .args(["--exact", &test_name, "--nocapture"])
-                    .env(CHILD, &configuration)
-                    .env(
-                        "KASUMI_TEST_LOCAL_RESTORE_OPERATION",
-                        request.operation_id.to_string(),
-                    )
+                    .env(CHILD, root.path())
                     .output()
                     .unwrap();
                 assert_eq!(
@@ -303,12 +296,23 @@ fn cold_local_restore_resolves_the_original_start_audit_before_advancing() {
                     String::from_utf8_lossy(&child.stderr)
                 );
 
+                let (configuration, request, phase): (PathBuf, LocalRecoveryStart, Uuid) =
+                    serde_json::from_slice(
+                        &std::fs::read(root.path().join("original.json")).unwrap(),
+                    )
+                    .unwrap();
+                let policy = RuntimeConfig::load(&configuration).unwrap().admission;
+                let storage = crate::runtime_memory::RuntimeStorage::fixture(
+                    policy.clone(),
+                    kasumi_engine::admission::MemoryCore::new(policy).unwrap(),
+                )
+                .unwrap();
                 let mut operator = Operator::open(&configuration, storage.clone())
                     .await
                     .unwrap();
                 let mut journal = record(operator.store(), request.operation_id).unwrap();
                 assert_eq!(journal.status.phase, LocalRecoveryPhase::Materialize);
-                assert_eq!(journal.status.phase_id, started.phase_id);
+                assert_eq!(journal.status.phase_id, phase);
                 assert_eq!(
                     journal.target_preparation,
                     TargetPreparation::MaterializationDispatched
@@ -320,7 +324,7 @@ fn cold_local_restore_resolves_the_original_start_audit_before_advancing() {
                         CredentialResource::Database {
                             incarnation: request.target_incarnation,
                         },
-                        started.phase_id,
+                        phase,
                     )
                     .await
                     .unwrap();
