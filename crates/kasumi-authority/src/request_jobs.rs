@@ -83,19 +83,24 @@ impl RequestJobs {
         &self,
         requests: &Semaphore,
     ) -> Option<kasumi_types::drain::DrainIssueRef> {
-        let (slot, job) = {
+        let (slot, job, previously_reported) = {
             let registry = self.registry.lock().unwrap();
             let mut abandoned = registry.jobs.iter().enumerate().filter_map(|(slot, job)| {
                 let job = job.as_ref()?;
                 (job.abandoned.load(Ordering::Acquire) && !job.claimed.load(Ordering::Acquire))
                     .then(|| (slot, job.clone()))
             });
-            let first = abandoned.next()?;
+            let (slot, job) = abandoned.next()?;
             assert!(
                 abandoned.next().is_none(),
                 "ambiguous original fixture request"
             );
-            first
+            // DrainReport preserves the first issue for each component and
+            // slot, including after the slot is returned to the request pool.
+            let reported = registry.report.issues().iter().any(|issue| {
+                issue.component() == "authority request outcome" && issue.instance() == slot
+            });
+            (slot, job, reported)
         };
         job.child.drain().await.unwrap();
         let original_unknown = {
@@ -104,7 +109,7 @@ impl RequestJobs {
                 && error.message == "authority acknowledgement unavailable; resolve the exact permanent command identity")
         };
         self.observe(requests);
-        original_unknown.then(|| {
+        (original_unknown && !previously_reported).then(|| {
             self.registry
                 .lock()
                 .unwrap()

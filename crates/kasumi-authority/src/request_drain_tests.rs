@@ -363,6 +363,32 @@ async fn request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_o
 }
 
 #[tokio::test]
+async fn original_reply_observation_distinguishes_retained_issues_across_slot_reuse() {
+    let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+    let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
+    let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));
+    async fn abandon(jobs: &RequestJobs, requests: &Arc<Semaphore>, error: Error) {
+        let (waiter, receive) = jobs
+            .submit::<()>(requests.clone(), async move { Err(error) })
+            .unwrap();
+        let child = waiter.child().clone();
+        drop((waiter, receive));
+        child.drain().await.unwrap();
+    }
+    abandon(&jobs, &requests, unknown("original acknowledgement")).await;
+    let original = jobs.original_unknown_reply(&requests).await.unwrap();
+    abandon(&jobs, &requests, unknown("later acknowledgement")).await;
+    assert!(jobs.original_unknown_reply(&requests).await.is_none());
+    let failure = jobs.drain(&requests).await.unwrap_err();
+    let [retained] = failure.issues() else {
+        panic!("unexpected drain {failure:?}")
+    };
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original, retained
+    ));
+}
+
+#[tokio::test]
 async fn unclaimed_rejections_never_exhaust_the_request_inventory() {
     let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
     let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
