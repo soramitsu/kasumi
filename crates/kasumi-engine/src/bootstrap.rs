@@ -1,7 +1,7 @@
 use kasumi_store::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES as CHUNK,
     APPLICATION_BOOTSTRAP_MANIFEST_BYTES as MAX_BOOTSTRAP_MANIFEST_BYTES,
-    ApplicationBootstrapManifest, EncryptedSpool, SnapshotImage,
+    ApplicationBootstrapManifest, EncryptedSpool, LOCAL_ENROLLMENT_GENESIS_KEY, SnapshotImage,
 };
 use std::io::{Read, Write};
 // Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
@@ -1014,8 +1014,6 @@ enum LocalRuntime<'a> {
     FixtureDefault,
 }
 
-const LOCAL_ENROLLMENT_KEY: &[u8] = b"local_enrollment_genesis";
-
 fn local_enrollment_commitment(
     stores: &TenantStorageSet,
     dispatch: &[u8; 32],
@@ -1062,7 +1060,7 @@ pub fn require_local_enrollment_genesis(
     );
     let expected = local_enrollment_commitment(stores, dispatch, &digest)?;
     anyhow::ensure!(
-        view.custody_get("raft.meta", LOCAL_ENROLLMENT_KEY, 32)?
+        view.custody_get("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
             .as_deref()
             == Some(expected.as_slice()),
         "original local enrollment genesis receipt is missing or differs"
@@ -1100,10 +1098,13 @@ async fn open_local_inner(
         crate::SnapshotFailure::ordinary(|| {
             anyhow::ensure!(
                 stores.deployment_binding()?.is_none()
+                    && store
+                        .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+                        .is_none()
                     && stores
                         .custody()
                         .store()
-                        .get_bounded("raft.meta", LOCAL_ENROLLMENT_KEY, 32)?
+                        .get_bounded("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
                         .is_none(),
                 "original local enrollment requires fresh catalogs"
             );
@@ -1140,7 +1141,11 @@ async fn open_local_inner(
             )?;
             let receipt = if let LocalRuntime::Enrollment { dispatch, .. } = &runtime {
                 let value = local_enrollment_commitment(&stores, dispatch, bytes.sha256())?;
-                Some(WriteOp::put("raft.meta", LOCAL_ENROLLMENT_KEY, value))
+                Some(WriteOp::put(
+                    "raft.meta",
+                    LOCAL_ENROLLMENT_GENESIS_KEY,
+                    value,
+                ))
             } else {
                 None
             };

@@ -916,6 +916,87 @@ async fn pinned_bootstrap_view_survives_coherent_physical_identity_replacement()
 }
 
 #[tokio::test]
+async fn standalone_enrollment_receipt_is_optional_only_at_the_original_genesis_commit()
+-> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("checkpoint.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory,
+        scratch,
+    )
+    .expect("bounded node fixture");
+    let installation = Uuid::new_v4();
+    for (tenant, sealed) in [("historical", false), ("enrolled", true)] {
+        let stores = TenantStorageSet::initialize_catalogs(
+            node.clone(),
+            tenant.into(),
+            Arc::new(LocalKeyProvider::new([11; 32])),
+            Arc::new(LocalKeyProvider::new([12; 32])),
+            StorageAccess::standalone(installation, tenant, Uuid::new_v4())?,
+        )
+        .await?;
+        let marker = |v: &[u8]| WriteOp::put("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, v);
+        let application = [WriteOp::put("engine.bootstrap", b"manifest", b"manifest-a")];
+        let initial = vec![
+            WriteOp::put("raft.meta", b"application_bootstrap_sha256", b"digest-a"),
+            WriteOp::put("raft.meta", b"node_id", b"1"),
+            WriteOp::put("raft.meta", b"group", b"group"),
+        ];
+        let mut with_receipt = initial.clone();
+        with_receipt.push(marker(&[41; 32]));
+        let custody = stores.custody().store();
+        assert!(custody.write_batch(&[marker(&[41; 32])]).is_err());
+        assert!(stores.write_batch(&[], &[marker(&[41; 32])]).is_err());
+        let mut wrong_domain = application.to_vec();
+        wrong_domain.push(marker(&[41; 32]));
+        assert!(stores.write_batch(&wrong_domain, &initial).is_err());
+        let mut malformed = initial.clone();
+        malformed.push(marker(&[41; 31]));
+        assert!(stores.write_batch(&application, &malformed).is_err());
+        let original = if sealed { &with_receipt } else { &initial };
+        stores.write_batch(&application, original)?;
+        stores.write_batch(&application, original)?;
+        let changed_presence = if sealed { &initial } else { &with_receipt };
+        assert!(stores.write_batch(&application, changed_presence).is_err());
+        let mut substituted = initial.clone();
+        substituted.push(marker(&[42; 32]));
+        assert!(stores.write_batch(&application, &substituted).is_err());
+        let delete = WriteOp::delete("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY);
+        assert!(custody.write_batch(std::slice::from_ref(&delete)).is_err());
+        assert!(stores.write_batch(&[], &[delete]).is_err());
+        assert_eq!(
+            custody
+                .get_bounded("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
+                .as_deref(),
+            sealed.then_some(&[41; 32][..])
+        );
+        stores.shutdown().await?;
+    }
+    // A fresh distributed/fixture pair cannot receive a standalone commitment.
+    let other = initialize_pair_fixture(node.clone()).await?;
+    assert!(
+        other
+            .write_batch(
+                &[WriteOp::put("engine.bootstrap", b"manifest", b"manifest-a")],
+                &[
+                    WriteOp::put("raft.meta", b"application_bootstrap_sha256", b"digest-a"),
+                    WriteOp::put("raft.meta", b"node_id", b"1"),
+                    WriteOp::put("raft.meta", b"group", b"group"),
+                    WriteOp::put("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, [41; 32]),
+                ]
+            )
+            .is_err()
+    );
+    other.shutdown().await?;
+    node.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> Result<()> {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir()?;

@@ -10,7 +10,7 @@
 mod application_bootstrap;
 pub use application_bootstrap::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
-    ApplicationBootstrapManifest,
+    ApplicationBootstrapManifest, LOCAL_ENROLLMENT_GENESIS_KEY,
 };
 mod archive_keys;
 mod archive_objects;
@@ -3157,10 +3157,7 @@ fn validate_batch(domains: &[&[WriteOp]]) -> Result<()> {
 /// writable TenantStore. A repeated, byte-identical first-install write is a
 /// no-op so interrupted chunk publication can resume after an unknown commit.
 pub(crate) fn is_write_once_identity(namespace: &str, key: &[u8]) -> bool {
-    namespace == "engine.bootstrap"
-        || (namespace == "engine.deployment" && key == b"mode")
-        || (namespace == "raft.meta"
-            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+    namespace == "engine.bootstrap" || is_paired_identity(namespace, key)
 }
 
 pub(crate) fn is_initial_identity_namespace(namespace: &str) -> bool {
@@ -3174,7 +3171,13 @@ pub(crate) fn is_paired_identity(namespace: &str, key: &[u8]) -> bool {
     (namespace == "engine.deployment" && key == b"mode")
         || (namespace == "engine.bootstrap" && key == b"manifest")
         || (namespace == "raft.meta"
-            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+            && matches!(
+                key,
+                b"application_bootstrap_sha256"
+                    | b"node_id"
+                    | b"group"
+                    | LOCAL_ENROLLMENT_GENESIS_KEY
+            ))
 }
 
 pub(crate) fn reject_unpaired_identity_ops(operations: &[WriteOp]) -> Result<()> {

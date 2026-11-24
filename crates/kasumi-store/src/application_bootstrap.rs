@@ -3,6 +3,8 @@
 //! been rehashed or that a caller is authorized to reconstruct/serve them.
 use serde::{Deserialize, Serialize};
 
+/// Optional immutable custody row committed only with a new standalone enrollment.
+pub const LOCAL_ENROLLMENT_GENESIS_KEY: &[u8] = b"local_enrollment_genesis";
 pub const APPLICATION_BOOTSTRAP_CHUNK_BYTES: usize = 4 << 20;
 // Existing four-field writer bound; no new format or lower accepted limit.
 pub const APPLICATION_BOOTSTRAP_MANIFEST_BYTES: usize = 256;
