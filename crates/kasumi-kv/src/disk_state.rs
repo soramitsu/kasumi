@@ -75,7 +75,14 @@ use warming::Warmup;
 mod auto_warming;
 use auto_warming::AutoWarm;
 
+/// Independent snapshot pins a database holds at once unless its opener
+/// selects another registry size with `Builder::with_snapshot_pins`.
 const MAX_PINNED_ROOTS: usize = 256;
+/// Default snapshot pin registry of a database.
+pub const DEFAULT_SNAPSHOT_PINS: usize = MAX_PINNED_ROOTS;
+/// Largest snapshot pin registry a database may select. Captures sort and
+/// deduplicate in place, so even a full registry stays O(n log n) per commit.
+pub const MAX_SNAPSHOT_PINS: usize = 16_384;
 
 const ALLOCATION_ALLOWANCE: usize = 64;
 const LEASE_ALLOWANCE: usize = 128;
@@ -1285,12 +1292,13 @@ fn empty_root(group_id: [u8; 16]) -> DirectoryRoot {
 
 fn fixed_admission(
     admission: &Arc<dyn StorageAdmission>,
+    snapshot_pins: usize,
 ) -> Result<NativeResidentLease, CoreError> {
     admission
         .check_owner()
         .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
     let bytes = std::mem::size_of::<DiskOpening>()
-        + AutoWarm::backing_bytes()
+        + AutoWarm::backing_bytes(snapshot_pins)
         + std::mem::size_of::<CheckedGroup>()
         + 2 * std::mem::size_of::<usize>()
         + std::mem::size_of::<Mutex<NativeCache<NativeIdentity>>>()

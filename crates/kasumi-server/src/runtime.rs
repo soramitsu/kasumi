@@ -1617,7 +1617,7 @@ impl NodeRuntime {
                 .expect("same installed original startup inventory").claim(0).await;
             constructor.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| NodeStore::open_existing(
                 &config.database_path, config.database_id,
-                persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config(),
+                persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config().shared_node(),
             )).map_err(|observed| observed.foreign_error())?
         };
         pending.owned_nodes.push(node.clone());

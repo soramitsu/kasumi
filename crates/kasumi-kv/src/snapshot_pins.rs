@@ -294,15 +294,20 @@ impl SnapshotPins {
         let lease = self.inner.reserve(charge)?;
         let mut roots = bounded_vec(self.inner.max_pins)?;
         let state = self.inner.lock()?;
-        for slot in state.slots.iter().filter_map(Entry::pinned) {
-            // Deliberately bounded by the configured pin limit, without a map
-            // or an allocation for each independently acquired duplicate root.
-            if !roots.contains(&slot.root) {
-                roots.push(slot.root);
-            }
-        }
+        // Deliberately bounded by the configured pin limit, without a map or
+        // an allocation for each independently acquired duplicate root. One
+        // entry per pinned slot always fits; sorting then removes duplicates
+        // in place, so the cost stays O(n log n) for a full registry.
+        roots.extend(
+            state
+                .slots
+                .iter()
+                .filter_map(Entry::pinned)
+                .map(|slot| slot.root),
+        );
         let epoch = state.epoch;
         drop(state);
+        sort_unique(&mut roots);
         self.inner.check()?;
         Ok(SnapshotRoots {
             registry: self.inner.clone(),
@@ -328,19 +333,18 @@ impl SnapshotPins {
         let state = self.inner.lock()?;
         capture.roots.clear();
         for slot in state.slots.iter().filter_map(Entry::pinned) {
-            if !capture.roots.contains(&slot.root) {
-                if capture.roots.len() == capture.roots.capacity() {
-                    // Unreachable while slots are bounded by `max_pins`;
-                    // never grow past the admitted backing.
-                    drop(state);
-                    self.inner.failed.store(true, Ordering::Release);
-                    return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
-                }
-                capture.roots.push(slot.root);
+            if capture.roots.len() == capture.roots.capacity() {
+                // Unreachable while slots are bounded by `max_pins`;
+                // never grow past the admitted backing.
+                drop(state);
+                self.inner.failed.store(true, Ordering::Release);
+                return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
             }
+            capture.roots.push(slot.root);
         }
         capture.epoch = state.epoch;
         drop(state);
+        sort_unique(&mut capture.roots);
         self.inner.check()
     }
 
@@ -392,7 +396,7 @@ impl SnapshotPins {
             .slots
             .iter()
             .filter_map(Entry::pinned)
-            .all(|slot| slot.root == current || capture.roots.contains(&slot.root));
+            .all(|slot| slot.root == current || capture.contains(&slot.root));
         drop(state);
         self.inner.check()?;
         if covered {
@@ -620,8 +624,16 @@ impl SnapshotPins {
 }
 
 impl SnapshotRoots {
+    /// Distinct captured roots in `root_order`.
     pub(crate) fn roots(&self) -> &[DirectoryRoot] {
         &self.roots
+    }
+
+    /// Membership by binary search over the sorted, deduplicated capture.
+    pub(crate) fn contains(&self, root: &DirectoryRoot) -> bool {
+        self.roots
+            .binary_search_by(|probe| root_order(probe, root))
+            .is_ok()
     }
 
     #[cfg(test)]
@@ -717,6 +729,28 @@ impl Drop for PinInner {
         // Payload/credit destructors run after unlock.
         drop(state);
     }
+}
+
+/// A total order over roots, used only to deduplicate and search captures.
+/// Equal under this order exactly when the derived `PartialEq` is equal.
+fn root_order(a: &DirectoryRoot, b: &DirectoryRoot) -> std::cmp::Ordering {
+    let page = |root: &DirectoryRoot| {
+        root.page
+            .map(|page| (page.arena_id, page.page_index, page.sha256))
+    };
+    (a.generation, a.group_id, a.height, a.entries, page(a)).cmp(&(
+        b.generation,
+        b.group_id,
+        b.height,
+        b.entries,
+        page(b),
+    ))
+}
+
+/// Sort in place and drop adjacent duplicates; never allocates.
+fn sort_unique(roots: &mut Vec<DirectoryRoot>) {
+    roots.sort_unstable_by(root_order);
+    roots.dedup();
 }
 
 fn backing_charge<T>(count: usize, overhead: usize) -> Result<u64, CoreError> {
@@ -980,6 +1014,53 @@ mod tests {
         );
         assert_eq!(first.validate(&pin).unwrap(), root(1));
         assert_eq!(second.epoch().unwrap(), 0);
+    }
+
+    /// A node database holds one pin per open tenant Generation at distinct
+    /// roots. Captures of a full registry are sorted, deduplicated in place
+    /// within the original backing, and answer membership by search.
+    #[test]
+    fn full_registry_captures_sort_and_deduplicate_distinct_roots_in_place() {
+        const PINS: usize = 1500;
+        let (_, pins) = setup(PINS);
+        // Interleave generations so slot order differs from root order, and
+        // pin a third of them twice.
+        let generations: Vec<u64> = (0..1000u64).map(|i| (i * 7919) % 1000 + 1).collect();
+        let mut held = Vec::new();
+        for (index, &generation) in generations.iter().enumerate() {
+            held.push(pins.acquire(root(generation)).unwrap());
+            if index % 2 == 0 && held.len() < PINS {
+                held.push(pins.acquire(root(generation)).unwrap());
+            }
+        }
+        assert_eq!(held.len(), PINS);
+        assert!(
+            matches!(&(pins.acquire(root(5000))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
+        let mut capture = pins.capture().unwrap();
+        let expected: Vec<_> = (1..=1000).map(root).collect();
+        assert_eq!(capture.roots(), expected.as_slice());
+        assert_eq!(capture.roots.capacity(), PINS);
+        assert!(capture.contains(&root(1)) && capture.contains(&root(1000)));
+        assert!(!capture.contains(&root(0)) && !capture.contains(&root(1001)));
+        let mut foreign = root(500);
+        foreign.entries = 1;
+        assert!(!capture.contains(&foreign));
+        pins.validate_coverage(&capture, root(1000)).unwrap();
+        // Release every pin of the odd generations; recapture reuses the
+        // admitted buffer and stays sorted and unique.
+        held.retain(|pin| pin.root().generation % 2 == 0);
+        pins.recapture(&mut capture).unwrap();
+        let even: Vec<_> = (1..=500).map(|i| root(i * 2)).collect();
+        assert_eq!(capture.roots(), even.as_slice());
+        assert_eq!(capture.roots.capacity(), PINS);
+        pins.validate_coverage(&capture, root(1001)).unwrap();
+        held.push(pins.acquire(root(3)).unwrap());
+        assert!(
+            matches!(&(pins.validate_coverage(&capture, root(1001))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        drop(held);
+        assert!(pins.capture().unwrap().roots().is_empty());
     }
 
     #[test]

@@ -200,9 +200,13 @@ as before, and audit-maintenance applies keep using the maintenance escrow.
 Two native bounds are counts, not memory, and stay admitted while applying:
 storage census slots (capacity `max_reservations`; every owner registered
 outside an escrow also holds its own ledger charge, so they run out only after
-ledger slots) and the 256 snapshot pins of a node database (one per live
+ledger slots) and the snapshot pins of a node database (one per live
 selected Generation, which includes every in-flight request's Generation and
-every snapshot lease, and one per transient planner or capture reader).
+every snapshot lease, and one per transient planner or capture reader). The
+node database that Control, the service audit and tenants without their own
+database share has 4,096 pins (`SHARED_NODE_SNAPSHOT_PINS`); every other
+database keeps 256. Each open tenant holds one for its current Generation, so
+256 would stop a standalone node at about 253 tenants.
 
 The standalone writer's own storage work runs outside any committed apply and
 spends no escrow: the journal append (or, for a write that joins its journal

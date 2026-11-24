@@ -79,8 +79,9 @@ impl DeferredIdentities {
 }
 
 impl AutoWarm {
-    pub(super) const fn backing_bytes() -> usize {
-        std::mem::size_of::<[Option<DirectoryRoot>; MAX_PINNED_ROOTS]>()
+    /// `snapshot_pins` is at most `MAX_SNAPSHOT_PINS`, so this cannot overflow.
+    pub(super) fn backing_bytes(snapshot_pins: usize) -> usize {
+        std::mem::size_of::<Option<DirectoryRoot>>() * snapshot_pins
             + (std::mem::align_of::<Option<DirectoryRoot>>() - 1)
             + ALLOCATION_ALLOWANCE
             + std::mem::size_of::<[DeferredIdentity; DeferredIdentities::CAPACITY]>()
@@ -89,15 +90,18 @@ impl AutoWarm {
     }
 
     // The caller's original fixed grant already covers this exact backing.
-    pub(super) fn new(_original: &NativeResidentLease) -> Result<Self, CoreError> {
+    pub(super) fn new(
+        _original: &NativeResidentLease,
+        snapshot_pins: usize,
+    ) -> Result<Self, CoreError> {
         let mut roots = Vec::new();
         roots
-            .try_reserve_exact(MAX_PINNED_ROOTS)
+            .try_reserve_exact(snapshot_pins)
             .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
-        if roots.capacity() != MAX_PINNED_ROOTS {
+        if roots.capacity() != snapshot_pins {
             return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
-        for _ in 0..MAX_PINNED_ROOTS {
+        for _ in 0..snapshot_pins {
             roots.push(None);
         }
         let mut deferred = Vec::new();

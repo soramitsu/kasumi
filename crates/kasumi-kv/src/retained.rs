@@ -1483,6 +1483,43 @@ mod tests {
         Database::builder(Arc::new(Permit), [61; 16], CacheConfig::default())
     }
 
+    /// A database shared by many tenants keeps one snapshot pin per open
+    /// tenant Generation, so its opener sizes the registry. Every other
+    /// database keeps the default, and forks never take another slot.
+    #[test]
+    fn snapshot_pin_registry_is_sized_per_database() {
+        let fill = |database: &Database, slots: usize| {
+            let reads: Vec<_> = (0..slots).map(|_| database.begin_read().unwrap()).collect();
+            let refused = database.begin_read().err().expect("full pin registry");
+            assert!(refused.0.is_capacity_denied(), "{refused:?}");
+            let refused = database.begin_write().err().expect("full pin registry");
+            assert!(refused.0.is_capacity_denied(), "{refused:?}");
+            let forks: Vec<_> = reads.iter().map(|read| read.fork().unwrap()).collect();
+            drop(reads);
+            assert!(database.begin_read().err().unwrap().0.is_capacity_denied());
+            drop(forks);
+            database.begin_write().unwrap().commit().unwrap();
+        };
+        let default = builder().create_with_backend(InMemoryGroup::new()).unwrap();
+        fill(&default, crate::DEFAULT_SNAPSHOT_PINS);
+        let shared = builder()
+            .with_snapshot_pins(1100)
+            .create_with_backend(InMemoryGroup::new())
+            .unwrap();
+        fill(&shared, 1100);
+        for refused in [0, crate::MAX_SNAPSHOT_PINS + 1] {
+            let failure = builder()
+                .with_snapshot_pins(refused)
+                .create_with_backend(InMemoryGroup::new())
+                .err()
+                .expect("out-of-range pin registry");
+            assert!(
+                format!("{failure:?}").contains("snapshot pin limit"),
+                "{failure:?}"
+            );
+        }
+    }
+
     #[test]
     fn retained_index_existence_observes_exact_snapshot_and_tombstones() {
         let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index-only-rows");
