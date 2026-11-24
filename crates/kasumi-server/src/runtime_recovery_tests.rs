@@ -2593,8 +2593,7 @@ impl Fixture {
         })
         .await
         .expect("Control must answer the post-recovery observation")
-        .err()
-        .expect("Finished recovery still admitted its sibling");
+        .expect_err("Finished recovery still admitted its sibling");
         assert_eq!(refusal.code(), Some(ErrorCode::Unavailable));
         assert!(matches!(refusal, kasumi_client::ClientError::Transport(ref status)
             if status.message() == "no matching target request on this Control member"), "{refusal:?}");

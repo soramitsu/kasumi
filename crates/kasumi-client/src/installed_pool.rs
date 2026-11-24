@@ -829,9 +829,9 @@ mod tests {
     }
     #[test]
     fn only_local_expiration_carries_pool_provenance() {
-        let error = RequestDeadline::new(Duration::ZERO, Arc::new(SystemLeaseClock))
-            .err()
-            .expect("zero budget expires immediately");
+        let Err(error) = RequestDeadline::new(Duration::ZERO, Arc::new(SystemLeaseClock)) else {
+            panic!("zero budget must expire immediately");
+        };
         let peer: ClientError =
             tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed")
                 .into();
