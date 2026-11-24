@@ -22,6 +22,9 @@ use std::{
 /// error and the Arc allocation before releasing the final admission charge.
 struct FailureState {
     error: OnceLock<anyhow::Error>,
+    // Published only after `error` is installed, and only for that exact
+    // original: it is a bare access refusal that owns no native child.
+    access_refusal: AtomicBool,
     preparation: OnceLock<PreparationApplyFailure>,
     pub(crate) completion: CompletionState,
     // A retained diagnostic keeps the duplicate-open fence independently of
@@ -77,6 +80,7 @@ impl ApplyFailureSlot {
         Self(ChargedSlot {
             state: Arc::new(FailureState {
                 error: OnceLock::new(),
+                access_refusal: AtomicBool::new(false),
                 preparation: OnceLock::new(),
                 completion: CompletionState::new(),
                 ownership: OnceLock::new(),
@@ -151,6 +155,25 @@ impl ApplyFailureSlot {
         Ok(RetainedApplyFailure(self.0.clone()))
     }
 
+    /// Retain a failure the apply worker observed before any publication
+    /// entered its sink: the storage access check ahead of the backend, or a
+    /// backend error while its publication was still unentered. Only a bare
+    /// access refusal (`is_access_refusal`) settles its ownership here; any
+    /// other original is retained exactly as `retain` does.
+    pub(crate) fn retain_before_publication(
+        &self,
+        error: anyhow::Error,
+    ) -> Result<RetainedApplyFailure, anyhow::Error> {
+        let access_refusal = is_access_refusal(&error);
+        self.0.state.error.set(error)?;
+        // Classify only the original this call installed. An observer that
+        // runs in between sees an owning error, which is the conservative side.
+        if access_refusal {
+            self.0.state.access_refusal.store(true, Ordering::Release);
+        }
+        Ok(RetainedApplyFailure(self.0.clone()))
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "An occupied prepaid slot returns the original preparation custody without allocating."
@@ -164,9 +187,21 @@ impl ApplyFailureSlot {
     }
 
     pub(crate) fn failure_ownership_drained(&self) -> bool {
-        self.0.state.preparation.get().is_none()
-            && self.0.state.error.get().is_none()
-            && self.0.state.completion.failure_ownership_drained()
+        let state = &self.0.state;
+        if state.preparation.get().is_some() {
+            return false;
+        }
+        if state.error.get().is_none() {
+            return state.completion.failure_ownership_drained();
+        }
+        // A bare access refusal retained before publication keeps its
+        // diagnostic and the fenced machine, but owns nothing a drain must
+        // wait for. It settles only beside an idle, drained ordinary
+        // completion that never failed. Every other original stays owning.
+        state.access_refusal.load(Ordering::Acquire)
+            && !state.completion.failed()
+            && !state.completion.unsettled()
+            && state.completion.drained()
     }
 
     /// A stable diagnostic of the first failure, with no ownership transfer or
@@ -177,6 +212,22 @@ impl ApplyFailureSlot {
             || self.0.state.completion.failed())
         .then(|| RetainedApplyFailure(self.0.clone()))
     }
+}
+
+/// The storage access fence refused this apply: a sealed key lease or an
+/// expired target phase capability. Only the outermost object counts, as for
+/// a planner's bare `KeyAccessDenied`. `KeyAccessDenied` has no fields, and a
+/// `Sealed` application error without a physical source holds only its code
+/// and bounded message. A context layer, any other type or a physical source
+/// may own native children and keeps full custody. Callers supply the stage.
+fn is_access_refusal(error: &anyhow::Error) -> bool {
+    let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+    outer.is::<kasumi_store::KeyAccessDenied>()
+        || outer
+            .downcast_ref::<kasumi_types::Error>()
+            .is_some_and(|error| {
+                error.code == kasumi_types::ErrorCode::Sealed && !error.has_physical_source()
+            })
 }
 
 /// This diagnostic owns only the independent slot and its charge. It must not
@@ -307,6 +358,49 @@ mod tests {
             drops: drops.clone(),
         }
         .into()
+    }
+
+    #[test]
+    fn only_a_bare_refusal_before_publication_settles_its_ownership() {
+        let sealed = || {
+            kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Sealed,
+                "tenant key authorization expired; recovery required",
+            )
+        };
+        let drops = Arc::new(AtomicUsize::new(0));
+        // The engine's own access check refuses an apply with this exact value.
+        // A sealed store's `KeyAccessDenied` is covered by the storage worker.
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
+        let retained = slot.retain_before_publication(sealed().into()).unwrap();
+        // The fenced diagnostic stays; only native ownership is settled.
+        assert!(slot.failure().is_some());
+        assert_eq!(retained.to_string(), RetainedApplyFailure::MESSAGE);
+        assert!(retained.source().is_some());
+        assert!(slot.failure_ownership_drained());
+        // The same value from an unproven stage keeps full custody.
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
+        slot.retain(sealed().into()).unwrap();
+        assert!(!slot.failure_ownership_drained());
+        let owning: Vec<anyhow::Error> = vec![
+            original(3, &drops),
+            anyhow::Error::from(sealed()).context("contextual owner"),
+            sealed().with_physical_source(original(5, &drops)).into(),
+            kasumi_types::Error::new(kasumi_types::ErrorCode::Unavailable, "not an access fence")
+                .into(),
+            anyhow::anyhow!("tenant is sealed: key-access lease unavailable or expired"),
+        ];
+        for error in owning {
+            let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
+            slot.retain_before_publication(error).unwrap();
+            assert!(slot.failure().is_some());
+            assert!(!slot.failure_ownership_drained());
+        }
+        // A rejected second original never reclassifies the installed one.
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
+        slot.retain(original(7, &drops)).unwrap();
+        assert!(slot.retain_before_publication(sealed().into()).is_err());
+        assert!(!slot.failure_ownership_drained());
     }
 
     #[test]

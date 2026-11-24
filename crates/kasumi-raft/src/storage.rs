@@ -2238,7 +2238,10 @@ impl StateMachine {
             let outcome = (|| {
                 ensure!(!poisoned, "state machine lock poisoned");
                 machine.snapshot_buffers.check()?;
-                machine.domains.check_access()?;
+                // No backend or publication has entered for this apply yet.
+                if let Err(refusal) = machine.domains.check_access() {
+                    return Ok(Err(machine.snapshot_buffers.retain_apply_refusal(refusal)));
+                }
                 work(&machine, &mut state)
             })();
             match outcome {
@@ -2354,7 +2357,9 @@ fn apply_group(
     entries: Vec<Entry<TypeConfig>>,
     journal: &kasumi_store::DeferredBatch,
 ) -> Result<std::result::Result<GroupApplied, crate::apply_failure::RetainedApplyFailure>> {
-    machine.domains.check_access()?;
+    if let Err(refusal) = machine.domains.check_access() {
+        return Ok(Err(machine.snapshot_buffers.retain_apply_refusal(refusal)));
+    }
     let mut positions = Vec::with_capacity(entries.len());
     let mut inputs = Vec::with_capacity(entries.len());
     let mut retentions = Vec::with_capacity(entries.len());
@@ -2397,8 +2402,12 @@ fn apply_group(
             .backend
             .apply_group_with_publisher(&positions, &inputs, &mut publication)
     }));
+    let unentered = publication.unentered();
     let finished = match publication.finish_observed(backend, || {}) {
         Ok(finished) => finished,
+        Err(crate::apply_publication::FinishFailure::Single(error)) if unentered => {
+            return Ok(Err(machine.snapshot_buffers.retain_apply_refusal(error)));
+        }
         Err(crate::apply_publication::FinishFailure::Single(error)) => return Err(error),
         Err(crate::apply_publication::FinishFailure::Retained(failure)) => {
             return Ok(Err(failure));
@@ -2429,7 +2438,9 @@ fn apply_entry(
     entry: Entry<TypeConfig>,
     journal: Option<&kasumi_store::DeferredBatch>,
 ) -> Result<std::result::Result<EntryApplied, crate::apply_failure::RetainedApplyFailure>> {
-    machine.domains.check_access()?;
+    if let Err(refusal) = machine.domains.check_access() {
+        return Ok(Err(machine.snapshot_buffers.retain_apply_refusal(refusal)));
+    }
     let (command_sha256, retirement_seed) = match &entry.payload {
         EntryPayload::Normal(command) => (sha256(command.bytes()), command.seed()?),
         _ => (sha256(&encode_entry(&entry)?), None),
@@ -2508,8 +2519,15 @@ fn apply_entry(
                 .apply_with_publisher(&position, input, &mut publication)
         }
     }));
+    // The engine's apply owner refuses an expired phase capability or key
+    // lease before it enters this publication; such a bare refusal owns no
+    // native child. Any other unentered error stays fully retained.
+    let unentered = publication.unentered();
     let finished = match publication.finish_observed(backend, || {}) {
         Ok(finished) => finished,
+        Err(crate::apply_publication::FinishFailure::Single(error)) if unentered => {
+            return Ok(Err(machine.snapshot_buffers.retain_apply_refusal(error)));
+        }
         Err(crate::apply_publication::FinishFailure::Single(error)) => return Err(error),
         Err(crate::apply_publication::FinishFailure::Retained(failure)) => {
             return Ok(Err(failure));
