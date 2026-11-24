@@ -376,6 +376,11 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
                 .get_bounded("engine.bootstrap", b"manifest", 256)?
                 .is_none()
         );
+        manager.config.install_tenant_archives_with(
+            stores.application(),
+            None,
+            manager.credential.clone(),
+        )?;
         let old = kasumi_engine::LocalDatabaseStartup::reserve(manager.audit.clone())?
             .initialize(
                 stores.clone(),
