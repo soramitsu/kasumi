@@ -6893,18 +6893,58 @@ mod lifecycle_tests {
         .unwrap();
         fixture_stage!("source suspend accepted");
         fixture_stage!("starting backup");
+        let backup_id = uuid::Uuid::new_v4();
         let backup = managers[leader]
             .execute_for_test(
                 context.clone(),
                 M::Backup {
-                    session_id: uuid::Uuid::new_v4(),
+                    session_id: backup_id,
                     destination: "primary".into(),
                 },
             )
-            .await
-            .unwrap();
+            .await;
+        match &backup {
+            Ok(reply) => assert_eq!(reply["backup_id"], backup_id.to_string()),
+            Err(error) if error.code == kasumi_types::ErrorCode::UnknownOutcome => {}
+            Err(error) => panic!("source backup failed: {error:?}"),
+        }
+        if backup.is_err() || protected_prepare_only {
+            // The response fence can close after the original backup completed.
+            // Resolve its single session on the source without resubmitting a write.
+            let checkpoint = fixture_operation(|| async {
+                let started = tokio::time::Instant::now();
+                let request = kasumi_types::BackupSessionRequest {
+                    session_id: backup_id,
+                    destination: "primary".into(),
+                };
+                loop {
+                    let status = databases[leader]
+                        .backup_session_status(context.clone(), request.clone())
+                        .await;
+                    let observation = match status {
+                        Ok(status) => {
+                            assert_eq!(status.intent.session_id, backup_id);
+                            assert_eq!(status.intent.tenant, context.tenant);
+                            assert_eq!(status.intent.principal, context.principal);
+                            match status.outcome {
+                                Some(kasumi_types::BackupSessionOutcome::Complete { checkpoint, .. }) => break checkpoint,
+                                Some(kasumi_types::BackupSessionOutcome::Aborted { .. }) => panic!("original source backup aborted: {backup:?}"),
+                                None => "pending".to_string(),
+                            }
+                        }
+                        Err(error) if matches!(error.code, kasumi_types::ErrorCode::Unavailable
+                            | kasumi_types::ErrorCode::UnknownOutcome | kasumi_types::ErrorCode::NotFound) => format!("{error:?}"),
+                        Err(error) => panic!("original source backup status failed: {error:?}; original reply: {backup:?}"),
+                    };
+                    assert!(started.elapsed() < Duration::from_secs(20),
+                        "backup {backup_id} did not resolve: {observation}; original reply: {backup:?}");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await;
+            assert_eq!(checkpoint.backup_id, backup_id);
+            assert_eq!(checkpoint.tenant, context.tenant);
+        }
         fixture_stage!("backup command completed");
-        let backup_id = uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
         fixture_stage!("waiting for suspend replication");
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
