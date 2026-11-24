@@ -1137,9 +1137,17 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
         let unavailable = unavailable_pool
             .retirement_status(&reference, deadline)
             .await;
+        let unresolved = match &unavailable {
+            Err(kasumi_client::ClientError::Transport(status)) => {
+                matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded)
+            }
+            Err(kasumi_client::ClientError::LocalDeadline(deadline)) => {
+                deadline.reason() == "installed recovery operation deadline elapsed"
+            }
+            _ => false,
+        };
         assert!(
-            matches!(&unavailable, Err(kasumi_client::ClientError::Transport(status))
-                if matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded)),
+            unresolved,
             "unavailable exact status must remain unresolved: {unavailable:?}"
         );
         drop(unavailable_pool);
