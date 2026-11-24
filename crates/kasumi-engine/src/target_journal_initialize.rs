@@ -19,6 +19,9 @@ pub(crate) struct InitialInitializeAssociation {
     start: TargetFirstMembershipPrebind,
 }
 impl InitialInitializeAssociation {
+    pub(in crate::target_journal) fn target_incarnation(&self) -> Uuid {
+        self.initialize.target_incarnation
+    }
     fn key(&self) -> Vec<u8> {
         format!(
             "dispatch-initialize/{}/{}",
@@ -338,8 +341,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, key.as_bytes(), MAX_RECORD)?
             .context("Initialize association accepted dispatch absent")?;
-        self.validate_dispatch_record(key.as_bytes(), &bytes)?;
-        let accepted: AcceptedInitialDispatch = decode_current(&bytes)?;
+        let accepted = self.validate_dispatch_record(key.as_bytes(), &bytes)?;
         ensure!(
             accepted.expected_raft_prebind(&bytes)? == *expected,
             "Initialize association differs from accepted dispatch"

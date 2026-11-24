@@ -204,31 +204,35 @@ pub(crate) async fn provision(
             .as_ref()
             .context("replication configuration missing")?;
         let network = network(replication)?;
-        let control = crate::control_genesis::bootstrap(config)?;
-        let control_incarnation = Uuid::parse_str(&control.incarnation)?;
-        let mut control_seat = originals.claim(0).await;
-        let control_fingerprint = initialize_domain(
-            config,
-            node.clone(),
-            audit.clone(),
-            network.clone(),
-            CONTROL_TENANT,
-            &config.control.keys,
-            &config.control.custody_keys,
-            control,
-            StorageAccess::node_control(),
-            None,
-            credential.clone(),
-            &mut control_seat,
-        )
-        .await?;
-        drop(control_seat);
-        enrollment.record_genesis_tenant(
-            audit.store(),
-            CONTROL_TENANT,
-            control_incarnation,
-            control_fingerprint,
-        )?;
+        // A data-only node enrolls no Control replica: its dedicated Control
+        // quorum enrolled the shared routing catalog in its own genesis.
+        if let Some(hosted) = &config.control {
+            let control = crate::control_genesis::bootstrap(config)?;
+            let control_incarnation = Uuid::parse_str(&control.incarnation)?;
+            let mut control_seat = originals.claim(0).await;
+            let control_fingerprint = initialize_domain(
+                config,
+                node.clone(),
+                audit.clone(),
+                network.clone(),
+                CONTROL_TENANT,
+                &hosted.keys,
+                &hosted.custody_keys,
+                control,
+                StorageAccess::node_control(),
+                None,
+                credential.clone(),
+                &mut control_seat,
+            )
+            .await?;
+            drop(control_seat);
+            enrollment.record_genesis_tenant(
+                audit.store(),
+                CONTROL_TENANT,
+                control_incarnation,
+                control_fingerprint,
+            )?;
+        }
         for tenant in &config.tenants {
             let incarnation = Uuid::parse_str(
                 tenant
@@ -360,7 +364,7 @@ async fn initialize_domain(
             grant.check()?;
         }
         let application_provider = application.provider(credential.clone())?;
-        let custody_provider = custody.provider(credential)?;
+        let custody_provider = custody.provider(credential.clone())?;
         let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             tenant.into(),
@@ -376,7 +380,7 @@ async fn initialize_domain(
             crate::startup_preparation::checkpoint(config.database_id, "ha-control-pair");
         }
         let app = stores.application().clone();
-        config.install_tenant_audit_archive(&app, None)?;
+        config.install_tenant_archives_with(&app, None, credential)?;
         if let Some(grant) = grant {
             grant.check()?;
         }

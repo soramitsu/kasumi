@@ -29,6 +29,7 @@ Credentials and keys:
                                              a native credential is bound to the named
                                              certificate, which its new profile presents
   credential renew|watch|inspect <profile>
+  credential observe <database-profile>      authenticate the current bearer and report its digest and expiry
   credential renew|watch <mcp-profile> <control-profile>
                                              a Control administrator renews an MCP credential
   credential status|revoke <control-profile> <family-uuid>
@@ -43,14 +44,6 @@ Credentials and keys:
                                              admit only listed client certificates on the
                                              native and administrative listeners; apply
                                              with SIGHUP (enable: at the next start)
-  maintenance bind-credentials <configuration.json>
-                                             bind every profile's native credential to its own
-                                             client certificate and give MCP its own audience and
-                                             profile (daemon and watchers stopped; resumable)
-  maintenance split-credentials <configuration.json>
-                                             give an installation from before the credential
-                                             split separate application and operator profiles
-                                             (daemon and default.json watcher stopped; resumable)
 
 Storage:
   maintenance move-tenant-audit-cache <configuration.json> <current-cache-directory>
@@ -62,7 +55,10 @@ Backups, audit and recovery:
   backup status|verify <operator-profile> <destination> <session-uuid>
   backup abort <operator-profile> <destination> <session-uuid> <reason>
   backup cleanup <operator-profile> <destination> <session-uuid> <max-objects>
-  audit status <control-profile>
+  key-retention read|status|retire|abort <tenant-or-control-profile> <request-json>
+  tenant-audit status|capacity <tenant-or-control-profile>
+  tenant-audit verify|export <tenant-or-control-profile> <request-json>
+  audit status|capacity <control-profile>
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>
   audit prune <control-profile> <export-page.json> <through-index> <output.json>
@@ -70,7 +66,7 @@ Backups, audit and recovery:
   maintenance prune-service-audit <configuration.json> <export-page.json> <through-index> <output.json>
                                              export or prune a service audit that refuses
                                              records (daemon stopped)
-  control-recovery configuration-digest|start|status|resume|stop|phase <arguments>
+  control-recovery source-key-digest|configuration-digest|start|status|resume|stop|phase <arguments>
   local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>
 
   help, --help, -h                           print this help";
@@ -149,9 +145,7 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
     // An invoked command keeps the default hook's message on its terminal;
     // the daemon's stderr is the journal.
     kasumi_server::logging::install_panic_hook();
-    kasumi_server::logging::daemon_starting();
     *daemon = true;
-    startup_progress::begin();
     match serve(options).await {
         Ok(()) => {
             kasumi_server::logging::daemon_stopped();
@@ -172,6 +166,9 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
 }
 
 async fn serve(options: ServeOptions) -> Result<()> {
+    let mut signals = kasumi_server::daemon_signals::DaemonSignals::install()?;
+    kasumi_server::logging::daemon_starting();
+    startup_progress::begin();
     // Engines read this when they are constructed: set it before any tenant opens.
     kasumi_engine::set_local_snapshot_archive(serve_options::process_snapshot_archive(Some(
         &options,
@@ -180,41 +177,21 @@ async fn serve(options: ServeOptions) -> Result<()> {
     let config = RuntimeConfig::load(&options.configuration)?;
     let opening = NodeRuntime::open_with_storage_maintenance(config, options.storage_maintenance);
     let runtime = tokio::select! {
-        result = opening => result.context("opening encrypted node runtime")?,
+        result = signals.open(opening) => result.context("opening encrypted node runtime")?,
         during = startup_progress::retained_for(Retained::Startup, RETAINED_GRACE) => {
             startup_progress::exit_with_retained_owners(during, RETAINED_GRACE)
         }
     };
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
     let reload = runtime.tls_reload_handle()?;
-    let (stop, shutdown) = tokio::sync::watch::channel(false);
-    let signal = tokio::spawn(async move {
-        #[cfg(unix)]
-        {
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            let mut hangup =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-            loop {
-                tokio::select! {
-                    result=tokio::signal::ctrl_c()=>{ result?; break; },
-                    _=terminate.recv()=>break,
-                    _=hangup.recv()=>{ if reload.reload().await.is_err() { kasumi_server::logging::tls_reload_failed(); } }
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        tokio::signal::ctrl_c().await?;
-        stop.send_replace(true);
-        Ok::<_, std::io::Error>(())
-    });
-    let result = tokio::select! {
-        result = runtime.serve(shutdown) => result,
+    tokio::select! {
+        result = signals.serve(reload, |shutdown| runtime.serve(shutdown)) => result,
         during = startup_progress::retained_for(Retained::Drain, RETAINED_GRACE) => {
             startup_progress::exit_with_retained_owners(during, RETAINED_GRACE)
         }
-    };
-    signal.abort();
-    result
+    }
 }
 
 async fn run(arguments: &[String]) -> Result<()> {

@@ -189,6 +189,9 @@ impl Credentials {
         Self { key, jwks }
     }
     fn token(&self, principal: &str, tenant: &str, resource: CredentialResource) -> String {
+        self.token_with_scope(principal, tenant, resource, "kasumi:admin kasumi:read kasumi:write kasumi:audit")
+    }
+    fn token_with_scope(&self, principal: &str, tenant: &str, resource: CredentialResource, scope: &str) -> String {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
         header.kid = Some("runtime-recovery".into());
         header.typ = Some("at+jwt".into());
@@ -201,7 +204,7 @@ impl Credentials {
             &header,
             &serde_json::json!({
                 "sub":principal,"tenant":tenant,"kasumi_resource":resource,
-                "scope":"kasumi:admin kasumi:read kasumi:write kasumi:audit",
+                "scope":scope,
                 "iss":"https://runtime-identity.example","aud":"https://runtime.example",
                 "exp":now+3600
             }),
@@ -254,6 +257,7 @@ pub(super) struct Fixture {
     issuer_nodes: Vec<NodeStore>,
     storage: crate::runtime_memory::RuntimeStorage,
     issuer_audits: Vec<Arc<SecurityAudit>>,
+    issuer_signers: Vec<Arc<TenantStore>>,
     issuer_networks: Vec<Arc<ClusterNetwork>>,
     issuer_stops: Vec<watch::Sender<bool>>,
     issuer_tasks: Vec<tokio::task::JoinHandle<Result<()>>>,
@@ -289,6 +293,7 @@ impl Fixture {
         kms_certificate: &std::path::Path,
         cluster: &crate::runtime_cluster_storage::ClusterStorage,
         fenced_source: bool,
+        inspect_signer_keys: bool,
     ) -> impl std::future::Future<Output = Self> {
         Box::pin(async move {
             let directory = directory.join("canonical-recovery");
@@ -396,6 +401,13 @@ impl Fixture {
             ] {
                 private_files::publish(&directory.join(name), value.as_bytes()).unwrap();
             }
+            if inspect_signer_keys {
+                let token = credentials.token_with_scope(
+                    OPERATOR, &format!("kasumi.authority.{}.0", manifest.authority_id),
+                    CredentialResource::Authority {authority_id: manifest.authority_id, partition: 0},
+                    "kasumi:read");
+                private_files::publish(&directory.join("issuer-catalog.jwt"), token.as_bytes()).unwrap();
+            }
             let mut sockets = Vec::new();
             for _ in 0..3 {
                 sockets.push(TcpListener::bind("127.0.0.1:0").await.unwrap());
@@ -460,6 +472,7 @@ impl Fixture {
             let mut issuer_stores = Vec::new();
             let mut issuer_nodes = Vec::new();
             let mut issuer_audits = Vec::new();
+            let mut issuer_signers = Vec::new();
             let mut issuer_networks = Vec::new();
             let mut issuer_stops = Vec::new();
             let mut issuer_tasks = Vec::new();
@@ -564,6 +577,18 @@ impl Fixture {
                 )
                 .await
                 .unwrap();
+                if inspect_signer_keys {
+                    let verifier = &authority_ids[index];
+                    let signer = TenantStore::initialize_catalog(
+                        issuer_nodes.last().unwrap().clone(), verifier.tenant(),
+                        Arc::new(LocalKeyProvider::new([80 + id as u8; 32])),
+                        kasumi_store::StorageAccess::live_signer_trust(verifier.clone()).unwrap()
+                    ).await.unwrap();
+                    authority.install_operational_key_catalogs(audit.store(), &signer).unwrap();
+                    let inventory: Arc<dyn kasumi_raft::member_catalog::MemberAuditInventory> = audit.clone();
+                    authority.install_audit_archive_inventory(audit.store(), &inventory).unwrap();
+                    issuer_signers.push(signer);
+                }
                 network
                     .register_group(
                         "runtime-issuer".into(),
@@ -684,6 +709,7 @@ impl Fixture {
                 issuer_nodes,
                 storage: cluster.storage.clone(),
                 issuer_audits,
+                issuer_signers,
                 issuer_networks,
                 issuer_stops,
                 issuer_tasks,
@@ -785,21 +811,25 @@ impl Fixture {
             endpoints: BTreeMap::from([(0, self.endpoints.clone())]),
             tls: self.files[index].clone(),
             server_ca: self.ca.clone(),
+            catalog_bearer_files: if self.issuer_signers.is_empty() { BTreeMap::new() }
+                else { BTreeMap::from([(0, self.path("issuer-catalog.jwt"))]) },
             bearer_files: BTreeMap::from([(0, self.path(&format!("node-{}.jwt", index + 1)))]),
             principal: self.node(index).principal,
         }
     }
     pub async fn configure(&self, config: &mut RuntimeConfig, index: usize) {
         config.auth = self.auth.clone();
-        config.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
-            command_id: self.install_command,
-            installation: self.installation.clone(),
-            signing_key: self.directory.join("control.pk8"),
-            recovery: None,
-        });
+        config.hosted_control_mut().unwrap().lifecycle =
+            Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
+                command_id: self.install_command,
+                installation: self.installation.clone(),
+                signing_key: self.directory.join("control.pk8"),
+                recovery: None,
+            });
         assert!(
             config
-                .control
+                .hosted_control()
+                .unwrap()
                 .initial_policy
                 .grants
                 .iter()
@@ -818,9 +848,10 @@ impl Fixture {
             token.as_bytes(),
         )
         .unwrap();
+        let hosted = config.control.as_mut().unwrap();
         for keys in [
-            &mut config.control.keys,
-            &mut config.control.custody_keys,
+            &mut hosted.keys,
+            &mut hosted.custody_keys,
             &mut config.security_audit.keys,
         ]
         .into_iter()
@@ -832,7 +863,7 @@ impl Fixture {
         ) {
             keys.transit_mut().unwrap().token_file = self.path("transit.token");
         }
-        let mut keys = config.control.keys.clone();
+        let mut keys = config.hosted_control().unwrap().keys.clone();
         keys.transit_mut().unwrap().key_name = format!("verifier-{}", index + 1);
         let verifier = crate::signer_runtime::SignerVerifierConfig {
             max_background_workers: 64,
@@ -1014,6 +1045,8 @@ impl Fixture {
                             source_backups: BTreeMap::from([(
                                 self.source,
                                 TargetBackupSource {
+                                    read_key_binding: Some(crate::local_recovery::keys::RecoveryKeys::open_with(&base.tenants[0].keys, &[], Arc::new(crate::runtime::file_secret)).unwrap().digest().unwrap()),
+                                    historical_keys: vec![],
                                     destination_alias: "primary".into(),
                                     keys: base.tenants[0].keys.clone(),
                                 },
@@ -1181,7 +1214,13 @@ impl Fixture {
             });
             for (index, socket) in control_sockets.into_iter().enumerate() {
                 let mut config = configurations[index].clone();
-                config.control.lifecycle.as_mut().unwrap().recovery = Some(RecoveryRuntimeConfig {
+                config
+                    .hosted_control_mut()
+                    .unwrap()
+                    .lifecycle
+                    .as_mut()
+                    .unwrap()
+                    .recovery = Some(RecoveryRuntimeConfig {
                     routes: BTreeMap::from([("planned".into(), route.clone())]),
                 });
                 self.start_control(
@@ -1204,14 +1243,23 @@ impl Fixture {
         handles: &Handles,
         certificate: usize,
     ) {
-        let signer = config.control.lifecycle.as_ref().unwrap().signer().unwrap();
+        let signer = config
+            .hosted_control()
+            .unwrap()
+            .lifecycle
+            .as_ref()
+            .unwrap()
+            .signer()
+            .unwrap();
         let auth = self.authenticator(handles.audit.clone()).await;
         let lifecycle =
             crate::rpc::NativeLifecycleControl::new(control.clone(), signer.clone(), auth.clone())
                 .unwrap();
         let coordinator =
-            ControlRecoveryCoordinator::new(&config, control, signer, handles.trusts.clone())
+            ControlRecoveryCoordinator::new(&config, control.clone(), signer, handles.trusts.clone())
                 .unwrap();
+        let writers:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
+        control.install_target_writer_network(Arc::downgrade(&writers)).unwrap();
         let router = tonic::service::Routes::new(lifecycle.service())
             .add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth).service())
             .into_axum_router();
@@ -1316,6 +1364,215 @@ impl Fixture {
         assert!(expected.pending_phase.is_none());
         self.assert_protected_status_record(configurations, &expected)
             .await;
+    }
+
+    pub async fn assert_data_member_service_inventories(
+        &self,
+        leader: &kasumi_engine::Database,
+        handles: &[Handles],
+    ) {
+        use kasumi_raft::member_catalog::{CatalogPurpose, CatalogStart, MemberCatalogRequest};
+        let group = leader.raft_group();
+        let metrics = group.metrics();
+        let mut observed = BTreeSet::new();
+        let mut streams = BTreeSet::new();
+        for (&id, node) in metrics.membership_config.membership().nodes() {
+            let physical = &handles[usize::try_from(id - 1).unwrap()];
+            let verifier = physical
+                .verifier
+                .as_ref()
+                .unwrap()
+                .identity_for(physical.audit.store().persistent_disk())
+                .unwrap();
+            let mut request = MemberCatalogRequest {
+                nonce: Uuid::new_v4(),
+                leader: metrics.id,
+                term: metrics.current_term,
+                membership: *metrics.membership_config.log_id(),
+                applied: metrics.last_applied.unwrap(),
+                purpose: CatalogPurpose::DataSigner {
+                    installation_id: verifier.installation_id,
+                },
+                start: CatalogStart::First,
+                limit: 4,
+            };
+            let report = if id == metrics.id {
+                let reply = leader.member_key_catalog(request.clone()).await.unwrap();
+                leader
+                    .check_member_catalog_release(&reply, &request)
+                    .await
+                    .unwrap();
+                let kasumi_raft::RpcResponse::MemberSignerCatalog(report) = &*reply else {
+                    panic!("local Data verifier returned an unrelated catalog");
+                };
+                (**report).clone()
+            } else {
+                let report = group
+                    .read_member_signer_catalog(id, node, &request)
+                    .await
+                    .unwrap();
+                request.purpose = CatalogPurpose::DataSigner {
+                    installation_id: Uuid::new_v4(),
+                };
+                assert!(
+                    group
+                        .read_member_signer_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                request.purpose = CatalogPurpose::ControlSigner;
+                assert!(
+                    group
+                        .read_member_signer_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                report
+            };
+            assert_eq!(report.verifier, verifier);
+            assert!(!report.entries.is_empty());
+            assert!(observed.insert(report.catalog));
+
+            request.purpose = CatalogPurpose::DataServiceAudit {
+                installation_id: verifier.installation_id,
+            };
+            let audit = if id == metrics.id {
+                let reply = leader.member_key_catalog(request.clone()).await.unwrap();
+                leader
+                    .check_member_catalog_release(&reply, &request)
+                    .await
+                    .unwrap();
+                let kasumi_raft::RpcResponse::MemberAuditCatalog(report) = &*reply else {
+                    panic!("local Data audit returned an unrelated catalog");
+                };
+                (**report).clone()
+            } else {
+                let report = group
+                    .read_member_audit_catalog(id, node, &request)
+                    .await
+                    .unwrap();
+                request.purpose = CatalogPurpose::DataServiceAudit {
+                    installation_id: Uuid::new_v4(),
+                };
+                assert!(
+                    group
+                        .read_member_audit_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                request.purpose = CatalogPurpose::ServiceAudit;
+                assert!(
+                    group
+                        .read_member_audit_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                report
+            };
+            assert_eq!(
+                audit.stream,
+                physical.audit.status().unwrap().position.stream_id
+            );
+            physical
+                .audit
+                .store()
+                .visit_wrapping_identities(|catalog, _, _, _| {
+                    assert_eq!(audit.catalog, catalog);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(audit.unreadable_objects.is_empty() && !audit.truncated);
+            assert!(observed.insert(audit.catalog));
+            assert!(streams.insert(audit.stream));
+        }
+        assert_eq!(observed.len(), 6);
+        assert_eq!(streams.len(), 3);
+    }
+
+    pub async fn assert_authority_signer_inventory(&self, control: &kasumi_engine::Database, handles: &[Handles]) {
+        use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionCoverage, KeyRetentionScope, MissingKeyDependency, ReadKeyRetentionRequest};
+        let auth = self.authenticator(self.issuer_audits[0].clone()).await;
+        let operator = auth.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
+        let request = ReadKeyRetentionRequest {scope: KeyRetentionScope::Signer {}, cursor: None, limit: 64};
+        let missing = MissingKeyDependency::AuthorityPartitionUnreported {authority_id:self.manifest.authority_id, partition:0};
+        let mut lookup = request.clone();
+        let mut entries = std::collections::BTreeSet::new();
+        loop {
+            let page = control.read_key_retention(&operator, lookup.clone()).await.unwrap();
+            assert!(matches!(&page.coverage, KeyRetentionCoverage::Complete { .. }), "incomplete signer coverage: {:?}", page.coverage);
+            for entry in &page.entries { assert!(entries.insert(entry.clone()), "repeated signer entry"); }
+            lookup.cursor = page.next_cursor.clone();
+            if lookup.cursor.is_none() { break; }
+        }
+        for (i, signer) in self.issuer_signers.iter().enumerate() {
+            let node = i as u64 + 1;
+            let catalogs = entries.iter().filter_map(|entry| match entry.reference {
+                KeyReference::Catalog {node_id, catalog_id, domain: KeyCatalogDomain::LiveSignerTrust} if node_id == node => Some(catalog_id),
+                _ => None,
+            }).collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(catalogs.len(), 2, "one Control and one independent issuer signer per installed node");
+            signer.visit_wrapping_identities(|id, provider, key_ref, version| {
+                assert!(entries.iter().any(|entry| entry.key.provider == provider && entry.key.key_ref == key_ref && entry.key.version == version &&
+                    matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id, domain: KeyCatalogDomain::LiveSignerTrust}
+                        if node_id == i as u64 + 1 && catalog_id == id)));
+                Ok(())
+            }).unwrap();
+        }
+        let audit_request = ReadKeyRetentionRequest {
+            scope: KeyRetentionScope::SecurityAudit {},
+            limit: 1,
+            cursor: None,
+        };
+        let mut audit_query = audit_request.clone();
+        let mut audit_entries = std::collections::BTreeSet::new();
+        let mut first_cursor = None;
+        loop {
+            let audit = control.read_key_retention(&operator, audit_query.clone()).await.unwrap();
+            assert!(matches!(&audit.coverage, KeyRetentionCoverage::Complete { .. }),
+                "physical Control audits and independent issuer coverage: {:?}", audit.coverage);
+            audit_entries.extend(audit.entries.iter().cloned());
+            audit_query.cursor = audit.next_cursor.clone();
+            if first_cursor.is_none() { first_cursor = audit_query.cursor.clone(); }
+            if audit_query.cursor.is_none() { break; }
+        }
+        for (index, audit) in handles.iter().map(|h| &h.audit).enumerate().chain(self.issuer_audits.iter().enumerate()) {
+            audit.store().visit_wrapping_identities(|catalog, provider, key_ref, version| {
+                assert!(audit_entries.iter().any(|entry| entry.key.provider == provider
+                    && entry.key.key_ref == key_ref && entry.key.version == version
+                    && matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id,
+                        domain: KeyCatalogDomain::SecurityAudit} if node_id == index as u64 + 1 && catalog_id == catalog)));
+                Ok(())
+            }).unwrap();
+        }
+        self.issuer_audits[1].store().rotate_data_key().await.unwrap();
+        let stale_issuer = ReadKeyRetentionRequest { cursor: first_cursor, ..audit_request.clone() };
+        assert!(matches!(control.read_key_retention(&operator, stale_issuer).await,
+            Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
+        let fresh = control.read_key_retention(&operator, audit_request.clone()).await.unwrap();
+        let peer = handles.iter().enumerate()
+            .find(|(index, _)| *index as u64 + 1 != control.raft_group().node_id()).unwrap().1;
+        peer.audit.store().rotate_data_key().await.unwrap();
+        let stale_audit = ReadKeyRetentionRequest { cursor: Some(fresh.next_cursor.clone().unwrap()), ..audit_request.clone() };
+        drop(fresh);
+        assert!(matches!(control.read_key_retention(&operator, stale_audit).await,
+            Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
+        let short = ReadKeyRetentionRequest {limit: 1, ..request.clone()};
+        let page = control.read_key_retention(&operator, short.clone()).await.unwrap();
+        let cursor = page.next_cursor.clone().unwrap();
+        drop(page);
+        self.issuer_signers[1].rotate_data_key().await.unwrap();
+        let result = control.read_key_retention(&operator, ReadKeyRetentionRequest {cursor: Some(cursor), ..short}).await;
+        assert!(matches!(result, Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
+        let path = self.directory.join("issuer-catalog.jwt");
+        let original = Zeroizing::new(std::fs::read(&path).unwrap());
+        private_files::replace(&path, self.control_token.as_bytes()).unwrap();
+        let refused = control.read_key_retention(&operator, request).await;
+        let refused_audit = control.read_key_retention(&operator, audit_request).await;
+        private_files::replace(&path, &original).unwrap();
+        let refused = refused.unwrap();
+        assert!(matches!(&refused.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
+        let refused_audit = refused_audit.unwrap();
+        assert!(matches!(&refused_audit.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
     }
     /// Drive installed Control/issuer/target services through Start and the
     /// distinct Initialize, discard each actual reply, and resolve their
@@ -1838,7 +2095,17 @@ impl Fixture {
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
         assert_eq!(response.headers()["cache-control"], "no-store");
-        let value: serde_json::Value = response.json().await.unwrap();
+        crate::observability::test_evidence::native_observation(
+            "recovery-status",
+            serde_json::json!({
+                "operation_id":operation_id, "phase":expected.phase, "updated_revision":expected.updated_revision,
+                "phase_pending":expected.pending_phase.is_some(), "terminal":expected.phase.terminal()
+            }),
+        );
+        let value: serde_json::Value = serde_json::from_slice(
+            &crate::observability::test_evidence::observed_reply("recovery-status", response).await,
+        )
+        .unwrap();
         assert_eq!(value.as_object().unwrap().len(), 5);
         assert_eq!(value["operation_id"], operation_id.to_string());
         assert_eq!(
@@ -2255,6 +2522,237 @@ impl Fixture {
             (resumed_initial_inspection || observed_one_materialization) && isolated && restored
         );
     }
+    pub async fn assert_target_checkpoint_inventory(
+        &self,
+        controls: &[Arc<kasumi_engine::Database>],
+        configurations: &[RuntimeConfig],
+        checkpoint: &FullBackupCheckpoint,
+    ) {
+        let leader = quorum_ready_leader(controls, "target checkpoint inventory").await;
+        let control = &controls[leader];
+        let member = self
+            .targets
+            .iter()
+            .find(|target| target.node_id() == control.raft_group().node_id())
+            .unwrap();
+        member.install_key_inventory(control).unwrap();
+        let auth = self.authenticator(self.issuer_audits[0].clone()).await;
+        let operator = auth
+            .authenticate(&format!("Bearer {}", self.control_token))
+            .await
+            .unwrap();
+        let request = ReadKeyRetentionRequest {
+            scope: KeyRetentionScope::TargetJournal {},
+            cursor: None,
+            limit: 64,
+        };
+        let before = control
+            .read_key_retention(&operator, request.clone())
+            .await
+            .unwrap();
+        let KeyRetentionCoverage::Incomplete { missing, .. } = &before.coverage else {
+            panic!("absent peer journals returned complete coverage")
+        };
+        for remote in controls
+            .iter()
+            .filter(|db| db.raft_group().node_id() != control.raft_group().node_id())
+        {
+            let id = remote.raft_group().node_id();
+            assert!(missing.contains(&MissingKeyDependency::MemberUnreported { node_id: id }));
+            self.targets
+                .iter()
+                .find(|target| target.node_id() == id)
+                .unwrap()
+                .install_key_inventory(remote)
+                .unwrap();
+        }
+        drop(before);
+        async fn pages(
+            control: &kasumi_engine::Database,
+            operator: &RequestContext,
+            initial: &ReadKeyRetentionRequest,
+            phase: &str,
+        ) -> kasumi_types::Result<(BTreeSet<KeyRetentionEntry>, KeyRetentionCoverage, Option<kasumi_types::KeyRetentionCursor>)> {
+            use tracing::instrument::WithSubscriber;
+            use tracing_subscriber::layer::SubscriberExt;
+            // Scope peer read diagnostics to this enumeration, including
+            // partial observations that legitimately expire a cursor.
+            let diagnostics = tracing::Dispatch::new(tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::Targets::new().with_target(
+                    "kasumi_engine::service::key_retention::member", tracing::Level::DEBUG))
+                .with(tracing_subscriber::fmt::layer().with_test_writer()));
+            // All pages must belong to one physical inventory. This live
+            // cluster may finish recovery or catch up a peer between pages.
+            // Discard every row of an expired cursor and retain its evidence.
+            for attempt in 1..=4 {
+                let mut next = initial.clone();
+                next.limit = 2;
+                let mut entries = BTreeSet::new();
+                let mut first_continuation = None;
+                loop {
+                    let page = match control.read_key_retention(operator, next.clone()).with_subscriber(diagnostics.clone()).await {
+                        Ok(page) => page,
+                        Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired
+                            && next.cursor.is_some() => {
+                            eprintln!("journal inventory expired phase={phase} attempt={attempt} cursor={:?} observed={entries:?} error={error:?}",next.cursor);
+                            if attempt == 4 { return Err(error); }
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    page.validate(&next)?;
+                    eprintln!("journal inventory page phase={phase} attempt={attempt} requested={:?} returned={:?} coverage={:?} entries={:?}",
+                        next.cursor,page.next_cursor,page.coverage,page.entries);
+                    for row in &page.entries {
+                        assert!(entries.last().is_none_or(|previous| previous < row),
+                            "journal inventory repeated or regressed");
+                        entries.insert(row.clone());
+                    }
+                    if next.cursor.is_none() {
+                        first_continuation = page.next_cursor.clone();
+                    }
+                    next.cursor = page.next_cursor.clone();
+                    if next.cursor.is_none() {
+                        return Ok((entries, page.coverage.clone(), first_continuation));
+                    }
+                }
+            }
+            unreachable!("fourth expired enumeration returned its original error")
+        }
+        for db in controls {
+            let runtime = self.targets.iter().find(|target| target.node_id() == db.raft_group().node_id()).unwrap();
+            runtime.check_checkpoint_route_under_generation_lock(db, self.target, checkpoint).await.unwrap();
+        }
+        let (entries, coverage, held_cursor) = pages(control, &operator, &request, "installed").await.unwrap();
+        let held_cursor = held_cursor.expect("three installed journals need a second two-row page");
+        assert!(
+            matches!(coverage, KeyRetentionCoverage::Complete { .. }),
+            "incomplete physical journal coverage {coverage:?}"
+        );
+        let catalogs = entries
+            .iter()
+            .filter_map(|row| match row.reference {
+                KeyReference::Catalog {
+                    node_id,
+                    catalog_id,
+                    domain: KeyCatalogDomain::TargetJournal,
+                } => Some((node_id, catalog_id)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(catalogs.len(), 3);
+        assert_eq!(catalogs.values().collect::<BTreeSet<_>>().len(), 3);
+        for db in controls {
+            let id = db.raft_group().node_id();
+            assert!(entries.iter().any(|row|matches!(row.reference,KeyReference::TargetJournal{node_id,incarnation} if node_id==id && incarnation==self.target)));
+        }
+        let has_checkpoint = |entries: &BTreeSet<KeyRetentionEntry>| {
+            entries.iter().any(|row|matches!(row.reference,KeyReference::CompletedBackup{backup_id,..} if backup_id==checkpoint.backup_id))
+        };
+        assert!(has_checkpoint(&entries), "target backup graph absent");
+        let source = self.source_observer.upgrade().unwrap();
+        let source_index = usize::try_from(source.raft_group().node_id() - 1).unwrap();
+        let crate::administration::DestinationConfig::Filesystem { directory, .. } =
+            &configurations[source_index].backup_destinations["primary"]
+        else {
+            panic!("expected filesystem target recovery fixture")
+        };
+        let id = checkpoint.backup_id;
+        let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+        let disk = source.stores().application().persistent_disk();
+        let config = &configurations[source_index].persistent_disk;
+        let withheld = manifest.with_file_name("withheld-target-checkpoint");
+        let (root, name) = config.binding(&manifest).unwrap();
+        let (held_root, held_name) = config.binding(&withheld).unwrap();
+        let original = disk.open_file(root, name).unwrap();
+        let identity = original.identity().unwrap();
+        let held = disk.publish_file(original, held_root, held_name).unwrap();
+        let held_request = ReadKeyRetentionRequest {cursor:Some(held_cursor.clone()),limit:2,..request.clone()};
+        let rejected = control.read_key_retention(&operator,held_request).await;
+        let unavailable = pages(control, &operator, &request, "withheld").await;
+        let restored = disk.publish_file(held, root, name).unwrap();
+        assert_eq!(restored.identity().unwrap(), identity);
+        drop(restored);
+        assert!(matches!(rejected,Err(ref error) if error.code==kasumi_types::ErrorCode::CursorExpired),
+            "withheld checkpoint did not expire the original complete journal cursor {held_cursor:?}");
+        let unavailable = unavailable.unwrap();
+        assert!(!has_checkpoint(&unavailable.0));
+        assert!(
+            matches!(&unavailable.1,KeyRetentionCoverage::Incomplete{missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable{record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
+        );
+        let restored = pages(control, &operator, &request, "restored").await.unwrap();
+        assert!(
+            matches!(restored.1, KeyRetentionCoverage::Complete { .. })
+                && has_checkpoint(&restored.0)
+        );
+        let KeyRetentionCoverage::Complete {
+            coverage_sha256, ..
+        } = &restored.1
+        else {
+            unreachable!()
+        };
+        let retirement = kasumi_types::RetireKeyVersionsRequest {
+            retirement_id: "1".into(),
+            scope: KeyRetentionScope::TargetJournal {},
+            identity: kasumi_types::KeyIdentityRef {
+                provider: "unused-inventory-provider".into(),
+                key_ref: "unused-inventory-key".into(),
+            },
+            retire_below_version: 2,
+            expected_coverage_sha256: coverage_sha256.clone(),
+        };
+        let writer_token = self.path("control.jwt");
+        let withheld = self.directory.join("withheld-writer-credential");
+        std::fs::rename(&writer_token, &withheld).unwrap();
+        let failed = control
+            .retire_key_versions(&operator, retirement.clone())
+            .await;
+        std::fs::rename(&withheld, &writer_token).unwrap();
+        assert!(
+            matches!(failed,Err(ref error) if error.code==kasumi_types::ErrorCode::Unavailable && error.has_physical_source()),
+            "withholding the writer credential did not return the original physical failure: {failed:?}"
+        );
+        let held = control
+            .key_retirement_status(
+                &operator,
+                kasumi_types::KeyRetirementStatusRequest {
+                    scope: request.scope.clone(),
+                    retirement_id: "1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(held.status.as_ref(),Some(kasumi_types::KeyRetirementStatus::Fenced{fence}) if fence.request==retirement)
+        );
+        let completed = control
+            .retire_key_versions(&operator, retirement.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(completed.as_ref(),kasumi_types::KeyRetirementStatus::Completed{record} if record.fence.request==retirement)
+        );
+        let generation = control.engine().generation().unwrap();
+        assert_eq!(
+            generation
+                .state
+                .target_journal_writers
+                .iter()
+                .map(|writer| (writer.verifier.node_id, writer.catalog))
+                .collect::<BTreeMap<_, _>>(),
+            catalogs
+        );
+        drop(generation);
+        let replay = control
+            .retire_key_versions(&operator, retirement)
+            .await
+            .unwrap();
+        assert_eq!(replay.as_ref(), completed.as_ref());
+        assert!(matches!(
+            pages(control, &operator, &request, "retired").await.unwrap().1,
+            KeyRetentionCoverage::Complete { .. }
+        ));
+    }
     pub async fn databases(&self) -> Vec<Arc<kasumi_engine::Database>> {
         let mut databases = Vec::new();
         for target in &self.targets {
@@ -2339,6 +2837,9 @@ impl Fixture {
         }
         self.issuers.clear();
         self.issuer_networks.clear();
+        for signer in self.issuer_signers.drain(..) {
+            signer.shutdown().await.unwrap();
+        }
         for audit in &self.issuer_audits {
             audit.admission().drain_snapshot_startups().await.unwrap();
         }

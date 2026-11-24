@@ -183,7 +183,6 @@ pub(crate) use document_read_scope::DocumentReadBudget;
 mod disk_memory;
 pub(crate) use disk_memory::ProposalBudget;
 mod installed;
-pub mod snapshot_work;
 pub mod startup;
 
 pub(crate) trait MemorySource: Send + Sync {
@@ -304,6 +303,7 @@ pub struct ResidentReservationBytes {
     pub audit_maintenance: u64,
     pub scoped_application_source: u64,
     pub native_cache: u64,
+    pub text_shard_cache: u64,
     pub document_source: u64,
 }
 
@@ -317,7 +317,7 @@ pub struct AdmissionSnapshot {
     pub bookkeeping_bytes: u64,
     /// Non-operation reservations, excluding separately reported bookkeeping.
     pub resident_reserved_bytes: u64,
-    /// The six counters sum to `resident_reserved_bytes` in this same sample.
+    /// The counters sum to `resident_reserved_bytes` in this same sample.
     pub resident_reserved_bytes_by_origin: ResidentReservationBytes,
     pub live_reservations: usize,
     pub inflight_operations: usize,
@@ -337,13 +337,17 @@ enum ChargeOrigin {
     AuditMaintenance,
     ScopedApplicationSource,
     NativeCache,
+    TextShardCache,
     // Retained selected-source metadata and logical document backing preserve
     // the same mandatory work and installed maintenance floors.
     DocumentSource,
 }
 impl ChargeOrigin {
     fn preserves_cache_headroom(self) -> bool {
-        matches!(self, Self::NativeCache | Self::DocumentSource)
+        matches!(
+            self,
+            Self::NativeCache | Self::TextShardCache | Self::DocumentSource
+        )
     }
     /// Cache-work reserves a charge of this origin leaves free. A retained
     /// source keeps one for transient required work. Every proposal admits a
@@ -352,7 +356,10 @@ impl ChargeOrigin {
     /// credit therefore keeps two more, so a cache that grew while idle cannot
     /// refuse the next request's grant by itself.
     fn cache_work_reserves(self) -> u64 {
-        if self == Self::NativeCache { 3 } else { 1 }
+        match self {
+            Self::NativeCache | Self::TextShardCache => 3,
+            _ => 1,
+        }
     }
 }
 #[derive(Clone, Copy)]
@@ -431,7 +438,7 @@ fn arc_bytes<T>() -> anyhow::Result<u64> {
         .ok_or_else(|| anyhow::anyhow!("memory owner size overflow"))
 }
 
-/// Shared resource accounting and the bounded strong startup-scope census.
+/// Shared resource accounting and the bounded strong startup-terminal census.
 /// Runtime admission fences remain separate; a resident lease retains this core.
 ///
 /// `new` creates an independent governor for an explicit embedding policy.
@@ -441,7 +448,6 @@ fn arc_bytes<T>() -> anyhow::Result<u64> {
 pub struct MemoryCore {
     storage_census: kasumi_store::StorageCensus,
     startups: Mutex<startup::Census>,
-    snapshot_work: Mutex<snapshot_work::Census>,
     // Blocking verification and backup children of admitted operations. Each
     // child retains its operation's reservation, never this core's owner.
     blocking_children: kasumi_serving::BlockingChildren,
@@ -537,6 +543,44 @@ impl MemoryCore {
     pub(crate) fn blocking_children(&self) -> &kasumi_serving::BlockingChildren {
         &self.blocking_children
     }
+    /// Run a read whose captures already own their workspace, registration and
+    /// selected source. Preserve its actual join when the request disappears.
+    pub(crate) async fn read_child<T: Send + 'static>(
+        &self,
+        token: QueryCancellation,
+        deadline_error: Option<fn() -> Error>,
+        read: impl FnOnce(&QueryCancellation) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let call = self
+            .blocking_children()
+            .start(move || {
+                token
+                    .check()
+                    .map_err(kasumi_serving::ChildFailure::Stopped)?;
+                read(&token).map_err(|error| {
+                    if error.code == ErrorCode::CursorExpired
+                        || deadline_error.is_some_and(|expired| error == expired())
+                        || token.check().err().as_ref() == Some(&error)
+                    {
+                        kasumi_serving::ChildFailure::Stopped(error)
+                    } else {
+                        kasumi_serving::ChildFailure::Failed(error)
+                    }
+                })
+            })
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking read capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking read owner sealed")
+                }
+            })?;
+        call.wait()
+            .await
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking read worker failed"))?
+    }
     /// Refuse every later blocking child of the process's installed core. Only
     /// the process's final drain seals, before it joins that core's children.
     pub fn seal_installed_blocking_children() {
@@ -566,7 +610,6 @@ impl MemoryCore {
         let clock = arc_bytes::<SystemLeaseClock>()?;
         let data = arc_bytes::<MemoryState>()?;
         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
-        let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
         let children =
             kasumi_serving::BlockingChildren::required_bytes(config.max_inflight_operations)
                 .and_then(|bytes| bytes.checked_add(ALLOCATION_ALLOWANCE))
@@ -576,7 +619,6 @@ impl MemoryCore {
             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
             .and_then(|bytes| bytes.checked_add(data))
             .and_then(|bytes| bytes.checked_add(startups))
-            .and_then(|bytes| bytes.checked_add(snapshot_work))
             .and_then(|bytes| bytes.checked_add(children))
             .and_then(|bytes| bytes.checked_add(storage))
             .and_then(|bytes| bytes.checked_add(source))
@@ -629,9 +671,6 @@ impl MemoryCore {
         let startups = Mutex::new(startup::Census::allocate(
             prepared.config.max_startup_scopes,
         )?);
-        let snapshot_work = Mutex::new(snapshot_work::Census::allocate(
-            prepared.config.max_inflight_operations,
-        )?);
         // Every live child retains its operation's reservation, so the
         // operation bound is also the bound on children that can run at once.
         let blocking_children = kasumi_serving::BlockingChildren::new(
@@ -678,7 +717,6 @@ impl MemoryCore {
         let core = Arc::new(Self {
             storage_census,
             startups,
-            snapshot_work,
             blocking_children,
             sampler: None,
             data,
@@ -865,6 +903,9 @@ impl MemoryState {
                         }
                         ChargeOrigin::NativeCache => {
                             &mut resident_reserved_bytes_by_origin.native_cache
+                        }
+                        ChargeOrigin::TextShardCache => {
+                            &mut resident_reserved_bytes_by_origin.text_shard_cache
                         }
                         ChargeOrigin::DocumentSource => {
                             &mut resident_reserved_bytes_by_origin.document_source
@@ -1113,6 +1154,7 @@ struct SnapshotStartups {
     inventory: Option<Reservation>,
 }
 pub struct NodeAdmission {
+    pub(crate) text_shards: Mutex<crate::application_text::ShardCache>,
     core: Arc<MemoryCore>,
     snapshot_startup_drain: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
     // Report is destroyed before an inventory charge retained for its failures.
@@ -1158,6 +1200,7 @@ impl NodeAdmission {
         owners.try_reserve_exact(core.data.config.max_snapshot_startups)?;
         owners.resize_with(core.data.config.max_snapshot_startups, || None);
         let facade = Arc::new(Self {
+            text_shards: Default::default(),
             core,
             snapshot_startups: Mutex::new(SnapshotStartups {
                 closed: false,
@@ -1240,6 +1283,26 @@ impl NodeAdmission {
     pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_resident(bytes)
     }
+    /// Optional retention leaves the same byte and reservation floors as the
+    /// native page cache. Only a capacity denial permits a demand-only read.
+    pub(crate) fn try_reserve_text_shard(&self, bytes: u64) -> Result<Option<Reservation>> {
+        match self.core.reserve_kind_raw(
+            bytes,
+            None,
+            ChargeKind::Resident,
+            ChargeOrigin::TextShardCache,
+        ) {
+            Ok(lease) => Ok(Some(lease)),
+            Err(ReserveKindError::Exhausted) => Ok(None),
+            Err(ReserveKindError::IdentifierExhausted | ReserveKindError::Missing) => {
+                Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "text shard admission owner unavailable",
+                ))
+            }
+        }
+    }
+
     pub(crate) fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_audit_escrow(bytes)
     }
@@ -1365,6 +1428,36 @@ impl NodeAdmission {
         *slot = Some(Arc::downgrade(&owner));
         Ok(owner)
     }
+    /// Run admitted adapter work on the installed core's bounded child table.
+    /// An abandoned caller leaves its actual handle and any failed outcome
+    /// here for shutdown. The closure owns its input and workspace.
+    pub async fn adapter_child<T, E>(
+        &self,
+        work: impl FnOnce() -> std::result::Result<T, kasumi_serving::ChildFailure<E>> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<Error> + Into<anyhow::Error> + Send + 'static,
+    {
+        let child = self
+            .core
+            .blocking_children()
+            .start(work)
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking adapter capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking adapter owner sealed")
+                }
+            })?;
+        child
+            .wait()
+            .await
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking adapter worker stopped"))?
+    }
+
     /// Join the blocking verification and backup children accepted on this
     /// node's core, including those whose callers were cancelled or timed out.
     /// A panic, or a failure no caller received, is reported here and by every
@@ -1491,6 +1584,19 @@ impl Drop for OrdinaryProtection {
     }
 }
 impl Reservation {
+    #[cfg(test)]
+    pub(crate) fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
+        let core = self.core.clone();
+        let slot = self.slot;
+        let id = self.id;
+        move || {
+            let state = core.data.state.lock().unwrap_or_else(|p| p.into_inner());
+            state
+                .charge(slot, id)
+                .map(|charge| (charge.bytes, charge.kind == ChargeKind::Resident))
+        }
+    }
+
     /// The node's table of blocking children. A child started here stays with
     /// the installed core when its caller is cancelled or times out, and
     /// `NodeAdmission::drain_blocking_children` joins it.
@@ -1502,6 +1608,19 @@ impl Reservation {
     /// and must not keep the charge alive while it waits.
     pub(crate) fn blocking_owner(&self) -> Arc<MemoryCore> {
         self.core.clone()
+    }
+
+    /// The installed core owns the blocking join. A disappearing request can
+    /// discard its reply, while the drain still observes the worker's terminal
+    /// error or panic. The worker owns the reservation through its last read.
+    pub(crate) async fn retained_read<T: Send + 'static>(
+        self,
+        token: QueryCancellation,
+        read: impl FnOnce(Self, &QueryCancellation) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.blocking_owner()
+            .read_child(token, None, move |token| read(self, token))
+            .await
     }
 
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
@@ -1837,6 +1956,36 @@ mod tests {
             Ok(self.rss.load(Ordering::SeqCst))
         }
     }
+    #[tokio::test]
+    async fn cancelled_read_retains_a_later_storage_error_and_releases_its_reservation() {
+        let (node, _, _) = fixture();
+        let token = QueryCancellation::default();
+        let reservation = node.reserve(1, Some(token.clone())).unwrap();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let reader = tokio::spawn(reservation.retained_read(
+            token.clone(),
+            move |_workspace, _token| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                Err::<(), _>(Error::new(
+                    ErrorCode::Corruption,
+                    "retained encrypted page failed",
+                ))
+            },
+        ));
+        started.await.unwrap();
+        token.cancel();
+        reader.abort();
+        assert!(reader.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        let failure = node.drain_blocking_children().await.unwrap_err();
+        let retained = failure.issues()[0].error().downcast_ref::<Error>().unwrap();
+        assert_eq!(retained.code, ErrorCode::Corruption);
+        assert_eq!(retained.message, "retained encrypted page failed");
+        assert!(node.reserve(1, None).is_ok());
+    }
+
     fn fixture() -> (Arc<NodeAdmission>, Arc<Memory>, Arc<Clock>) {
         let clock = Arc::new(Clock::default());
         let memory = Arc::new(Memory {
@@ -2231,6 +2380,7 @@ mod tests {
             (ChargeOrigin::AuditMaintenance, 17),
             (ChargeOrigin::ScopedApplicationSource, 19),
             (ChargeOrigin::NativeCache, 23),
+            (ChargeOrigin::TextShardCache, 41),
             (ChargeOrigin::DocumentSource, 29),
         ]
         .into_iter()
@@ -2260,6 +2410,7 @@ mod tests {
                 audit_maintenance: 17,
                 scoped_application_source: 19,
                 native_cache: 23,
+                text_shard_cache: 41,
                 document_source: 29,
             }
         );
@@ -2267,7 +2418,7 @@ mod tests {
         let origins = encoded["resident_reserved_bytes_by_origin"]
             .as_object()
             .unwrap();
-        assert_eq!(origins.len(), 6);
+        assert_eq!(origins.len(), 7);
         assert_eq!(
             origins
                 .values()
@@ -2275,12 +2426,12 @@ mod tests {
                 .sum::<u64>(),
             held.resident_reserved_bytes
         );
-        assert_eq!(held.resident_reserved_bytes, 112);
+        assert_eq!(held.resident_reserved_bytes, 153);
         assert_eq!(held.bookkeeping_bytes, baseline.bookkeeping_bytes + 31);
-        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 180);
+        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 221);
         drop(residents.pop());
         let released = node.snapshot();
-        assert_eq!(released.resident_reserved_bytes, 83);
+        assert_eq!(released.resident_reserved_bytes, 124);
         assert_eq!(
             released.resident_reserved_bytes_by_origin.document_source,
             0

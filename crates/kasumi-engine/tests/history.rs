@@ -612,6 +612,25 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         db.open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
     )
     .unwrap();
+    let leased = resolved!(
+        db,
+        db.read_snapshot_page(
+            &context(),
+            ReadSnapshotPage {
+                lease_id: lease.lease_id.clone(),
+                documents: vec![DocumentKey {
+                    collection: "docs".into(),
+                    id: "r0599".into(),
+                }],
+            },
+        )
+    )
+    .unwrap();
+    assert_eq!(
+        leased.documents[0].document.as_ref().unwrap(),
+        before.as_ref()
+    );
+    drop(leased);
     let mut after_id = None;
     let mut read = 0;
     loop {
@@ -671,8 +690,68 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .code,
         ErrorCode::Unavailable
     );
+    let key_request = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Tenant {
+            tenant: context().tenant,
+        },
+        cursor: None,
+        limit: 1,
+    };
+    let missing = db
+        .read_key_retention(&context(), key_request.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&missing.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
+        if missing.contains(&MissingKeyDependency::RecordUnreadable {
+            record_kind: KeyReferenceKind::HistoryArchive, id: archive.manifest_object_id.clone()
+        }))
+    );
+    let stale = missing
+        .next_cursor
+        .clone()
+        .expect("both current catalogs exist");
+    drop(missing);
     db.install_archive_destination("cold".into(), destination.clone())
         .unwrap();
+    let error = db
+        .read_key_retention(
+            &context(),
+            ReadKeyRetentionRequest {
+                cursor: Some(stale),
+                ..key_request.clone()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::CursorExpired);
+    let page = db
+        .read_key_retention(
+            &context(),
+            ReadKeyRetentionRequest {
+                limit: 256,
+                ..key_request
+            },
+        )
+        .await
+        .unwrap();
+    let observed: BTreeSet<_> = page
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.reference {
+            KeyReference::HistoryArchive {
+                archive_id,
+                object_id,
+            } if archive_id == "period-one" => Some(object_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let expected: BTreeSet<_> = std::iter::once(archive.manifest_object_id.as_str())
+        .chain(archive.manifest.chunks.iter().map(|c| c.object_id.as_str()))
+        .collect();
+    assert_eq!(observed, expected);
+    drop(page);
+
     assert_eq!(
         resolved!(db, db.get(&context(), "docs", "r0599"))
             .unwrap()

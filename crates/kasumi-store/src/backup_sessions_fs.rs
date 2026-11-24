@@ -180,15 +180,15 @@ impl Directory {
         self.verified_identity()?;
         Ok(Some(bytes))
     }
-    // A published terminal has a canonical header and the exact full extent; a
+    // A published terminal has its format's canonical header and extent; a
     // reserve must be the exact admitted fixed length. Neither arbitrary names
     // nor short reserve files are adopted. The caller synchronizes this
     // directory once after classifying both slots: every terminal and reserve
     // was itself synchronized before its name could appear.
     fn terminal_state(&self, session: Uuid, slot: Terminal) -> Result<(bool, bool)> {
         let published = match self.find_leaf(slot.published())? {
-            Some(file) => {
-                terminal::classify(&file, session, slot)?;
+            Some(mut file) => {
+                terminal::classify(&mut file, session, slot)?;
                 true
             }
             None => false,
@@ -473,9 +473,15 @@ impl Directory {
         let (root, relative) = self.1.binding(&destination_path)?;
         // Publication synchronizes the durable contents' new name.
         match self.1.publish_file(file, root, relative) {
-            Ok(_published) => {
+            Ok(mut published) => {
                 #[cfg(test)]
                 test_sync::check(destination, &name, test_sync::Point::PublishDirectory)?;
+                if terminal_slot.is_some() && bytes.len() < terminal::PAYLOAD_BYTES {
+                    // The original exclusive descriptor stays enrolled across
+                    // rename, truncate and both syncs. A crash at the rename
+                    // leaves a readable full record and a later writer reclaims it.
+                    published.shrink((terminal::HEADER_BYTES + bytes.len()) as u64)?;
+                }
                 Ok(())
             }
             Err(error) => {

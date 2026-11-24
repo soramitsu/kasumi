@@ -13,6 +13,9 @@
 //! batches afterwards.
 use super::*;
 
+mod structured;
+pub(super) use structured::validate_structured_manifest;
+
 pub(crate) const OWNERS: &str = "kasumi.app.staging";
 pub(crate) const SELECTIONS: &str = "kasumi.app.selection";
 const SELECTION_BYTES: usize = 8192;
@@ -129,6 +132,10 @@ impl NamespaceStage {
         &self.namespace
     }
 
+    pub(crate) fn memory(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.store.scratch_disk().memory().clone()
+    }
+
     /// The fixed-size selection write joins the checkpoint binding and applied
     /// cursor in the existing paired transaction. Store rejects it unless this
     /// exact owner has sealed successfully; it cannot select an abandoned stage.
@@ -149,6 +156,16 @@ impl NamespaceStage {
     /// retrying the same owner accepts only identical bytes and exact coverage.
     /// A sealed token is ready for publication and cannot be written again.
     pub fn write_table(&self, source: &EncryptedTable) -> Result<()> {
+        self.write_rows(|row| source.visit(|key, value| row(key, value)))
+    }
+
+    /// `write_table` for rows produced while staging, such as a bulk-built
+    /// ordered tree: `produce` hands each row to the callback in turn, and
+    /// the stage seals once it returns.
+    pub fn write_rows(
+        &self,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         let _memory = self
             .store
             .scratch_disk()
@@ -170,7 +187,7 @@ impl NamespaceStage {
         let mut records = 0u64;
         let mut bytes = 0u64;
         let mut digest = Sha256::new();
-        source.visit(|key, value| {
+        produce(&mut |key, value| {
             validate_record(&self.namespace, key, value.len())?;
             let framed = self
                 .namespace
@@ -347,11 +364,26 @@ impl NamespaceStage {
     /// generation a selector retired. Checkpoint-bound selected namespaces
     /// require the future snapshot/reference reachability collector.
     pub fn reclaim_unselected(store: &Arc<TenantStore>) -> Result<()> {
+        Self::reclaim_matching(store, |_| true)
+    }
+
+    /// Reclaim generations made by this family's exclusive staging owner.
+    /// Other families can stage concurrently.
+    pub fn reclaim_family(store: &Arc<TenantStore>, family: &str) -> Result<()> {
+        validate_target(family)?;
+        Self::reclaim_matching(store, |namespace| {
+            namespace == family
+                || namespace
+                    .rsplit_once('@')
+                    .is_some_and(|(base, id)| base == family && Uuid::parse_str(id).is_ok())
+        })
+    }
+
+    fn reclaim_matching(store: &Arc<TenantStore>, matches: impl Fn(&str) -> bool) -> Result<()> {
         let view = store.read_view()?;
         view.visit(OWNERS, OWNER_BYTES, |namespace, bytes| {
-            let owner = Owner::decode(bytes)?;
-            if owner.phase != Phase::Selected {
-                let namespace = std::str::from_utf8(namespace)?;
+            let namespace = std::str::from_utf8(namespace)?;
+            if matches(namespace) && Owner::decode(bytes)?.phase != Phase::Selected {
                 while !Self::reclaim(store, namespace)? {}
             }
             Ok(())
@@ -459,8 +491,19 @@ impl SelectedGeneration {
     /// The selection at a pinned root: every row read through this view
     /// belongs to the returned generation even while a newer one is reclaimed.
     pub fn load_at(view: &TenantReadView, family: &str, initial: &[&str]) -> Result<Self> {
-        let record = view.get(SELECTIONS, family.as_bytes(), SELECTION_BYTES)?;
-        Self::from_record(family, initial, record.as_deref())
+        Self::load_from_pages(view, family, initial)
+    }
+    pub(crate) fn load_from_pages(
+        view: &dyn crate::ordered_pages::PageSource,
+        family: &str,
+        initial: &[&str],
+    ) -> Result<Self> {
+        let record = view.read_row(SELECTIONS, family.as_bytes(), SELECTION_BYTES)?;
+        Self::from_record(
+            family,
+            initial,
+            record.as_ref().map(crate::ordered_pages::PageRow::as_bytes),
+        )
     }
     pub fn namespace(&self, role: usize) -> &str {
         &self.namespaces[role]
@@ -587,6 +630,32 @@ fn mutate<T>(
         },
     )?;
     Ok(output.expect("successful stage body"))
+}
+
+/// Install one immutable encrypted identity in the same native transaction
+/// that tests its predecessor. Independent opens cannot select different bytes.
+pub(crate) fn bind_immutable(
+    store: &TenantStore,
+    namespace: &str,
+    key: &[u8],
+    value: &[u8],
+) -> Result<()> {
+    mutate(store, &[namespace], |tx, state, catalog| {
+        if let Some(old) = read_record(tx, store, state, namespace, key, value.len())? {
+            ensure!(
+                old.value.as_slice() == value,
+                "installed immutable identity differs"
+            );
+            return Ok(());
+        }
+        write_domain(
+            tx,
+            store,
+            state,
+            catalog,
+            &[WriteOp::put(namespace, key, value)],
+        )
+    })
 }
 
 struct StageRecord {
@@ -823,6 +892,139 @@ pub(super) fn validate_transitions(
             owner_op(name),
             "generation selection lacks its owner transition"
         );
+    }
+    validate_primary_manifest(tx, store, state, operations)?;
+    validate_text_manifest(tx, store, state, operations)
+}
+
+/// The ordinary primary directory row changes only forward. A put names the
+/// page space selected after this batch. Without a selection switch in the
+/// same batch it must succeed a current predecessor on the same tree with a
+/// larger revision; with one it starts a replacement generation. Deletion is
+/// left to whole-namespace removal.
+fn validate_primary_manifest(
+    tx: &kasumi_kv::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    operations: &[WriteOp],
+) -> Result<()> {
+    use crate::primary_manifest::{
+        CURRENT, FAMILY, INITIAL_SPACE, MANIFESTS, MAX_MANIFEST_BYTES, PrimaryManifest,
+    };
+    let mut seen = false;
+    for operation in operations {
+        let (namespace, key) = operation_target(operation);
+        if namespace != MANIFESTS {
+            continue;
+        }
+        ensure!(key.as_slice() == CURRENT, "unknown primary manifest row");
+        ensure!(!seen, "duplicate primary manifest write");
+        seen = true;
+        let WriteOp::Put { value, .. } = operation else {
+            continue;
+        };
+        let next = PrimaryManifest::decode(value)?;
+        ensure!(
+            next.tenant == store.tenant,
+            "primary manifest tenant differs"
+        );
+        let switched = operations.iter().find_map(|operation| match operation {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } if namespace == SELECTIONS && key.as_slice() == FAMILY.as_bytes() => Some(value),
+            _ => None,
+        });
+        let selected = match switched {
+            Some(bytes) => Selection::decode(bytes)?.namespaces,
+            None => read_selection(tx, store, state, FAMILY.as_bytes())?.map_or_else(
+                || INITIAL_SPACE.iter().map(|space| (*space).into()).collect(),
+                |selection| selection.namespaces,
+            ),
+        };
+        ensure!(
+            selected.len() == INITIAL_SPACE.len() && selected[0] == next.page_space,
+            "primary manifest names an unselected page space"
+        );
+        if switched.is_some() {
+            ensure!(
+                next.is_current() || next.is_rebuild_seed(),
+                "a replacement primary generation must be current or begin an empty rebuild"
+            );
+            continue;
+        }
+        if let Some(previous) =
+            read_record(tx, store, state, MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)?
+        {
+            next.check_successor(&PrimaryManifest::decode(&previous.value)?)?;
+        } else {
+            ensure!(
+                next.rebuild().is_none(),
+                "a primary rebuild needs a selected seed"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The text directory row changes only forward. A put names the page space
+/// selected after this batch. Without a selection switch in the same batch it
+/// must succeed a current predecessor on the same tree; with one it starts a
+/// replacement generation. Deletion is left to whole-namespace removal.
+fn validate_text_manifest(
+    tx: &kasumi_kv::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    operations: &[WriteOp],
+) -> Result<()> {
+    use crate::text_manifest::{CURRENT, FAMILY, INITIAL_SPACE, MANIFESTS, TextManifest};
+    let mut seen = false;
+    for operation in operations {
+        let (namespace, key) = operation_target(operation);
+        if namespace != MANIFESTS {
+            continue;
+        }
+        ensure!(key.as_slice() == CURRENT, "unknown text manifest row");
+        ensure!(!seen, "duplicate text manifest write");
+        seen = true;
+        let WriteOp::Put { value, .. } = operation else {
+            anyhow::bail!("text manifest cannot be deleted")
+        };
+        let next = TextManifest::decode(value)?;
+        ensure!(next.tenant == store.tenant, "text manifest tenant differs");
+        let switched = operations.iter().find_map(|operation| match operation {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } if namespace == SELECTIONS && key.as_slice() == FAMILY.as_bytes() => Some(value),
+            _ => None,
+        });
+        let selected = match switched {
+            Some(bytes) => Selection::decode(bytes)?.namespaces,
+            None => read_selection(tx, store, state, FAMILY.as_bytes())?.map_or_else(
+                || INITIAL_SPACE.iter().map(|space| (*space).into()).collect(),
+                |selection| selection.namespaces,
+            ),
+        };
+        ensure!(
+            selected.len() == INITIAL_SPACE.len() && selected[0] == next.page_space,
+            "text manifest names an unselected page space"
+        );
+        if switched.is_some() {
+            continue;
+        }
+        let previous = read_record(
+            tx,
+            store,
+            state,
+            MANIFESTS,
+            CURRENT,
+            crate::text_manifest::MAX_MANIFEST_BYTES,
+        )?
+        .context("text manifest edit lacks a predecessor")?;
+        next.check_successor(&TextManifest::decode(&previous.value)?)?;
     }
     Ok(())
 }

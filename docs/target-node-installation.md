@@ -92,3 +92,20 @@ before journal catalog acquisition, so a rejected root cannot leave journal
 renewal workers behind. The explicit initializer separately drains the opened
 store after either successful or rejected journal installation. These successor
 changes are source-only pending the coordinated compiler and functional gates.
+
+### Bind backup read keys during enrollment
+
+Each newly enrolled target backup source supplies a primary `keys` setting,
+a `historical_keys` array for older encrypted backups, and a `read_key_binding`
+SHA-256. To obtain the digest, put the source's `destination_alias`, `keys` and
+`historical_keys` settings in an owner-only JSON file. Run
+`kasumid control-recovery source-key-digest <source.json>` and set
+`read_key_binding` to its output before initializing the journal.
+
+The journal binds each tenant, source incarnation and destination alias to its
+provider roster. Materialization rechecks that roster before opening the
+backup. The roster includes file provider identities and Transit key identities
+and CA trust. Token refresh can use the configured credential source. A change
+in roster or TLS trust fences materialization. Stop and cleanup can reopen the
+journal while the source read keys are offline. Deployed journals with an
+unbound single source keep their original configuration and read path.

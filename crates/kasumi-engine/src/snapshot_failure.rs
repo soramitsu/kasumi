@@ -73,6 +73,11 @@ impl From<ScratchOperationFailure> for SnapshotFailure {
 impl From<anyhow::Error> for SnapshotFailure {
     fn from(original: anyhow::Error) -> Self {
         let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
+        if outer.is::<kasumi_serving::ChildLost>() {
+            return Self::Operation(crate::state::snapshot_encoding_failure::encoding_error(
+                original,
+            ));
+        }
         if !outer.is::<Error>() {
             return Self::Source(original);
         }

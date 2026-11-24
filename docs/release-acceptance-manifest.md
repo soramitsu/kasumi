@@ -6,13 +6,21 @@ run workloads, manufacture receipts, remove failed attempts, or grant waivers.
 The approved scope remains [the release plan](first-release-plan.md) and
 [G01–G14](first-release-goals.md).
 
-**No final release can currently pass this verifier.** The domain-adapter
-registry is deliberately empty. None of the existing domain runners produces
-all the evidence needed for its final-release gate. An opaque report saying
-“passed,” a list of successful scenario names, or an arbitrary frozen source
-file used as a purported runner is rejected. The structural validators and
-their counterexample tests are implementation progress, not closure of G11,
-qualification evidence, or permission to close the release goal.
+**Release acceptance remains open.** The verifier registers all 19 domain
+adapters. Each checks a native run against its scenarios and the selected
+candidate, configuration and artifact identities. The current qualification
+results and outstanding placements are recorded in the
+[release integration ledger](first-release-integration-20261118.md).
+
+| Area | Registered domain IDs |
+| --- | --- |
+| Installed software and artifacts | `installed`, `package-smoke`, `oci-smoke`, `systemd-smoke`, `repeatable-assembly` |
+| Data, operations and security | `correctness`, `concurrency`, `observability`, `backup-cleanup`, `audit-retention`, `key-retention`, `providers`, `dependency-review` |
+| Capacity, fault recovery and endurance | `capacity-standalone`, `capacity-ha`, `benchmark-matrix`, `ha-faults`, `recovery`, `ha-soak` |
+
+The verifier takes the domain IDs from its scenario registry. The attempt
+index restricts OCI and systemd smoke to Linux. A passing unit test or
+source build supplies only the evidence it actually observed.
 
 ## Invocation and custody
 
@@ -174,6 +182,17 @@ parent-sync, and durable-evidence phases. It also requires absent source quorum,
 separate source/target authorization, one activation winner, forward completion,
 physical bindings, and unrelated-file isolation.
 
+For the Linux ARM64 `ha-faults` run, allocate a local advertised HTTPS endpoint
+and a separate `replication.listener.listen` socket for each of the three Data
+voters. Keep the advertised URLs and certificate pins in the enrolled peer
+roster. The runner binds those advertised endpoints and passes the original
+TLS streams to the installed listeners. The runner must be able to read the
+socket descriptors of the nine processes it starts. During the cut it records
+the two blocked outbound paths from the isolated leader and incoming traffic
+from the new majority, polls the isolated member's protected administration
+endpoint, verifies a committed majority write, then checks the original
+member's applied index after reconnection.
+
 A domain receipt has `schema`, `id`, `status`, `identity`, `binaries`,
 `configuration_ids`, `runner`, `started_at`, `finished_at`, `host`, `processes`,
 `topology`, `scenarios`, `details`, and `artifacts`. The binary map must equal
@@ -209,19 +228,108 @@ The structural workload validators enforce:
   snapshot, compaction, restart, filesystem/S3 backup/restore, retained-read,
   and HA follower-replacement operation needs exhaustive contiguous integrity
   batches of at most 256 documents, matching hashes, complete bytes, and
-  multiple actual RSS/disk/workspace samples within recorded limits.
+  multiple actual RSS/disk/workspace samples within recorded limits. Each operation
+  references its original installed `verify` events and integrity journal. The
+  verifier replays each prefix and binds the complete observed digest to the
+  measured corpus, driver, platform and integrity file.
 - A full-corpus `gzip-9` compression measurement whose output/input ratio is at
-  least 0.75, suitable for the existing printable-ASCII capacity corpus. This
-  explicit gate threshold is not an entropy proof. Maintenance workspace and
+  least 0.75. Reference the capacity driver's original `measure` events journal.
+  The verifier matches its seed, document count, canonical size and measured output
+  to the submitted totals. Maintenance workspace and
   retained-read budget must each be at most one quarter of the measured corpus.
 - A genuine **86,400-second** HA soak, bounded by wall time and a retained process
   of at least that duration. Heartbeats begin at zero, have no gap above 60
   seconds, show continued successful workload, and end at the actual duration.
   Unexpected errors and integrity mismatches must remain zero. Credential
   renewal, archival, backup, and membership maintenance must occur during it.
+  Configure the HA installation's external OAuth issuer to refresh the workload
+  profile's private bearer file before each 1,500-second session rotation.
+  The runner takes a baseline and uses `kasumid credential observe <database-profile>`
+  to authenticate the exact bearer against the pinned native listener at each
+  rotation. The retained profile digest stays constant. Success requires a
+  different bearer digest and a later expiration after every renewal.
 - Archive segments no larger than 8 MiB, maintenance at 75% toward 50%, measured
-  crossings of all permanent-history lifetime categories, key-retention pages
+  historical count crossings and the permanent backup-session floor, key-retention pages
   no larger than 256, and complete current-epoch readiness above 128 groups.
+
+The audit-retention component collector runs the installed nine-process
+observation and the frozen engine, Raft and Authority tests on native Linux ARM64. Use
+the admitted topology, fresh enrolled profiles for one tenant incarnation
+and a new custody directory outside the functional evidence. The audit plan
+uses schema `kasumi-audit-replica-v1` and absolute `data_profile` and
+`operator_profile` paths. The installation stage runs first so it can use the
+enrolled credentials while they are fresh. An ordinary failure in either
+stage preserves its receipts and allows the independent stage to run.
+
+```sh
+python3 -I -B -S scripts/observe_audit_retention.py collect \
+  --evidence "$functional" --custody "$new_custody" --journal "$journal" \
+  --attempt-id "$attempt" --topology "$nine_member_plan" --plan "$audit_plan"
+python3 -I -B -S scripts/observe_audit_retention.py replay \
+  --evidence "$functional" --custody "$transported_custody"
+```
+
+Replay checks both original reports against the supplied functional tree,
+recomputes their observations from original process output and checks the
+combined report. It records measured archival, outage, replica and replacement
+scenarios and the measured command, receipt, lifecycle and incarnation counts.
+The Authority witness enrolls distinct tenants, drains and reopens the encrypted
+database, verifies every incarnation against its original receipt, and replays the
+first and last enrollments. The historical Authority manifest before commit
+`04f8c199` capped receipts at 100,000 and required each accepted incarnation
+to have a receipt. The other former limits are 4,096 commands, 100,000
+mutation receipts and 10,000 lifecycle intents. Each count must exceed its
+own limit. The backup-session entry carries `acceptance_floor: 100001`,
+the observed distinct count and its original log reference. Its count must
+meet or exceed that floor. The full gate requires the cold-kill, reopen,
+authenticated replay and pagination evidence specified in G11. The combined
+report retains `qualification: component` until all five witnesses qualify.
+
+The concurrency producer runs all nine separately enrolled processes on native
+Linux ARM64. Start it from the frozen source with the same isolated interpreter
+and attempt journal as the other domain runners.
+
+```sh
+python3 -I -B -S scripts/run_concurrency.py --evidence "$functional" \
+  --journal "$journal" --attempt-id "$attempt" --output "$output" \
+  --topology "$nine_member_plan" --plan "$concurrency_plan"
+```
+
+Use plan schema `kasumi-concurrency-plan-v1`. Supply `data_profile` and
+`operator_profile` as absolute paths to installed profiles for the same tenant
+incarnation. The operator profile selects the current data leader's
+administrative endpoint. Supply a fresh `collection` name and a registered
+backup `destination`. The runner creates the declared collection, verifies
+both document versions after atomic writes, reads coherent snapshots, checks
+the new physical Raft snapshot position, creates and verifies a backup
+checkpoint and commits a fresh membership log entry for the enrolled voters.
+The fixed workloads retain complete original session replies, operation times,
+maintenance receipts and the nine original process drains.
+
+The observability runner uses this same admitted topology on the native ARM64
+reference. Its measurement checks protected data-node health, capacity, over
+128 healthy local groups and a fresh coverage epoch after an applied membership
+change. It resolves a new backup through its durable status and verifies the
+checkpoint, then compares private recovery records with protected HTTP responses
+through activation and completion. It also replays the seven frozen server
+cases that exercise denials, archive outages, issuer replacement and redaction.
+
+```sh
+python3 -I -B -S scripts/run_installed_observability.py --evidence "$functional" \
+  --topology "$topology" --plan "$observability_plan" --journal "$journal" \
+  --attempt-id "$attempt" --output "$new_output"
+```
+
+The plan uses schema `kasumi-installed-observability-v1`. Set `observer_profile`
+to a Control administrative credential for the observed data endpoint and
+`operator_profile` to the measured tenant operator on the same data leader.
+`control_profile` names the separate Control quorum. `destination` selects an
+installed backup alias. `recovery_request` is the absolute path to an original
+`RecoveryStart` for this disposable qualification tenant. The runner advances
+that operation to completion. The observed node hosts at least 129 tenants
+and the measured tenant appears on its bounded detail page. Profile and input
+paths are absolute. The runner preserves startup and membership-settling
+failures with their original process receipts.
 
 Latency sample rows contain `sequence`, `elapsed_ns`, and `status`. A
 measurement declares `name`, `requested_operations`, `attempted_operations`,
@@ -229,6 +337,51 @@ measurement declares `name`, `requested_operations`, `attempted_operations`,
 the raw `samples` file. Missing/truncated/duplicate samples cannot be replaced
 by a percentile summary. The existing benchmark report's summaries and
 fixture-based matrix do not satisfy this contract.
+
+### Running the native benchmark matrix
+
+On the native Linux ARM64 reference host, run the following command from the
+frozen source export. The functional evidence must contain the production
+benchmark driver built with the `installed-embedded` feature.
+
+```sh
+python3 -I -B -S scripts/run_benchmark_matrix_owned.py \
+  --evidence /release/functional --journal /release/runs \
+  --output /release/runs/matrix-01 --attempt-id matrix-01 \
+  --plans /release/matrix-inputs
+```
+
+The runner creates the raw cases itself. Supply one plan per installed case
+using `local`, `replicated`, `text` and `network` at 1, 100 and 1,000 tenants.
+Each filename follows the pattern `local-1.json`. A local plan has this shape.
+
+```json
+{
+  "mode": "local",
+  "documents": 1000000,
+  "operations": 1000,
+  "nodes": [{"path": "/release/local-1/kasumi.json", "sha256": "<SHA-256 of those bytes>"}],
+  "tenants": {"bench-0000": {"administrator": "bench-admin", "application": "bench-app"}}
+}
+```
+
+Use dedicated enrolled storage with a fresh `docs` collection name. Each
+plan must name the exact installed tenants and their existing principals. The
+runner opens the production node and its enrolled application and custody key
+providers. The administrator creates the collection. The application must have
+read and write grants. For replicated cases supply the three distinct enrolled
+data-voter configurations and their live authority dependencies. The runner
+checks the effective voters on each tenant. It drains all opened nodes after
+each case and preserves their data and original failed operations.
+
+A network plan also names a `network` object with the absolute path and
+SHA-256 of a network-driver configuration. Use the owned node's loopback
+endpoints and both `grpc` and `mcp` cases, named for their protocols.
+Each case lists a dedicated write body, a complete-page query on `docs` and
+a matching credential for every installed tenant. In sorted tenant order use
+document IDs `"0"`, `"1"` and so on. Keep secret values in their private
+credential files. The driver checks the tenant claim and uses normal TLS and
+server authorization for every wire operation.
 
 ## Process and failed-attempt evidence
 
@@ -245,11 +398,10 @@ The owned repeatable-assembly runner retains the executable selected at dispatch
 and rejects a process receipt whose command or executable differs from its
 retained preflight bytes. Its verifier also rejects a substituted retained
 executable or `command[0]` that differs from the selected absolute path. Every
-other domain or independent rebuild runner still needs this original process
-identity and a domain-specific command check; historical receipts cannot gain
-it through projection. Process groups do not prove custody of daemonized or
+other domain and independent rebuild also requires its original process
+identity and command check. Historical receipts retain their original scope. Process groups do not prove custody of daemonized or
 remote services. Domain adapters must preserve those services' actual terminal
-outcomes too. Before registering an adapter, its native Python launcher must
+outcomes too. Each native Python launcher must
 also rule out execution of stale or unchecked bytecode. The final verifier
 enforces its own isolated cache-free invocation; `-B` alone cannot establish
 which imported code ran.
@@ -275,19 +427,19 @@ rewrites, or upgrades a failed attempt. Evidence custody must also preserve
 attempts outside the bundle; a local verifier cannot discover withheld history.
 Independent custody and a separately published journal head remain required to
 detect removal of the entire index or a rewritten complete history before
-bundle collection. The owned assembly launcher is the first indexed native
-entry point; other native acceptance dispatchers must join this journal before
-their semantic adapters can be registered.
+bundle collection. The owned assembly launcher and domain admission code record
+attempts before dispatch. Every selected native run must have its own admission
+and terminal receipt in the same journal.
 
 Its successful attempt also retains `domain-observation.json` as an additional
 hash-bound journal reference. This exact native observation binds the original
 launcher, inner report, target, and both package/source assembly outputs. Its
-status is `unqualified`: it supplies no authenticated host or reservation, no
-final domain receipt, and no registration in `DOMAIN_ADAPTERS`. The journal
-rejects a substituted or stale observation while retaining the launcher
-outcome as the attempt's primary evidence.
+status is `unqualified`. The registered repeatable-assembly adapter separately
+checks the selected primary input and both assemblies. Host identity,
+reservation and the final domain receipt are required for acceptance. The
+journal retains the launcher's original outcome and observation hashes.
 
-## Deliverables and remaining adapters
+## Deliverables and native evidence
 
 The fixed artifact roster includes source/checksums/license/notice,
 contribution/security/installation/maintenance/recovery/operating-limits
@@ -300,38 +452,24 @@ Checksums cover every other delivered file exactly once. Smoke receipts must
 bind the actual package/image/unit digests; repeat assembly must produce
 distinct files with identical package and source hashes.
 
-The unregistered `check_native_admin_readback` component now checks retained
+The installed runner calls `check_native_admin_readback` to check retained
 `kasumictl` policy, schema, and policy readbacks against independently pinned
 admin-client bytes, tenant/incarnation, exact policy/grants and limits, and
 collection definitions. It requires three distinct candidate-executable
 processes whose `--config` and request-file arguments are the verified local
 files, and rejects changed policy/schema epochs or nonmonotonic revisions.
-Transported native evidence needs an independently verified original-path to
-retained-byte binding before it can use this local-file check. Revisions may advance for
-strict read audit events, so equality is not assumed. This is only a semantic check
-of supplied evidence. The installed-domain runner must still prove original
-dispatch order and input-byte custody, own the native TLS endpoint and process
-lifetimes, bind the pinned intent to reviewed release configuration, and retain
-the native receipts before an adapter can register. No live tenant, grant, or
-schema readback is claimed by the synthetic tests. Admission requires
+For transported native evidence the runner verifies the original path against
+the retained input bytes. Revision numbers may advance during strict read
+auditing. The installed-domain verifier also checks original dispatch order,
+the native TLS endpoint, process lifetimes and the pinned release intent.
+Admission requires
 `ReadSchema {"selection":"all"}` and the exact complete collection set; named
 reads and the retired untagged request cannot establish inventory admission.
 
-Before enabling any domain adapter, implement and review its actual runner,
-fixed executable/argument/configuration/artifact contract, and semantic parser.
-Required work includes the installed full lifecycle, real providers, complete
-HA faults/recovery/deletion, retention races, exhaustive resource/integrity
-measurements, complete production benchmark samples/concurrency, full soak,
-advisory dispositions, and actual package/OCI/systemd smoke. OCI adapters must
-verify the image's platform, manifest/layer identities, contained candidate
-binaries, and matching OS/image SBOM; hashing an arbitrary archive is
-insufficient. Dependency review must parse the actual advisory scan and every
-disposition rather than accept an opaque “reviewed” report. Independent-build
-collection must retain the actual compiler transcript and source-bound isolated
-environment; the verifier's local replay does not produce or authenticate that
-native run.
-
-Tests intentionally use synthetic temporary fixtures to challenge validators.
-They do not produce or commit a populated acceptance manifest. The empty
-adapter registry ensures incomplete domain integration cannot accidentally
-turn those structural checks into a production release claim.
+A release needs recorded results for the installed lifecycle, real providers,
+HA faults and recovery, retention races, resource and integrity measurements,
+the benchmark matrix and concurrency, and the full soak. OCI evidence binds
+the image platform, manifest and layers, contained binaries and OS/image SBOM.
+Dependency review binds the advisory scan and each disposition. Independent
+builders supply their compiler transcript and source-bound environment.
+The final manifest selects completed native attempts for the frozen source.

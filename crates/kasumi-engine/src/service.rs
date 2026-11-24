@@ -8,6 +8,9 @@ use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, Te
 mod audit_maintenance_service;
 #[path = "backup_producer_jobs.rs"]
 mod backup_producer_jobs;
+#[cfg(test)]
+#[path = "backup_session_floor_tests.rs"]
+mod backup_session_floor_tests;
 #[path = "database_construction.rs"]
 pub(crate) mod construction;
 #[path = "control_administration.rs"]
@@ -41,18 +44,38 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
 mod backup_checkpoints;
+pub(crate) use backup_checkpoints::verify_target_writer_checkpoint;
+#[path = "backup_control_service.rs"]
+mod backup_control_service;
+pub use backup_control_service::{
+    BackupSourceCapability, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
+    VerifiedBackupSource,
+};
+#[path = "backup_session_pages.rs"]
+pub(crate) mod backup_session_pages;
 #[path = "backup_sessions.rs"]
 mod backup_sessions;
 #[path = "change_feed.rs"]
 mod change_feed;
 #[path = "custody_service.rs"]
 mod custody_service;
+#[path = "data_membership_observation.rs"]
+mod data_membership_observation;
 #[path = "full_backup.rs"]
 mod full_backup;
 #[path = "history_export.rs"]
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+#[path = "key_retention_service.rs"]
+mod key_retention;
+pub use key_retention::{
+    AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryCheckpoint,
+    LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, LocalRecoveryKeyRead,
+    RemoteDataCatalogReader, SignerCatalog, TargetCheckpointInventory, TargetCheckpointSource,
+    TargetJournalExclusion, TargetWriterNetwork,
+};
+
 #[path = "point_read.rs"]
 mod point_read;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
@@ -87,6 +110,8 @@ pub(crate) mod target_inspection_service;
 pub(crate) mod target_receiver_service;
 #[path = "target_service.rs"]
 pub(crate) mod target_service;
+#[path = "tenant_audit_service.rs"]
+mod tenant_audit_service;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
@@ -266,7 +291,7 @@ pub(crate) fn document_load_error(error: anyhow::Error) -> Error {
         } else if let Some(failure) =
             cause.downcast_ref::<crate::document_restore::ReadAdmissionFailure>()
         {
-            // Only the staged reader's explicit decode-admission call can mint
+            // Only a reader's explicit decode-admission call can mint
             // this wrapper; arbitrary I/O errors retain Unavailable behavior.
             if !failure.is_capacity_denied() {
                 capacity_denied = false;
@@ -299,6 +324,13 @@ fn with_document_reads<T>(
     read: impl FnOnce(&DocumentReads) -> Result<T>,
 ) -> Result<T> {
     let reads = DocumentReads::new(generation, deadline).map_err(document_load_error)?;
+    finish_document_read(reads, read)
+}
+
+fn finish_document_read<T>(
+    reads: DocumentReads,
+    read: impl FnOnce(&DocumentReads) -> Result<T>,
+) -> Result<T> {
     let result = read(&reads);
     match (result, reads.finish()) {
         (result, Ok(())) => result,
@@ -727,20 +759,6 @@ impl Default for DatabaseClocks {
     }
 }
 
-struct DenialWork {
-    audit: Arc<SecurityAudit>,
-    event: SecurityEvent,
-    // A canceled caller cannot release shutdown until the durable writer drops.
-    _registration: WorkRegistration,
-}
-impl DenialWork {
-    fn run(self) -> anyhow::Result<()> {
-        let result = self.audit.record_sync(self.event.clone());
-        drop(self);
-        result
-    }
-}
-
 struct QueryWork {
     generation: Arc<crate::Generation>,
     request: QueryRequest,
@@ -764,24 +782,43 @@ struct QueryOutput {
 impl QueryWork {
     /// Copy the first page and pin the rest for a cursor, or read one seek page.
     fn run(mut self) -> QueryOutput {
-        let generation = &self.generation;
-        let limits = &generation.state.limits;
-        let cancellation = &self.cancellation;
-        let bound = kasumi_query::PageBound {
-            rows: self.request.page_size(),
-            bytes: limits.max_result_bytes,
-        };
         if self.request.paging == Paging::Seek {
-            let response = with_document_reads(generation, self.deadline, |reads| {
-                query_seek::seek_page(
-                    generation,
-                    reads,
-                    &self.request,
-                    cancellation,
-                    &mut self.memory,
-                )
-            })
-            .map(|page| (page, PinnedRows::default()));
+            let mut projection_charge = 0;
+            let mut response = self
+                .generation
+                .physical_seek_view(&self.request.collection, |bytes| {
+                    match self.memory.reserve(bytes) {
+                        Ok(()) => {
+                            projection_charge = bytes;
+                            Ok(true)
+                        }
+                        Err(e) if e.code == ErrorCode::ResourceExhausted => Ok(false),
+                        Err(e) => Err(e),
+                    }
+                })
+                .map_err(document_load_error)
+                .and_then(|projected| {
+                    if let Some(projected) = projected {
+                        self.generation = Arc::new(projected);
+                    }
+                    with_document_reads(&self.generation, self.deadline, |reads| {
+                        query_seek::seek_page(
+                            &self.generation,
+                            reads,
+                            &self.request,
+                            &self.cancellation,
+                            &mut self.memory,
+                        )
+                    })
+                })
+                .map(|page| (page, PinnedRows::default()));
+            drop(self.generation);
+            if projection_charge > 0
+                && let Err(error) = self.memory.release(projection_charge)
+                && response.is_ok()
+            {
+                response = Err(error);
+            }
             return QueryOutput {
                 response,
                 request: self.request,
@@ -789,6 +826,13 @@ impl QueryWork {
                 _registration: self.registration.clone(),
             };
         }
+        let generation = &self.generation;
+        let limits = &generation.state.limits;
+        let cancellation = &self.cancellation;
+        let bound = kasumi_query::PageBound {
+            rows: self.request.page_size(),
+            bytes: limits.max_result_bytes,
+        };
         let response = with_document_reads(generation, self.deadline, |reads| {
             let source = reads.source(&self.request.collection)?;
             generation
@@ -961,13 +1005,12 @@ struct SnapshotWork {
     registration: Arc<WorkRegistration>,
 }
 struct SnapshotOutput {
-    response: Result<SnapshotReadResponse>,
+    response: SnapshotReadResponse,
     memory: QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
 impl SnapshotOutput {
     fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotReadResponse>> {
-        self.response.as_ref().map_err(|error| error.clone())?;
         self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
         // Retain the evaluation's logical peak, which covers the response it
         // holds, not the pre-admitted maximum workspace: the result size is
@@ -980,24 +1023,24 @@ impl SnapshotOutput {
         reservation.retain(peak);
         let charge = Arc::new(reservation);
         Ok(RegisteredOutput {
-            response: AdmittedOutput::new(
-                self.response.expect("checked snapshot response"),
-                charge,
-            ),
+            response: AdmittedOutput::new(self.response, charge),
             _registration: self._registration,
         })
     }
 }
 impl SnapshotWork {
-    fn run(mut self) -> SnapshotOutput {
+    fn read(&mut self) -> Result<SnapshotReadResponse> {
         let generation = self.generation.clone();
-        let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
-        SnapshotOutput {
+        with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))
+    }
+
+    fn run(mut self) -> Result<SnapshotOutput> {
+        let response = self.read()?;
+        Ok(SnapshotOutput {
             response,
             memory: self.memory,
             _registration: self.registration,
-        }
+        })
     }
 
     fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotReadResponse> {
@@ -1176,7 +1219,20 @@ pub struct Database {
     stores: Arc<TenantStorageSet>,
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
+    audit_cursor_key: std::sync::OnceLock<ring::hmac::Key>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
+    remote_backup: std::sync::OnceLock<Arc<dyn RemoteBackupTransport>>,
+    remote_backup_verifier: std::sync::OnceLock<Arc<dyn RemoteBackupSourceVerifier>>,
+    backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
+    local_recovery_keys: std::sync::OnceLock<Arc<dyn LocalRecoveryKeyInventory>>,
+    authority_signer_keys: std::sync::OnceLock<std::sync::Weak<dyn AuthoritySignerKeyInventory>>,
+    remote_data_catalog_reader: std::sync::OnceLock<Arc<dyn RemoteDataCatalogReader>>,
+    signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
+    journal_exclusion: std::sync::OnceLock<Arc<TargetJournalExclusion>>,
+    target_checkpoint_keys: std::sync::OnceLock<Arc<dyn TargetCheckpointInventory>>,
+    target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
+    target_writer_network:
+        std::sync::OnceLock<std::sync::Weak<dyn key_retention::TargetWriterNetwork>>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -1195,6 +1251,8 @@ pub struct Database {
         database_workers::BlockingChild<anyhow::Result<audit_maintenance_service::Prepared>>,
     background_stop: tokio::sync::watch::Sender<bool>,
     seal_monitor_wake: Arc<tokio::sync::Notify>,
+    text_warmup: Mutex<crate::application_text::Warmup>,
+    text_warmup_status: Mutex<crate::TextWarmupStatus>,
     audit_worker_wake: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
@@ -1279,7 +1337,14 @@ impl std::ops::Deref for ResponseDatabase<'_> {
 fn release_action(kind: &str) -> Action {
     match kind {
         "receipt" | "mutation_capacity_admission" => Action::Write,
-        "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
+        "tenant_audit_status"
+        | "tenant_audit_capacity"
+        | "tenant_audit_verify"
+        | "tenant_audit_export" => Action::Audit,
+        "schema_activation_status"
+        | "schema_read"
+        | "policy_limits_read"
+        | "read_key_retention" => Action::Admin,
         _ => Action::Read,
     }
 }
@@ -1464,6 +1529,41 @@ impl<'a> ResponseFence<'a> {
     }
 }
 
+impl ResponseFence<'static> {
+    /// Keep an admitted adapter's workspace and database work registration
+    /// with its actual blocking child, including after the request disconnects.
+    /// A surviving caller gets the original fence back for final release.
+    pub async fn run_blocking<T: Send + 'static>(
+        self,
+        work: impl FnOnce() -> std::result::Result<T, kasumi_serving::ChildFailure<anyhow::Error>>
+        + Send
+        + 'static,
+    ) -> anyhow::Result<(Self, T)> {
+        let admission = self.database.admission().clone();
+        let registration = self.database.work.begin(self.cancellation.clone())?;
+        admission
+            .adapter_child(move || {
+                let _registration = registration;
+                self.check().map_err(|error| {
+                    if error.has_physical_source()
+                        || matches!(
+                            error.code,
+                            ErrorCode::Corruption
+                                | ErrorCode::Unavailable
+                                | ErrorCode::AuditUnavailable
+                        )
+                    {
+                        kasumi_serving::ChildFailure::Failed(error.into())
+                    } else {
+                        kasumi_serving::ChildFailure::Stopped(error.into())
+                    }
+                })?;
+                work().map(|output| (self, output))
+            })
+            .await
+    }
+}
+
 impl Database {
     /// Network adapters must retain this gate across the authorized engine call
     /// and response serialization. It never replaces that call's RBAC checks,
@@ -1546,6 +1646,7 @@ impl Database {
             stores,
             store,
             cursors: Mutex::new(HashMap::new()),
+            audit_cursor_key: Default::default(),
             archive_destinations: Mutex::new(BTreeMap::new()),
             archive_flights: Default::default(),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -1564,6 +1665,8 @@ impl Database {
             audit_preparation: database_workers::BlockingChild::new("database audit preparation"),
             background_stop: tokio::sync::watch::channel(false).0,
             seal_monitor_wake: Arc::new(tokio::sync::Notify::new()),
+            text_warmup: Default::default(),
+            text_warmup_status: Default::default(),
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             audit_worker_pause: Mutex::new(None),
@@ -1577,6 +1680,17 @@ impl Database {
             selection_rebase_warned: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
+            remote_backup: Default::default(),
+            remote_backup_verifier: Default::default(),
+            backup_control: Default::default(),
+            local_recovery_keys: Default::default(),
+            authority_signer_keys: Default::default(),
+            signer_keys: Default::default(),
+            remote_data_catalog_reader: Default::default(),
+            target_keys: Default::default(),
+            target_writer_network: Default::default(),
+            journal_exclusion: Default::default(),
+            target_checkpoint_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
@@ -1694,7 +1808,9 @@ impl Database {
         if let Err(failure) = self.group.shutdown().await {
             report.merge(&failure);
             if failure.completion() == DrainCompletion::Retained {
-                retained = Some(failure);
+                // The retry still owns its writer, selected roots and both
+                // physical key domains. Its caller has sealed new requests.
+                return report.outcome(Some(failure));
             }
         }
         // Accepted proposals, backup producers and the actual Raft/local
@@ -1843,6 +1959,30 @@ impl Database {
         Ok(())
     }
 
+    /// Last completed monitor step, sampled without taking its native read lock.
+    pub fn text_warmup_status(&self) -> crate::TextWarmupStatus {
+        *self
+            .text_warmup_status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn warm_selected_text(&self, generation: &Arc<crate::Generation>) {
+        let mut warmup = self.text_warmup.lock().unwrap_or_else(|p| p.into_inner());
+        let mut sampled = warmup.status;
+        match warmup.step(generation, &self.admission) {
+            Ok(()) => sampled = warmup.status,
+            Err(_) => {
+                sampled.revision = Some(generation.revision());
+                sampled.state = crate::TextWarmupState::DirectoryUnavailable;
+            }
+        }
+        *self
+            .text_warmup_status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = sampled;
+    }
+
     /// TenantStore refreshes keys. Its watch signal plus independent expiry checks
     /// evict idle resident state even if no client makes another request.
     fn spawn_seal_monitor(self: &Arc<Self>) {
@@ -1897,7 +2037,7 @@ impl Database {
                                     hook();
                                 }
                                 let db = &work.database;
-                                let _ = db.access();
+                                let access = db.access();
                                 if db.engine.generation().is_err() {
                                     db.work.seal();
                                 }
@@ -1912,6 +2052,18 @@ impl Database {
                                 let serving = db.engine.generation().is_ok();
                                 if serving {
                                     db.rebase_stale_application_selection();
+                                    if !pressured && let Err(error) = db.engine.primary_maintenance_step() {
+                                        tracing::warn!(event="primary_maintenance_deferred",
+                                            io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+                                            "primary maintenance deferred until its next scheduled step");
+                                    }
+                                    if !pressured && let Err(error) = db.engine.structured_maintenance_step() {
+                                        tracing::warn!(event="structured_maintenance_deferred", io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+                                            "structured maintenance deferred until its next scheduled step");
+                                    }
+                                }
+                                if !pressured && access.is_ok() && let Ok(generation) = db.engine.generation() {
+                                    db.warm_selected_text(&generation);
                                 }
                                 drop(work);
                                 serving
@@ -2164,18 +2316,17 @@ impl Database {
             if let Some(kind) = kind
                 && let Ok(registration) = self.audit_work.begin(QueryCancellation::default())
             {
-                let work = DenialWork {
-                    audit: self.security_audit.clone(),
-                    event: SecurityEvent {
-                        kind,
-                        principal: Some(context.principal.clone()),
-                        tenant: Some(context.tenant.clone()),
-                        request_id: context.request_id.clone(),
-                        outcome: SecurityOutcome::Denied,
-                    },
-                    _registration: registration,
+                let event = SecurityEvent {
+                    kind,
+                    principal: Some(context.principal.clone()),
+                    tenant: Some(context.tenant.clone()),
+                    request_id: context.request_id.clone(),
+                    outcome: SecurityOutcome::Denied,
                 };
-                let _ = tokio::task::spawn_blocking(move || work.run()).await;
+                let _ = self
+                    .security_audit
+                    .record_database_denial(event, registration)
+                    .await;
                 error.mark_denial_audit_attempted();
             }
         }
@@ -2278,6 +2429,12 @@ impl Database {
                 | Operation::PublishHistoryArchive(_)
                 | Operation::RetireSource(_)
                 | Operation::AbortRetirement(_)
+                | Operation::BeginKeyRetirement(_)
+                | Operation::RegisterTargetJournalWriter(_)
+                | Operation::CompleteTargetJournalRetirement(_)
+                | Operation::AbortTargetJournalRetirement(_)
+                | Operation::CompleteKeyRetirement(_)
+                | Operation::AbortKeyRetirement(_)
         ) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
@@ -2821,24 +2978,21 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        work.generation = tokio::select! {
-            result = tokio::time::timeout_at(deadline, self.hydrate_history(
-                work.generation.clone(),
-                &work.request.documents,
-                &work.request.queries,
-                &cancellation,
-                &mut work.memory,
-            )) => result.map_err(|_| query_admission::deadline_error())??,
+        work = tokio::select! {
+            result = tokio::time::timeout_at(deadline, self.hydrate_history(work, &cancellation, SnapshotWork::history_inputs)) => result.map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let mut output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| query_admission::deadline_error())?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
+                .map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let response = output.response.as_mut().map_err(|error| error.clone())?;
+        let response = &mut output.response;
         let max_result_bytes = state.limits.max_result_bytes;
         drop(generation);
         if let Some(bounds) = time_bounds {
@@ -3415,6 +3569,10 @@ impl Database {
         // a snapshot continuation copies the next page from its pinned rows.
         let seek = request.paging == Paging::Seek;
         let continuation = request.cursor.as_ref().filter(|_| !seek);
+        let revision = state.revision;
+        let max_cursors = state.limits.max_cursors;
+        let max_cursor_bytes = state.limits.max_cursor_bytes;
+        let max_result_bytes = state.limits.max_result_bytes;
         let (mut full, mut page, offset, created) = if let Some(token) = continuation {
             let (mut full, offset, revision, created) = {
                 let cursors = self.cursors.lock().map_err(|_| {
@@ -3446,35 +3604,30 @@ impl Database {
                 };
                 (full, offset, revision, created)
             };
-            let max_result_bytes = state.limits.max_result_bytes;
-            let worker_cancellation = cancellation.clone();
-            // Stored cursor rows require synchronous native reads and decode.
-            // The actual worker keeps the selected generation, page charge,
-            // registration and permit if the caller times out or disconnects.
+            drop(generation);
+            // Stored cursor rows use native reads. The installed child owns
+            // the selected generation and permit through its final read.
             let worker_deadline = deadline.into_std();
-            let worker = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let page = full.copy_page(
-                    offset,
-                    revision,
-                    max_result_bytes,
-                    &worker_cancellation,
-                    worker_deadline,
-                );
-                (page, full)
-            });
+            let worker = self.admission().memory().read_child(
+                cancellation.clone(),
+                Some(DocumentReads::deadline_error),
+                move |token| {
+                    let _permit = permit;
+                    let page =
+                        full.copy_page(offset, revision, max_result_bytes, token, worker_deadline)?;
+                    Ok((page, full))
+                },
+            );
             let (page, full) = tokio::select! {
                 result = tokio::time::timeout_at(deadline, worker) => result
-                    .map_err(|_| query_admission::deadline_error())?
-                    .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
+                    .map_err(|_| query_admission::deadline_error())??,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
-            let page = page?;
             let next = offset + page.rows.len();
             (full, page, next, created)
         } else {
             let mut work = QueryWork {
-                generation: generation.clone(),
+                generation,
                 request: input.request,
                 cancellation: cancellation.clone(),
                 deadline: deadline.into_std(),
@@ -3484,33 +3637,31 @@ impl Database {
             };
             // Seek pages read resident rows straight from their index.
             if !seek {
-                work.generation = tokio::select! {
-                    result = tokio::time::timeout_at(deadline, self.hydrate_history(
-                        work.generation.clone(),
-                        &[],
-                        std::slice::from_ref(&work.request),
-                        &cancellation,
-                        &mut work.memory,
-                    )) => result.map_err(|_| query_admission::deadline_error())??,
+                work = tokio::select! {
+                    result = tokio::time::timeout_at(deadline, self.hydrate_history(work, &cancellation, QueryWork::history_inputs)) => result.map_err(|_| query_admission::deadline_error())??,
                     _ = cancelled(&cancellation) => return Err(cancelled_error()),
                 };
             }
-            let worker = tokio::task::spawn_blocking(move || work.run());
-            let output = tokio::select! {
+            let worker = self.admission().memory().read_child(
+                cancellation.clone(),
+                Some(DocumentReads::deadline_error),
+                move |_| {
+                    let QueryOutput {
+                        response,
+                        request,
+                        memory,
+                        _registration,
+                    } = work.run();
+                    Ok((response?, request, memory, _registration))
+                },
+            );
+            let ((mut page, rows), request, memory, _registration) = tokio::select! {
                 result = tokio::time::timeout_at(deadline, worker) => result
-                    .map_err(|_| query_admission::deadline_error())?
-                    .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
+                    .map_err(|_| query_admission::deadline_error())??,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
-            let QueryOutput {
-                response,
-                request,
-                memory,
-                _registration,
-            } = output;
-            let (mut page, rows) = response?;
             if !seek {
-                page.revision = state.revision;
+                page.revision = revision;
             }
             (
                 QueryResultOwner {
@@ -3526,14 +3677,11 @@ impl Database {
                 self.clock.now(),
             )
         };
-        let max_cursors = state.limits.max_cursors;
-        let max_cursor_bytes = state.limits.max_cursor_bytes;
         // Each completed page releases its operation slot before a strict
         // read needs to submit its audit, while retaining every admitted byte.
         // Continuations retain a page charge independent of the full cursor.
         full.prepare_page_handoff()?;
         let request = &full.request;
-        drop(generation);
         tokio::select! {
             result = tokio::time::timeout_at(deadline, self.release(context, &request.collection, page.revision, strict, policy_epoch)) =>
                 result.map_err(|_| query_admission::deadline_error())??,
@@ -3638,14 +3786,14 @@ pub fn now_ms() -> Result<u64> {
         .map_err(|_| Error::new(ErrorCode::Unavailable, "trusted clock unavailable"))
 }
 
-async fn cancelled(token: &QueryCancellation) {
+pub(crate) async fn cancelled(token: &QueryCancellation) {
     // Polling avoids tying the standalone synchronous evaluator to an async
     // runtime. The worker observes cancellation directly at its loop checkpoints.
     while !token.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
-fn cancelled_error() -> Error {
+pub(crate) fn cancelled_error() -> Error {
     Error::new(ErrorCode::ResourceExhausted, "query work cancelled")
 }
 
@@ -3747,6 +3895,9 @@ fn credential_acknowledgement(error: Error) -> Error {
 }
 
 #[cfg(test)]
+pub(crate) use tests::backup_test_control;
+
+#[cfg(test)]
 mod tests {
     include!("service_staging_tests.rs");
     include!("service_staged_stop_tests.rs");
@@ -3754,6 +3905,7 @@ mod tests {
     include!("service_snapshot_audit_tests.rs");
     include!("service_snapshot_admission_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_backup_claim_tests.rs");
     include!("service_proposal_tests.rs");
     include!("service_group_commit_tests.rs");
     include!("service_topology_input_tests.rs");
@@ -4181,67 +4333,48 @@ mod tests {
     #[tokio::test]
     async fn response_fence_retains_adapter_charges_in_its_entry_until_drop() {
         let fixture = CredentialFixture::new().await;
-        let before = fixture.db.admission().snapshot();
         let mut fence = fixture
             .db
             .admitted_response_fence(&fixture.context)
             .unwrap();
-        let fixed = fixture.db.admission().snapshot();
-        assert!(fixed.reserved_bytes > before.reserved_bytes);
-        assert!(fixed.reserved_bytes - before.reserved_bytes < 16 << 10);
-        let idle: Vec<_> = (0..99)
+        // Background maintenance shares this node. Track the ledger identity
+        // of each response until its reservation is released or its slot reused.
+        let observe = fence.workspace.observe_fixture_charge();
+        let (fixed, resident) = observe().unwrap();
+        assert!(resident);
+        assert!((1..16 << 10).contains(&fixed));
+        let (idle, observers): (Vec<_>, Vec<_>) = (0..99)
             .map(|_| {
-                fixture
+                let idle = fixture
                     .db
                     .admitted_response_fence(&fixture.context)
-                    .unwrap()
+                    .unwrap();
+                let observe = idle.workspace.observe_fixture_charge();
+                assert_eq!(observe(), Some((fixed, true)));
+                (idle, observe)
             })
-            .collect();
-        assert_eq!(
-            fixture.db.admission().snapshot().inflight_operations,
-            before.inflight_operations
-        );
+            .unzip();
         drop(idle);
+        assert!(observers.iter().all(|observe| observe().is_none()));
         fence.retain_response_bytes(4096).unwrap();
+        assert_eq!(observe(), Some((fixed + 4096, true)));
         fence.retain_response_bytes(1 << 20).unwrap();
-        let charged = fixture.db.admission().snapshot();
-        assert_eq!(
-            charged.reserved_bytes,
-            fixed.reserved_bytes + 4096 + (1 << 20)
-        );
-        // Adapter charges join the fence's retained entry: no ledger entry or
-        // operation slot of their own, and nothing to leak on a later error.
-        assert_eq!(charged.live_reservations, fixed.live_reservations);
-        assert_eq!(charged.inflight_operations, before.inflight_operations);
-        // A charge beyond the node budget is refused before any allocation
-        // and leaves the retained charge unchanged.
+        let charged = Some((fixed + 4096 + (1 << 20), true));
+        assert_eq!(observe(), charged);
         let refused = fence.retain_response_bytes(u64::MAX / 2).unwrap_err();
         assert_eq!(refused.code, ErrorCode::ResourceExhausted);
-        assert_eq!(
-            fixture.db.admission().snapshot().reserved_bytes,
-            charged.reserved_bytes
-        );
+        assert_eq!(observe(), charged);
         fence.check().unwrap();
-        // Pressure-cancelled responses take no further materialization.
         fence.cancellation.cancel();
         assert_eq!(
             fence.retain_response_bytes(1).unwrap_err().code,
             ErrorCode::ResourceExhausted
         );
-        assert_eq!(
-            fixture.db.admission().snapshot().reserved_bytes,
-            charged.reserved_bytes
-        );
+        assert_eq!(observe(), charged);
         drop(fence);
-        let released = fixture.db.admission().snapshot();
-        assert_eq!(released.reserved_bytes, before.reserved_bytes);
-        assert_eq!(released.live_reservations, before.live_reservations);
+        assert_eq!(observe(), None);
+        drop(observe);
+        drop(observers);
         fixture.close().await;
     }
 }
-
-// Component qualification only; production wiring requires the exact per-Database
-// source-worker registry and shutdown drain described in this module.
-#[cfg(test)]
-#[path = "query_source_work.rs"]
-mod query_source_work;

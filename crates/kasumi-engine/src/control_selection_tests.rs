@@ -193,7 +193,7 @@ fn control_document_charge_outlives_the_actual_body_deallocation() {
         .unwrap();
     let held = admission.snapshot();
     let address = output.body.as_str().unwrap().as_ptr() as usize;
-    crate::allocation_tests::check_topology_input_drop(
+    crate::allocation_tests::check_deallocation(
         address,
         move || drop(output),
         || {

@@ -835,11 +835,10 @@ async fn prepare_completion(
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|control| control.intents.get(&intent_phase))
-        .cloned()
-        .expect("the one-shot Control effect did not retain its exact intent");
+        .lifecycle_intent(intent_phase)
+        .unwrap()
+        .expect("the one-shot Control effect did not retain its exact intent")
+        .clone();
     assert_eq!(&retained_intent.request, commit.as_ref());
     // Crash after actual Control consensus accepts the phase, before the
     // coordinator receives or records that outcome.
@@ -857,10 +856,9 @@ async fn prepare_completion(
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(intent_phase)
         .unwrap()
-        .intents[&intent_phase]
+        .unwrap()
         .clone();
     let state = resolve_phase(
         &f,
@@ -1858,10 +1856,9 @@ async fn complete_recovery(
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(cleanup_phase)
         .unwrap()
-        .intents[&cleanup_phase]
+        .unwrap()
         .clone();
     resolve_phase(
         &f,
@@ -2543,13 +2540,9 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
             );
             for (node, database) in &f.nodes {
                 let access = database.raft_group().check_access();
-                let retained = database.engine().generation().map(|generation| {
-                    let intent = generation
-                        .state
-                        .lifecycle_control
-                        .as_ref()
-                        .and_then(|control| control.intents.get(&requested_id));
-                    (
+                let retained = database.engine().generation().and_then(|generation| {
+                    let intent = generation.state.lifecycle_intent(requested_id)?;
+                    Ok((
                         generation.state.revision,
                         intent.map(|intent| {
                             (
@@ -2560,7 +2553,7 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
                                 intent.original_credential_expires_at_ms,
                             )
                         }),
-                    )
+                    ))
                 });
                 eprintln!(
                     "RECOVERY_INTENT_MEMBER: node={node} access={access:?} \
@@ -2583,10 +2576,9 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(phase_id)
         .unwrap()
-        .intents[&phase_id]
+        .unwrap()
         .clone();
     resolve_phase(
         f,
@@ -2927,13 +2919,11 @@ async fn recovery_control_begin_effect_lost_release_keeps_exact_phase_unresolved
     assert_eq!(error.code, ErrorCode::UnknownOutcome);
     let generation = current.engine().generation().unwrap();
     assert!(
-        !generation
+        generation
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(phase_id)
             .unwrap()
-            .intents
-            .contains_key(&phase_id),
+            .is_none(),
         "no Control child intent may be fabricated after the lost release",
     );
     assert!(
@@ -3013,10 +3003,9 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(original_id)
         .unwrap()
-        .intents[&original_id]
+        .unwrap()
         .clone();
     assert_eq!(original.original_credential_expires_at_ms, limit);
     let outcome = RecoveryDispatchOutcome::ControlIntent(Box::new(original.clone()));
@@ -3139,10 +3128,9 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(resumed)
         .unwrap()
-        .intents[&resumed]
+        .unwrap()
         .clone();
     assert!(
         resumed_intent.original_credential_expires_at_ms
@@ -3160,10 +3148,10 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(original_id)
             .unwrap()
-            .intents[&original_id],
+            .unwrap()
+            .clone(),
         original
     );
     let old = db

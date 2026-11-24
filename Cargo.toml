@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/kasumi-clock", "crates/kasumi-types", "crates/kasumi-serving", "crates/kasumi-authority", "crates/kasumi-kv", "crates/kasumi-frozen-run", "crates/kasumi-live-node", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-taira-journal", "crates/kasumi-private-evidence", "crates/kasumi-server", "crates/kasumi-bench"]
-exclude = ["vendor/openraft-0.9.25", "vendor/bitmaps-3.2.1", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151", "vendor/rmcp-3.2.0"]
+exclude = ["vendor/openraft-0.9.25", "vendor/lru-0.16.4", "vendor/serde_json-1.0.151", "vendor/rmcp-3.11.0"]
 
 [workspace.package]
 version = "0.1.0"
@@ -58,7 +58,6 @@ opt-level = 2
 # vendor/README.md. Keep the upstream versions so scanners retain visibility.
 [patch.crates-io]
 openraft = { path = "vendor/openraft-0.9.25/openraft" }
-bitmaps = { path = "vendor/bitmaps-3.2.1" }
 lru = { path = "vendor/lru-0.16.4" }
 serde_json = { path = "vendor/serde_json-1.0.151" }
-rmcp = { path = "vendor/rmcp-3.2.0" }
+rmcp = { path = "vendor/rmcp-3.11.0" }

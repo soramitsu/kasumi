@@ -27,8 +27,10 @@ pub use snapshot_decode::{
     SnapshotReadOptions,
 };
 mod credentials;
+mod data_member_catalog;
 mod profile;
 pub use profile::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
+mod remote_backup;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
 mod installed_pool;
@@ -848,7 +850,7 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
 mod staged_status;
 
 mod target;
-pub use target::{KasumiTargetClient, TargetAcknowledgement};
+pub use target::{KasumiTargetClient, TargetAcknowledgement, read_target_deletion_status};
 
 #[cfg(test)]
 mod authorization_tests {

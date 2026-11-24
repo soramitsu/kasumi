@@ -65,6 +65,7 @@ async fn completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned(
         lease: input.handle,
         generation: input.generation,
         deadline: std::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
+        scan_reader: input.scan_reader,
         ids: input.scan_ids,
         has_more: input.scan_has_more,
         request,
@@ -77,9 +78,10 @@ async fn completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned(
     assert!(!work.lease.live());
     let output = tokio::task::spawn_blocking(move || work.run())
         .await
-        .unwrap();
+        .expect("join snapshot scan worker")
+        .expect("open fixture document reads");
     fence.seal();
-    let response = output.response.as_ref().unwrap();
+    let response = &output.response;
     assert_eq!(response.data_epoch, 1);
     assert_eq!(response.documents.len(), 1);
     assert_eq!(response.documents[0].version, 1);

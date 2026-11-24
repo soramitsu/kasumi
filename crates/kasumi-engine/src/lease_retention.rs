@@ -3,7 +3,6 @@
 use super::*;
 use crate::admission::{NodeAdmission, Reservation};
 use kasumi_clock::LeaseClock;
-use kasumi_query::ReadIds;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -38,6 +37,8 @@ impl LeaseHandle {
 pub(crate) struct SelectedSnapshot {
     pub handle: Arc<LeaseHandle>,
     pub generation: Arc<Generation>,
+    /// The same physical reader that selected the ordered IDs will read their bodies.
+    pub scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     pub scan_ids: Vec<String>,
     pub scan_has_more: bool,
     // The selected generation keeps these already-admitted bytes live while
@@ -51,12 +52,10 @@ pub(crate) struct SelectedSnapshot {
 struct Paths {
     documents: usize,
     archived: usize,
-    ids: usize,
 }
 struct Roots {
     handle: Arc<LeaseHandle>,
     generation: Generation,
-    ids: ReadIds,
     paths: BTreeMap<String, Paths>,
     archive_paths: usize,
     // Payload costs are evaluated only when a version first diverges. They
@@ -325,14 +324,6 @@ impl Roots {
                 };
                 let paths = self.paths.entry(name.clone()).or_default();
                 paths.documents = paths.documents.saturating_add(1).min(documents.len());
-                if (old.documents.contains_key(id) || old.archived_documents.contains_key(id))
-                    != (new.documents.contains_key(id) || new.archived_documents.contains_key(id))
-                {
-                    paths.ids = paths
-                        .ids
-                        .saturating_add(1)
-                        .min(documents.len().saturating_add(archived.len()));
-                }
                 if let Some(value) = documents.get(id)
                     && new
                         .documents
@@ -356,18 +347,6 @@ impl Roots {
                 };
                 let paths = self.paths.entry(name.clone()).or_default();
                 paths.archived = paths.archived.saturating_add(1).min(archived.len());
-                // Archive-only removals also change the primary ID root. A hot
-                // document difference already counted its corresponding path.
-                if old.documents.get(id) == new.documents.get(id)
-                    && (old.documents.contains_key(id) || old.archived_documents.contains_key(id))
-                        != (new.documents.contains_key(id)
-                            || new.archived_documents.contains_key(id))
-                {
-                    paths.ids = paths
-                        .ids
-                        .saturating_add(1)
-                        .min(documents.len().saturating_add(archived.len()));
-                }
                 if let Some(value) = archived.get(id)
                     && new
                         .archived_documents
@@ -413,13 +392,6 @@ impl Roots {
             for charge in [
                 path_bytes(collection.documents.len(), paths.documents),
                 path_bytes(collection.archived_documents.len(), paths.archived),
-                path_bytes(
-                    collection
-                        .documents
-                        .len()
-                        .saturating_add(collection.archived_documents.len()),
-                    paths.ids,
-                ),
             ] {
                 add(&mut bytes, charge, budget)?;
             }
@@ -583,7 +555,6 @@ impl LeaseManager {
             Roots {
                 handle: handle.clone(),
                 generation: current.lease_view(),
-                ids: current.indexes.read_ids(),
                 paths: BTreeMap::new(),
                 archive_paths: 0,
                 payloads: BTreeMap::new(),
@@ -638,17 +609,104 @@ impl LeaseManager {
         } = access;
         context.authorization.check_live()?;
         cancellation.check()?;
-        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        let current = engine.generation()?;
-        let root = Self::checked(&entries, &current.state, context, id, term)?;
-        let original = &root.generation.state;
-        let initial = original
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let mut current = engine.generation()?;
+        let mut root = Self::checked(&entries, &current.state, context, id, term)?;
+        let initial = root
+            .generation
+            .state
             .limits
             .max_result_bytes
             .saturating_mul(3)
             .saturating_add(root.metadata_bytes)
             .saturating_add(4096);
         let mut reservation = node.reserve(initial as u64, Some(cancellation.clone()))?;
+        let mut durable_ids = None;
+        let mut scan_reader = None;
+        if let PageSelection::Scan(request) = &request {
+            if request.lease_id != id {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "snapshot scan lease identity differs",
+                ));
+            }
+            validate_name(&request.collection)?;
+            if let Some(after) = &request.after_id {
+                validate_name(after)?;
+            }
+            if request.limit == 0
+                || request.limit > root.generation.state.limits.max_page_size.min(1000)
+            {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "snapshot scan limit outside bounds",
+                ));
+            }
+            authorize_state(
+                &current.state,
+                context,
+                Some(&request.collection),
+                Action::Read,
+            )?;
+            if let Some(selection) = root.generation.application_selection.get() {
+                // The two namespace scans materialize at most two pages of 256-byte
+                // names. The merged page moves those strings without cloning them.
+                reservation.reserve_additional(((request.limit + 1) * 768) as u64)?;
+                let metadata = crate::snapshot_codec::metadata(&root.generation.state);
+                let selection = selection.clone();
+                scan_reader = root
+                    .generation
+                    .shared_document_read()
+                    .map_err(crate::service::document_load_error)?;
+                let handle = root.handle.clone();
+                drop(entries);
+                drop(current);
+                let shared = scan_reader
+                    .as_deref()
+                    .map(crate::document_store::SharedRead::selected);
+                let read = selection.with_serving_primary(shared, &metadata, |tree, _, layout| {
+                    let check = || -> anyhow::Result<()> {
+                        cancellation.check()?;
+                        context.authorization.check_live()?;
+                        anyhow::ensure!(handle.live(), "snapshot expired while scanning");
+                        Ok(())
+                    };
+                    let limit = request.limit + 1;
+                    if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+                        let mut ids = Vec::with_capacity(limit);
+                        crate::application_records::visit_snapshot_headers(
+                            tree,
+                            &request.collection,
+                            request.after_id.as_deref(),
+                            metadata.revision,
+                            |id, _, _| {
+                                check()?;
+                                ids.push(id.to_owned());
+                                Ok(ids.len() < limit)
+                            },
+                        )?;
+                        return Ok(ids);
+                    }
+                    crate::application_records::snapshot_ids_after(
+                        tree,
+                        &request.collection,
+                        request.after_id.as_deref(),
+                        limit,
+                        check,
+                    )
+                });
+                context.authorization.check_live()?;
+                cancellation.check()?;
+                entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+                current = engine.generation()?;
+                root = Self::checked(&entries, &current.state, context, id, term)?;
+                if !Arc::ptr_eq(&handle, &root.handle) {
+                    return Err(expired());
+                }
+                durable_ids = read.map_err(crate::service::document_load_error)?;
+            }
+        }
+        let original = &root.generation.state;
         let mut scan_has_more = false;
         let (keys, scan_ids) = match request {
             PageSelection::Points(keys) => {
@@ -672,28 +730,6 @@ impl LeaseManager {
                 (keys, vec![])
             }
             PageSelection::Scan(request) => {
-                if request.lease_id != id {
-                    return Err(Error::new(
-                        ErrorCode::InvalidArgument,
-                        "snapshot scan lease identity differs",
-                    ));
-                }
-                validate_name(&request.collection)?;
-                if let Some(after) = &request.after_id {
-                    validate_name(after)?;
-                }
-                if request.limit == 0 || request.limit > original.limits.max_page_size {
-                    return Err(Error::new(
-                        ErrorCode::InvalidArgument,
-                        "snapshot scan limit outside bounds",
-                    ));
-                }
-                authorize_state(
-                    &current.state,
-                    context,
-                    Some(&request.collection),
-                    Action::Read,
-                )?;
                 let collection =
                     original
                         .collections
@@ -701,11 +737,12 @@ impl LeaseManager {
                         .ok_or_else(|| {
                             Error::new(ErrorCode::NotFound, "snapshot collection not found")
                         })?;
-                let candidates = root.ids.document_ids_after(
-                    &request.collection,
-                    request.after_id.as_deref(),
-                    request.limit + 1,
-                )?;
+                let candidates = durable_ids.unwrap_or_else(|| {
+                    crate::index_source::resident_ids_after(collection, request.after_id.as_deref())
+                        .take(request.limit + 1)
+                        .cloned()
+                        .collect()
+                });
                 let mut bytes = crate::accounting::encoded_len(&SnapshotScanPage {
                     snapshot: root.handle.header.clone(),
                     collection: request.collection.clone(),
@@ -791,6 +828,7 @@ impl LeaseManager {
                             document_sources: root.generation.clone_document_sources(),
                             _read_reservations: vec![],
                         }),
+                        scan_reader,
                         scan_ids: ids,
                         scan_has_more: false,
                         selected_input_bytes: root.metadata_bytes as u64,
@@ -856,6 +894,12 @@ impl LeaseManager {
                     reservation.reserve_additional((retained_bytes - charged_bytes) as u64)?;
                     charged_bytes = retained_bytes;
                 }
+                selected.archived_document_bytes = selected
+                    .archived_document_bytes
+                    .checked_add(super::history::metadata_entry(&key.id, reference)?)
+                    .ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "archive metadata overflow")
+                    })?;
                 selected
                     .archived_documents
                     .insert(key.id.clone(), reference.clone());
@@ -881,6 +925,7 @@ impl LeaseManager {
                 document_sources: root.generation.clone_document_sources(),
                 _read_reservations: vec![],
             }),
+            scan_reader,
             scan_ids,
             scan_has_more,
             selected_input_bytes: retained_bytes as u64,

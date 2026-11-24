@@ -17,6 +17,9 @@ use std::{
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+#[path = "local_auth_certificate_rotation.rs"]
+mod certificate_rotation;
+
 const FAMILIES: &str = "local-credential-families";
 const ISSUANCES: &str = "local-credential-issuances";
 const EVENTS: &str = "local-credential-events";
@@ -412,19 +415,34 @@ impl LocalCredentials {
         Ok(self)
     }
     pub fn status(&self, family: Uuid) -> Result<CredentialStatus> {
+        self.existing_family(family)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found").into())
+    }
+
+    pub(crate) fn existing_family(&self, family: Uuid) -> Result<Option<CredentialStatus>> {
         let (epoch, cached) = self.statuses.get(family);
         if let Some(status) = cached {
             self.store.check_access()?;
-            return Ok(status);
+            return Ok(Some(status));
         }
-        let bytes = self
+        let Some(bytes) = self
             .store
             .get_bounded(FAMILIES, family.as_bytes(), MAX_RECORD)?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found"))?;
+        else {
+            return Ok(None);
+        };
         let status = Self::family(&bytes).context(InvalidFamilyRecord)?;
         self.statuses.insert(epoch, family, &status);
-        Ok(status)
+        Ok(Some(status))
     }
+
+    /// Only an absent row or another audience can give a policy refusal here.
+    pub(crate) fn is_mcp_family(&self, family: Uuid) -> Result<bool> {
+        Ok(self
+            .existing_family(family)?
+            .is_some_and(|status| status.specification.audience == CredentialAudience::Mcp))
+    }
+
     fn authorization_status(&self, family: Uuid) -> kasumi_types::Result<CredentialStatus> {
         self.status(family)
             .map_err(|error| family_status_error(&error, self.store.key_lease_failure_class()))
@@ -1790,6 +1808,11 @@ mod tests {
             status
         );
         let resource = status.specification.resource.clone();
+        assert!(!manager.is_mcp_family(Uuid::new_v4()).unwrap());
+        assert_eq!(
+            manager.is_mcp_family(family).unwrap(),
+            status.specification.audience == CredentialAudience::Mcp
+        );
         let mut alternates = respelled(&current).to_vec();
         alternates.push(omitted.clone());
         for alternate in alternates {
@@ -1799,6 +1822,10 @@ mod tests {
             let before = rows(&store);
             refused(
                 manager.status(family).unwrap_err(),
+                "credential family record",
+            );
+            refused(
+                manager.is_mcp_family(family).unwrap_err(),
                 "credential family record",
             );
             refused(

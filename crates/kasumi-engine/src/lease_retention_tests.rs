@@ -453,7 +453,7 @@ fn publication_enforces_aggregate_retention_before_another_page_or_monitor_tick(
 }
 
 #[test]
-fn primary_id_paths_stay_charged_after_temporary_insert_and_delete() {
+fn lease_keeps_the_original_document_paths_after_temporary_insert_and_delete() {
     let engine = fixture(
         kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
         128,
@@ -474,15 +474,13 @@ fn primary_id_paths_stay_charged_after_temporary_insert_and_delete() {
     );
     let entries = engine.leases.entries.lock().unwrap();
     let root = &entries[&lease.header.lease_id];
-    assert_eq!(root.paths["docs"].ids, 2);
-    assert!(root.bytes >= root.metadata_bytes + path_bytes(128, 2) * 2);
+    assert_eq!(root.paths["docs"].documents, 2);
+    assert_eq!(root.bytes, root.metadata_bytes + path_bytes(128, 2));
     assert!(root.handle.live());
     assert_eq!(root.generation.state.revision, 1);
     assert_eq!(
-        root.ids
-            .document_ids_after("docs", None, 129)
-            .unwrap()
-            .len(),
+        crate::index_source::resident_ids_after(&root.generation.state.collections["docs"], None)
+            .count(),
         128
     );
 }

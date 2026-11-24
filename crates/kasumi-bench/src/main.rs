@@ -1,7 +1,11 @@
 //! Reproducible local benchmark. Test-only wrapping is explicit in every report;
 //! it performs authenticated encryption but excludes network Transit latency.
 use anyhow::{Context, Result, ensure};
-use kasumi_bench::{Measurement, Samples};
+use kasumi_bench::embedded::{Dimensions, EmbeddedDatabases, definition, queries, workload};
+use kasumi_bench::{
+    Measurement,
+    raw::{RawCorpus, document_body as body},
+};
 use kasumi_engine::{
     Database, ReplicaPlacement, ReplicatedBootstrap, SECURITY_TENANT, SecurityAudit,
     initialize_replicated, open_local, open_replicated,
@@ -13,8 +17,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeSet, HashMap},
-    hint::black_box,
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -28,6 +31,7 @@ struct Options {
     modes: Vec<String>,
     output: PathBuf,
     work_parent: Option<PathBuf>,
+    retain_samples: bool,
 }
 impl Options {
     fn parse() -> Result<Self> {
@@ -43,6 +47,7 @@ impl Options {
             ],
             output: PathBuf::from("kasumi-benchmark.json"),
             work_parent: None,
+            retain_samples: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -52,9 +57,14 @@ impl Options {
                 options.operations = 32;
                 continue;
             }
+            if arg == "--retain-samples" {
+                ensure!(!options.retain_samples, "duplicate --retain-samples");
+                options.retain_samples = true;
+                continue;
+            }
             if arg == "--help" {
                 println!(
-                    "kasumi-bench [--smoke] [--documents 1000000] [--tenants 1,100,1000] [--operations 10000] [--modes raw,local,replicated,text] [--output report.json] [--work-parent /directory]\nDefaults run every requested local mode. Network transport benchmarks require a separate authenticated endpoint runner; this harness never labels in-process calls as RPC/MCP."
+                    "kasumi-bench [--smoke] [--documents 1000000] [--tenants 1,100,1000] [--operations 10000] [--modes raw,local,replicated,text] [--output report.json] [--work-parent /directory] [--retain-samples]\nDefaults run every requested local mode. Network transport benchmarks require a separate authenticated endpoint runner; this harness never labels in-process calls as RPC/MCP."
                 );
                 std::process::exit(0);
             }
@@ -147,13 +157,6 @@ struct Report {
     failures: Vec<String>,
 }
 
-fn body(ordinal: usize, version: usize, tenants: usize) -> Value {
-    let local_ordinal = ordinal / tenants;
-    let mut value = json!({"ordinal":ordinal,"version":version,"text":format!("searchable document token{:04} feature{:04} {} revision{version} ",local_ordinal%1000,local_ordinal%1000,if local_ordinal.is_multiple_of(1000) {"図書館"}else{"動物"}),"padding":""});
-    let encoded = serde_json::to_vec(&value).unwrap().len();
-    value["padding"] = Value::String("x".repeat(1024usize.saturating_sub(encoded)));
-    value
-}
 fn context(tenant: usize) -> RequestContext {
     RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -195,70 +198,16 @@ fn limits(documents: usize, operations: usize) -> anyhow::Result<Limits> {
     })
 }
 
-fn definition(text: bool) -> CollectionDefinition {
-    let mut indexes = vec![IndexDefinition {
-        name: "ordinal".into(),
-        fields: vec![IndexField {
-            path: "/ordinal".into(),
-            kind: ScalarType::Number,
-        }],
-        unique: false,
-        text: None,
-    }];
-    if text {
-        for (name, analyzer) in [
-            ("english", Analyzer::EnglishV1),
-            ("japanese", Analyzer::JapaneseV1),
-        ] {
-            indexes.push(IndexDefinition {
-                name: name.into(),
-                fields: vec![IndexField {
-                    path: "/text".into(),
-                    kind: ScalarType::String,
-                }],
-                unique: false,
-                text: Some(TextIndex { analyzer }),
-            });
-        }
-    }
-    CollectionDefinition {
-        retention_class: kasumi_types::CollectionRetentionClass::Operational,
-        write_mode: kasumi_types::CollectionWriteMode::Mutable,
-        name: "docs".into(),
-        schema: json!({"type":"object","required":["ordinal","version","text","padding"],"properties":{"ordinal":{"type":"integer"},"version":{"type":"integer"},"text":{"type":"string"},"padding":{"type":"string"}},"additionalProperties":false}),
-        indexes,
-        strict_read_audit: false,
-    }
-}
 fn raw(options: &Options, tenants: usize) -> Result<Case> {
     let baseline_rss_bytes = rss();
     let opened = Instant::now();
-    let mut maps: Vec<HashMap<String, Value>> = (0..tenants).map(|_| HashMap::new()).collect();
+    let mut corpus = RawCorpus::new(tenants)?;
     let open_seconds = opened.elapsed().as_secs_f64();
     let empty_rss_bytes = rss();
     let started = Instant::now();
-    let mut payload_bytes = 0;
-    for ordinal in 0..options.documents {
-        let value = body(ordinal, 0, tenants);
-        payload_bytes += serde_json::to_vec(&value)?.len();
-        maps[ordinal % tenants].insert(ordinal.to_string(), value);
-    }
+    let payload_bytes = corpus.load(options.documents)?;
     let load_seconds = started.elapsed().as_secs_f64();
-    let keys: Vec<_> = (0..options.operations)
-        .map(|i| ((i.wrapping_mul(7919)) % options.documents).to_string())
-        .collect();
-    let mut samples = Samples::new("raw_hashmap_borrowed_lookup", keys.len());
-    for (i, key) in keys.iter().enumerate() {
-        let ordinal = (i.wrapping_mul(7919)) % options.documents;
-        let start = Instant::now();
-        black_box(
-            maps[ordinal % tenants]
-                .get(key)
-                .context("raw document missing")?,
-        );
-        samples.record(start.elapsed(), Ok(()));
-    }
-    let measurement = samples.finish();
+    let measurement = corpus.measure(options.operations, options.retain_samples)?;
     Ok(Case { mode:"raw".into(),tenants,documents:options.documents,replicas:1,security_audit_stores:0,raft_timing_milliseconds:None,payload_bytes,open_seconds,baseline_rss_bytes,empty_rss_bytes,collection_setup_seconds:None,empty_index_rss_bytes:None,load_seconds,resident_rss_bytes:rss(),after_workload_rss_bytes:rss(),after_recovery_rss_bytes:None,peak_rss_bytes:peak_rss(),disk_bytes:0,shutdown_seconds:None,recovery_seconds:None,measurements:vec![measurement],notes:vec!["Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included.".into()] })
 }
 
@@ -525,7 +474,7 @@ async fn database_case(
         ("balanced_50_read_50_write", 50, 3),
     ] {
         checkpoint(report, mode, tenants, name, details.clone(), &measurements)?;
-        let measurement = workload(&databases, options, name, percent, phase).await;
+        let measurement = workload(&databases, options.into(), name, percent, phase).await;
         measurements.push(measurement);
         checkpoint(
             report,
@@ -536,7 +485,7 @@ async fn database_case(
             &measurements,
         )?;
     }
-    measurements.push(queries(&databases, options, None).await);
+    measurements.push(queries(&databases, options.into(), None).await);
     checkpoint(
         report,
         mode,
@@ -555,7 +504,7 @@ async fn database_case(
             measurements.push(
                 queries(
                     &databases,
-                    options,
+                    options.into(),
                     Some(TextSearch::new(index, query).mode(mode)),
                 )
                 .await,
@@ -628,123 +577,28 @@ async fn database_case(
         notes:vec!["Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted Kasumi KV durable commits, and mutation audit/receipt retention are active.".into(),"Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.".into(),if replicated{"Three real OpenRaft voters use separate Kasumi KV files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.".into()}else{"One real OpenRaft voter; no network protocol overhead.".into()},"Test-only authenticated key wrapping excludes Transit network latency. Each replica node has one independently encrypted service security-audit tenant with a distinct wrapping key shared across its customer groups; its opening/key/RSS/disk overhead is included. No successful-read strict audit; mutation and denial audits remain enabled.".into(),"Shutdown measures complete Database closure and release of fixture stores. Recovery starts after shutdown and measures reopen, index reconstruction, key access, readiness and one verified point read per tenant; final cleanup and crash safety are separate.".into()]})
 }
 
-async fn workload(
-    databases: &Databases,
-    options: &Options,
-    name: &str,
-    write_percent: usize,
-    phase: usize,
-) -> Measurement {
-    let mut samples = Samples::new(name, options.operations);
-    for operation in 0..options.operations {
-        let ordinal = operation.wrapping_mul(7919) % options.documents;
-        let tenant = ordinal % databases.tenant_count;
-        let selection = Instant::now();
-        let database = match databases.leader(tenant).await {
-            Ok(database) => database,
-            Err(error) => {
-                samples.record(selection.elapsed(), Err(error));
-                break;
-            }
-        };
-        let context = context(tenant);
-        let id = ordinal.to_string();
-        let start = Instant::now();
-        let result: Result<()> = async {
-            if (operation + 1) * write_percent / 100 > operation * write_percent / 100 {
-                database
-                    .mutate(
-                        context,
-                        MutationBatch {
-                            read_set: Vec::new(),
-                            idempotency_key: format!("work-{phase}-{operation}"),
-                            operations: vec![Mutation::Put {
-                                collection: "docs".into(),
-                                id,
-                                body: body(
-                                    ordinal,
-                                    phase * options.operations + operation + 1,
-                                    databases.tenant_count,
-                                ),
-                                expected: Precondition::Any,
-                            }],
-                        },
-                    )
-                    .await?;
-            } else if name == "embedded_authorized_shared_point_get" {
-                black_box(
-                    database
-                        .get_shared(&context, "docs", &id)
-                        .await?
-                        .ok_or_else(|| {
-                            Error::new(ErrorCode::NotFound, "benchmark document is missing")
-                        })?,
-                );
-            } else {
-                black_box(database.get(&context, "docs", &id).await?.ok_or_else(|| {
-                    Error::new(ErrorCode::NotFound, "benchmark document is missing")
-                })?);
-            }
-            Ok(())
-        }
-        .await;
-        if !samples.record(start.elapsed(), result) {
-            break;
-        }
+impl EmbeddedDatabases for Databases {
+    fn tenant_count(&self) -> usize {
+        self.tenant_count
     }
-    samples.finish()
+
+    fn context(&self, tenant: usize) -> RequestContext {
+        context(tenant)
+    }
+
+    async fn leader(&self, tenant: usize) -> Result<Arc<Database>> {
+        self.leader(tenant).await
+    }
 }
-async fn queries(
-    databases: &Databases,
-    options: &Options,
-    text: Option<TextSearch>,
-) -> Measurement {
-    let name = text
-        .as_ref()
-        .map(|text| format!("text_{}_{:?}_complete_pages", text.index, text.mode))
-        .unwrap_or_else(|| "structured_indexed_equality".into());
-    let mut samples = Samples::new(name, options.operations);
-    for operation in 0..options.operations {
-        let ordinal = operation.wrapping_mul(7919) % options.documents;
-        let tenant = ordinal % databases.tenant_count;
-        let selection = Instant::now();
-        let database = match databases.leader(tenant).await {
-            Ok(database) => database,
-            Err(error) => {
-                samples.record(selection.elapsed(), Err(error));
-                break;
-            }
-        };
-        let filter = match &text {
-            None => Filter::new().eq("/ordinal", ordinal),
-            Some(_) => Filter::new(),
-        };
-        let mut page = QueryRequest::new("docs")
-            .filter(filter)
-            .select(["/ordinal"])
-            .limit(1000);
-        page.search = text.clone();
-        let identity = context(tenant);
-        let start = Instant::now();
-        let result: Result<()> = async {
-            loop {
-                let response = database.query(&identity, page.clone()).await?;
-                let cursor = response.cursor.clone();
-                black_box(response);
-                if let Some(cursor) = cursor {
-                    page.cursor = Some(cursor);
-                } else {
-                    break;
-                }
-            }
-            Ok(())
-        }
-        .await;
-        if !samples.record(start.elapsed(), result) {
-            break;
+
+impl From<&Options> for Dimensions {
+    fn from(options: &Options) -> Self {
+        Self {
+            documents: options.documents,
+            operations: options.operations,
+            retain_samples: options.retain_samples,
         }
     }
-    samples.finish()
 }
 
 fn checkpoint(
@@ -944,12 +798,13 @@ mod tests {
             modes: vec!["local".into()],
             output: dir.path().join("result.json"),
             work_parent: None,
+            retain_samples: false,
         };
         for name in [
             "embedded_authorized_owned_point_get",
             "embedded_authorized_shared_point_get",
         ] {
-            let failed = workload(&databases, &options, name, 0, 0).await;
+            let failed = workload(&databases, (&options).into(), name, 0, 0).await;
             assert_eq!(
                 (
                     failed.successful_operations,
@@ -983,7 +838,7 @@ mod tests {
             .unwrap();
         let succeeded = workload(
             &databases,
-            &options,
+            (&options).into(),
             "embedded_authorized_owned_point_get",
             0,
             0,

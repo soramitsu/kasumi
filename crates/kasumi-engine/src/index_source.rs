@@ -162,31 +162,56 @@ pub(crate) fn record<'a>(
         .map(|reference| RecordLoan::Archived(reference.as_ref())))
 }
 
-/// Iterate the logical union directly, validating both sides of a hydrated
-/// duplicate before lending it once. Scratch is two ordered-map iterators.
+/// Merge two strictly ordered key streams, yielding a shared key once.
+pub(crate) fn ordered_union<T: Ord>(
+    left: impl Iterator<Item = T>,
+    right: impl Iterator<Item = T>,
+) -> impl Iterator<Item = T> {
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(a), Some(b)) => match a.cmp(b) {
+            std::cmp::Ordering::Less => left.next(),
+            std::cmp::Ordering::Greater => right.next(),
+            std::cmp::Ordering::Equal => {
+                right.next();
+                left.next()
+            }
+        },
+        (Some(_), None) => left.next(),
+        _ => right.next(),
+    })
+}
+
+pub(crate) fn resident_ids_after<'a>(
+    collection: &'a CollectionState,
+    after: Option<&str>,
+) -> impl Iterator<Item = &'a String> {
+    use std::ops::Bound;
+    let bounds = (
+        after.map_or(Bound::Unbounded, Bound::Excluded),
+        Bound::Unbounded,
+    );
+    ordered_union(
+        collection
+            .documents
+            .range::<_, str>(bounds)
+            .map(|(id, _)| id),
+        collection
+            .archived_documents
+            .range::<_, str>(bounds)
+            .map(|(id, _)| id),
+    )
+}
+
+/// Validate both sides of a hydrated duplicate before lending it once.
 pub(crate) fn visit(
     collection: &CollectionState,
     revision: u64,
     resolver: Option<&dyn DocumentResolver>,
     mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
 ) -> SourceResult<()> {
-    let mut live = collection.documents.keys().peekable();
-    let mut archived = collection.archived_documents.keys().peekable();
-    loop {
-        let id = match (live.peek(), archived.peek()) {
-            (Some(a), Some(b)) => match a.cmp(b) {
-                std::cmp::Ordering::Less => live.next(),
-                std::cmp::Ordering::Greater => archived.next(),
-                std::cmp::Ordering::Equal => {
-                    archived.next();
-                    live.next()
-                }
-            },
-            (Some(_), None) => live.next(),
-            (None, Some(_)) => archived.next(),
-            (None, None) => break,
-        }
-        .expect("selected nonempty source iterator");
+    for id in resident_ids_after(collection, None) {
         let value = record(collection, id, revision, resolver)?
             .ok_or_else(|| corruption("source iterator lost its record"))?;
         lend(id, value.as_record())?;
@@ -266,16 +291,20 @@ impl DocumentChanges for StateChanges<'_> {
 }
 
 pub(crate) fn build(state: &TenantState) -> SourceResult<QueryIndexes> {
-    build_with_resolver(state, None)
+    build_with_resolver(state, None, kasumi_query::TextResidency::Resident)
 }
 
 pub(crate) fn build_with_resolver(
     state: &TenantState,
     resolver: Option<&dyn DocumentResolver>,
+    residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
-    QueryIndexes::build(state.collections.iter().map(|(name, collection)| {
-        StateCollection::with_resolver(state, name, collection, resolver)
-    }))
+    QueryIndexes::build_with_residency(
+        state.collections.iter().map(|(name, collection)| {
+            StateCollection::with_resolver(state, name, collection, resolver)
+        }),
+        residency,
+    )
 }
 
 fn check_scope(old: &TenantState, new: &TenantState) -> Result<()> {
@@ -402,9 +431,21 @@ pub(crate) fn update(
     new: &TenantState,
     changed: &BTreeMap<String, BTreeSet<String>>,
 ) -> SourceResult<QueryIndexes> {
-    update_with_resolvers(indexes, old, new, changed, None, None)
+    update_with_resolvers(
+        indexes,
+        old,
+        new,
+        changed,
+        None,
+        None,
+        indexes.text_residency(),
+    )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "both exact generation states, their resolvers and the text residency stay explicit"
+)]
 pub(crate) fn update_with_resolvers(
     indexes: &QueryIndexes,
     old: &TenantState,
@@ -412,6 +453,7 @@ pub(crate) fn update_with_resolvers(
     changed: &BTreeMap<String, BTreeSet<String>>,
     old_resolver: Option<&dyn DocumentResolver>,
     new_resolver: Option<&dyn DocumentResolver>,
+    residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
     check_scope(old, new)?;
     // Complete metadata planning before any shared text writer can advance.
@@ -455,7 +497,7 @@ pub(crate) fn update_with_resolvers(
                 .filter(|name| !new.collections.contains_key(*name))
                 .map(|name| IndexUpdate::Remove(name)),
         );
-    indexes.update(actions)
+    indexes.update_with_residency(actions, residency)
 }
 
 #[cfg(test)]

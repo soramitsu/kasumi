@@ -87,6 +87,10 @@ MIN_CORPUS = 3 << 30
 SOAK_SECONDS = 86400
 HEARTBEAT_SECONDS = 60
 MAX_JSON_BYTES = 16 << 20
+BACKUP_SESSION_FLOOR = 100_001
+PERMANENT_HISTORY_LIMITS = {
+    "commands": 4_096, "receipts": 100_000, "incarnations": 100_000, "lifecycle": 10_000,
+}
 MODES = ("raw", "local", "replicated", "text", "network")
 TENANTS = (1, 100, 1000)
 BASE_WORKLOADS = {
@@ -244,6 +248,25 @@ def rows(root, ref):
             yield decode(line)
 
 
+def check_lifetime_counts(root, records):
+    counts = unique(records, "id", "permanent record lifetime counts")
+    require(set(counts) == PERMANENT_HISTORY_LIMITS.keys() | {"sessions"},
+            "permanent history lifetime coverage is incomplete")
+    for category, historical in PERMANENT_HISTORY_LIMITS.items():
+        entry = counts[category]
+        exact(entry, {"id", "former_limit", "observed", "log"}, "lifetime crossing")
+        require(uint(entry["former_limit"], "former ceiling") == historical and
+                uint(entry["observed"], "observed records") > historical,
+                category + " did not cross its historical ceiling")
+        reference(root, entry["log"])
+    sessions = counts["sessions"]
+    exact(sessions, {"id", "acceptance_floor", "observed", "log"}, "permanent backup sessions")
+    require(uint(sessions["acceptance_floor"], "backup session floor") == BACKUP_SESSION_FLOOR and
+            uint(sessions["observed"], "distinct backup sessions") >= BACKUP_SESSION_FLOOR,
+            "distinct backup sessions did not meet the adopted floor")
+    reference(root, sessions["log"])
+
+
 def required_gates():
     result = {(kind, REFERENCE) for kind in SCENARIOS
               if kind not in {"installed", "package-smoke", "oci-smoke", "systemd-smoke", "repeatable-assembly"}}
@@ -335,18 +358,98 @@ def check_benchmarks(root, details):
             check_samples(root, measurement, minimum=1000)
 
 
-def check_integrity(root, ref, documents, expected_bytes):
+def check_integrity(root, operation, measurement):
+    measured_start, measured_end = measurement
+    plan = measured_start["corpus"]
+    documents, expected_bytes = plan["documents"], measured_end["input_bytes"]
+    ref = operation["integrity"]
+    events = iter(rows(root, operation["verification"]))
+    start = next(events, None)
+    exact(start, {"event", "format", "mode", "configuration_sha256", "corpus",
+                  "expected_canonical_bytes", "endpoint", "credential_binding_claims",
+                  "credential_binding_scope", "executable_sha256", "os", "architecture",
+                  "generator", "scope"}, "installed verification start")
+    checksum(start["configuration_sha256"])
+    installed = start["corpus"]
+    exact(installed, set(plan), "installed corpus plan")
+    batch_size = uint(installed["batch_documents"], "installed batch size", 1)
+    require(batch_size <= 256 and (plan["document_bytes"] + 2048) * batch_size <= 4 << 20,
+            "installed corpus exceeds driver batch bounds")
+    # Request grouping changes the integrity rows, while the measured framed
+    # body stream depends only on the generator inputs and document order.
+    require(start["event"] == "started" and start["mode"] == "verify"
+            and type(start["format"]) is int and start["format"] == 1
+            and all(type(installed[k]) is type(value) and installed[k] == value
+                    for k, value in plan.items() if k != "batch_documents")
+            and uint(start["expected_canonical_bytes"], "installed planned bytes", 1) == expected_bytes
+            and all(start[k] == measured_start[k] for k in ("os", "architecture", "executable_sha256")),
+            "installed verification did not use the measured plan, host platform and driver")
     count = size = 0
     for row in rows(root, ref):
         exact(row, {"first", "documents", "canonical_bytes", "expected_sha256", "observed_sha256"}, "integrity batch")
         require(type(row["first"]) is int and row["first"] == count, "integrity gap or duplicate batch")
         batch = uint(row["documents"], "integrity documents", 1)
-        require(batch <= 256, "integrity verification is not bounded")
+        require(batch == min(batch_size, documents - count)
+                and row["canonical_bytes"] == batch * plan["document_bytes"],
+                "integrity batch differs from the original corpus plan")
         count += batch
         size += uint(row["canonical_bytes"], "integrity bytes", 1)
         require(checksum(row["expected_sha256"]) == row["observed_sha256"], "integrity mismatch")
         require(count <= documents and size <= expected_bytes, "integrity exceeds corpus")
+        progress = next(events, None)
+        exact(progress, {"event", "documents", "canonical_bytes"}, "installed verification progress")
+        require(progress["event"] == "verified_prefix"
+                and uint(progress["documents"], "verified prefix", 1) == count
+                and uint(progress["canonical_bytes"], "verified bytes", 1) == size,
+                "installed verification progress differs from the original integrity rows")
     require(count == documents and size == expected_bytes, "integrity verification is not exhaustive")
+    passed = next(events, None)
+    exact(passed, {"event", "documents", "canonical_bytes", "expected_sha256", "observed_sha256",
+                   "integrity_sha256"}, "installed verification result")
+    require(passed["event"] == "passed" and uint(passed["documents"], "verified documents", 1) == count
+            and uint(passed["canonical_bytes"], "verified bytes", 1) == size
+            and passed["expected_sha256"] == passed["observed_sha256"] == measured_end["expected_sha256"]
+            and passed["integrity_sha256"] == ref["sha256"] and next(events, None) is None,
+            "installed verification differs from the full measured digest or original integrity file")
+
+
+def replay_capacity_measurement(root, corpus):
+    compression = corpus["compression"]
+    events = iter(rows(root, compression["log"]))
+    start, end = next(events, None), next(events, None)
+    require(next(events, None) is None, "unexpected extra compression event")
+    exact(start, {"event", "format", "mode", "configuration_sha256", "executable_sha256",
+                  "architecture", "os", "corpus", "expected_canonical_bytes", "algorithm"}, "compression start")
+    exact(end, {"event", "documents", "algorithm", "input_bytes", "output_bytes", "canonical_sha256",
+                "gzip_sha256", "expected_sha256", "seconds"}, "compression result")
+    require(start["event"] == "started" and uint(start["format"], "compression journal format") == 1
+            and start["mode"] == "measure" and end["event"] == "measured"
+            and start["algorithm"] == end["algorithm"] == compression["algorithm"],
+            "compression journal did not complete the configured measurement")
+    for value in (start["configuration_sha256"], start["executable_sha256"],
+                  end["canonical_sha256"], end["gzip_sha256"], end["expected_sha256"]):
+        checksum(value)
+    number(end["seconds"], "compression duration")
+    plan = start["corpus"]
+    exact(plan, {"run_id", "collection", "seed_sha256", "documents", "document_bytes", "batch_documents"},
+          "compression corpus plan")
+    require(isinstance(plan["run_id"], str)
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", plan["run_id"])
+            and plan["run_id"] != "00000000-0000-0000-0000-000000000000"
+            and isinstance(plan["collection"], str) and plan["collection"], "missing measured corpus identity")
+    document_bytes = uint(plan["document_bytes"], "measured document bytes", 128)
+    batch = uint(plan["batch_documents"], "measured batch size", 1)
+    require(document_bytes <= 1 << 20 and batch <= 256 and (document_bytes + 2048) * batch <= 4 << 20,
+            "measured corpus exceeds driver batch bounds")
+    require(uint(plan["documents"], "planned documents", 1) == corpus["documents"]
+            and uint(end["documents"], "measured documents", 1) == corpus["documents"]
+            and plan["seed_sha256"] == corpus["seed_sha256"]
+            and document_bytes * corpus["documents"] == corpus["canonical_bytes"]
+            and uint(start["expected_canonical_bytes"], "planned bytes") == corpus["canonical_bytes"]
+            and uint(end["input_bytes"], "measured input") == compression["input_bytes"]
+            and uint(end["output_bytes"], "measured output") == compression["output_bytes"],
+            "compression report differs from the measured corpus")
+    return start, end
 
 
 def check_capacity(root, details, kind):
@@ -362,12 +465,12 @@ def check_capacity(root, details, kind):
             "compression must measure the full exact corpus with gzip-9")
     compressed = uint(compression["output_bytes"], "compressed bytes", 1)
     require(compressed * 4 >= size * 3, "corpus is too compressible (minimum ratio 0.75)")
-    reference(root, compression["log"])
+    measurement = replay_capacity_measurement(root, corpus)
     operations = unique(details["operations"], "id", "capacity operations")
     require(set(operations) == SCENARIOS[kind], "capacity operation coverage is incomplete")
     for operation in operations.values():
-        exact(operation, {"id", "integrity", "resources", "limits", "read_retention_budget_bytes"}, "capacity operation")
-        check_integrity(root, operation["integrity"], documents, size)
+        exact(operation, {"id", "integrity", "verification", "resources", "limits", "read_retention_budget_bytes"}, "capacity operation")
+        check_integrity(root, operation, measurement)
         limits = operation["limits"]
         exact(limits, {"rss_bytes", "allocated_disk_bytes", "maintenance_workspace_bytes"}, "resource limits")
         for key, value in limits.items():
@@ -450,7 +553,17 @@ def check_host(root, host, target, started, finished):
     uint(reservation["disk_bytes"], "reserved disk", 64 << 30)
 
 
-def check_processes(root, processes, elapsed, passed=True):
+def domain_expected_exits(kind):
+    if kind == "key-retention":
+        import run_key_retention
+        return run_key_retention.REFUSALS
+    if kind == "installed":
+        import run_installed
+        return run_installed.EXPECTED_REFUSALS
+    return {}
+
+
+def check_processes(root, processes, elapsed, passed=True, expected_exits=None):
     processes = unique(processes, "id", "owned processes")
     require(processes, "missing process custody")
     longest = 0
@@ -488,7 +601,8 @@ def check_processes(root, processes, elapsed, passed=True):
                     "timeout_seconds": record.get("timeout_seconds"), "timed_out": record.get("timed_out"),
                     "received_signals": record.get("received_signals"), "process_error": record.get("error")}
             number(record.get("timeout_seconds"), "original process deadline", 1)
-            package.verify_process_receipt(root, gate, record["timeout_seconds"])
+            package.verify_process_receipt(root, gate, record["timeout_seconds"],
+                                           (expected_exits or {}).get(process["id"], 0))
         duration = number(record.get("duration_seconds"), "process elapsed time")
         require(duration <= elapsed + 1, "process duration exceeds attempt wall time")
         longest = max(longest, duration)
@@ -859,12 +973,11 @@ def check_dependency_review_primary(root, domain, candidate):
             "dependency review consumed another primary functional receipt")
 
 
-def check_native_admin_readback(root, witness, processes, binaries, expected):
+def check_native_admin_readback(root, witness, processes, binaries, expected, original_root=None):
     """Check native policy/schema observations against independently pinned intent.
 
-    This is an unregistered semantic component. A future owned installed-domain
-    runner must prove dispatch order, input bytes at dispatch, endpoint custody,
-    and full process ownership before its adapter may use this check.
+    The caller binds dispatch order, endpoint custody and original process identity.
+    Transported receipts retain the producing host’s original argument paths.
     """
     exact(expected, {"admin_config_sha256", "tenant", "incarnation", "policy",
                      "limits", "collections"}, "pinned administrative intent")
@@ -952,8 +1065,10 @@ def check_native_admin_readback(root, witness, processes, binaries, expected):
                 isinstance(executable["path"], str) and Path(executable["path"]).is_absolute()
                 and executable["sha256"] == binaries["kasumictl"],
                 "native admin process identity is malformed")
-        command = [executable["path"], "--config", str(config_path), operation,
-                   str(request_path)]
+        local_root = Path(root).resolve(strict=True)
+        original = Path(original_root) if original_root is not None else local_root
+        command = [executable["path"], "--config", str(original / config_path.relative_to(local_root)), operation,
+                   str(original / request_path.relative_to(local_root))]
         require(receipt.get("command") == command and receipt.get("status") == "passed"
                 and receipt.get("outputs_stable") is True and receipt.get("exit_code") == 0,
                 "native admin command or outcome differs from readback contract")
@@ -1069,10 +1184,106 @@ def dependency_review_adapter(root, domain, files, configs, artifacts, candidate
     return outcome.relative_to(root).as_posix()
 
 
+def capacity_standalone_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_capacity_standalone
+
+    return run_capacity_standalone.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def capacity_ha_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_capacity_ha
+
+    return run_capacity_ha.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def ha_faults_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_ha_faults
+
+    return run_ha_faults.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def recovery_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_recovery
+
+    return run_recovery.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def key_retention_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_key_retention
+
+    return run_key_retention.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def audit_retention_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_audit_retention
+
+    return run_audit_retention.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
     import run_ha_soak
 
     return run_ha_soak.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def backup_cleanup_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_backup_cleanup
+
+    return run_backup_cleanup.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def providers_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_providers
+
+    return run_providers.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def check_readiness_epoch(value):
+    exact(value, {"topology_version", "installed_routes", "actual_membership"}, "readiness epoch")
+    for component in value:
+        uint(value[component], "readiness epoch " + component)
+    return value
+
+
+def observability_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_installed_observability
+
+    return run_installed_observability.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def concurrency_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_concurrency
+
+    return run_concurrency.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def benchmark_matrix_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_benchmark_matrix_owned
+
+    return run_benchmark_matrix_owned.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def correctness_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_correctness
+
+    return run_correctness.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def systemd_smoke_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_systemd_smoke
+
+    return run_systemd_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def installed_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_installed
+    return run_installed.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def package_smoke_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_package_smoke
+
+    return run_package_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
 def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
@@ -1088,10 +1299,25 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "ha-faults": ha_faults_adapter,
+    "recovery": recovery_adapter,
+    "capacity-standalone": capacity_standalone_adapter,
+    "capacity-ha": capacity_ha_adapter,
+    "audit-retention": audit_retention_adapter,
+    "key-retention": key_retention_adapter,
+    "benchmark-matrix": benchmark_matrix_adapter,
+    "concurrency": concurrency_adapter,
+    "observability": observability_adapter,
+    "correctness": correctness_adapter,
+    "backup-cleanup": backup_cleanup_adapter,
+    "providers": providers_adapter,
     "repeatable-assembly": repeatable_assembly_adapter,
     "dependency-review": dependency_review_adapter,
     "ha-soak": ha_soak_adapter,
     "oci-smoke": oci_smoke_adapter,
+    "package-smoke": package_smoke_adapter,
+    "systemd-smoke": systemd_smoke_adapter,
+    "installed": installed_adapter,
 }
 
 
@@ -1121,13 +1347,13 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     elapsed = (finished - started).total_seconds()
     require(elapsed > 0, "domain gate elapsed time missing")
     check_host(root, record["host"], target, started, finished)
-    longest = check_processes(root, record["processes"], elapsed)
+    longest = check_processes(root, record["processes"], elapsed, expected_exits=domain_expected_exits(kind))
     check_topology(record["topology"], record["processes"], binaries[target],
                    "required" if kind in TOPOLOGY_REQUIRED else
                    "permitted" if kind in TOPOLOGY_PERMITTED else "forbidden")
-    # An image's daemon runs inside its container; the OCI adapter binds the
-    # candidate bytes through the image's own layer instead.
-    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke"}:
+    # OCI identifies the daemon in its image layer. The systemd adapter
+    # verifies PID 1's actual child via /proc/PID/exe, cgroup and InvocationID.
+    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke", "systemd-smoke"}:
         require(binaries[target]["kasumid"] in {process["executable"]["sha256"] for process in record["processes"]},
                 "domain process inventory does not contain the qualified daemon")
     scenarios = unique(record["scenarios"], "id", "domain scenarios")
@@ -1151,14 +1377,16 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     require(set(consumed) == expected_artifacts, "gate artifact coverage is incomplete")
     details = record["details"]
     if kind == "benchmark-matrix":
-        check_benchmarks(root, details)
+        exact(details, {"cases", "report"}, "owned benchmark details")
+        check_benchmarks(root, {"cases": details["cases"]})
     elif kind.startswith("capacity-"):
         check_capacity(root, details, kind)
     elif kind == "ha-soak":
         check_soak(root, details, elapsed)
         require(longest >= details["duration_seconds"], "soak has no process retained for full duration")
     elif kind == "concurrency":
-        exact(details, {"workloads"}, "concurrent workloads")
+        exact(details, {"workloads", "report"}, "concurrent workloads")
+        reference(root, details["report"])
         workloads = unique(details["workloads"], "name", "concurrent workloads")
         require(set(workloads) == SCENARIOS[kind], "concurrent workload roster differs")
         for work in workloads.values():
@@ -1207,14 +1435,7 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
         require(uint(details["maximum_segment_bytes"], "encrypted archive segment", 1) <= 8 << 20
                 and details["maintenance_start_percent"] == 75 and details["maintenance_target_percent"] == 50,
                 "audit segment/maintenance contract differs")
-        counts = unique(details["lifetime_counts"], "id", "permanent record lifetime counts")
-        require(set(counts) == {"commands", "receipts", "incarnations", "lifecycle", "sessions"},
-                "permanent history lifetime coverage is incomplete")
-        for count in counts.values():
-            exact(count, {"id", "former_limit", "observed", "log"}, "lifetime crossing")
-            require(uint(count["observed"], "observed records", 1) > uint(count["former_limit"], "former ceiling", 1),
-                    "former lifetime ceiling was not crossed")
-            reference(root, count["log"])
+        check_lifetime_counts(root, details["lifetime_counts"])
         reference(root, details["report"])
     elif kind == "key-retention":
         exact(details, {"maximum_page_entries", "coverage_complete", "report"}, "key retention details")
@@ -1224,8 +1445,8 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     elif kind == "observability":
         exact(details, {"groups", "membership_epoch", "covered_epoch", "coverage_complete", "report"}, "observability details")
         uint(details["groups"], "readiness groups", 129)
-        require(uint(details["membership_epoch"], "membership epoch", 1) == details["covered_epoch"]
-                and type(details["covered_epoch"]) is int and details["coverage_complete"] is True,
+        require(check_readiness_epoch(details["membership_epoch"]) == check_readiness_epoch(details["covered_epoch"])
+                and details["coverage_complete"] is True,
                 "readiness lacks complete current membership coverage")
         reference(root, details["report"])
     else:
@@ -1333,7 +1554,8 @@ def verify_attempts(root, attempts, selected):
         selected_paths.add(record["evidence"]["path"])
         elapsed = (timestamp(record["finished_at"]) - timestamp(record["started_at"])).total_seconds()
         if record["processes"]:
-            check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed")
+            check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed",
+                            expected_exits=domain_expected_exits(admission["kind"]))
         else:
             check_pre_dispatch_failure(root, record, admission, outcome)
         if record["evidence"]["path"] in selected:

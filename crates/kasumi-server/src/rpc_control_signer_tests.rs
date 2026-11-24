@@ -207,6 +207,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         )]),
         tls: tls_files("client"),
         server_ca: directory.join("ca.pem"),
+        catalog_bearer_files: BTreeMap::new(),
         bearer_files: BTreeMap::from([(0, token_path.to_string_lossy().into_owned())]),
         principal: format!("control-{node_id}"),
     };

@@ -32,12 +32,8 @@ MAX_MEMBERS = 4096
 # Reviewed differences from each published archive. ``added`` and ``changed``
 # name vendored files; ``removed`` names archive members that are not vendored.
 # The rmcp entry follows vendor/rmcp-terminal-ownership.md and the vendored
-# sources; the other three were derived from the published archives.
+# sources; the remaining entries were derived from the published archives.
 UPSTREAM_DELTA = {
-    "vendor/bitmaps-3.2.1": {
-        "changed": ("src/bitmap.rs", "src/lib.rs"),
-        "added": ("Cargo.lock",),
-        "removed": (".github/dependabot.yml", ".github/workflows/ci.yml", ".gitignore")},
     "vendor/lru-0.16.4": {
         "changed": ("src/lib.rs",),
         "added": ("Cargo.lock",),
@@ -46,10 +42,13 @@ UPSTREAM_DELTA = {
         "changed": ("Cargo.toml", "src/number.rs", "src/raw.rs", "src/value/de.rs"),
         "added": ("tests/literal_keys.rs",),
         "removed": ()},
-    "vendor/rmcp-3.2.0": {
-        "changed": ("src/transport/streamable_http_server.rs",
-                    "src/transport/streamable_http_server/tower.rs"),
-        "added": ("LICENSE", "src/transport/streamable_http_server/terminal_stateless_tests.rs"),
+    "vendor/rmcp-3.11.0": {
+        "changed": ("Cargo.lock", "Cargo.toml", "Cargo.toml.orig",
+                    "src/model/annotated.rs", "src/model/request_state.rs", "src/service.rs",
+                    "src/task_manager.rs", "src/transport/streamable_http_server.rs",
+                    "src/transport/streamable_http_server/tower.rs",
+                    "tests/common/handlers.rs", "tests/test_logging.rs"),
+        "added": ("src/transport/streamable_http_server/terminal_stateless_tests.rs",),
         "removed": ()},
 }
 # Roots admitted by a review record instead of a published archive.

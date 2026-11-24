@@ -126,16 +126,16 @@
     "sha256": "8ce8ef3f3a8dec55e9ceedbc437e424db4f051bfdff75b7e2773ed02d2b6ca03"
   },
   {
-    "bytes": 55697,
+    "bytes": 53321,
     "mode": "0o644",
     "path": "Cargo.lock",
-    "sha256": "578ccbe2c12a67526ee318cec43ba13b18ebd8b1166ddf4c17fefad90abcd232"
+    "sha256": "d6e49ef462253dd0c9f84d4491bda40f540a7f908dcd37059e940039a1f7b532"
   },
   {
-    "bytes": 1892,
+    "bytes": 1919,
     "mode": "0o644",
     "path": "Cargo.toml",
-    "sha256": "05940cbb590a3eeb82a4b00a2bb08eca4c860f00da37384f6ab046cbce49cbc0"
+    "sha256": "602f41e6b653a0a32373d1fb4e61fa88a22b60ff25c6a39899c63afb33f05cec"
   },
   {
     "bytes": 3024,
@@ -1074,10 +1074,10 @@
     "sha256": "1226200fb33bd522a4a9be68d3179e6cc8639d65ce0207bb9904a9f9eff1468f"
   },
   {
-    "bytes": 751,
+    "bytes": 783,
     "mode": "0o644",
     "path": "macros/Cargo.toml",
-    "sha256": "9c66dafa166d83459ed8a88f00fccc72992eeabfc6e878a25960a41dd2a1d87a"
+    "sha256": "c43b98ea973c216785ac41e8b182a40b62f1d18fed9e384e6260296de9b21a42"
   },
   {
     "bytes": 300,
@@ -1104,10 +1104,10 @@
     "sha256": "18791e58a87898ea28bb7629b313552f03d1df2d9b42dee8c3cd81a342bfe28e"
   },
   {
-    "bytes": 6483,
+    "bytes": 7510,
     "mode": "0o644",
     "path": "macros/src/since.rs",
-    "sha256": "4730ea91f59f9c9c3e4512aee340bed3763ad2434c96649fb59a2b283cd4ae80"
+    "sha256": "d746ce4ad474442dd167d398db82d165e861f936ffcbe80a57b301ad8e5b6b2f"
   },
   {
     "bytes": 1213,
@@ -1314,10 +1314,10 @@
     "sha256": "158f5620a65be77b39103c282e6b8fb14033ca141f5324102218e60863828f02"
   },
   {
-    "bytes": 4720,
+    "bytes": 4749,
     "mode": "0o644",
     "path": "openraft/Cargo.toml",
-    "sha256": "38ae61cd1c8f82c10c3e069064fe1ca57b4e83272c27fae35b46eb3fcc867588"
+    "sha256": "88bde05aaf7b91eab43aa57c4b862376f669a1bb057128189f3ea6110061a9b2"
   },
   {
     "bytes": 10730,
@@ -1518,10 +1518,10 @@
     "sha256": "2a1308af00535bfb0684191a1f50e0b4c37676a6d5791ca30afefeb1d48d0360"
   },
   {
-    "bytes": 3110,
+    "bytes": 4375,
     "mode": "0o644",
     "path": "openraft/src/display_ext/display_instant.rs",
-    "sha256": "7bba6c6b992e9b12ea8270b3414e39ed0216b5005683a0701fe43b5474ba02a9"
+    "sha256": "1ade862409c132a65827d9f5d84ea08f5bb4fad4e26a50d60413160964b150af"
   },
   {
     "bytes": 802,
@@ -3228,10 +3228,10 @@
     "sha256": "e2d65a39e7cc4a137a0edb51395fdf368cf0c9807248255dda6d34f2730ab07e"
   },
   {
-    "bytes": 9558,
+    "bytes": 10177,
     "mode": "0o644",
     "path": "tests/tests/life_cycle/t14_auxiliary_custody.rs",
-    "sha256": "3cd46de8bc065f5e7ef7d36062f34b8faccfc3e9ac1372b2bba5a5fd6c31f2af"
+    "sha256": "6d1907cd40ba862466915c09c1a237caf295ab85f5f2996c0494f9fe55683b65"
   },
   {
     "bytes": 2330,

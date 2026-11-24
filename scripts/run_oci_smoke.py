@@ -21,7 +21,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import tempfile
 import time
 
@@ -52,6 +51,8 @@ CONTROL = "/opt/kasumi/bin/kasumictl"
 TENANT = "smoke"
 TIMEOUT = 600
 READY_POLLS = 300
+MCP_FILES = ("kasumi.json", "profiles/mcp.json", "profiles/mcp.token",
+             "profiles/client.pem", "profiles/client-key.pem", "tls/ca.pem", "tls/mcp.pem")
 POLICIES = {"directory-policy": {"extent_bytes": 10485760, "max_entries": 32768},
             "file-allocation-policy": {"maximum_extra_extent_bytes": 1048576},
             "tenant-audit-placements": {"__kasumi_control": {"kind": "local_replica_only"},
@@ -68,20 +69,22 @@ def plan(parameters, image, python, probe):
     """Every step in order: (id, scenario, command). ``ready-*`` steps are polled."""
     runtime, port = parameters["runtime"], parameters["base_port"]
     name = "kasumi-smoke-" + parameters["attempt_id"].lower()
-    volume, export = name + ":/var/lib/kasumi", parameters["export"] + ":/export"
+    volume = name + ":/var/lib/kasumi"
     reference = image["reference"]
     inputs = init_inputs(port)
-    write = "mkdir " + INPUTS + " && " + " && ".join(
+    write = "umask 077 && mkdir " + INPUTS + " && " + " && ".join(
         "printf '%s' '" + json.dumps(inputs[key], sort_keys=True, separators=(",", ":"))
         + "' > " + INPUTS + "/" + key + ".json" for key in sorted(inputs))
     profile = INSTALLATION + "/profiles/"
-    ready = [runtime, "exec", name, CONTROL, "--profile", profile + "operator.json", "ready"]
+    ready = [runtime, "exec", name, CONTROL, "--profile", profile + "control.json", "ready"]
     native = [runtime, "exec", name, CONTROL, "--profile", profile + "default.json", "collections"]
-    publish = [runtime, "exec", "--user", "0", name, "/bin/sh", "-c",
-               "rm -rf /export/installation && cp -R " + INSTALLATION
-               + " /export/installation && chmod -R a+rX /export/installation"]
-    mcp = [python, "-I", "-B", "-S", probe, "--installation", INSTALLATION,
-           "--mapped", parameters["export"] + "/installation"]
+    def mcp_steps(stage, scenario, step):
+        mapped = Path(parameters["export"]) / stage
+        copies = [(f"copy-{stage}-{relative.replace('/', '-').replace('.', '-')}", scenario,
+                   [runtime, "cp", name + ":" + INSTALLATION + "/" + relative,
+                    str(mapped / relative)]) for relative in MCP_FILES]
+        return [*copies, (step, scenario, [python, "-I", "-B", "-S", probe, "--installation",
+                                          INSTALLATION, "--mapped", str(mapped)])]
     return [
         ("load", "load-image", [runtime, "load", "--input", parameters["image"]]),
         ("identify", "load-image", [runtime, "image", "inspect", "--format", "{{.Id}}", reference]),
@@ -94,16 +97,14 @@ def plan(parameters, image, python, probe):
             *[part for key in sorted(inputs) for part in ("--" + key, INPUTS + "/" + key + ".json")],
             "--tenant", TENANT]),
         ("start", "native", [runtime, "run", "--detach", "--name", name, "--network", "host",
-                             "--volume", volume, "--volume", export, reference]),
+                             "--volume", volume, reference]),
         ("ready-start", None, ready),
         ("native", "native", native),
-        ("publish", "mcp", publish),
-        ("mcp", "mcp", mcp),
+        *mcp_steps("start", "mcp", "mcp"),
         ("restart", "restart", [runtime, "restart", "--time", "60", name]),
         ("ready-restart", None, ready),
         ("native-restarted", "restart", native),
-        ("publish-restarted", "restart", publish),
-        ("mcp-restarted", "restart", mcp),
+        *mcp_steps("restart", "restart", "mcp-restarted"),
         ("stop", "clean-stop", [runtime, "stop", "--time", "60", name]),
         ("exit", "clean-stop", [runtime, "inspect", "--format",
                                 "{{.State.ExitCode}} {{.State.OOMKilled}}", name]),
@@ -161,6 +162,16 @@ def execute(run, parameters, image_path, sbom_path, record_path, pause):
     run.environment["PATH"] = str(Path(parameters["runtime"]).parent) + os.pathsep + "/usr/bin:/bin"
     run.save()
     outputs = {}
+    export = Path(parameters["export"])
+    require(export.is_absolute() and not export.is_symlink()
+            and export.is_dir() and export.stat().st_uid == os.getuid()
+            and export.stat().st_mode & 0o777 == 0o700,
+            "MCP inputs require a private directory owned by the smoke runner")
+    for stage in ("start", "restart"):
+        mapped = export / stage
+        mapped.mkdir(mode=0o700)
+        for subdir in ("profiles", "tls"):
+            (mapped / subdir).mkdir(mode=0o700)
     steps = plan(parameters, image, details["tools"]["python"]["path"],
                  str(run.source / "scripts/mcp_probe.py"))
     for step, scenario, command in steps:
@@ -200,19 +211,14 @@ def main(argv=None):
                         help="first of three free loopback ports")
     args = parser.parse_args(argv)
     require(1024 <= args.base_port <= 65533, "base port must leave three unprivileged ports")
-    # The exported installation holds keys and a token: keep it out of custody.
-    export = Path(tempfile.mkdtemp(prefix="kasumi-oci-smoke-")).resolve()
-    os.chmod(export, 0o777)
-    parameters = {"attempt_id": args.attempt_id, "runtime": str(args.runtime.resolve(strict=True)),
-                  "base_port": args.base_port, "image": str(args.image.resolve(strict=True)),
-                  "export": str(export)}
-    try:
+    with tempfile.TemporaryDirectory(prefix="kasumi-oci-smoke-") as export:
+        parameters = {"attempt_id": args.attempt_id, "runtime": str(args.runtime.resolve(strict=True)),
+                      "base_port": args.base_port, "image": str(args.image.resolve(strict=True)),
+                      "export": str(Path(export).resolve(strict=True))}
         with domain_run.Run(KIND, RUNNER, MODULES, args.evidence, args.output, args.journal,
                             args.attempt_id, parameters, domain_run.QUALIFYING) as run:
             execute(run, parameters, args.image.resolve(strict=True),
                     args.image_sbom.resolve(strict=True), args.image_record, 1.0)
-    finally:
-        shutil.rmtree(export, ignore_errors=True)
     print("OCI smoke retained: " + str(args.output))
     return 0
 

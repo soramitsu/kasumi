@@ -73,6 +73,8 @@ impl PreparedSpool {
             layout: SpoolLayout::Native,
             #[cfg(test)]
             authenticated_bytes_read: 0,
+            #[cfg(test)]
+            ciphertext_writes: 0,
             cached_index: None,
             cached,
             ciphertext,

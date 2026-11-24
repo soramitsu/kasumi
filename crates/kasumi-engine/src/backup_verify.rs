@@ -7,6 +7,7 @@ use crate::{
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Borrow,
     future::Future,
     io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
@@ -76,13 +77,20 @@ pub(crate) trait BackupReader: Sync {
         &'a self,
         state: &'a TenantState,
     ) -> impl Future<Output = anyhow::Result<()>> + Send + 'a;
-    fn audit_target(&self) -> Option<Arc<kasumi_store::TenantStore>>;
+    type AuditSegment: Borrow<AuditArchiveReference> + Send;
+    fn audit_publication(
+        &self,
+        segment: Self::AuditSegment,
+    ) -> Option<(
+        Arc<kasumi_store::TenantStore>,
+        kasumi_store::PreparedAuditSegment,
+    )>;
     fn audit_dependency<'a>(
         &'a self,
         state: &'a VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
-    ) -> impl Future<Output = anyhow::Result<kasumi_store::PreparedAuditSegment>> + Send + 'a;
+    ) -> impl Future<Output = anyhow::Result<Self::AuditSegment>> + Send + 'a;
     fn object<'a>(
         &'a self,
         id: uuid::Uuid,
@@ -121,13 +129,7 @@ pub(crate) async fn verify_indexed_audit_dependency(
     ciphertext: &[u8],
     link: &AuditArchiveLink,
 ) -> anyhow::Result<AuditArchiveReference> {
-    let dependency = kasumi_store::InspectedAuditDependency::from_link(ciphertext, link)?;
-    anyhow::ensure!(
-        dependency.source_tenant() == state.metadata().tenant
-            && dependency.reference().stream_id == state.metadata().audit_retention.stream_id,
-        "backup audit stream differs"
-    );
-    state.authorize_source(root, dependency.source_purpose())?;
+    let dependency = indexed_audit_dependency(state, root, ciphertext, link)?;
     Ok(store
         .verify_historical_audit(&dependency, dependency.source_purpose())
         .await?
@@ -135,15 +137,36 @@ pub(crate) async fn verify_indexed_audit_dependency(
         .clone())
 }
 
+pub(crate) fn indexed_audit_dependency<'a>(
+    state: &VerifiedState,
+    root: &kasumi_store::StoragePurpose,
+    ciphertext: &'a [u8],
+    link: &AuditArchiveLink,
+) -> anyhow::Result<kasumi_store::InspectedAuditDependency<'a>> {
+    let dependency = kasumi_store::InspectedAuditDependency::from_link(ciphertext, link)?;
+    anyhow::ensure!(
+        dependency.source_tenant() == state.metadata().tenant
+            && dependency.reference().stream_id == state.metadata().audit_retention.stream_id,
+        "backup audit stream differs"
+    );
+    state.authorize_source(root, dependency.source_purpose())?;
+    Ok(dependency)
+}
+
 /// What a blocking worker's failure leaves in the node's drain report when no
 /// caller receives it. Typed native custody stays with its own registry; the
 /// report keeps a marker, as a database drain does for a failed custody detach.
 pub(crate) trait WorkerFailure: From<anyhow::Error> + Send + 'static {
     fn unclaimed(self) -> anyhow::Error;
+    fn matches_stop(&self, stop: &Error) -> bool;
 }
 impl WorkerFailure for anyhow::Error {
     fn unclaimed(self) -> anyhow::Error {
         self
+    }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        crate::state::snapshot_encoding_failure::causes(self)
+            .any(|cause| cause.downcast_ref::<Error>() == Some(stop))
     }
 }
 impl WorkerFailure for kasumi_store::ScratchOperationFailure {
@@ -153,10 +176,20 @@ impl WorkerFailure for kasumi_store::ScratchOperationFailure {
             custody => anyhow::anyhow!("{custody}"),
         }
     }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        matches!(self, Self::Operation(error) if error.matches_stop(stop))
+    }
 }
 impl WorkerFailure for crate::SnapshotFailure {
     fn unclaimed(self) -> anyhow::Error {
         self.into_scratch_failure().unclaimed()
+    }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        match self {
+            Self::Operation(error) => error == stop,
+            Self::Source(error) => error.matches_stop(stop),
+            Self::AdmissionRefused(_) | Self::Creation(_) => false,
+        }
     }
 }
 struct Unclaimed<E>(E);
@@ -193,7 +226,7 @@ impl VerificationDeadline {
     }
     pub fn check(self) -> anyhow::Result<()> {
         if tokio::time::Instant::now() >= self.0 {
-            return Err(Self::expired());
+            return Err(Self::expired_error().into());
         }
         Ok(())
     }
@@ -201,14 +234,13 @@ impl VerificationDeadline {
         self.check()?;
         tokio::time::timeout_at(self.0, future)
             .await
-            .map_err(|_| Self::expired())
+            .map_err(|_| Self::expired_error().into())
     }
-    fn expired() -> anyhow::Error {
+    fn expired_error() -> Error {
         Error::new(
             ErrorCode::Unavailable,
             "backup verification deadline expired",
         )
-        .into()
     }
     /// Run `work` on a blocking child that the node's memory core retains.
     /// An expired deadline or a cancelled caller gives up only its claim: the
@@ -228,57 +260,71 @@ impl VerificationDeadline {
     {
         struct Resources {
             _reservation: Arc<Reservation>,
-            _registration: Option<Arc<VerificationWork>>,
+            registration: Option<Arc<VerificationWork>>,
         }
-        impl Resources {
-            /// The operation's own deadline or cancellation told it to stop.
-            fn stopped<E: From<anyhow::Error>>(&self, deadline: VerificationDeadline) -> Option<E> {
-                if let Err(expired) = deadline.check() {
-                    return Some(E::from(expired));
-                }
-                let work = self._registration.as_ref()?;
-                work.check()
-                    .err()
-                    .map(|original| E::from(anyhow::Error::new(original)))
-            }
-        }
-        struct Output<T> {
-            value: T,
-            // Output/state drops before resources; resources drop their byte
-            // charge before the work registration permits shutdown to drain.
-            _resources: Resources,
-        }
+        let owner = reservation.blocking_owner();
+        let resources = Resources {
+            _reservation: reservation,
+            registration,
+        };
+        let (value, _) = self
+            .blocking_with(
+                owner,
+                resources,
+                |resources| {
+                    resources
+                        .registration
+                        .as_ref()
+                        .map_or(Ok(()), |work| work.check())
+                },
+                |_| work(),
+            )
+            .await?;
+        Ok(value)
+    }
+
+    /// Retain the original join and its resources together, including a
+    /// uniquely owned reservation that a restore must grow after inspecting
+    /// the image. The output drops before the charge and work registration.
+    pub(crate) async fn blocking_with<R, T, E>(
+        self,
+        owner: Arc<crate::admission::MemoryCore>,
+        mut resources: R,
+        check: impl Fn(&R) -> Result<()> + Send + 'static,
+        work: impl FnOnce(&mut R) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<(T, R), E>
+    where
+        R: Send + 'static,
+        T: Send + 'static,
+        E: WorkerFailure,
+    {
         let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
         self.check().map_err(E::from)?;
-        // The child takes the reservation whole. This waiter keeps only the
-        // core whose table owns the child, never a share of the charge.
-        let owner = reservation.blocking_owner();
         let started = owner.blocking_children().start(move || {
             let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
-            let resources = Resources {
-                _reservation: reservation,
-                _registration: registration,
+            let check_stop = |resources: &R| {
+                if tokio::time::Instant::now() >= self.0 {
+                    Err(Self::expired_error())
+                } else {
+                    check(resources)
+                }
             };
-            if let Some(stop) = resources.stopped(self) {
-                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
-            }
-            let value = work().map_err(|error| {
-                // A stopped operation's worker reports that stop in its own
-                // words. Any other failure is the worker's, and is retained
-                // when no caller is left to receive it.
-                match resources.stopped::<E>(self) {
-                    Some(_) => kasumi_serving::ChildFailure::Stopped(Unclaimed(error)),
-                    None => kasumi_serving::ChildFailure::Failed(Unclaimed(error)),
+            let stopped = |error: Error| {
+                kasumi_serving::ChildFailure::Stopped(Unclaimed(E::from(error.into())))
+            };
+            check_stop(&resources).map_err(stopped)?;
+            let value = work(&mut resources).map_err(|error| {
+                // Cancellation may coincide with an independent storage failure.
+                // Only the original cancellation/deadline is an expected stop.
+                if check_stop(&resources).is_err_and(|stop| error.matches_stop(&stop)) {
+                    kasumi_serving::ChildFailure::Stopped(Unclaimed(error))
+                } else {
+                    kasumi_serving::ChildFailure::Failed(Unclaimed(error))
                 }
             })?;
-            if let Some(stop) = resources.stopped(self) {
-                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
-            }
+            check_stop(&resources).map_err(stopped)?;
             phase.complete();
-            Ok(Output {
-                value,
-                _resources: resources,
-            })
+            Ok((value, resources))
         });
         let waited = match started {
             Ok(call) => self.run(call.wait()).await,
@@ -289,7 +335,7 @@ impl VerificationDeadline {
             .map_err(|lost| E::from(anyhow::Error::new(lost)))?
             .map_err(|failure| failure.0)?;
         phase.complete();
-        Ok(output.value)
+        Ok(output)
     }
 }
 
@@ -546,6 +592,7 @@ pub(crate) async fn verify(
             .checked_mul((PAGE_BYTES + 8) as u64)
             .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
         let mut pages = kasumi_store::EncryptedSpool::new(reader.scratch_disk(), page_budget)?;
+        pages.reserve(page_budget)?;
         let mut reference = Some(manifest.last_page.clone());
         for expected in (0..manifest.page_count).rev() {
             reader.check_access().await?;
@@ -583,16 +630,25 @@ pub(crate) async fn verify(
         );
         phase.complete();
         let phase = VerificationPhase::start("verify.resident_chunks", Some(deadline));
+        let cancellation = reader.cancellation();
         let mut spool = if capture.is_some() {
             None
         } else {
-            Some(kasumi_store::EncryptedSpool::new(
-                reader.scratch_disk(),
-                manifest.resident_bytes,
-            )?)
+            let mut spool =
+                kasumi_store::EncryptedSpool::new(reader.scratch_disk(), manifest.resident_bytes)?;
+            // The authenticated manifest gives the exact total. Admit it
+            // before copying so the anonymous file can extend in bounded
+            // steps instead of resizing once per encrypted block.
+            spool.reserve(manifest.resident_bytes)?;
+            Some((
+                spool,
+                Box::new(crate::snapshot_codec::StreamInspector::new()),
+            ))
         };
         let mut resident_bytes = 0u64;
-        let mut digest = Sha256::new();
+        // The encrypted append-only spool hashes every byte it accepts. Only
+        // the captured-generation path, which has no spool, needs its own hash.
+        let mut captured_digest = capture.as_ref().map(|_| Sha256::new());
         let mut chunk_count = 0u64;
         for index in (0..manifest.page_count).rev() {
             pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
@@ -630,13 +686,28 @@ pub(crate) async fn verify(
                     "backup chunk order or size differs"
                 );
                 key_catalogs.add(&contents.key_catalog_sha256)?;
-                digest.update(&contents.snapshot);
+                if let Some(hash) = &mut captured_digest {
+                    hash.update(&contents.snapshot);
+                }
                 resident_bytes = resident_bytes
                     .checked_add(contents.snapshot.len() as u64)
                     .filter(|bytes| *bytes <= manifest.resident_bytes)
                     .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
-                if let Some(spool) = &mut spool {
-                    spool.write_all(&contents.snapshot)?;
+                if let Some((spool, inspector)) = &mut spool {
+                    // Inspect the same authenticated bytes that enter the private
+                    // image. The later canonical visit checks the frozen image
+                    // independently against these bounds before publication.
+                    for block in contents.snapshot.chunks(64 << 10) {
+                        deadline.check()?;
+                        if let Some(work) = &ownership {
+                            work.check()?;
+                        }
+                        if let Some(token) = &cancellation {
+                            token.check()?;
+                        }
+                        inspector.push(block)?;
+                        spool.write_all(block)?;
+                    }
                 }
             }
         }
@@ -646,7 +717,8 @@ pub(crate) async fn verify(
         );
         anyhow::ensure!(
             resident_bytes == manifest.resident_bytes
-                && hex::encode(digest.finalize()) == manifest.resident_sha256,
+                && captured_digest
+                    .is_none_or(|hash| hex::encode(hash.finalize()) == manifest.resident_sha256),
             "full backup resident stream differs"
         );
         phase.complete();
@@ -667,6 +739,8 @@ pub(crate) async fn verify(
     let semantic_reservation = reservation.clone();
     let semantic_admission = admission.clone();
     let semantic_cancellation = reader.cancellation();
+    let resident_bytes = manifest.resident_bytes;
+    let resident_sha256 = manifest.resident_sha256.clone();
     let (state, bytes) = deadline
         .blocking(
             reservation.clone(),
@@ -681,10 +755,15 @@ pub(crate) async fn verify(
                                     "verify.snapshot_freeze",
                                     Some(deadline),
                                 );
-                                let bytes =
-                                    kasumi_store::SnapshotImage::freeze(spool.ok_or_else(
-                                        || anyhow::anyhow!("historical backup staging missing"),
-                                    )?)?;
+                                let (spool, inspector) = spool.ok_or_else(|| {
+                                    anyhow::anyhow!("historical backup staging missing")
+                                })?;
+                                let bytes = kasumi_store::SnapshotImage::freeze(spool)?;
+                                anyhow::ensure!(
+                                    bytes.len() == resident_bytes
+                                        && bytes.sha256() == resident_sha256,
+                                    "full backup resident stream differs"
+                                );
                                 phase.complete();
                                 let disk = bytes
                                     .len()
@@ -693,25 +772,15 @@ pub(crate) async fn verify(
                                     .ok_or_else(|| {
                                         anyhow::anyhow!("snapshot index disk budget overflow")
                                     })?;
-                                let mut check = || -> anyhow::Result<()> {
-                                    deadline.check()?;
-                                    if let Some(work) = &semantic_work {
-                                        work.check()?;
-                                    }
-                                    if let Some(token) = &semantic_cancellation {
-                                        token.check()?;
-                                    }
-                                    Ok(())
-                                };
-                                let phase = VerificationPhase::start(
-                                    "verify.structural_inspection",
-                                    Some(deadline),
-                                );
-                                let layout = crate::snapshot_index::StagedSnapshot::inspect(
-                                    &bytes, &mut check,
-                                )?;
+                                deadline.check()?;
+                                if let Some(work) = &semantic_work {
+                                    work.check()?;
+                                }
+                                if let Some(token) = &semantic_cancellation {
+                                    token.check()?;
+                                }
+                                let layout = inspector.finish()?;
                                 phase::snapshot_layout(&layout);
-                                phase.complete();
                                 let phase = VerificationPhase::start(
                                     "verify.semantic_admission",
                                     Some(deadline),
@@ -830,82 +899,48 @@ pub(crate) async fn verify(
                 let semantic_admission = admission.clone();
                 let retained_workspace = state.verification_workspace()?;
                 deadline
-                .blocking(reservation.clone(), ownership.clone(), move || -> anyhow::Result<_> {
-                    let mut check = || -> anyhow::Result<()> {
-                        deadline.check()?;
-                        if let Some(token) = &semantic_cancellation {
-                            token.check()?;
-                        }
-                        if let Some(work) = &semantic_work {
-                            work.check()?;
-                        }
-                        Ok(())
-                    };
-                    check()?;
-                    let chunk = &semantic_archive.manifest.chunks[index];
-                    let archive = semantic_archive.as_ref();
-                    anyhow::ensure!(
-                        contents.source_purpose == semantic_purpose
-                            && contents.snapshot.len() == chunk.plaintext_bytes
-                            && hex::encode(Sha256::digest(&contents.snapshot))
-                                == chunk.plaintext_sha256,
-                        "full backup history chunk plaintext differs"
-                    );
-                    history_work::verify_body(
-                        contents.snapshot,
-                        &semantic_reservation,
-                        &semantic_admission,
-                        retained_workspace,
-                        &mut check,
-                        |body, check| {
-                            anyhow::ensure!(
-                                body.archive_id == archive.manifest.archive_id
-                                    && body.collection == archive.manifest.collection
-                                    && body.source_incarnation
-                                        == archive.manifest.source_incarnation
-                                    && body.index == index
-                                    && body.documents.len() == chunk.document_count
-                                    && body
-                                        .documents
-                                        .first()
-                                        .is_some_and(|doc| doc.id == chunk.first_id)
-                                    && body
-                                        .documents
-                                        .last()
-                                        .is_some_and(|doc| doc.id == chunk.last_id)
-                                    && body
-                                        .documents
-                                        .windows(2)
-                                        .all(|pair| pair[0].id < pair[1].id),
-                                "full backup history chunk identity differs"
-                            );
-                            let collection =
-                                semantic_state.collection(&archive.manifest.collection)?;
-                            for doc in &body.documents {
-                                check()?;
-                                let reference = semantic_state
-                                    .archived(&archive.manifest.collection, &doc.id)?;
-                                anyhow::ensure!(
-                                    reference.archive_id == archive.manifest.archive_id
-                                        && reference.chunk_index == index
-                                        && reference.version == doc.version
-                                        && reference.document_sha256 == staged_digest(doc)?.0
-                                        && reference.document_bytes
-                                            == crate::accounting::encoded_len(doc)?
-                                        && reference.indexed_fields
-                                            == crate::state::history::index_fields(
-                                                &collection.definition,
-                                                doc
-                                            ),
-                                    "full backup archived document differs from retained metadata"
-                                );
-                            }
+                    .blocking(
+                        reservation.clone(),
+                        ownership.clone(),
+                        move || -> anyhow::Result<_> {
+                            let mut check = || -> anyhow::Result<()> {
+                                deadline.check()?;
+                                if let Some(token) = &semantic_cancellation {
+                                    token.check()?;
+                                }
+                                if let Some(work) = &semantic_work {
+                                    work.check()?;
+                                }
+                                Ok(())
+                            };
                             check()?;
-                            Ok(())
+                            let chunk = &semantic_archive.manifest.chunks[index];
+                            let archive = semantic_archive.as_ref();
+                            anyhow::ensure!(
+                                contents.source_purpose == semantic_purpose
+                                    && contents.snapshot.len() == chunk.plaintext_bytes
+                                    && hex::encode(Sha256::digest(&contents.snapshot))
+                                        == chunk.plaintext_sha256,
+                                "full backup history chunk plaintext differs"
+                            );
+                            history_work::verify_body(
+                                contents.snapshot,
+                                &semantic_reservation,
+                                &semantic_admission,
+                                retained_workspace,
+                                &mut check,
+                                |body, check| {
+                                    body.verify_against(
+                                        &semantic_state,
+                                        &archive.manifest,
+                                        index,
+                                        check,
+                                    )
+                                },
+                            )
                         },
                     )
-                })
-                .await?;
+                    .await?;
             }
         }
         phase.complete();
@@ -922,15 +957,16 @@ pub(crate) async fn verify(
             let segment = reader
                 .audit_dependency(&state, &source_purpose, &link)
                 .await?;
+            let reference = segment.borrow();
             if archive_records == 0 {
                 anyhow::ensure!(
-                    retention.archive_head.as_ref() == Some(&segment.reference),
+                    retention.archive_head.as_ref() == Some(reference),
                     "backup audit head differs"
                 );
             }
-            expected = segment.reference.previous.clone();
+            expected = reference.previous.clone();
             archive_bytes = archive_bytes
-                .checked_add(segment.ciphertext.len() as u64)
+                .checked_add(reference.ciphertext_bytes)
                 .ok_or_else(|| anyhow::anyhow!("backup audit byte count overflow"))?;
             archive_records = archive_records
                 .checked_add(1)
@@ -940,8 +976,8 @@ pub(crate) async fn verify(
                     && archive_records <= retention.archive_segments,
                 "backup audit accounting exceeded"
             );
-            key_catalogs.add_audit(&segment.reference.key)?;
-            if let Some(target) = reader.audit_target() {
+            key_catalogs.add_audit(&reference.key)?;
+            if let Some((target, segment)) = reader.audit_publication(segment) {
                 let placement = target.tenant_audit_archive()?;
                 deadline
                     .blocking(
@@ -1098,7 +1134,7 @@ mod tests {
     async fn expired_worker_is_joined_by_the_node_drain_and_its_stop_is_not_evidence() {
         let admission = NodeAdmission::new(Default::default()).unwrap();
         let (caller, entered, release) = held_child(&admission, None, 1_000, || {
-            anyhow::bail!("worker noticed its expired deadline")
+            Err(VerificationDeadline::expired_error().into())
         });
         entered.await.unwrap();
         assert!(caller.await.unwrap().is_err());
@@ -1118,6 +1154,30 @@ mod tests {
             .unwrap();
         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(admission.snapshot().inflight_operations, 0);
+    }
+
+    #[tokio::test]
+    async fn expired_waiter_preserves_an_independent_failure_in_the_same_child() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (caller, entered, release) =
+            held_child(&admission, None, 1_000, || Err(WorkerFault(17).into()));
+        entered.await.unwrap();
+        assert!(caller.await.unwrap().is_err());
+        release.send(()).unwrap();
+        let failure = tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(failure.issues().len(), 1);
+        assert_eq!(
+            failure.issues()[0]
+                .error()
+                .downcast_ref::<WorkerFault>()
+                .unwrap()
+                .0,
+            17
+        );
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 
     #[tokio::test]

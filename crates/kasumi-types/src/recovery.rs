@@ -658,6 +658,31 @@ pub struct RecoveryPhaseRequest {
     pub phase_id: Uuid,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryIssuerStop {
+    pub phase: RecoveryPhaseRequest,
+    pub attempt_id: Option<Uuid>,
+    pub query: IssuerStopQuery,
+    pub observed: Option<IssuerStopStatus>,
+}
+impl RecoveryIssuerStop {
+    pub fn validate_for(&self, requested: &RecoveryPhaseRequest) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.phase == *requested
+                && !requested.operation_id.is_nil()
+                && !requested.phase_id.is_nil()
+                && self.attempt_id.is_none_or(|id| !id.is_nil()),
+            "issuer observation belongs to another Control phase"
+        );
+        self.query.validate()?;
+        if let Some(observed) = &self.observed {
+            observed.validate_for(&self.query)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

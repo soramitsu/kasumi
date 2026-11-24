@@ -228,7 +228,7 @@ impl SecurityAudit {
             return Ok(());
         };
         let recorded = self
-            .run_owned(move |work, id| async move {
+            .run_owned(jobs::JobClass::Shared, move |work, id| async move {
                 let owner = work.writer.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
                     work.record_class(event, transport, RecordClass::Unauthenticated)
@@ -298,7 +298,7 @@ impl SecurityAudit {
         }
         let events = count_events(&counts);
         let written = self
-            .run_owned(move |work, id| async move {
+            .run_owned(jobs::JobClass::Shared, move |work, id| async move {
                 let owner = work.writer.clone();
                 let outcome =
                     tokio::task::spawn_blocking(move || Ok(work.record_counts(events))).await;

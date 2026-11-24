@@ -163,22 +163,21 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     prefix.queries[1].limit = Some(0);
     assert_eq!(query_input_workspace(&prefix, 1).unwrap(), initial);
     let prefix_node = query_memory_node(1 << 20);
-    let (prefix_work, _, _) =
+    let (mut prefix_work, _, _) =
         query_memory_snapshot_work(&prefix_node, query_memory_generation(), prefix);
-    let prefix_output = prefix_work.run();
     assert_eq!(
-        prefix_output.response.as_ref().unwrap_err().code,
+        prefix_work.read().unwrap_err().code,
         ErrorCode::InvalidArgument
     );
-    let first_peak = prefix_output.memory.peak_bytes();
+    let first_peak = prefix_work.memory.peak_bytes();
     assert!(first_peak > initial + metadata + point);
-    drop(prefix_output);
+    drop(prefix_work);
     assert_eq!(crate::test_utils::reserved_payload_bytes(&prefix_node), 0);
     let node = query_memory_node(1 << 20);
     let before = node.snapshot();
     let (work, fence, slots) = query_memory_snapshot_work(&node, generation, request.clone());
-    let output = work.run();
-    let response = output.response.as_ref().unwrap();
+    let output = work.run().expect("open fixture document reads");
+    let response = &output.response;
     assert_eq!(
         response.documents[0].document.as_ref(),
         Some(&expected_document)
@@ -216,34 +215,27 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     // the already retained point and first response exceeds this fixed budget.
     let node = query_memory_node(second_peak - 1);
     let before = node.snapshot();
-    let (work, fence, slots) =
+    let (mut work, fence, slots) =
         query_memory_snapshot_work(&node, query_memory_generation(), request);
-    let output = work.run();
     assert_eq!(
-        output.response.as_ref().unwrap_err().code,
+        work.read().unwrap_err().code,
         ErrorCode::ResourceExhausted
     );
-    assert_eq!(output.memory.live_bytes(), initial);
-    assert!(output.memory.peak_bytes() >= first_peak);
-    assert!(output.memory.peak_bytes() < second_peak);
+    assert_eq!(work.memory.live_bytes(), initial);
+    assert!(work.memory.peak_bytes() >= first_peak);
+    assert!(work.memory.peak_bytes() < second_peak);
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&node),
-        output.memory.peak_bytes()
+        work.memory.peak_bytes()
     );
     assert_eq!(
         node.snapshot().live_reservations,
         before.live_reservations + 1
     );
+    drop(work);
     assert_eq!(slots.available_permits(), 1);
     fence.seal();
-    let mut draining = Box::pin(fence.drain());
-    assert!(
-        std::future::poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx)))
-            .await
-            .is_pending()
-    );
-    drop(output);
-    draining.await;
+    fence.drain().await;
     assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
     assert_eq!(node.snapshot().live_reservations, before.live_reservations);
 }

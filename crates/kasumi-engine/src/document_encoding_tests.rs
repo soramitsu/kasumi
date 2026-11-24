@@ -13,15 +13,19 @@ fn limits() -> BodyLimits {
 }
 
 fn encode(body: &Value, blobs: &mut HashMap<[u8; 32], Vec<u8>>) -> BodyManifest {
-    encode_body(body, limits(), |reference, bytes| {
-        if let Some(existing) = blobs.get(&reference.sha256) {
+    let (manifest, wire) = encode_body(body, limits(), |object| {
+        let bytes = object.bytes();
+        assert_eq!(object.digest(), <[u8; 32]>::from(Sha256::digest(bytes)));
+        if let Some(existing) = blobs.get(&object.digest()) {
             ensure!(existing == bytes, "immutable blob collision");
         } else {
-            blobs.insert(reference.sha256, bytes.to_vec());
+            blobs.insert(object.digest(), bytes.to_vec());
         }
         Ok(())
     })
-    .unwrap()
+    .unwrap();
+    assert_eq!(wire, serde_json::to_vec(&manifest).unwrap());
+    manifest
 }
 
 fn reconstruct(manifest: &BodyManifest, blobs: &HashMap<[u8; 32], Vec<u8>>) -> Vec<u8> {
@@ -29,6 +33,51 @@ fn reconstruct(manifest: &BodyManifest, blobs: &HashMap<[u8; 32], Vec<u8>>) -> V
         blobs.get(&reference.sha256).context("missing blob")
     })
     .unwrap()
+    .into_owned()
+}
+
+#[test]
+fn staged_manifest_fits_its_exact_wire_limit() {
+    let body = json!({"nested": [true, "雪\n", "a".repeat(STRING_THRESHOLD * 2)]});
+    let (_, original) = encode_body(&body, limits(), |_| Ok(())).unwrap();
+    let exact = BodyLimits {
+        manifest_bytes: original.len(),
+        ..limits()
+    };
+    let (manifest, wire) = encode_body(&body, exact, |_| Ok(())).unwrap();
+    assert_eq!(wire, original);
+    assert_eq!(wire, serde_json::to_vec(&manifest).unwrap());
+    assert!(
+        encode_body(
+            &body,
+            BodyLimits {
+                manifest_bytes: original.len() - 1,
+                ..exact
+            },
+            |_| Ok(())
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn single_literal_lends_its_authenticated_bytes_before_decode() {
+    let body = json!({"values": vec![0u8; 500]});
+    let mut manifest = encode(&body, &mut HashMap::new());
+    let [Fragment::Literal(text)] = manifest.fragments.as_slice() else {
+        panic!("expected one inline document");
+    };
+    let data = reconstruct_body::<Vec<u8>>(&manifest, limits(), |_| bail!("unexpected blob read"))
+        .unwrap();
+    assert!(matches!(data, Cow::Borrowed(_)));
+    assert_eq!(data.as_ptr(), text.as_ptr());
+    assert_eq!(serde_json::from_slice::<Value>(&data).unwrap(), body);
+    drop(data);
+    manifest.canonical_sha256[0] ^= 1;
+    assert!(
+        reconstruct_body::<Vec<u8>>(&manifest, limits(), |_| bail!("unexpected blob read"))
+            .is_err()
+    );
 }
 
 #[test]
@@ -93,6 +142,49 @@ fn opaque_unicode_escaping_and_literal_markers_round_trip_exactly() {
 }
 
 #[test]
+fn opaque_strings_use_the_exact_canonical_chunk_boundary_before_calling_the_sink() {
+    for (prefix, tail) in [
+        (BLOB_CHUNK_BYTES - 3, "!"),
+        (BLOB_CHUNK_BYTES - 3, "\n"),
+        (BLOB_CHUNK_BYTES - 3, "\u{0001}"),
+        (BLOB_CHUNK_BYTES - 3, "雪"),
+        (STRING_THRESHOLD, "雪"),
+        (STRING_THRESHOLD, "\"\\"),
+    ] {
+        let value = Value::String(format!("{}{tail}", "!".repeat(prefix)));
+        let canonical = serde_json::to_vec(&value).unwrap();
+        let mut chunks = Vec::new();
+        let (manifest, _) = encode_body(&value, limits(), |object| {
+            chunks.push(object.bytes().to_vec());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            manifest.canonical_sha256,
+            <[u8; 32]>::from(Sha256::digest(&canonical))
+        );
+        assert_eq!(
+            chunks,
+            canonical.chunks(BLOB_CHUNK_BYTES).collect::<Vec<_>>()
+        );
+        let mut calls = 0;
+        let refused = encode_body(
+            &value,
+            BodyLimits {
+                canonical_bytes: canonical.len() - 1,
+                ..limits()
+            },
+            |_| {
+                calls += 1;
+                Ok(())
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(calls, 0);
+    }
+}
+
+#[test]
 fn alternate_binary_spellings_are_preserved_as_opaque_json() {
     // A mixed-case hex-looking value must not have its spelling normalized.
     let mixed = "aAbBcCdDeEfF".repeat(1000);
@@ -113,6 +205,27 @@ fn alternate_binary_spellings_are_preserved_as_opaque_json() {
 }
 
 #[test]
+fn base64_physical_selection_matches_the_exact_logical_spelling() {
+    // Cross a physical chunk boundary. A padding symbol is valid only in the
+    // last quartet, and any unused low bits in that quartet must be zero.
+    let prefix = "++//".repeat(BLOB_CHUNK_BYTES / 3 + 1);
+    for byte in 0u8..=127 {
+        let ch = char::from(byte);
+        for s in [
+            format!("{prefix}A{ch}=="),
+            format!("{prefix}AA{ch}="),
+            format!("{prefix}A/+{ch}"),
+            format!("AA{ch}A{prefix}AAAA"),
+        ] {
+            let canonical = STANDARD
+                .decode(&s)
+                .is_ok_and(|raw| STANDARD.encode(raw) == s);
+            assert_eq!(classify(&s) == Encoding::Base64, canonical);
+        }
+    }
+}
+
+#[test]
 fn byte_fragment_blob_and_depth_limits_fail_closed() {
     let body = json!({"proof": "a".repeat(STRING_THRESHOLD * 3)});
     let mut called = 0;
@@ -123,7 +236,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 canonical_bytes: 50,
                 ..limits()
             },
-            |_, _| {
+            |_| {
                 called += 1;
                 Ok(())
             }
@@ -138,7 +251,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 fragments: 1,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -149,7 +262,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 blobs: 0,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -160,7 +273,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 depth: 1,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -171,7 +284,7 @@ fn byte_fragment_blob_and_depth_limits_fail_closed() {
                 manifest_bytes: 10,
                 ..limits()
             },
-            |_, _| Ok(())
+            |_| Ok(())
         )
         .is_err()
     );
@@ -278,7 +391,7 @@ fn missing_corrupt_truncated_and_reordered_chunks_are_rejected() {
 fn publication_is_impossible_when_blob_sink_fails() {
     let body = json!({"proof": hex::encode(vec![19; BLOB_CHUNK_BYTES * 3])});
     let mut puts = 0;
-    let result = encode_body(&body, limits(), |_, _| {
+    let result = encode_body(&body, limits(), |_| {
         puts += 1;
         if puts == 2 {
             bail!("injected native write failure");

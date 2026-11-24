@@ -20,28 +20,30 @@ fn pending_index_commits_full_prefix_and_final_tail_at_bounded_boundaries() {
     let scope = scratch();
     let index = table(&scope);
     let mut pending = PendingIndex::new(&index);
-    for id in 0u64..16 {
+    let limit = index.index_batch_entry_limit().unwrap() as u64;
+    assert!((16..EncryptedTableBatch::MAX_INDEX_ENTRIES as u64).contains(&limit));
+    for id in 0..limit {
         pending
             .insert(&id.to_be_bytes(), &[id as u8], &mut || Ok(()))
             .unwrap();
     }
     // The full batch stays private until more room or an explicit flush is
     // required. A point reader cannot observe any transaction-local prefix.
-    for id in 0u64..16 {
+    for id in 0..limit {
         assert!(index.get(&id.to_be_bytes()).unwrap().is_none());
     }
     pending
-        .insert(&16u64.to_be_bytes(), &[16], &mut || Ok(()))
+        .insert(&limit.to_be_bytes(), &[77], &mut || Ok(()))
         .unwrap();
-    for id in 0u64..16 {
+    for id in 0..limit {
         let current = index.get(&id.to_be_bytes()).unwrap();
         assert_eq!(current.as_deref(), Some([id as u8].as_slice()));
     }
-    assert!(index.get(&16u64.to_be_bytes()).unwrap().is_none());
+    assert!(index.get(&limit.to_be_bytes()).unwrap().is_none());
     pending.flush(&mut || Ok(())).unwrap();
     {
-        let current = index.get(&16u64.to_be_bytes()).unwrap();
-        assert_eq!(current.as_deref(), Some([16_u8].as_slice()));
+        let current = index.get(&limit.to_be_bytes()).unwrap();
+        assert_eq!(current.as_deref(), Some([77_u8].as_slice()));
     }
     // Finishing an already empty tail is harmless and retains every row.
     pending.flush(&mut || Ok(())).unwrap();
@@ -52,7 +54,7 @@ fn pending_index_commits_full_prefix_and_final_tail_at_bounded_boundaries() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(rows, 17);
+    assert_eq!(rows, limit + 1);
 }
 
 #[derive(Debug)]
@@ -179,6 +181,35 @@ fn image(scope: &ScratchScope, records: Vec<Record>) -> SnapshotImage {
         encoder.finish()
     })
     .unwrap()
+}
+
+#[test]
+fn document_point_reads_seek_across_encrypted_location_pages_and_collection_boundaries() {
+    let scope = scratch();
+    let mut records = vec![collection("alpha"), collection("beta")];
+    let mut rows: Vec<_> = (0..520).map(|id| document("alpha", id)).collect();
+    rows.sort_by_key(Record::order);
+    let keys: Vec<_> = rows.iter().map(Record::order).collect();
+    records.extend(rows);
+    records.push(document("beta", 7));
+    let staged = StagedSnapshot::new(image(&scope, records), 64 << 20, || Ok(())).unwrap();
+    for offset in [0, 255, 256, 511, 512, 519] {
+        let (kind, collection, id) = &keys[offset];
+        assert_eq!(
+            staged.get(*kind, collection, id).unwrap().unwrap().order(),
+            keys[offset]
+        );
+        assert!(
+            staged
+                .get(*kind, collection, &format!("{id}!"))
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(staged.get(3, "alpha", "zzzz").unwrap().is_none());
+    assert!(staged.get(3, "absent", "row-07").unwrap().is_none());
+    assert!(staged.get(3, "beta", "row-07").unwrap().is_some());
+    assert!(staged.get(4, "beta", "row-07").unwrap().is_none());
 }
 
 #[test]

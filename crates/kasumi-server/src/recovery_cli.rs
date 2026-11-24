@@ -84,12 +84,57 @@ fn client(profile: &ClientProfile) -> Result<kasumi_client::KasumiRecoveryPool> 
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
+        [
+            command,
+            action,
+            profile,
+            operation,
+            phase,
+            incarnation,
+            node,
+            timeout,
+        ] if command == "control-recovery" && action == "target-deletion" => {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let query = kasumi_types::TargetDeletionQuery {
+                operation_id: Uuid::parse_str(operation)?,
+                phase_id: Uuid::parse_str(phase)?,
+                target_incarnation: Uuid::parse_str(incarnation)?,
+                node_id: node.parse()?,
+            };
+            let connections = profile.administrative_connections()?;
+            ensure!(
+                connections.len() == 1,
+                "deletion observation requires a single pinned target"
+            );
+            let endpoint = connections
+                .get(&query.node_id)
+                .context("profile names another target")?;
+            let status = tokio::time::timeout(
+                request_timeout(timeout)?,
+                kasumi_client::read_target_deletion_status(endpoint, &profile.bearer()?, &query),
+            )
+            .await??;
+            println!("{}", serde_json::to_string(&status)?);
+        }
+        [command, action, input]
+            if command == "control-recovery" && action == "source-key-digest" =>
+        {
+            let source: crate::target_runtime_config::TargetBackupSource = serde_json::from_slice(
+                &crate::runtime::read_private_file(Path::new(input), 1 << 20)?,
+            )?;
+            let keys = crate::local_recovery::keys::RecoveryKeys::open_with(
+                &source.keys,
+                &source.historical_keys,
+                Arc::new(crate::runtime::file_secret),
+            )?;
+            println!("{}", keys.digest()?);
+        }
         [command, action, configuration, name]
             if command == "control-recovery" && action == "configuration-digest" =>
         {
             let runtime = crate::runtime::RuntimeConfig::load(configuration)?;
             let route = runtime
-                .control
+                .hosted_control()?
                 .lifecycle
                 .as_ref()
                 .and_then(|c| c.recovery.as_ref())
@@ -213,6 +258,28 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, action, profile, operation, phase, timeout]
+            if command == "control-recovery" && action == "issuer-stop" =>
+        {
+            let duration = request_timeout(timeout)?;
+            let profile = ClientProfile::load(Path::new(profile))?;
+            binding(&profile)?;
+            let mut client = client(&profile)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &client
+                        .read_issuer_stop(
+                            &RecoveryPhaseRequest {
+                                operation_id: Uuid::parse_str(operation)?,
+                                phase_id: Uuid::parse_str(phase)?
+                            },
+                            duration
+                        )
+                        .await?
+                )?
+            );
+        }
+        [command, action, profile, operation, phase, timeout]
             if command == "control-recovery" && action == "phase" =>
         {
             let duration = request_timeout(timeout)?;
@@ -235,7 +302,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, ..] if command == "control-recovery" => anyhow::bail!(
-            "usage: kasumid control-recovery configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS"
+            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | issuer-stop CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | target-deletion TARGET_CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS"
         ),
         _ => return Ok(false),
     }

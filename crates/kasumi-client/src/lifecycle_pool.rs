@@ -79,6 +79,18 @@ impl KasumiLifecyclePool {
             )
             .await
     }
+    pub async fn observe_target_writer(
+        &mut self,
+        challenge: &SignedTargetWriterChallenge,
+        timeout: Duration,
+    ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let challenge = challenge.clone();
+                Box::pin(async move { client.observe_target_writer(bearer, &challenge).await })
+            })
+            .await
+    }
     pub async fn observe_intent(
         &mut self,
         id: uuid::Uuid,
@@ -100,6 +112,46 @@ impl KasumiLifecyclePool {
             .request(timeout, true, |client, bearer| {
                 let partition = partition.to_owned();
                 Box::pin(async move { client.observe_change(bearer, id, &partition).await })
+            })
+            .await
+    }
+    /// A routing read may move to another installed member. Every attempt is a
+    /// new read bound to its own request, the snapshotted bearer and this
+    /// client's certificate; the shared deadline covers all attempts.
+    pub async fn observe_topology(
+        &mut self,
+        principal: &str,
+        maximum_lifetime_ms: u64,
+        timeout: Duration,
+    ) -> std::result::Result<crate::CurrentControlTopology, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let principal = principal.to_owned();
+                Box::pin(async move {
+                    client
+                        .observe_topology(bearer, &principal, maximum_lifetime_ms)
+                        .await
+                })
+            })
+            .await
+    }
+    /// Confirm the observed topology against the current Control quorum on the
+    /// same pinned connection, with the same bearer and original deadline.
+    pub async fn observe_released_topology(
+        &mut self,
+        principal: &str,
+        maximum_lifetime_ms: u64,
+        timeout: Duration,
+    ) -> std::result::Result<crate::CurrentControlTopologyRelease, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let principal = principal.to_owned();
+                Box::pin(async move {
+                    let original = client
+                        .observe_topology(bearer, &principal, maximum_lifetime_ms)
+                        .await?;
+                    client.release_topology(bearer, &original).await
+                })
             })
             .await
     }

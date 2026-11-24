@@ -1,5 +1,7 @@
 use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
 mod common;
+#[path = "schema_activation/maximum_replacement.rs"]
+mod maximum_replacement;
 use common::FixtureEngine;
 use kasumi_engine::{Database, SecurityAudit, TenantEngine};
 use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};

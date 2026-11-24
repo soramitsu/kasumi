@@ -173,7 +173,7 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
         .unwrap()
     };
     let audit = runtime.audit.clone();
-    let database = runtime.control.database.clone();
+    let database = runtime.control.as_ref().unwrap().database.clone();
     let release = runtime.audit_release_gate.clone();
     let telemetry = runtime.telemetry.clone();
     let (stop, shutdown) = watch::channel(false);
@@ -294,6 +294,13 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
                 .collect::<Vec<_>>();
             async move { crate::standalone_cli::command(&arguments).await }
         };
+        let capacity = admin.security_audit_capacity(&operator).await.unwrap();
+        assert_eq!(capacity.budget(), status.budget);
+        assert_eq!(
+            capacity.maintenance_reserved_bytes,
+            AuditRetentionBudget::MAINTENANCE_BYTES
+        );
+        assert!(cli(&["audit", "capacity", &profile]).await.unwrap());
         // Export the whole range page by page, as an operator would.
         let mut cursor: Option<SecurityAuditCursor> = None;
         let mut records = Vec::new();
@@ -775,6 +782,12 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
             .await
             .unwrap_err(),
     );
+    denied(
+        admin
+            .security_audit_capacity(&tenant.bearer().unwrap())
+            .await
+            .unwrap_err(),
+    );
     for (principal, scopes) in [
         ("administrator", BTreeSet::from([Action::Read])),
         ("ungranted", BTreeSet::from([Action::Admin])),
@@ -887,7 +900,7 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
     entered(&policy_gate).await;
     database
         .administer(
-            configured_control_context(&config.control).unwrap(),
+            configured_control_context(config.hosted_control().unwrap()).unwrap(),
             Operation::SetPolicy(Policy {
                 grants: vec![Grant {
                     principal: "replacement-administrator".into(),

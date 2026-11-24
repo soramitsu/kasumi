@@ -12,6 +12,9 @@ pub(super) struct ApplyOwner<'engine> {
     // A standalone group's last unpublished candidate, which its next member
     // applies to as it would to that candidate published.
     chained: Option<Arc<Generation>>,
+    // Only accepted members contribute IDs. The same union travels to the
+    // group's durable publication and identifies prior unpublished claims.
+    group_changes: ChangedIds,
     // This inline slot receives the same original input/budget alias BEFORE
     // the known tree factory allocates. It is unset for early/idempotent exits.
     _mutation_change_tree: std::sync::OnceLock<kasumi_raft::MutationChangeTreeRetention>,
@@ -40,6 +43,7 @@ impl<'engine> ApplyOwner<'engine> {
             engine,
             previous,
             chained: None,
+            group_changes: ChangedIds::new(),
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
@@ -58,6 +62,7 @@ impl<'engine> ApplyOwner<'engine> {
             engine,
             previous,
             chained: None,
+            group_changes: ChangedIds::new(),
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
@@ -99,6 +104,22 @@ impl<'engine> ApplyOwner<'engine> {
         }
         self.chained = Some(candidate);
         Ok(())
+    }
+
+    pub(super) fn extend_group_changes(&mut self, changed: ChangedIds) {
+        for (name, ids) in changed {
+            self.group_changes.entry(name).or_default().extend(ids);
+        }
+    }
+
+    pub(super) fn take_group_changes(&mut self) -> ChangedIds {
+        std::mem::take(&mut self.group_changes)
+    }
+
+    pub(super) fn prior_group_claims(&self) -> Option<(&Generation, &ChangedIds)> {
+        self.chained
+            .as_ref()
+            .map(|_| (self.previous.as_ref(), &self.group_changes))
     }
 
     /// The last chained candidate, which the group publishes.
@@ -326,7 +347,7 @@ impl AcceptedGeneration<'_> {
         position: &kasumi_raft::AppliedEntryContext,
     ) -> anyhow::Result<PreparedApplicationWrites> {
         let revision = self.candidate.state.revision;
-        self.prepare_writes(roots, revision, |documents| {
+        self.prepare_writes(roots, position, revision, |documents| {
             crate::mutation_receipt::PreparedPublication::can_join(position, documents)
         })
     }
@@ -341,7 +362,7 @@ impl AcceptedGeneration<'_> {
         members: usize,
         first_revision: u64,
     ) -> anyhow::Result<PreparedApplicationWrites> {
-        self.prepare_writes(roots, first_revision, |documents| {
+        self.prepare_writes(roots, position, first_revision, |documents| {
             crate::mutation_receipt::PreparedPublication::can_join_group(
                 position, documents, members,
             )
@@ -351,9 +372,22 @@ impl AcceptedGeneration<'_> {
     fn prepare_writes(
         &mut self,
         roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
         first_revision: u64,
         can_join: impl FnOnce(&[kasumi_store::WriteOp]) -> bool,
     ) -> anyhow::Result<PreparedApplicationWrites> {
+        // Index pending after-images before they are staged: their bodies are
+        // still resident, and staged bodies are unreadable until committed.
+        let compound = crate::application_structured::compound_delta::Captured::collect(
+            &self.owner.previous.state, &self.candidate.state, &self.candidate.indexes,
+            &self.delta.changed, self.owner.previous.document_resolver(), roots.memory_owner().clone(),
+        ).unwrap_or_else(|error| {
+            // This secondary producer cannot narrow write admission. The
+            // complete candidate indexes still carry the original transition.
+            tracing::debug!(error = %format!("{error:#}"), "compound edit capture fell back to generation indexes");
+            None
+        });
+        let mut text = self.prepare_text(position)?;
         let mut documents = self.prepare_documents_since(roots, first_revision)?;
         let mut receipts = std::mem::take(&mut self.receipt_publications);
         if !receipts.is_empty()
@@ -375,11 +409,81 @@ impl AcceptedGeneration<'_> {
         for receipt in &mut receipts {
             receipt.append_to(&mut writes)?;
         }
+        // After the after-images are stored: primary rows name descriptors.
+        let mut primary = self.prepare_primary(position)?;
+        if let Some(primary) = primary.as_mut() {
+            let rows = primary.take_writes();
+            writes.try_reserve_exact(rows.len())?;
+            writes.extend(rows);
+        }
+        if let Some(text) = text.as_mut() {
+            let rows = text.take_writes();
+            writes.try_reserve_exact(rows.len())?;
+            writes.extend(rows);
+        }
         Ok(PreparedApplicationWrites {
+            compound,
             writes,
             _documents: documents,
             _receipts: receipts,
+            _text: text,
+            _primary: primary,
         })
+    }
+
+    /// The ordinary primary directory's edit and manifest for this candidate,
+    /// published at `position` with the rest of its writes.
+    fn prepare_primary(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<Option<crate::application_primary::PrimaryPublication>> {
+        let engine = self.owner.engine;
+        let Some(store) = engine.snapshot_store.get() else {
+            return Ok(None);
+        };
+        crate::application_primary::prepare_publication_at(
+            &engine.primary,
+            store,
+            &self.owner.previous.state,
+            &self.candidate.state,
+            &self.delta.changed,
+            Some(crate::application_primary::entry_applied(position)?),
+            |manifest| match self.owner.previous.application_selection.get() {
+                Some(selected) => selected.matches_primary_predecessor(manifest),
+                None => Ok(false),
+            },
+        )
+    }
+
+    /// The text directory's edit and manifest for this candidate, published
+    /// with the rest of its writes. Nothing without an installed store.
+    fn prepare_text(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<Option<crate::application_text::TextPublication>> {
+        let engine = self.owner.engine;
+        let Some(store) = engine.snapshot_store.get() else {
+            return Ok(None);
+        };
+        let previous = &self.owner.previous;
+        crate::application_text::prepare_publication(
+            &engine.text,
+            store,
+            &previous.state,
+            &self.candidate.state,
+            &self.delta.changed,
+            &crate::application_text::ResolverBodies(previous.document_resolver()),
+            &crate::application_text::TextPosition {
+                previous: match previous.application_selection.get() {
+                    Some(selected) => selected.text_predecessor()?,
+                    None => None,
+                },
+                current: crate::application_text::entry_boundary(
+                    &position.log_id,
+                    &position.command_sha256,
+                )?,
+            },
+        )
     }
 
     /// Stage each changed after-image once, retaining the same compact handle
@@ -437,7 +541,8 @@ impl AcceptedGeneration<'_> {
             selected,
             &self.candidate.state.tenant,
             &self.candidate.state.incarnation,
-        )?;
+        )?
+        .collecting(self.owner.engine.object_gc.clone());
         let candidate = Arc::get_mut(&mut self.candidate)
             .ok_or_else(|| anyhow::anyhow!("unpublished document candidate escaped"))?;
         // Each staged after-image, by the pending slot it replaced; that slot
@@ -502,6 +607,40 @@ impl AcceptedGeneration<'_> {
         &self.candidate
     }
 
+    /// Join the ordinary structured directory's edit and manifest for this
+    /// candidate to `prepared`, so that they publish at `position` in the
+    /// same transaction as its other rows. The returned owner funds the
+    /// joined page rows until that publication returns.
+    pub(super) fn join_structured_writes(
+        &self,
+        roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
+        prepared: &mut PreparedApplicationWrites,
+    ) -> anyhow::Result<Option<crate::application_structured::StructuredPublication>> {
+        let (stores, _) = roots.primary_installation();
+        let mut publication = crate::application_structured::prepare_publication_at(
+            &roots.structured,
+            stores.application(),
+            (
+                &self.owner.previous.state,
+                &self.owner.previous.indexes,
+                prepared.compound.as_ref(),
+            ),
+            (&self.candidate.state, &self.candidate.indexes),
+            Some(crate::application_structured::entry_applied(position)?),
+            |manifest| match self.owner.previous.application_selection.get() {
+                Some(selected) => selected.matches_structured_predecessor(manifest),
+                None => Ok(false),
+            },
+        )?;
+        if let Some(publication) = publication.as_mut() {
+            let rows = publication.take_writes();
+            prepared.writes.try_reserve_exact(rows.len())?;
+            prepared.writes.extend(rows);
+        }
+        Ok(publication)
+    }
+
     pub(super) fn require_publication(
         &self,
         engine: &TenantEngine,
@@ -531,6 +670,11 @@ impl AcceptedGeneration<'_> {
             receipt_publications: _,
             owner,
         } = self;
+        // Descriptors this publication displaced become collection candidates.
+        owner
+            .engine
+            .object_gc
+            .displaced(&owner.previous.state, &candidate.state, &delta.changed);
         owner.engine.publish_generation(Some(candidate));
         // Preserve the moved exact IDs until the actual visible swap completes.
         drop(delta.changed);
@@ -539,9 +683,14 @@ impl AcceptedGeneration<'_> {
 }
 
 pub(super) struct PreparedApplicationWrites {
+    compound: Option<crate::application_structured::compound_delta::Captured>,
     writes: Vec<kasumi_store::WriteOp>,
     _documents: Option<crate::document_store::PreparedDocuments>,
     _receipts: Vec<crate::mutation_receipt::PreparedPublication>,
+    // Funds the primary page rows copied into `writes`.
+    _primary: Option<crate::application_primary::PrimaryPublication>,
+    // Funds the text directory rows copied into `writes`.
+    _text: Option<crate::application_text::TextPublication>,
 }
 impl PreparedApplicationWrites {
     pub(super) fn writes(&self) -> &[kasumi_store::WriteOp] {

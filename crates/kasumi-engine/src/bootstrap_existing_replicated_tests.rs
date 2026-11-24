@@ -249,6 +249,42 @@ async fn reject_first_installed_descriptor(
     Ok(())
 }
 
+#[test]
+fn lifecycle_byte_budget_decodes_old_and_current_replicated_bindings() -> anyhow::Result<()> {
+    let mut deployment = bootstrap();
+    let default = deployment.initial_limits.max_lifecycle_intent_bytes;
+    let old = serde_json::to_string(&("replicated", &deployment))?;
+    assert!(!old.contains("max_lifecycle_intent_bytes"));
+    assert_eq!(
+        decode_current_replicated_deployment(old.as_bytes())?
+            .initial_limits
+            .max_lifecycle_intent_bytes,
+        default
+    );
+    deployment.initial_limits.max_lifecycle_intent_bytes = default + 1;
+    let current = serde_json::to_string(&("replicated", &deployment))?;
+    assert_eq!(
+        decode_current_replicated_deployment(current.as_bytes())?
+            .initial_limits
+            .max_lifecycle_intent_bytes,
+        default + 1
+    );
+    let field = format!(r#""max_lifecycle_intent_bytes":{},"#, default + 1);
+    assert_eq!(current.matches(&field).count(), 1);
+    for malformed in [
+        current.replace(&field, &format!("{field}{field}")),
+        current.replace(
+            &field,
+            &format!(r#""max_lifecycle_intent_bytes":{default},"#),
+        ),
+        current.replace(&field, r#""max_lifecycle_intent_bytes":"1","#),
+        current.replace(&field, r#""max_lifecycle_intent_bytes":0,"#),
+    ] {
+        assert!(decode_current_replicated_deployment(malformed.as_bytes()).is_err());
+    }
+    Ok(())
+}
+
 fn bootstrap() -> ReplicatedBootstrap {
     ReplicatedBootstrap {
         genesis: crate::ReplicatedGenesis::Application,
@@ -368,7 +404,8 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b()
         Some((1, format!("replica/{}", installed_a.incarnation)))
     );
 
-    let installed_b = bootstrap();
+    let mut installed_b = bootstrap();
+    installed_b.initial_limits.max_lifecycle_intent_bytes += 1;
     let image_b = fixture.image(&installed_b, &installed_b.incarnation)?;
     assert_ne!(image_a.sha256(), image_b.sha256());
     let binding_b = serde_json::to_vec(&("replicated", &installed_b))?;

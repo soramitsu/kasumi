@@ -5,6 +5,86 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A protected point read identifies the Control effect and its one installed target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetDeletionQuery {
+    pub operation_id: Uuid,
+    pub phase_id: Uuid,
+    pub target_incarnation: Uuid,
+    pub node_id: u64,
+}
+impl TargetDeletionQuery {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.node_id != 0
+                && !self.operation_id.is_nil()
+                && !self.phase_id.is_nil()
+                && !self.target_incarnation.is_nil(),
+            "incomplete deletion observation identity"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetDeletionProgress {
+    StopRecorded,
+    ClosingGates,
+    GatesClosed,
+    DrainingWorkers,
+    WorkersDrained,
+    DrainingStorage,
+    StorageDrained,
+    Deleting,
+    Unlinked,
+    ParentSynced,
+    Deleted,
+}
+
+/// The local encrypted journal supplies the physical progress and installed
+/// binding digest. Control independently supplies the command and unique attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetDeletionStatus {
+    pub query: TargetDeletionQuery,
+    pub intent_id: Uuid,
+    pub attempt_id: Uuid,
+    pub stop_receipt_sha256: String,
+    pub binding_sha256: Option<String>,
+    pub progress: TargetDeletionProgress,
+}
+impl TargetDeletionStatus {
+    pub fn validate_for(&self, query: &TargetDeletionQuery) -> Result<()> {
+        query.validate()?;
+        ensure!(
+            &self.query == query && !self.intent_id.is_nil() && !self.attempt_id.is_nil(),
+            "deletion status belongs to another effect"
+        );
+        crate::validate_sha256(&self.stop_receipt_sha256)?;
+        if let Some(hash) = &self.binding_sha256 {
+            crate::validate_sha256(hash)?;
+        } else {
+            ensure!(
+                matches!(
+                    self.progress,
+                    TargetDeletionProgress::StopRecorded
+                        | TargetDeletionProgress::ClosingGates
+                        | TargetDeletionProgress::GatesClosed
+                        | TargetDeletionProgress::DrainingWorkers
+                        | TargetDeletionProgress::WorkersDrained
+                        | TargetDeletionProgress::DrainingStorage
+                        | TargetDeletionProgress::StorageDrained
+                        | TargetDeletionProgress::Deleted
+                ),
+                "physical deletion progress lacks its original storage binding"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Native Execute carries this outside the frozen RecoveryDispatch input:
 /// BeginEffect assigns the attempt ID only after that input is committed.
 /// These bytes are a claim for a later installed-Control read, not authority.

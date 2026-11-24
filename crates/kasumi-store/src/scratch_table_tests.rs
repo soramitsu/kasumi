@@ -391,6 +391,43 @@ fn accepted_batch_keeps_physical_table_until_commit_and_close() {
 }
 
 #[test]
+fn content_insert_keeps_pending_and_committed_originals_at_the_entry_limit() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let table = EncryptedTable::new(&disk, 8 << 20, CACHE).unwrap();
+    table.insert(b"committed", b"original").unwrap();
+    let mut batch = table.begin_batch().unwrap();
+    for ordinal in 0..EncryptedTableBatch::MAX_ENTRIES {
+        assert!(
+            batch
+                .insert_content(&ordinal.to_be_bytes(), b"new")
+                .unwrap()
+        );
+    }
+    assert!(!batch.has_capacity_for(1));
+    let pending = 0usize.to_be_bytes();
+    assert!(!batch.insert_content(&pending, b"new").unwrap());
+    assert!(!batch.insert_content(b"committed", b"original").unwrap());
+    for key in [pending.as_slice(), b"committed".as_slice()] {
+        let error = batch.insert_content(key, b"replacement").unwrap_err();
+        assert_eq!(error.to_string(), "staged content-address collision");
+    }
+    assert!(table.get(&pending).unwrap().is_none());
+    batch.commit().unwrap();
+    assert_eq!(
+        table.get(&pending).unwrap().as_deref(),
+        Some(b"new".as_slice())
+    );
+    assert_eq!(
+        table.get(b"committed").unwrap().as_deref(),
+        Some(b"original".as_slice())
+    );
+    table.close().unwrap();
+    assert_eq!(disk.snapshot().live_files, 0);
+}
+
+#[test]
 fn batch_entry_limit_rejects_before_publication_and_aborts_partial_input() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();

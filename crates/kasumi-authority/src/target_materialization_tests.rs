@@ -285,6 +285,47 @@ struct MaterialFixture {
     target_start_timeout_ms: u64,
 }
 impl MaterialFixture {
+    fn reserve_dispatch(
+        &self,
+        journal: &Arc<kasumi_engine::TargetJournal>,
+        root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        intent: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+    ) -> anyhow::Result<kasumi_engine::InitialDispatchReservation> {
+        match journal.reserve_initial_dispatch(root, phase, intent, request) {
+            Err(error) if error.is::<kasumi_engine::MissingTargetWriter>() => journal
+                .reserve_observed_initial_dispatch(
+                    root,
+                    phase,
+                    intent,
+                    request,
+                    &self.writer(journal),
+                ),
+            result => result,
+        }
+    }
+    fn writer(
+        &self,
+        journal: &Arc<kasumi_engine::TargetJournal>,
+    ) -> kasumi_engine::CurrentTargetJournalWriter {
+        let read = journal.begin_writer_read().unwrap();
+        let observation = TargetWriterObservation {
+            challenge: read.challenge().clone(),
+            observed_term: 1,
+            observed_revision: 1,
+            observed_policy_epoch: 1,
+            membership_epoch: 1,
+            retirements: KeyRetirementState::default(),
+        };
+        let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation)).unwrap();
+        let signature = hex::encode(self.control.key.sign(&bytes).as_ref());
+        read.admit(&SignedTargetWriterObservation {
+            observation,
+            signature,
+        })
+        .unwrap()
+    }
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
@@ -936,6 +977,7 @@ impl RunningTarget {
         &self,
         control: &SignedControlIntent,
         signer: &TargetSigner,
+        f: &MaterialFixture,
     ) -> FixtureResult<(
         kasumi_types::RecoveryPhaseRecord,
         kasumi_types::TargetRuntimeRequest,
@@ -970,8 +1012,9 @@ impl RunningTarget {
         let lease = self.operation.invocation().gate().current()?;
         let control =
             ControlTrust::install(lease.commitment().root.clone())?.verify_intent(control)?;
-        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) =
-            start.journal.reserve_initial_dispatch(
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = f
+            .reserve_dispatch(
+                &start.journal,
                 &lease.commitment().root,
                 &phase,
                 &lease.commitment().intent,
@@ -1035,6 +1078,7 @@ impl MaterialFixture {
         let journal = kasumi_engine::TargetJournal::create_new(
             store.clone(),
             kasumi_engine::TargetJournalInstallation {
+                source_key_bindings_sha256: None,
                 root: self.control.root.clone(),
                 node: node_identity,
                 audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -1093,8 +1137,8 @@ impl MaterialFixture {
             attempt_id,
             input_sha256: digest,
         };
-        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = journal
-            .reserve_initial_dispatch(&self.control.root, &phase, lifecycle, &request)
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = self
+            .reserve_dispatch(&journal, &self.control.root, &phase, lifecycle, &request)
             .unwrap()
         else {
             panic!("new fixture Start did not issue candidate")
@@ -1508,15 +1552,14 @@ async fn retained_initial_start_requires_the_same_live_prebound_child() {
         .check()
         .unwrap();
     assert!(matches!(
-        start
-            .journal
-            .reserve_initial_dispatch(
-                &f.control.root,
-                &start.phase,
-                &signed.observation.intent,
-                &start.request,
-            )
-            .unwrap(),
+        f.reserve_dispatch(
+            &start.journal,
+            &f.control.root,
+            &start.phase,
+            &signed.observation.intent,
+            &start.request,
+        )
+        .unwrap(),
         kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
     ));
 
@@ -1584,9 +1627,9 @@ async fn retained_initial_start_requires_the_same_live_prebound_child() {
     marker.attempt_id = Uuid::new_v4();
     marker.input_sha256 = initialize_phase.input_sha256.clone();
     marker.begun_revision = initialize_phase.prepared_revision + 1;
-    let kasumi_engine::InitialDispatchReservation::NewlyAccepted(initialize_candidate) = start
-        .journal
-        .reserve_initial_dispatch(
+    let kasumi_engine::InitialDispatchReservation::NewlyAccepted(initialize_candidate) = f
+        .reserve_dispatch(
+            &start.journal,
             &f.control.root,
             &initialize_phase,
             &signed.observation.intent,
@@ -1673,7 +1716,7 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
     let router = Arc::new(InProcessRouter::default());
     let mut targets = f.open_targets(&signed, &input, &router).await;
     let (phase, request) = targets[0]
-        .initialize(&signed, &f.signers[&targets[0].id])
+        .initialize(&signed, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     let identity = TargetInitialDispatchIdentity {
@@ -1691,15 +1734,14 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         .require_owner(&target.owner)
         .unwrap();
     assert!(matches!(
-        start
-            .journal
-            .reserve_initial_dispatch(
-                &f.control.root,
-                &phase,
-                &signed.observation.intent,
-                &request
-            )
-            .unwrap(),
+        f.reserve_dispatch(
+            &start.journal,
+            &f.control.root,
+            &phase,
+            &signed.observation.intent,
+            &request
+        )
+        .unwrap(),
         kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
     ));
     let association_key = format!(
@@ -1722,6 +1764,7 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         kasumi_engine::TargetJournal::open_existing(
             journal_store.clone(),
             kasumi_engine::TargetJournalInstallation {
+                source_key_bindings_sha256: None,
                 root: f.control.root.clone(),
                 node: nodes().into_iter().find(|n| n.node_id == 1).unwrap(),
                 audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -1868,7 +1911,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -1923,6 +1966,16 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
         .await
         .unwrap();
     assert_eq!(recovered.observation().fact, first);
+    // The completed image survives restart with the source's data at its
+    // original version and without a pending-restore marker.
+    let generation = selected.owner.database().engine().generation().unwrap();
+    assert!(generation.state.pending_restore.is_none());
+    let restored =
+        kasumi_engine::test_utils::fixture_document(&generation, "history", "immutable").unwrap();
+    assert_eq!(restored.body, serde_json::json!({"source":"unchanged"}));
+    assert!(restored.version <= f.target.checkpoint.revision);
+    drop(restored);
+    drop(generation);
     let resigned = f.signers[&selected.id]
         .sign_completed(&recovered, &selected.operation)
         .await
@@ -1965,7 +2018,7 @@ async fn exercise_target_activation(maintenance: bool) {
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -2069,6 +2122,7 @@ async fn exercise_target_activation(maintenance: bool) {
     // before the actual local effect. It uses neither source nor target key.
     let journal_path = f.physical[&selected.id].path("activation-journal.kv");
     let journal_installation = kasumi_engine::TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes()
             .into_iter()
@@ -2121,7 +2175,11 @@ async fn exercise_target_activation(maintenance: bool) {
             .is_none()
     );
     journal
-        .prepare(&selected.operation, &activation_input.digest().unwrap())
+        .prepare_observed(
+            &selected.operation,
+            &activation_input.digest().unwrap(),
+            &f.writer(&journal),
+        )
         .unwrap();
     let completed = exact_target_activation(selected, &accepted_signed).await;
     assert_eq!(
@@ -2365,7 +2423,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
     targets[0]
-        .initialize(&initialize, &f.signers[&targets[0].id])
+        .initialize(&initialize, &f.signers[&targets[0].id], &f)
         .await
         .unwrap();
     current_target(&targets).await;
@@ -2436,7 +2494,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let db = selected.owner.database();
     assert!(
         selected
-            .initialize(&inspection, &f.signers[&selected.id])
+            .initialize(&inspection, &f.signers[&selected.id], &f)
             .await
             .is_err()
     );
@@ -2505,9 +2563,16 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
 impl MaterialFixture {
     /// Actual issuer phase without constructing any application provider/store.
     async fn journal_scope(&self, intent: &SignedControlIntent) -> Arc<TargetOperationScope> {
+        self.journal_scope_at(intent, 1).await
+    }
+    async fn journal_scope_at(
+        &self,
+        intent: &SignedControlIntent,
+        id: u64,
+    ) -> Arc<TargetOperationScope> {
         let issuer = self.issuer.leader().await;
-        let trust = self.issuer.trust.clone();
-        let identity = nodes().first().unwrap().clone();
+        let trust = self.issuer.trust_for(id);
+        let identity = nodes().into_iter().find(|node| node.node_id == id).unwrap();
         let verified = ControlTrust::install(self.control.root.clone())
             .unwrap()
             .verify_intent(intent)
@@ -2545,6 +2610,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     use kasumi_engine::{TargetJournal, TargetJournalInstallation};
     let f = MaterialFixture::new().await;
     let installation = TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
         audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -2606,7 +2672,10 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         let j = journal.clone();
         let op = op.clone();
         let hash = f.input.digest().unwrap();
-        jobs.push(tokio::spawn(async move { j.prepare(&op, &hash).unwrap() }));
+        let writer = f.writer(&j);
+        jobs.push(tokio::spawn(async move {
+            j.prepare_observed(&op, &hash, &writer).unwrap()
+        }));
     }
     for job in jobs {
         assert_eq!(job.await.unwrap().intent(), &f.intent.observation.intent);
@@ -2775,14 +2844,59 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .await;
     let stop_scope = f.journal_scope(&stop_intent).await;
     let stop_op = stop_scope.begin_operation(60_000).unwrap();
+    let second_scope = f.journal_scope_at(&stop_intent, 2).await;
+    let second_op = second_scope.begin_operation(60_000).unwrap();
+    let (fresh, other_store, other_node) =
+        serving_tests::journal(&f, 2, &f.physical[&2].path("first-stop-journal.kv"), true).await;
+    assert!(
+        matches!(fresh.stop(&second_op,&proof),Err(error) if error.is::<kasumi_engine::MissingTargetWriter>())
+    );
+    fresh
+        .stop_observed(&second_op, &proof, &f.writer(&fresh))
+        .unwrap();
+    fresh.stop(&second_op, &proof).unwrap();
+    drop(second_op);
+    second_scope.close();
+    second_scope.drain().await;
+    fresh.shutdown().await.unwrap();
+    other_store.shutdown().await.unwrap();
+    other_node.shutdown().await.unwrap();
     journal.stop(&stop_op, &proof).unwrap();
+    use kasumi_engine::TargetOwnerDrain::*;
+    assert!(
+        journal
+            .record_owner_drain(&op, &proof, ClosingGates)
+            .is_err()
+    );
+    let stop_key = format!("stop/city/{}", f.target.incarnation);
+    for stage in [
+        ClosingGates,
+        GatesClosed,
+        DrainingWorkers,
+        WorkersDrained,
+        DrainingStorage,
+        StorageDrained,
+    ] {
+        journal.record_owner_drain(&stop_op, &proof, stage).unwrap();
+        journal
+            .record_owner_drain(&stop_op, &proof, ClosingGates)
+            .unwrap();
+        journal.stop(&stop_op, &proof).unwrap();
+        let row: serde_json::Value = serde_json::from_slice(
+            &store
+                .get("target.journal", stop_key.as_bytes())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(row["owner_drain"], serde_json::to_value(stage).unwrap());
+    }
     assert!(journal.prepare(&op, &f.input.digest().unwrap()).is_err());
     assert!(journal.reserve_materialization_file(&op).is_err());
     let metadata_after: serde_json::Value =
         serde_json::from_slice(&store.get("target.journal", b"metadata").unwrap().unwrap())
             .unwrap();
     assert_eq!(metadata_after, metadata); // reserved stop uses no new capacity
-    let stop_key = format!("stop/city/{}", f.target.incarnation);
     let terminal = store
         .get("target.journal", stop_key.as_bytes())
         .unwrap()
@@ -2946,6 +3060,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     use kasumi_engine::{MaterializationNode, TargetJournal, TargetJournalInstallation};
     let f = MaterialFixture::new().await;
     let installation = TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
         audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -2984,7 +3099,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     let scope = f.journal_scope(&f.intent).await;
     let operation = scope.begin_operation(60_000).unwrap();
     journal
-        .prepare(&operation, &f.input.digest().unwrap())
+        .prepare_observed(&operation, &f.input.digest().unwrap(), &f.writer(&journal))
         .unwrap();
     let path = f.physical[&1].path("creation-outcome-target.kv");
     let MaterializationNode::Created(target) = journal
@@ -3051,21 +3166,30 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         missing.custody().phase(),
         kasumi_store::NodeStartupPhase::Failed
     );
-    let (original_address, original_allocation, cause_address) = {
+    let (original_address, original_allocation, cause_address, expected_step, kind, errno) = {
         let report = missing.custody().opening().report();
         let kasumi_store::TerminalObservation::Returned(Err(original)) = report.acquisition()
         else {
             panic!("missing enrolled replay lost its original acquisition error");
         };
-        // Outside removal changes enrolled parent metadata. The canonical walk
-        // fails during preparation, before opening the missing child or native
-        // database; the typed opening keeps that exact filesystem original.
+        // The parent walk sees changed directory allocation on some filesystems.
+        // Others reach the missing enrolled child's openat. Keep the exact error,
+        // step and original allocation through the later custody observation.
         let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
         let cause = outer
             .downcast_ref::<std::io::Error>()
             .expect("missing enrolled replay must retain the original outer filesystem error");
-        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(cause.raw_os_error(), None);
+        let expected_step = match cause.kind() {
+            std::io::ErrorKind::InvalidData => {
+                assert_eq!(cause.raw_os_error(), None);
+                kasumi_store::NodeDiskDirectoryOperationStep::Prepared
+            }
+            std::io::ErrorKind::NotFound => {
+                assert!(cause.raw_os_error().is_some());
+                kasumi_store::NodeDiskDirectoryOperationStep::OpenChild
+            }
+            other => panic!("unexpected missing enrolled directory failure {other:?}"),
+        };
         assert!(matches!(
             report.opening_outer(),
             kasumi_store::TerminalObservation::NotEntered
@@ -3082,6 +3206,9 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
             std::ptr::from_ref(original) as usize,
             std::ptr::from_ref(outer) as *const () as usize,
             std::ptr::from_ref(cause) as usize,
+            expected_step,
+            cause.kind(),
+            cause.raw_os_error(),
         )
     };
     let physical_failure = node
@@ -3092,16 +3219,13 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         physical_failure.kind,
         kasumi_store::NodeDiskDirectoryOperationKind::Open
     );
-    assert_eq!(
-        physical_failure.step,
-        kasumi_store::NodeDiskDirectoryOperationStep::Prepared
-    );
+    assert_eq!(physical_failure.step, expected_step);
     let acquisition_failure = physical_failure
         .failure
         .expect("actual enrolled-directory acquisition failure missing");
     assert_eq!(acquisition_failure.step, physical_failure.step);
-    assert_eq!(acquisition_failure.kind, std::io::ErrorKind::InvalidData);
-    assert_eq!(acquisition_failure.errno, None);
+    assert_eq!(acquisition_failure.kind, kind);
+    assert_eq!(acquisition_failure.errno, errno);
     assert!(physical_failure.close_failure.is_none());
     assert!(physical_failure.uncertain_close_descriptor.is_none());
     assert_eq!(
@@ -3134,8 +3258,8 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         let cause = outer
             .downcast_ref::<std::io::Error>()
             .expect("retained missing replay changed its original outer filesystem error");
-        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(cause.raw_os_error(), None);
+        assert_eq!(cause.kind(), kind);
+        assert_eq!(cause.raw_os_error(), errno);
         assert_eq!(std::ptr::from_ref(cause) as usize, cause_address);
     }
     drop(retained_missing);

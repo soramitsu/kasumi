@@ -39,6 +39,7 @@ service KasumiAuthority {
   rpc VerifyControlStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc AcquireLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc DiscoverLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc ReadIssuerStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc VerifyTargetStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc AcquireLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Execute(AuthorityJsonRequest) returns (AuthorityJsonResponse);
@@ -53,8 +54,22 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc ReadDataMemberCatalog(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc ReadBackupInventory(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc ExchangeBackupBinding(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc ConfirmBackupSource(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  // Reads the application or Control stream bound to the verified credential.
+  rpc ReadKeyRetention(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc RetireKeyVersions(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc AbortKeyRetirement(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc KeyRetirementStatus(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc TenantAuditStatus(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc TenantAuditCapacity(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc VerifyTenantAudit(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc ExportTenantAudit(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc ControlSignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SecurityAuditStatus(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
+  rpc SecurityAuditCapacity(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditArchives(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditVerify(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
@@ -98,6 +113,8 @@ service KasumiAdmin {
 message GetRequest { string collection = 1; string id = 2; }
 // An absent document is an ordinary result; a missing collection is NOT_FOUND.
 message GetResponse { optional Document document = 1; }
+message PrivateReadJsonRequest { bytes request_json = 1; }
+message PrivateReadJsonResponse { bytes response_json = 1; }
 message SecurityAuditJsonRequest { bytes request_json = 1; }
 message SecurityAuditJsonResponse { bytes response_json = 1; }
 message CredentialJsonRequest { bytes request_json = 1; }
@@ -188,6 +205,7 @@ message CustodyStatusResponse { bytes response_json = 1; }
 // only. JSON statuses are recovery facts; only signed commitments can reach the
 // independent issuer, and only its separate finite grants authorize effects.
 service KasumiLifecycleControl {
+  rpc ObserveTargetWriter(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Execute(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ObserveIntent(ControlIntentReference) returns (ControlJsonResponse);
   rpc ObserveChange(ControlChangeReference) returns (ControlJsonResponse);
@@ -203,14 +221,18 @@ message ControlChangeReference { string command_id = 1; string authority_partiti
 // Fixed installed target templates and actual issuer/Control capabilities.
 // No endpoint, key, filesystem path or deserialized live proof is accepted.
 service KasumiTargetRecovery {
+  rpc RefreshTargetWriter(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Execute(TargetExecuteRequest) returns (TargetRuntimeResponse);
   rpc ReadInitialMembershipHistory(TargetHistoryQuery) returns (TargetHistoryStatus);
   rpc ReadInitialStart(TargetStartQuery) returns (TargetStartStatus);
+  rpc ReadDeletionStatus(TargetDeletionQuery) returns (TargetDeletionStatus);
 }
 message TargetExecuteRequest { bytes envelope_json = 1; }
 message TargetRuntimeResponse { bytes response_json = 1; }
 message TargetHistoryQuery { bytes query_json = 1; }
 message TargetHistoryStatus { bytes status_json = 1; }
+message TargetDeletionQuery { bytes query_json = 1; }
+message TargetDeletionStatus { bytes status_json = 1; }
 message TargetStartQuery { bytes query_json = 1; }
 message TargetStartStatus { bytes status_json = 1; }
 
@@ -221,5 +243,6 @@ service KasumiRecoveryControl {
   rpc Status(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Resume(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Stop(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ReadIssuerStop(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ReadPhase(ControlJsonRequest) returns (ControlJsonResponse);
 }

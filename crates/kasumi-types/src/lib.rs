@@ -17,7 +17,9 @@ mod canonical_json;
 pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
 pub use canonical_keys::{deserialize_u16_map, deserialize_u64_map};
+mod data_member_catalog;
 pub mod exact_json;
+pub use data_member_catalog::*;
 mod key_retention;
 pub use key_retention::*;
 mod target;
@@ -40,6 +42,8 @@ mod recovery;
 pub use recovery::*;
 mod lifecycle;
 pub use lifecycle::*;
+mod lifecycle_intent_history;
+pub use lifecycle_intent_history::*;
 mod authorization;
 pub use authorization::{CredentialLiveness, RequestAuthorization, credential_expired};
 mod credential_resource;
@@ -50,6 +54,10 @@ pub use credential_resource::CredentialResource;
 pub use restore_lineage::*;
 mod backup;
 pub use backup::*;
+mod remote_backup;
+pub use remote_backup::*;
+mod remote_backup_inventory;
+pub use remote_backup_inventory::*;
 mod atomic;
 pub use atomic::*;
 mod mutation_capacity;
@@ -88,6 +96,22 @@ pub struct Error {
     // and never persisted in an idempotency receipt.
     #[serde(skip)]
     denial_audit_attempted: bool,
+    /// An installed storage failure has no serializable or replayable domain outcome.
+    #[source]
+    #[serde(skip)]
+    physical_cause: Option<std::sync::Arc<PhysicalCause>>,
+}
+#[derive(Debug)]
+struct PhysicalCause(anyhow::Error);
+impl std::fmt::Display for PhysicalCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+impl std::error::Error for PhysicalCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
 }
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -106,6 +130,24 @@ impl Eq for Error {}
 impl Error {
     // Keep worst-case JSON/base64 details plus percent-encoded gRPC messages
     // below common 8 KiB header budgets, including protocol framing.
+    pub fn from_physical_source(original: anyhow::Error) -> Self {
+        Self::new(
+            ErrorCode::Corruption,
+            "selected permanent history could not be read",
+        )
+        .with_physical_source(original)
+    }
+
+    /// Retain the local operation's original cause behind its public response.
+    pub fn with_physical_source(mut self, original: anyhow::Error) -> Self {
+        self.physical_cause = Some(std::sync::Arc::new(PhysicalCause(original)));
+        self
+    }
+
+    pub fn has_physical_source(&self) -> bool {
+        self.physical_cause.is_some()
+    }
+
     pub const MAX_MESSAGE_BYTES: usize = 512;
 
     /// Internal adapter composition; a new request or deserialized receipt always
@@ -147,6 +189,7 @@ impl Error {
             code,
             message: Self::bounded_message(message.into()),
             denial_audit_attempted: false,
+            physical_cause: None,
         }
     }
 }
@@ -382,6 +425,11 @@ pub struct Limits {
     pub max_retirement_bytes: u64,
     pub max_target_resolution_bytes: u64,
     pub max_backup_binding_bytes: u64,
+    #[serde(
+        default = "default_lifecycle_intent_bytes",
+        skip_serializing_if = "is_default_lifecycle_intent_bytes"
+    )]
+    pub max_lifecycle_intent_bytes: u64,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     pub max_snapshot_bytes: u64,
@@ -398,6 +446,13 @@ pub struct Limits {
     pub max_cursor_bytes: usize,
     pub cursor_ttl_ms: u64,
 }
+fn default_lifecycle_intent_bytes() -> u64 {
+    128 << 20
+}
+fn is_default_lifecycle_intent_bytes(bytes: &u64) -> bool {
+    *bytes == default_lifecycle_intent_bytes()
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -413,6 +468,7 @@ impl Default for Limits {
             max_retirement_bytes: 64 << 20,
             max_target_resolution_bytes: 64 << 20,
             max_backup_binding_bytes: 128 << 20,
+            max_lifecycle_intent_bytes: default_lifecycle_intent_bytes(),
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),
@@ -865,6 +921,16 @@ pub enum Operation {
     /// One durable release containing bounded, individually authorized records.
     AuditBatch(Vec<AuditEvent>),
     MaintenanceAudit(AuditEvent),
+    /// Commit the fence of one wrapping-key retirement of this scope.
+    BeginKeyRetirement(BeginKeyRetirement),
+    /// Decide a fenced retirement against its exact dependency position.
+    CompleteKeyRetirement(CompleteKeyRetirement),
+    /// Remove the fence of an undecided retirement.
+    AbortKeyRetirement(AbortKeyRetirement),
+    /// Independent target writer decisions have their own ordinal sequence.
+    RegisterTargetJournalWriter(TargetWriterRegistration),
+    CompleteTargetJournalRetirement(CompleteKeyRetirement),
+    AbortTargetJournalRetirement(AbortKeyRetirement),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1044,6 +1110,20 @@ pub struct TenantState {
     pub retirements: imbl::OrdMap<String, StoredRetirement>,
     pub retirement_bytes: u64,
     pub audit_retention: AuditRetentionState,
+    /// Wrapping-key retirement fence and floors of this scope. State written
+    /// before any retirement began has none, and an empty value is not written.
+    #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
+    pub key_retirements: KeyRetirementState,
+    /// The Control log orders target-journal writer fences independently of
+    /// the Control store's own wrapping identities and request ordinals.
+    #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
+    pub target_journal_retirements: KeyRetirementState,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "key_retention::writer_participants"
+    )]
+    pub target_journal_writers: Vec<TargetWriterParticipant>,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

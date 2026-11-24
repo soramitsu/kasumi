@@ -57,9 +57,10 @@ impl OriginalServingFixture {
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
         let credentials = dir.join("credentials");
         kasumi_store::private_files::create_directory(&credentials).unwrap();
+        let hosted = config.control.as_mut().unwrap();
         for (index, settings) in [
-            &mut config.control.keys,
-            &mut config.control.custody_keys,
+            &mut hosted.keys,
+            &mut hosted.custody_keys,
             &mut config.security_audit.keys,
         ]
         .into_iter()

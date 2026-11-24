@@ -1134,6 +1134,16 @@ pub struct DatabaseOpenReport<'a> {
 }
 
 impl DatabaseOpenReport<'_> {
+    /// Count the native owners that can keep this opening in its transaction
+    /// wait. Observation grants no access to a database that started closing.
+    pub fn active_transactions(&self) -> Option<usize> {
+        self.owner
+            .retained_database()?
+            .database
+            .as_ref()
+            .map(Database::active_transactions)
+    }
+
     pub fn phase(&self) -> DatabaseOpenPhase {
         self.owner.phase
     }

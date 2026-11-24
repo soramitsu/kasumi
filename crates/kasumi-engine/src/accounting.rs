@@ -283,8 +283,7 @@ fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
     Ok(())
 }
 pub(crate) fn staged_header(key: &str, value: &StagedTransaction) -> Result<u64> {
-    let mut header = value.clone();
-    header.chunks.clear();
+    let header = crate::snapshot_codec::stage_header(value);
     Ok(record(&Record::Stage(key.into(), header))? as u64)
 }
 /// While any stage owns future terminal capacity, reserve the maximum decimal
@@ -379,8 +378,7 @@ fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
     Ok(size)
 }
 fn feed(key: u64, value: &std::sync::Arc<ChangeCommit>) -> Result<usize> {
-    let mut header = value.as_ref().clone();
-    header.records.clear();
+    let header = crate::snapshot_codec::change_header(value);
     let mut size = record(&Record::Change(key, std::sync::Arc::new(header)))?;
     for (i, value) in value.records.iter().enumerate() {
         let header = crate::snapshot_codec::WireChangeRecord {
@@ -837,8 +835,7 @@ mod cold_document_accounting_tests {
                     records: vec![event],
                     record_bytes: 0,
                 });
-                let mut header = commit.as_ref().clone();
-                header.records.clear();
+                let header = crate::snapshot_codec::change_header(&commit);
                 assert_eq!(
                     feed(10, &commit).unwrap(),
                     record(&Record::Change(10, Arc::new(header))).unwrap()

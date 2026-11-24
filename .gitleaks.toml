@@ -12,6 +12,13 @@ useDefault = true
 id = "generic-api-key"
 
 [[rules.allowlists]]
+description = "Two deployed KV table names in the format fixture reader"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''\Awrapped_keys_v1", "encrypted_records_v1"\z''']
+paths = ['''(?:^|/)crates/kasumi-kv/tests/deployed_format\.rs$''']
+
+[[rules.allowlists]]
 description = "Reviewed source-file SHA-256 entries in preserved evidence"
 condition = "AND"
 regexTarget = "line"

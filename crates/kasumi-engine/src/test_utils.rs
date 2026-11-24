@@ -6,6 +6,77 @@ use kasumi_store::{SnapshotImage, TenantStorageSet};
 use kasumi_types::{Error, ErrorCode, Limits, Policy, Result, TenantState};
 use std::sync::Arc;
 
+/// Read the original terminal observations into the retained fixture stderr.
+#[cfg(test)]
+pub(crate) fn report_node_opening_failure(error: &kasumi_store::NodeStoreStartFailure) {
+    use kasumi_kv::TerminalObservation;
+    use std::io::Write as _;
+    let kasumi_store::NodeStoreStartFailure::Opening(failure) = error else {
+        return;
+    };
+    let custody = failure.custody();
+    let report = custody.opening().report();
+    let engine = report.engine();
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(
+        stderr,
+        "fixture node opening failure: id={:?} startup={:?} child={:?} child_disposition={:?} close_error={:?} engine_phase={:?} engine_opening_phase={:?} engine_settlement={:?} native={:?}",
+        failure.opening_id(),
+        custody.phase(),
+        custody.child_id(),
+        custody.child_disposition(),
+        failure.close_error(),
+        engine.phase(),
+        engine.opening_phase(),
+        engine.settlement(),
+        engine.native_disposition()
+    );
+    fn observation<E: std::fmt::Debug>(
+        stderr: &mut impl std::io::Write,
+        name: &str,
+        observed: TerminalObservation<'_, E>,
+    ) {
+        match observed {
+            TerminalObservation::NotEntered => {
+                let _ = writeln!(stderr, "{name}: NotEntered");
+            }
+            TerminalObservation::Entered => {
+                let _ = writeln!(stderr, "{name}: Entered");
+            }
+            TerminalObservation::Returned(Ok(())) => {
+                let _ = writeln!(stderr, "{name}: Returned(Ok)");
+            }
+            TerminalObservation::Returned(Err(original)) => {
+                let _ = writeln!(stderr, "{name}: Returned(Err({original:#?}))");
+            }
+            TerminalObservation::Panicked(_) => {
+                let _ = writeln!(stderr, "{name}: Panicked (original retained)");
+            }
+        }
+    }
+    observation(&mut stderr, "physical acquisition", report.acquisition());
+    observation(&mut stderr, "native opening", engine.opening());
+    engine.with_partial_close_observation(|observed| {
+        observation(&mut stderr, "partial native close", observed);
+    });
+    observation(&mut stderr, "failed disposal", engine.failed_disposal());
+    if let Some(close) = engine.database_close() {
+        let _ = writeln!(
+            stderr,
+            "database close: settlement={:?} native={:?}",
+            close.settlement(),
+            close.native_disposition()
+        );
+        observation(&mut stderr, "database shutdown", close.shutdown());
+        observation(&mut stderr, "database backend close", close.backend());
+        observation(
+            &mut stderr,
+            "database failed disposal",
+            close.failed_disposal(),
+        );
+    }
+}
+
 /// Format a single borrowed observation only after a fixture already failed.
 /// None and Busy remain distinct and neither proves successful apply or drain.
 /// The closure never waits, retries, clears, or moves an original out of custody.
@@ -603,6 +674,71 @@ impl SnapshotFixtureState for crate::Generation {
 }
 #[derive(Clone)]
 pub struct SnapshotCandidate(crate::snapshot_codec::Decoded);
+impl SnapshotCandidate {
+    /// Make a self-consistent alternate one-intent snapshot for substitution tests.
+    pub fn alter_single_lifecycle_intent(
+        &mut self,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        id: uuid::Uuid,
+        edit: impl FnOnce(&mut kasumi_types::LifecycleIntent),
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
+        use anyhow::Context;
+        let state = &mut self.0.state;
+        let control = Arc::make_mut(
+            state
+                .lifecycle_control
+                .as_mut()
+                .context("expected Control")?,
+        );
+        let head = control
+            .intent_head
+            .as_ref()
+            .context("expected selected lifecycle history")?;
+        if head.count != 1 {
+            return Err(
+                anyhow::anyhow!("substitution fixture needs a single selected intent").into(),
+            );
+        }
+        let source = control.intent_storage().map_err(anyhow::Error::from)?;
+        let original = source
+            .row(head, 1, control.installation.max_state_bytes)
+            .map_err(anyhow::Error::from)?;
+        let mut row = *original.row.clone();
+        if row.intent.request.command_id != id {
+            return Err(anyhow::anyhow!("substitution identity differs").into());
+        }
+        edit(&mut row.intent);
+        let genesis =
+            kasumi_types::LifecycleIntentHead::empty(control.installation.root.control_incarnation)
+                .map_err(anyhow::Error::from)?;
+        let changed = crate::backup_binding::intents::advance(&genesis, &row)?;
+        control.intent_head = Some(changed.clone());
+        let mut builder = crate::backup_binding::Builder::new(
+            disk,
+            crate::backup_binding::scratch_limit(
+                changed
+                    .encoded_bytes
+                    .checked_add(state.backup_binding_head.encoded_bytes)
+                    .context("fixture scratch overflow")?,
+            )?,
+            &state.backup_binding_head.origin_incarnation,
+        )?;
+        for binding in self.0.backup_bindings.records() {
+            builder.push(&binding?, state)?;
+        }
+        builder.push_intent(
+            &row,
+            state
+                .lifecycle_control
+                .as_deref()
+                .expect("installed Control"),
+            state.limits.max_lifecycle_intent_bytes,
+        )?;
+        self.0.backup_bindings = builder.finish(&state.backup_binding_head)?;
+        self.0.backup_bindings.bind_intents(state);
+        Ok(())
+    }
+}
 impl std::ops::Deref for SnapshotCandidate {
     type Target = TenantState;
     fn deref(&self) -> &TenantState {
@@ -647,7 +783,7 @@ pub fn snapshot_accounted_bytes(candidate: &SnapshotImage) -> Result<u64> {
                 .kinds
                 .iter()
                 .enumerate()
-                .filter(|(kind, _)| !matches!(*kind, 5 | 22 | 24))
+                .filter(|(kind, _)| !matches!(*kind, 5 | 22 | 24 | 25))
                 .try_fold(64_u64, |total, (_, kind)| {
                     total
                         .checked_add(kind.framed_bytes)
@@ -708,6 +844,7 @@ fn write_candidate(
             encoder.record(crate::snapshot_codec::Record::BackupBinding(Box::new(row?)))?;
         }
     }
+    crate::snapshot_codec::write_lifecycle_history(&mut encoder, state)?;
     encoder.finish()
 }
 

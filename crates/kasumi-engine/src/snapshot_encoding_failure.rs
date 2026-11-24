@@ -10,6 +10,13 @@
 //! stored body or record that fails authentication.
 use kasumi_types::{Error, ErrorCode};
 
+/// Keep the original error as a traversable cause when an admitted reader or
+/// writer has to return an I/O error. Boxing anyhow directly hides the type
+/// of a cancellation or deadline returned without additional context.
+pub(crate) fn checked_io_failure(error: anyhow::Error) -> std::io::Error {
+    std::io::Error::other(error.reallocate_into_boxed_dyn_error_without_backtrace())
+}
+
 pub(crate) fn encoding_error(error: anyhow::Error) -> Error {
     // An engine error was classified where it arose, including by an earlier
     // call here, so it passes through unchanged and is not reported twice.
@@ -36,7 +43,9 @@ pub(crate) fn encoding_error(error: anyhow::Error) -> Error {
             "tenant key authorization expired; recovery required",
         );
     }
-    if causes(&error).any(|cause| cause.is::<tokio::task::JoinError>()) {
+    if causes(&error).any(|cause| {
+        cause.is::<tokio::task::JoinError>() || cause.is::<kasumi_serving::ChildLost>()
+    }) {
         return Error::new(ErrorCode::Unavailable, "snapshot worker stopped");
     }
     match causes(&error).find_map(|cause| cause.downcast_ref::<std::io::Error>()) {

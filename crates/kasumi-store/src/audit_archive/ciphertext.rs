@@ -131,6 +131,12 @@ impl PartialEq<AuditCiphertext> for Vec<u8> {
     }
 }
 
+impl std::borrow::Borrow<AuditArchiveReference> for PreparedAuditSegment {
+    fn borrow(&self) -> &AuditArchiveReference {
+        &self.reference
+    }
+}
+
 impl PreparedAuditSegment {
     pub(super) fn share(&self) -> Result<Self> {
         let charge = self

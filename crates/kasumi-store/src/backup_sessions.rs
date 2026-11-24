@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub(crate) mod filesystem;
 
 pub const MAX_SESSION_RECORD_BYTES: usize = 64 << 10;
+pub const MAX_ENCRYPTED_SESSION_RECORD_BYTES: usize =
+    MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84;
 pub const MAX_SESSION_GC_OBJECTS: usize = 256;
 /// Control records live outside the only deletable subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +206,23 @@ impl VerifiedBackupSession {
             .await?
             .to_bytes()
     }
+    /// The immutable intent bytes were authenticated when this proof was issued.
+    /// A completed outcome must carry the same catalog as that intent.
+    pub fn visit_wrapping_keys(
+        &self,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        self.access.check()?;
+        let envelope = EncryptedBackup::from_source_bytes(
+            &self.intent_bytes,
+            MAX_SESSION_RECORD_BYTES,
+            &self.intent.tenant,
+            &self.owner,
+        )?;
+        envelope.visit_catalog_keys(visit)?;
+        self.access.check()
+    }
+
     pub fn key_catalog_sha256(&self) -> &str {
         &self.key_catalog_sha256
     }
@@ -215,6 +234,9 @@ impl VerifiedBackupSession {
     }
     pub fn outcome(&self) -> Option<&BackupSessionOutcome> {
         self.outcome.as_ref()
+    }
+    pub fn outcome_ciphertext_sha256(&self) -> Option<&str> {
+        self.outcome_ciphertext_sha256.as_deref()
     }
     pub fn intent_ciphertext_sha256(&self) -> &str {
         &self.intent_ciphertext_sha256
@@ -238,11 +260,15 @@ impl VerifiedBackupSession {
 }
 async fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
+    tenant: &str,
     owner: &TenantStore,
     provider: Arc<dyn KeyProvider>,
 ) -> Result<(T, crate::StoragePurpose, u64, String)> {
-    let envelope = EncryptedBackup::from_bytes(bytes, MAX_SESSION_RECORD_BYTES, owner)?;
-    let contents = envelope.decrypt(owner.tenant(), provider, owner).await?;
+    let envelope =
+        EncryptedBackup::from_source_bytes(bytes, MAX_SESSION_RECORD_BYTES, tenant, owner)?;
+    let contents = envelope
+        .decrypt_session_source(tenant, provider, owner)
+        .await?;
     Ok((
         serde_json::from_slice(&contents.snapshot)?,
         envelope.source_purpose().clone(),
@@ -256,21 +282,135 @@ pub async fn verify_backup_session(
     owner: &Arc<TenantStore>,
     provider: Arc<dyn KeyProvider>,
 ) -> Result<Option<VerifiedBackupSession>> {
+    verify_session_for_tenant(destination, session, owner.tenant(), owner, provider).await
+}
+
+/// Read-only view of authenticated session control records for dependency
+/// verification. Only the backup owner retains the mutation and GC proofs.
+pub struct BackupSessionKeyRead(VerifiedBackupSession);
+impl From<VerifiedBackupSession> for BackupSessionKeyRead {
+    fn from(session: VerifiedBackupSession) -> Self {
+        Self(session)
+    }
+}
+impl BackupSessionKeyRead {
+    /// Open one graph object using the authenticated session's source tenant
+    /// and the original physical owner's access and memory reservation.
+    pub async fn graph_object(
+        &self,
+        bytes: &[u8],
+        expected: Uuid,
+        limit: usize,
+        keys: Arc<dyn KeyProvider>,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<crate::BackupContents> {
+        let owner = &self.0.owner;
+        let tenant = &self.0.intent.tenant;
+        self.0.access.check()?;
+        let encrypted = EncryptedBackup::from_source_bytes(bytes, limit, tenant, owner)?;
+        ensure!(
+            encrypted.id() == expected,
+            "recovery backup object identity differs"
+        );
+        let contents = encrypted
+            .decrypt_session_source(tenant, keys, owner)
+            .await?;
+        encrypted.visit_catalog_keys(visit)?;
+        self.0.access.check()?;
+        Ok(contents)
+    }
+    pub fn audit_verifier<'a>(
+        &'a self,
+        purpose: &'a crate::StoragePurpose,
+        provider: &'a dyn KeyProvider,
+    ) -> Result<crate::HistoricalAuditVerifier<'a>> {
+        self.0.owner.check_access()?;
+        crate::HistoricalAuditVerifier::for_checked_source(
+            &self.0.intent.tenant,
+            purpose,
+            provider,
+            &self.0.access,
+        )
+    }
+
+    pub fn source_purpose(&self) -> &crate::StoragePurpose {
+        self.0.source_purpose()
+    }
+    pub fn key_catalog_sha256(&self) -> &str {
+        self.0.key_catalog_sha256()
+    }
+    pub fn outcome(&self) -> Option<&BackupSessionOutcome> {
+        self.0.outcome()
+    }
+    pub fn outcome_ciphertext_sha256(&self) -> Option<&str> {
+        self.0.outcome_ciphertext_sha256()
+    }
+    pub fn intent_ciphertext_sha256(&self) -> &str {
+        self.0.intent_ciphertext_sha256()
+    }
+    pub fn visit_wrapping_keys(
+        &self,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        self.0.visit_wrapping_keys(visit)
+    }
+}
+
+/// Authenticate a source backup using the physical journal's bounded storage
+/// and key lease before it accepts a new checkpoint dependency.
+pub async fn verify_target_journal_backup_session(
+    destination: &dyn BackupDestination,
+    checkpoint: &kasumi_types::FullBackupCheckpoint,
+    owner: &Arc<TenantStore>,
+    provider: Arc<dyn KeyProvider>,
+) -> Result<Option<BackupSessionKeyRead>> {
+    checkpoint.validate()?;
+    ensure!(
+        matches!(
+            owner.storage_access().purpose(),
+            crate::StoragePurpose::TargetJournal { .. }
+        ),
+        "backup dependency reader requires the installed target journal"
+    );
+    let original = verify_session_for_tenant(
+        destination,
+        checkpoint.backup_id,
+        &checkpoint.tenant,
+        owner,
+        provider,
+    )
+    .await?;
+    let Some(session) = original else {
+        return Ok(None);
+    };
+    ensure!(
+        matches!(session.outcome(),Some(BackupSessionOutcome::Complete{checkpoint:original,..}) if original==checkpoint),
+        "target writer checkpoint differs from the completed original session"
+    );
+    Ok(Some(session.into()))
+}
+
+async fn verify_session_for_tenant(
+    destination: &dyn BackupDestination,
+    session: Uuid,
+    tenant: &str,
+    owner: &Arc<TenantStore>,
+    provider: Arc<dyn KeyProvider>,
+) -> Result<Option<VerifiedBackupSession>> {
     owner.check_access()?;
-    let tenant = owner.tenant();
     let access = owner.storage_access();
     let Some(intent_bytes) = destination
         .session_get(
             session,
             BackupSessionSlot::Intent,
-            MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
+            MAX_ENCRYPTED_SESSION_RECORD_BYTES,
         )
         .await?
     else {
         return Ok(None);
     };
     let (intent, source_purpose, revision, key_catalog_sha256): (BackupSessionIntent, _, _, _) =
-        decode(&intent_bytes, owner, provider.clone()).await?;
+        decode(&intent_bytes, tenant, owner, provider.clone()).await?;
     intent.validate()?;
     ensure!(
         intent.revision == revision,
@@ -286,12 +426,12 @@ pub async fn verify_backup_session(
         .session_get(
             session,
             BackupSessionSlot::Outcome,
-            MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
+            MAX_ENCRYPTED_SESSION_RECORD_BYTES,
         )
         .await?;
     let outcome = if let Some(bytes) = &outcome_bytes {
         let (outcome, purpose, revision, outcome_catalog): (BackupSessionOutcome, _, _, _) =
-            decode(bytes, owner, provider).await?;
+            decode(bytes, tenant, owner, provider).await?;
         ensure!(
             purpose == source_purpose
                 && revision == intent.revision
@@ -326,7 +466,8 @@ impl TenantStore {
     ) -> Result<Option<VerifiedBackupSession>> {
         self.check_access()?;
         let result =
-            verify_backup_session(destination, session, self, self.provider.clone()).await?;
+            verify_backup_session(destination, session, self, self.archive_read_provider()?)
+                .await?;
         self.check_access()?;
         Ok(result)
     }
@@ -345,7 +486,7 @@ impl TenantStore {
             "backup session tenant differs"
         );
         let bytes = session
-            .encrypt_outcome(value, self.provider.clone())
+            .encrypt_outcome(value, self.archive_read_provider()?)
             .await?;
         self.check_access()?;
         Ok(bytes)
@@ -385,6 +526,9 @@ impl BackupDestination for BackupSessionObjects<'_> {
     /// blocking verification.
     fn namespace_binding(&self) -> Result<BackupNamespaceBinding> {
         self.destination.namespace_binding()
+    }
+    async fn verified_namespace_binding(&self) -> Result<BackupNamespaceBinding> {
+        self.destination.verified_namespace_binding().await
     }
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         self.destination
@@ -628,13 +772,58 @@ mod tests {
                 .is_empty()
         );
         assert!(destination.session_objects(&proof, 257).await.is_err());
-        assert!(
-            verify_backup_session(&destination, id, &store, keys)
+        let binding = destination.namespace_binding().unwrap();
+        let intent = destination
+            .session_get(id, BackupSessionSlot::Intent, MAX_SESSION_RECORD_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        let outcome = destination
+            .session_get(id, BackupSessionSlot::Outcome, MAX_SESSION_RECORD_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        let root = dir.path().join("backup");
+        let disk = crate::test_utils::fixture_directory_owner(&root, fixture_memory).unwrap();
+        drop(proof);
+        drop(destination);
+        let destination = FilesystemBackupDestination::open_enrolled(
+            &root,
+            crate::MAX_BACKUP_BUNDLE_BYTES,
+            disk,
+            &binding,
+        )
+        .unwrap();
+        assert_eq!(destination.namespace_binding().unwrap(), binding);
+        assert_eq!(
+            destination
+                .session_get(id, BackupSessionSlot::Intent, MAX_SESSION_RECORD_BYTES)
                 .await
                 .unwrap()
+                .unwrap(),
+            intent
+        );
+        assert_eq!(
+            destination
+                .session_get(id, BackupSessionSlot::Outcome, MAX_SESSION_RECORD_BYTES)
+                .await
                 .unwrap()
-                .aborted()
-                .is_ok()
+                .unwrap(),
+            outcome
+        );
+        let proof = verify_backup_session(&destination, id, &store, keys)
+            .await
+            .unwrap()
+            .unwrap()
+            .aborted()
+            .unwrap();
+        assert!(
+            destination
+                .session_objects(&proof, 256)
+                .await
+                .unwrap()
+                .objects
+                .is_empty()
         );
         assert_eq!(
             destination.get(shared, 1024).await.unwrap(),
@@ -1079,6 +1268,157 @@ mod tests {
             .unwrap();
         assert_eq!(verified.source_purpose(), access.purpose());
         assert!(verified.aborted().is_ok());
+        let root = ControlSigningRoot {
+            control_incarnation: Uuid::new_v4(),
+            public_key: "11".repeat(32),
+        };
+        let node = kasumi_serving::NodeIdentity {
+            node_id: 1,
+            verifier: TrustVerifierIdentity {
+                node_id: 1,
+                installation_id: Uuid::new_v4(),
+            },
+            principal: "target".into(),
+            certificate_sha256: "22".repeat(32),
+        };
+        let journal = TenantStore::initialize_catalog_fixture_with_access(
+            NodeStore::create_new_fixture(
+                dir.path().join("journal"),
+                crate::test_utils::NODE_STORE_ID,
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
+            )
+            .unwrap(),
+            format!("kasumi.target.{}.1", root.control_incarnation),
+            Arc::new(LocalKeyProvider::new([44; 32])),
+            StorageAccess::target_journal(&root, &node).unwrap(),
+        )
+        .await
+        .unwrap();
+        let complete = BackupSessionIntent {
+            session_id: Uuid::new_v4(),
+            ..intent.clone()
+        };
+        destination
+            .session_put(
+                complete.session_id,
+                BackupSessionSlot::Intent,
+                store.encrypt_session_record(7, &complete).unwrap().into(),
+            )
+            .await
+            .unwrap();
+        let completed =
+            verify_backup_session(&destination, complete.session_id, &store, keys.clone())
+                .await
+                .unwrap()
+                .unwrap();
+        let checkpoint = FullBackupCheckpoint {
+            tenant: complete.tenant.clone(),
+            source_incarnation: complete.source_incarnation.clone(),
+            revision: 7,
+            resident_sha256: "55".repeat(32),
+            backup_id: complete.session_id,
+            manifest_ciphertext_sha256: "66".repeat(32),
+            key_lineage_digest: "77".repeat(32),
+        };
+        assert!(
+            verify_target_journal_backup_session(&destination, &checkpoint, &journal, keys.clone())
+                .await
+                .is_err()
+        );
+        destination
+            .session_put(
+                complete.session_id,
+                BackupSessionSlot::Outcome,
+                store
+                    .encrypt_backup_session_outcome(
+                        &completed,
+                        &BackupSessionOutcome::Complete {
+                            intent_ciphertext_sha256: completed.intent_ciphertext_sha256().into(),
+                            checkpoint: checkpoint.clone(),
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .into(),
+            )
+            .await
+            .unwrap();
+        let read =
+            verify_target_journal_backup_session(&destination, &checkpoint, &journal, keys.clone())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(read.source_purpose(), access.purpose());
+        let graph_bytes = &completed.intent_bytes;
+        let object = EncryptedBackup::from_bytes(graph_bytes, MAX_SESSION_RECORD_BYTES, &store)
+            .unwrap()
+            .id();
+        assert!(
+            EncryptedBackup::from_bytes(graph_bytes, MAX_SESSION_RECORD_BYTES, &journal).is_err()
+        );
+        let verified = read
+            .graph_object(
+                graph_bytes,
+                object,
+                MAX_SESSION_RECORD_BYTES,
+                keys.clone(),
+                |_, _, _| Ok(()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verified.revision, completed.intent().revision);
+        assert!(
+            read.graph_object(
+                graph_bytes,
+                Uuid::new_v4(),
+                MAX_SESSION_RECORD_BYTES,
+                keys.clone(),
+                |_, _, _| Ok(())
+            )
+            .await
+            .is_err()
+        );
+        read.audit_verifier(access.purpose(), keys.as_ref())
+            .unwrap();
+        let mut original_keys = Vec::new();
+        store
+            .visit_wrapping_identities(|_, provider, key_ref, version| {
+                original_keys.push((provider.to_owned(), key_ref.to_owned(), version));
+                Ok(())
+            })
+            .unwrap();
+        let mut observed = Vec::new();
+        read.visit_wrapping_keys(|provider, key_ref, version| {
+            observed.push((provider.to_owned(), key_ref.to_owned(), version));
+            Ok(())
+        })
+        .unwrap();
+        assert!(!original_keys.is_empty());
+        assert_eq!(observed, original_keys);
+        assert!(
+            verify_target_journal_backup_session(&destination, &checkpoint, &store, keys.clone())
+                .await
+                .is_err()
+        );
+        let foreign = FullBackupCheckpoint {
+            tenant: "foreign".into(),
+            ..checkpoint.clone()
+        };
+        assert!(
+            verify_target_journal_backup_session(&destination, &foreign, &journal, keys.clone())
+                .await
+                .is_err()
+        );
+        let swapped = FullBackupCheckpoint {
+            manifest_ciphertext_sha256: "aa".repeat(32),
+            ..checkpoint
+        };
+        assert!(
+            verify_target_journal_backup_session(&destination, &swapped, &journal, keys.clone())
+                .await
+                .is_err()
+        );
         let wrong = BackupSessionIntent {
             session_id: Uuid::new_v4(),
             source_incarnation: Uuid::new_v4().to_string(),

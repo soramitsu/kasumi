@@ -33,7 +33,7 @@ fn new_session_denies_before_mkdir_when_both_terminal_inodes_cannot_fit() {
 }
 
 #[test]
-fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() {
+fn terminal_publication_keeps_original_inode_and_reclaims_only_published_padding() {
     use std::os::unix::fs::MetadataExt;
     let temporary = private_tempdir().unwrap();
     let disk = open(temporary.path(), 2);
@@ -50,15 +50,16 @@ fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() 
     assert!(!path.join("intent.reserve").exists());
     assert_eq!(
         path.join("intent.kasumi").metadata().unwrap().len(),
-        terminal::FILE_BYTES as u64
+        (terminal::HEADER_BYTES + b"original encrypted intent".len()) as u64
     );
     let session_directory = directory.session(session).unwrap().unwrap();
-    let intent = session_directory
+    let mut intent = session_directory
         .open_leaf("intent.kasumi")
         .unwrap()
         .unwrap();
-    let (valid, allocations) =
-        crate::allocation_tests::measure(|| terminal::classify(&intent, session, Terminal::Intent));
+    let (valid, allocations) = crate::allocation_tests::measure(|| {
+        terminal::classify(&mut intent, session, Terminal::Intent)
+    });
     valid.unwrap();
     assert_eq!(allocations, 0, "classification reads a fixed header");
     let (small, allocations) =
@@ -94,8 +95,11 @@ fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() 
         (published.dev(), published.ino()),
         (reserve.dev(), reserve.ino())
     );
-    assert_eq!(published.len(), terminal::FILE_BYTES as u64);
-    assert_eq!(disk.snapshot().charged_bytes, charged);
+    assert_eq!(
+        published.len(),
+        (terminal::HEADER_BYTES + b"original encrypted outcome".len()) as u64
+    );
+    assert!(disk.snapshot().charged_bytes < charged);
     assert_eq!(disk.snapshot().persistent_files, 2);
     assert_eq!(
         directory
@@ -103,6 +107,74 @@ fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() 
             .unwrap()
             .unwrap(),
         b"original encrypted outcome"
+    );
+}
+
+#[test]
+fn retry_clears_stale_reserved_payload_without_materializing_the_untouched_tail() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = private_tempdir().unwrap();
+    let disk = open(directory.path(), 2);
+    let destination = Directory::open(directory.path(), disk.clone()).unwrap();
+    let session = Uuid::new_v4();
+    destination
+        .put(session, BackupSessionSlot::Intent, b"immutable intent")
+        .unwrap();
+    let owner = destination.session(session).unwrap().unwrap();
+    let reserve_path = directory
+        .path()
+        .join("sessions")
+        .join(session.to_string())
+        .join("outcome.reserve");
+    let before = reserve_path.metadata().unwrap();
+    let reserve = owner.open_leaf("outcome.reserve").unwrap().unwrap();
+    let long = vec![0x5a; 3 * terminal::IO_CHUNK_BYTES + 17];
+    let initial_writes = disk.physical_written_bytes();
+    terminal::write(&reserve, session, Terminal::Outcome, &long).unwrap();
+    let after = reserve_path.metadata().unwrap();
+    assert_eq!(after.len(), terminal::FILE_BYTES as u64);
+    // APFS may allocate the entire private reserve on its first prefix write.
+    // The Store must issue only the payload and header writes on a fresh tail.
+    assert_eq!(
+        disk.physical_written_bytes() - initial_writes,
+        (terminal::HEADER_BYTES + long.len()) as u64
+    );
+    let short = b"retried outcome";
+    let before_retry = disk.physical_written_bytes();
+    terminal::write(&reserve, session, Terminal::Outcome, short).unwrap();
+    let stale_bytes = long.len() - short.len();
+    let repaired_tail = stale_bytes.next_multiple_of(terminal::IO_CHUNK_BYTES);
+    assert!(
+        disk.physical_written_bytes() - before_retry
+            <= (terminal::HEADER_BYTES + short.len() + repaired_tail) as u64
+    );
+    assert_eq!(
+        terminal::read(&reserve, session, Terminal::Outcome, short.len()).unwrap(),
+        short
+    );
+    drop(reserve);
+    assert!(
+        destination
+            .get(session, BackupSessionSlot::Outcome, short.len())
+            .unwrap()
+            .is_none()
+    );
+    destination
+        .put(session, BackupSessionSlot::Outcome, short)
+        .unwrap();
+    let final_path = reserve_path.with_file_name("outcome.kasumi");
+    let published = final_path.metadata().unwrap();
+    assert!(published.blocks() * 512 < terminal::FILE_BYTES as u64);
+    assert_eq!(
+        (published.dev(), published.ino()),
+        (before.dev(), before.ino())
+    );
+    assert_eq!(
+        destination
+            .get(session, BackupSessionSlot::Outcome, short.len())
+            .unwrap()
+            .unwrap(),
+        short
     );
 }
 
@@ -142,6 +214,86 @@ fn session_object_put_syncs_each_change_once_and_reads_only_terminal_headers() {
         b"object bytes"
     );
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+}
+
+#[test]
+fn interrupted_terminal_reuses_original_decision_and_preserves_legacy_extent() {
+    for legacy in [false, true] {
+        let temporary = private_tempdir().unwrap();
+        let disk = open(temporary.path(), 4);
+        let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
+        let session = Uuid::new_v4();
+        directory
+            .put(
+                session,
+                BackupSessionSlot::Object(Uuid::new_v4()),
+                b"object",
+            )
+            .unwrap();
+        let path = temporary.path().join("sessions").join(session.to_string());
+        let fault = test_sync::fail(
+            &path,
+            "intent.kasumi",
+            &[test_sync::Point::PublishDirectory],
+        )
+        .unwrap();
+        let intent = b"retained encrypted intent";
+        let error = directory
+            .put(session, BackupSessionSlot::Intent, intent)
+            .unwrap_err();
+        assert!(error.to_string().contains("injected"), "{error:#}");
+        drop(fault);
+        assert_eq!(
+            path.join("intent.kasumi").metadata().unwrap().len(),
+            terminal::FILE_BYTES as u64
+        );
+        if legacy {
+            // Reproduce the deployed fixed record in the original inode.
+            let owner = directory.session(session).unwrap().unwrap();
+            let file = owner.open_leaf("intent.kasumi").unwrap().unwrap();
+            file.write_all_at(b"KSMSES01", 0).unwrap();
+            file.sync_all_and_parent().unwrap();
+        }
+        assert_eq!(
+            directory
+                .get(session, BackupSessionSlot::Intent, 80)
+                .unwrap()
+                .unwrap(),
+            intent
+        );
+        directory
+            .put(session, BackupSessionSlot::Outcome, b"original outcome")
+            .unwrap();
+        let expected = if legacy {
+            terminal::FILE_BYTES
+        } else {
+            terminal::HEADER_BYTES + intent.len()
+        };
+        assert_eq!(
+            path.join("intent.kasumi").metadata().unwrap().len(),
+            expected as u64
+        );
+        assert!(
+            directory
+                .put(session, BackupSessionSlot::Intent, b"replacement")
+                .is_err()
+        );
+        assert_eq!(
+            directory
+                .get(session, BackupSessionSlot::Intent, 80)
+                .unwrap()
+                .unwrap(),
+            intent
+        );
+        assert_eq!(
+            directory
+                .get(session, BackupSessionSlot::Outcome, 80)
+                .unwrap()
+                .unwrap(),
+            b"original outcome"
+        );
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    }
 }
 
 #[test]
@@ -296,7 +448,7 @@ fn terminal_restart_worker() {
             disk.snapshot().persistent_files,
             config.max_persistent_files
         );
-        assert_eq!(disk.snapshot().charged_bytes, config.max_bytes);
+        assert!(disk.snapshot().charged_bytes < config.max_bytes);
     }
 }
 

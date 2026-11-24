@@ -154,8 +154,11 @@ async fn local_stores(
         kasumi_store::TenantStorageSet::open_existing(
             owner.node.clone(),
             crate::runtime::CONTROL_TENANT.into(),
-            config.control.keys.provider(source.clone())?,
-            config.control.custody_keys.provider(source.clone())?,
+            config.hosted_control()?.keys.provider(source.clone())?,
+            config
+                .hosted_control()?
+                .custody_keys
+                .provider(source.clone())?,
             StorageAccess::node_control(),
         )
         .await?,

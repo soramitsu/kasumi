@@ -133,6 +133,45 @@ fn scratch_claim_consumes_real_quota_without_readmission_and_finishes_complete_p
     close(database, &disk);
 }
 #[test]
+fn scratch_segment_transfers_only_its_own_prepaid_extent_and_settles_actual_bytes() {
+    for count in [1, 2] {
+        let (_directory, disk, _memory, owner, backend, database) = fixture();
+        let mut plan = plan();
+        plan.new_segments.count = count;
+        backend.reserve_transaction(&plan).unwrap();
+        let file = GroupFile::segment(1);
+        backend.create(file).unwrap();
+        backend.write(file, 0, &[7; 4096]).unwrap();
+        backend.sync(file).unwrap();
+        assert_eq!(backend.len(file).unwrap(), 4096);
+        let charge = |length| {
+            disk.transaction_file_ceiling(
+                EncryptedSpool::transaction_ciphertext_len(length).unwrap(),
+            )
+            .unwrap()
+        };
+        let file_charge = || {
+            owner.with_file(file, |retained| {
+                retained.spool().unwrap().transaction_charged_bytes()
+            })
+        };
+        assert_eq!(
+            file_charge(),
+            charge(if count == 1 { 100_000 } else { 4096 })
+        );
+        backend.write(file, 4096, &[8; 4096]).unwrap();
+        backend.finish_transaction(GROUP, 1).unwrap();
+        assert_eq!(backend.len(file).unwrap(), 8192);
+        assert!(file_charge() <= charge(8192));
+        let mut contents = [0; 8192];
+        backend.read(file, 0, &mut contents).unwrap();
+        assert_eq!(&contents[..4096], &[7; 4096]);
+        assert_eq!(&contents[4096..], &[8; 4096]);
+        close(database, &disk);
+    }
+}
+
+#[test]
 fn scratch_claim_finish_settles_observed_extents_without_synchronizing() {
     let (_directory, disk, _memory, _owner, backend, database) = fixture();
     backend.reserve_transaction(&plan()).unwrap();

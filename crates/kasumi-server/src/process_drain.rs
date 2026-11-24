@@ -8,7 +8,7 @@
 //! every outcome nobody collected. A binary therefore seals those registries
 //! and joins them here first, for at most its retained grace.
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, time::Duration};
 
 /// How a process's final drain ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum ProcessDrain {
 /// `Retained` the caller exits rather than returning into the runtime's own
 /// teardown, which would wait for a blocked child without any bound.
 pub async fn drain(grace: Duration) -> ProcessDrain {
-    bounded(grace, |failed| async move {
+    bounded(grace, async |progress| {
         // An owner admitted after its registry's census would start only to
         // be dropped with the runtime. Seal each registry before its census.
         for kind in [
@@ -35,36 +35,37 @@ pub async fn drain(grace: Duration) -> ProcessDrain {
         ] {
             crate::serving_owner::seal(kind);
         }
-        seal_startups().await;
+        seal_startups(progress).await;
         // Serving first: a supervisor still closing its runtime owns every
         // worker and child that the later registries report.
         for (registry, kind) in [
             ("data_serving", crate::serving_owner::Kind::Data),
             ("authority_serving", crate::serving_owner::Kind::Authority),
         ] {
-            failed.observe(registry, crate::serving_owner::drain(kind).await);
+            progress
+                .join(registry, crate::serving_owner::drain(kind))
+                .await;
         }
-        startups(&failed).await;
-        failed.observe(
-            "background_custody",
-            background_custody().await.map_err(Into::into),
-        );
+        startups(progress).await;
+        progress
+            .join("background_custody", background_custody())
+            .await;
         // Every owner that could still start a blocking child while closing
         // has now been joined.
         kasumi_store::NodeDisk::seal_installed_filesystem_children();
         kasumi_engine::admission::MemoryCore::seal_installed_blocking_children();
-        failed.observe(
-            "installed_disk_children",
-            kasumi_store::NodeDisk::drain_installed_filesystem_children()
-                .await
-                .map_err(Into::into),
-        );
-        failed.observe(
-            "installed_blocking_children",
-            kasumi_engine::admission::MemoryCore::drain_installed_blocking_children()
-                .await
-                .map_err(Into::into),
-        );
+        progress
+            .join(
+                "installed_disk_children",
+                kasumi_store::NodeDisk::drain_installed_filesystem_children(),
+            )
+            .await;
+        progress
+            .join(
+                "installed_blocking_children",
+                kasumi_engine::admission::MemoryCore::drain_installed_blocking_children(),
+            )
+            .await;
     })
     .await
 }
@@ -100,17 +101,20 @@ const STARTUPS: [(&str, crate::startup_owner::Kind); 6] = {
     ]
 };
 
-async fn seal_startups() {
-    for (_, kind) in STARTUPS {
+async fn seal_startups(progress: &mut DrainProgress) {
+    for (registry, kind) in STARTUPS {
+        progress.current = registry;
         crate::startup_owner::seal(kind).await;
     }
 }
 
 /// Opens, operator commands and enrollments whose caller was cancelled, or
 /// whose publication was refused, and which are still closing their owner.
-async fn startups(failed: &Failures) {
+async fn startups(progress: &mut DrainProgress) {
     for (registry, kind) in STARTUPS {
-        failed.observe(registry, crate::startup_owner::drain(kind).await);
+        progress
+            .join(registry, crate::startup_owner::drain(kind))
+            .await;
     }
 }
 
@@ -142,30 +146,37 @@ async fn background_custody() -> DrainResult {
     report.outcome(retained)
 }
 
-/// Whether any registry reported a failure. Shared with the bounded traversal
-/// so an expired grace still knows what was logged before it.
-#[derive(Default)]
-struct Failures(std::sync::atomic::AtomicBool);
-impl Failures {
-    fn observe(&self, registry: &'static str, outcome: anyhow::Result<()>) {
-        if let Err(error) = outcome {
-            self.0.store(true, std::sync::atomic::Ordering::Release);
-            crate::logging::process_drain_failed(registry, &error);
+/// Only this serial traversal writes these fields. A timed-out wait drops its
+/// borrow, leaving the original registry name available to the exit log.
+struct DrainProgress {
+    current: &'static str,
+    failed: bool,
+}
+impl DrainProgress {
+    async fn join<E: Into<anyhow::Error>>(
+        &mut self,
+        registry: &'static str,
+        work: impl Future<Output = Result<(), E>>,
+    ) {
+        self.current = registry;
+        if let Err(error) = work.await {
+            self.failed = true;
+            crate::logging::process_drain_failed(registry, &error.into());
         }
     }
 }
 
-async fn bounded<Joining: Future<Output = ()>>(
-    grace: Duration,
-    traversal: impl FnOnce(Arc<Failures>) -> Joining,
-) -> ProcessDrain {
-    let failures = Arc::new(Failures::default());
-    match tokio::time::timeout(grace, traversal(failures.clone())).await {
+async fn bounded(grace: Duration, traversal: impl AsyncFnOnce(&mut DrainProgress)) -> ProcessDrain {
+    let mut progress = DrainProgress {
+        current: "startup_seal",
+        failed: false,
+    };
+    match tokio::time::timeout(grace, traversal(&mut progress)).await {
         Err(_) => {
-            crate::logging::process_drain_retained(grace);
+            crate::logging::process_drain_retained(grace, progress.current);
             ProcessDrain::Retained
         }
-        Ok(()) if failures.0.load(std::sync::atomic::Ordering::Acquire) => ProcessDrain::Failed,
+        Ok(()) if progress.failed => ProcessDrain::Failed,
         Ok(()) => ProcessDrain::Clean,
     }
 }

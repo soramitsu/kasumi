@@ -186,6 +186,12 @@ impl<'a> InspectedAuditDependency<'a> {
     pub fn reference(&self) -> &AuditArchiveReference {
         &self.reference
     }
+    /// Verify this exact inspected object with the currently installed store.
+    pub async fn verify_current(&self, store: &TenantStore) -> Result<VerifiedAuditSegment> {
+        store
+            .decrypt_audit_segment(self.bytes, &self.reference)
+            .await
+    }
     pub async fn verify(
         &self,
         verifier: &HistoricalAuditVerifier<'_>,
@@ -257,10 +263,11 @@ impl TenantStore {
     ) -> Result<VerifiedAuditSegment> {
         let _access = AccessGuard(self);
         self.check_access()?;
+        let reader = self.archive_read_provider()?;
         let verifier = HistoricalAuditVerifier::new(
             &self.tenant,
             source_purpose,
-            self.provider.as_ref(),
+            reader.as_ref(),
             &self.access,
         )?;
         let verified = dependency.verify(&verifier).await?;
@@ -284,10 +291,11 @@ impl TenantStore {
     ) -> Result<VerifiedAuditSegment> {
         let _access = AccessGuard(self);
         self.check_access()?;
+        let reader = self.archive_read_provider()?;
         AuditDecoder {
             tenant: &self.tenant,
             purpose: self.access.purpose(),
-            provider: self.provider.as_ref(),
+            provider: reader.as_ref(),
             clock: self.clock.as_ref(),
         }
         .decode(bytes, expected, || self.check_access())
@@ -312,6 +320,14 @@ impl<'a> HistoricalAuditVerifier<'a> {
         current_access: &'a crate::StorageAccess,
     ) -> Result<Self> {
         current_access.validate_tenant(tenant)?;
+        Self::for_checked_source(tenant, source_purpose, provider, current_access)
+    }
+    pub(crate) fn for_checked_source(
+        tenant: &'a str,
+        source_purpose: &'a StoragePurpose,
+        provider: &'a dyn crate::KeyProvider,
+        current_access: &'a crate::StorageAccess,
+    ) -> Result<Self> {
         current_access.check()?;
         match source_purpose {
             StoragePurpose::Standalone {
@@ -546,6 +562,9 @@ pub struct TenantAuditPlacement {
 impl TenantAuditPlacement {
     pub fn cache(&self) -> &Arc<FilesystemAuditArchive> {
         &self.cache
+    }
+    pub async fn read_destination(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
+        self.destination.read(link).await
     }
     pub fn destination_identity(&self) -> String {
         self.destination.identity()
@@ -807,16 +826,22 @@ fn read_object(
     durable: bool,
 ) -> Result<Vec<u8>> {
     let length = file.observed_len()?;
-    ensure!(
-        length <= MAX_AUDIT_SEGMENT_BYTES as u64,
-        "invalid audit archive object"
-    );
+    if length > MAX_AUDIT_SEGMENT_BYTES as u64 {
+        return Err(kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "invalid audit archive object",
+        )
+        .into());
+    }
     let mut bytes = vec![0; usize::try_from(length)?];
     file.read_exact_at(&mut bytes, 0)?;
-    ensure!(
-        hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
-        "audit archive readback mismatch"
-    );
+    if hex::encode(Sha256::digest(&bytes)) != link.ciphertext_sha256 {
+        return Err(kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "audit archive readback mismatch",
+        )
+        .into());
+    }
     if durable {
         file.sync_all_and_parent()?;
     }
@@ -924,11 +949,15 @@ impl AuditArchiveDestination for S3AuditArchive {
             .destination
             .get(link.object_id, MAX_AUDIT_SEGMENT_BYTES)
             .await?;
-        ensure!(
-            bytes.len() <= MAX_AUDIT_SEGMENT_BYTES
-                && hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
-            "audit archive readback mismatch"
-        );
+        if bytes.len() > MAX_AUDIT_SEGMENT_BYTES
+            || hex::encode(Sha256::digest(&bytes)) != link.ciphertext_sha256
+        {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Corruption,
+                "audit archive readback mismatch",
+            )
+            .into());
+        }
         Ok(bytes)
     }
 }

@@ -10,17 +10,6 @@ selected Cargo packages. It records exact bytes, SHA-256 and file permissions,
 including executable scripts and ignored lockfiles. Published archive checksums
 remain recorded for crate distributions. There is no format-1 fallback.
 
-## bitmaps 3.2.1
-
-[RUSTSEC-2025-0167](https://rustsec.org/advisories/RUSTSEC-2025-0167.html)
-describes invalid boolean representations accepted through two byte APIs. The
-patch rejects every byte above one when decoding `Bitmap<1>` and removes the
-`AsMut<[u8]>` implementation. Bit operations and checked byte construction remain.
-The regression exercises all 256 byte values, malformed lengths, and a full
-eight-bit bitmap; a compile-fail doctest checks that mutable byte access is absent.
-The changed `src/bitmap.rs` and `src/lib.rs` remain under MPL-2.0 or later. Their
-source and the original `LICENCE.md` must accompany release source distributions.
-
 ## lru 0.16.4
 
 [RUSTSEC-2026-0253](https://rustsec.org/advisories/RUSTSEC-2026-0253.html)
@@ -44,7 +33,7 @@ The generic number deserializer also retains larger integers on that exact map
 path through Serde enum buffering; explicit typed 128-bit requests stay exact.
 Both upstream MIT and Apache-2.0 licenses remain in the vendored directory.
 
-## rmcp 3.2.0
+## rmcp 3.11.0
 
 The terminal stateless HTTP constructor executes the handler inside its calling
 HTTP future, preserving SDK validation while avoiding detached service, handler
@@ -122,7 +111,6 @@ qualification is asserted.
 # Python 3.11 or newer is required.
 python3 -m unittest discover -s scripts -p test_check_dependency_patches.py -v
 python3 scripts/check_dependency_patches.py
-cargo test --manifest-path vendor/bitmaps-3.2.1/Cargo.toml --locked
 cargo test --manifest-path vendor/lru-0.16.4/Cargo.toml --locked
 cargo test --manifest-path vendor/serde_json-1.0.151/Cargo.toml --locked
 cargo test --manifest-path vendor/serde_json-1.0.151/Cargo.toml --locked --features arbitrary_precision

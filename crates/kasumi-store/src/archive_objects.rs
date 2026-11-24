@@ -10,6 +10,17 @@ impl TenantStore {
         expected_id: uuid::Uuid,
         max_plaintext_bytes: usize,
     ) -> Result<BackupContents> {
+        self.authenticate_object(bytes, expected_id, max_plaintext_bytes)
+            .await
+            .map(|(_, contents)| contents)
+    }
+
+    pub(crate) async fn authenticate_object(
+        &self,
+        bytes: &[u8],
+        expected_id: uuid::Uuid,
+        max_plaintext_bytes: usize,
+    ) -> Result<(EncryptedBackup, BackupContents)> {
         let _access = AccessGuard(self);
         self.check_access()?;
         let encrypted = EncryptedBackup::from_bytes(bytes, max_plaintext_bytes, self)?;
@@ -18,9 +29,9 @@ impl TenantStore {
             "encrypted object identity mismatch"
         );
         let contents = encrypted
-            .decrypt(&self.tenant, self.provider.clone(), self)
+            .decrypt(&self.tenant, self.archive_read_provider()?, self)
             .await?;
         self.check_access()?;
-        Ok(contents)
+        Ok((encrypted, contents))
     }
 }

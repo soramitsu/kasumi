@@ -1,6 +1,11 @@
+#![recursion_limit = "256"]
+
 use anyhow::Context;
 use kasumi_server::authority_runtime::EnrollmentFailure;
 use kasumi_server::authority_runtime::{AuthorityRuntime, AuthorityRuntimeConfig};
+
+const USAGE: &str = "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>";
+
 fn main() -> std::process::ExitCode {
     kasumi_server::process_runtime::block_on(async_main)
 }
@@ -35,7 +40,6 @@ async fn invoked(serving: &mut bool) -> std::process::ExitCode {
         // An invoked command keeps the default hook's message on its terminal;
         // the daemon's stderr is the journal.
         kasumi_server::logging::install_panic_hook();
-        kasumi_server::logging::daemon_starting();
     }
     match run(&args).await {
         Ok(()) => {
@@ -87,6 +91,10 @@ impl std::fmt::Display for CommandFailure {
 }
 async fn run(args: &[String]) -> std::result::Result<(), CommandFailure> {
     match args {
+        [command] if matches!(command.as_str(), "help" | "--help" | "-h") => {
+            println!("{USAGE}");
+            Ok(())
+        }
         [command, path] if command == "check-config" => {
             AuthorityRuntimeConfig::load(path)?;
             Ok(())
@@ -99,32 +107,23 @@ async fn run(args: &[String]) -> std::result::Result<(), CommandFailure> {
             Ok(())
         }
         [command, path] if command == "serve" => {
-            let runtime = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?)
+            let mut signals = kasumi_server::daemon_signals::DaemonSignals::install()
+                .context("installing authority signal handlers")?;
+            kasumi_server::logging::daemon_starting();
+            let opening = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?);
+            let Some(runtime) = signals
+                .open(opening)
                 .await
-                .context("opening independent authority")?;
+                .context("opening independent authority")?
+            else {
+                return Ok(());
+            };
             let reload = runtime.tls_reload_handle();
-            let (stop, shutdown) = tokio::sync::watch::channel(false);
-            let signal = tokio::spawn(async move {
-                let mut term =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-                let mut hangup =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-                loop {
-                    tokio::select! {
-                        result=tokio::signal::ctrl_c()=>{ result?; break; },
-                        _=term.recv()=>break,
-                        _=hangup.recv()=>{ if reload.reload().await.is_err() { kasumi_server::logging::tls_reload_failed(); } }
-                    }
-                }
-                stop.send_replace(true);
-                Ok::<_, std::io::Error>(())
-            });
-            let result = runtime.serve(shutdown).await;
-            signal.abort();
-            result.map_err(CommandFailure::Operation)
+            signals
+                .serve(reload, |shutdown| runtime.serve(shutdown))
+                .await
+                .map_err(CommandFailure::Operation)
         }
-        _ => Err(anyhow::anyhow!(
-            "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>"
-        ).into()),
+        _ => Err(anyhow::anyhow!(USAGE).into()),
     }
 }

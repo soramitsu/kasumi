@@ -3,7 +3,7 @@ use kasumi_store::{AuditArchivePublicationObserver, FilesystemAuditArchive};
 use kasumi_types::AuditArchiveReference;
 use sha2::{Digest, Sha256};
 
-const OBJECTS: &str = "standalone-recovery-archive-objects";
+pub(super) const OBJECTS: &str = "standalone-recovery-archive-objects";
 const CACHE: &str = "tenant-audit-archives";
 const PAGE: usize = 256;
 #[derive(Clone, Serialize, Deserialize)]
@@ -15,6 +15,85 @@ struct Object {
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     published: Option<private_files::FileIdentity>,
 }
+/// Read-only inventory of one authenticated publication row and its original
+/// inode. Staged or unavailable ciphertext remains an explicit key dependency.
+pub(super) struct RetainedObject(Object);
+
+impl RetainedObject {
+    pub(super) fn read(key: &[u8], bytes: &[u8]) -> Result<(Uuid, Self)> {
+        ensure!(key.len() == 32, "invalid local archive ownership key");
+        let operation = Uuid::from_slice(&key[..16])?;
+        let object: Object = decode(bytes)?;
+        object.reference.validate()?;
+        ensure!(
+            !operation.is_nil()
+                && key[16..] == *object.reference.object.object_id.as_bytes()
+                && object
+                    .published
+                    .as_ref()
+                    .is_none_or(|id| Some(id) == object.staged.as_ref()),
+            "substituted local archive ownership record"
+        );
+        Ok((operation, Self(object)))
+    }
+
+    pub(super) fn reference(&self) -> &AuditArchiveReference {
+        &self.0.reference
+    }
+
+    pub(super) fn inspect(
+        &self,
+        journal: &Journal,
+        settings: &kasumi_store::NodeDiskConfig,
+        store: &TenantStore,
+        token: &kasumi_query::QueryCancellation,
+    ) -> Result<bool> {
+        let directory = journal.target_directory.join(CACHE);
+        let directory_id = journal
+            .archive_directory
+            .as_ref()
+            .context("local archive object has no owned directory")?;
+        let Some(published) = &self.0.published else {
+            return Ok(false);
+        };
+        let reference = self.reference();
+        let path = directory.join(format!("{}.audit", reference.object.object_id));
+        let inspected = (|| -> Result<bool> {
+            if private_files::directory_identity(&directory)? != *directory_id {
+                return Ok(false);
+            }
+            let file =
+                crate::standalone::open_installed_file(settings, store.persistent_disk(), &path)?;
+            if file.identity()? != *published || file.observed_len()? != reference.ciphertext_bytes
+            {
+                return Ok(false);
+            }
+            let mut bytes = vec![0; usize::try_from(reference.ciphertext_bytes)?];
+            for (offset, chunk) in bytes.chunks_mut(64 << 10).enumerate() {
+                token.check()?;
+                file.read_exact_at(chunk, u64::try_from(offset)? * (64 << 10))?;
+            }
+            let inspected =
+                kasumi_store::InspectedAuditDependency::from_link(&bytes, &reference.object)?;
+            token.check()?;
+            Ok(inspected.reference() == reference
+                && file.observed_len()? == reference.ciphertext_bytes
+                && private_files::file_identity(&path)? == *published
+                && private_files::directory_identity(&directory)? == *directory_id)
+        })();
+        match inspected {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == ErrorKind::NotFound) =>
+            {
+                Ok(false)
+            }
+            result => result,
+        }
+    }
+}
+
 fn key(operation: Uuid, object: Uuid) -> Vec<u8> {
     [
         operation.as_bytes().as_slice(),
@@ -125,9 +204,13 @@ impl Operator {
         let target = self
             .open_target_directory(journal, false)?
             .context("archive target directory is missing")?;
-        let _archive = self
-            .directory_child(&target, c"tenant-audit-archives", true)?
-            .context("archive directory was not created")?;
+        let _archive = directory_child(
+            self.store().persistent_disk(),
+            &target,
+            c"tenant-audit-archives",
+            true,
+        )?
+        .context("archive directory was not created")?;
         if journal.archive_directory.is_none() {
             ensure!(
                 std::fs::read_dir(&directory)?.next().is_none(),
@@ -187,7 +270,13 @@ impl Operator {
         let target = self
             .open_target_directory(journal, false)?
             .context("archive target directory is missing")?;
-        let Some(archive) = self.directory_child(&target, c"tenant-audit-archives", false)? else {
+        let Some(archive) = directory_child(
+            self.store().persistent_disk(),
+            &target,
+            c"tenant-audit-archives",
+            false,
+        )?
+        else {
             return Ok(true);
         };
         let identity = private_files::directory_identity(&directory)?;

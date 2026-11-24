@@ -1978,6 +1978,34 @@ fn fuzzy_terms_build_one_automaton_shared_by_every_field() {
 }
 
 #[test]
+fn schema_resolution_hashes_the_original_json_and_enforces_the_encoded_size() {
+    use sha2::{Digest, Sha256};
+
+    let mut definition = definition(&[]);
+    definition.schema = json!({"type":"object","description":"Kasumi\n雪\""});
+    let encoded = serde_json::to_vec(&definition.schema).unwrap();
+    let digest = validation::DigestedSchema::new(&definition.schema).unwrap();
+    assert_eq!(digest.sha256, <[u8; 32]>::from(Sha256::digest(encoded)));
+
+    let indexes = QueryIndexes::default();
+    let overhead = serde_json::to_vec(&json!({"description":""}))
+        .unwrap()
+        .len();
+    definition.schema = json!({"description":"a".repeat(256 * 1024 - overhead)});
+    let before = validation::schema_digest_count();
+    indexes.schema_validator(&definition).unwrap();
+    assert_eq!(validation::schema_digest_count(), before + 1);
+
+    // One escaped newline occupies two wire bytes. The source string alone
+    // fits, but the serialized schema exceeds the limit by one byte.
+    definition.schema =
+        json!({"description":format!("{}\n", "a".repeat(256 * 1024 - overhead - 1))});
+    let error = indexes.schema_validator(&definition).err().unwrap();
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(error.message, "schema exceeds 256 KiB");
+}
+
+#[test]
 fn one_schema_resolution_validates_a_run_of_documents() {
     let collections = collection(
         definition(&[("/n", ScalarType::Number)]),

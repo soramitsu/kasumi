@@ -13,7 +13,9 @@ mod backup_destination_installation;
 pub mod client_pins;
 pub mod cluster;
 mod control_genesis;
+pub mod daemon_signals;
 pub mod data_cli;
+pub mod data_member_catalog;
 mod data_node_enrollment;
 mod installed_clients;
 #[cfg(test)]
@@ -36,6 +38,8 @@ mod readiness_probe;
 mod recovery_allocation_watch;
 mod recovery_cli;
 pub mod recovery_runtime;
+pub mod remote_backup;
+pub mod remote_control;
 mod request_admission;
 mod retired_source_failure;
 pub mod rpc;

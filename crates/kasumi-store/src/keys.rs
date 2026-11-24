@@ -42,6 +42,24 @@ pub struct WrappedKey {
     pub context: Option<String>,
 }
 
+impl WrappedKey {
+    /// A catalog writer may advance within its installed wrapping source. A
+    /// stale provider must never reintroduce an already retired version.
+    pub(crate) fn check_successor(&self, next: &Self) -> Result<()> {
+        ensure!(
+            self.provider == next.provider
+                && self.key_ref == next.key_ref
+                && self.context == next.context,
+            "key rotation changed the installed wrapping identity"
+        );
+        ensure!(
+            next.version > 0 && next.version >= self.version,
+            "key rotation regressed the installed wrapping version"
+        );
+        Ok(())
+    }
+}
+
 /// The fixed security properties of one installed historical wrapping source.
 /// Credentials and local file paths are deliberately absent: they may refresh
 /// without redirecting the accepted key resource or changing its TLS trust.

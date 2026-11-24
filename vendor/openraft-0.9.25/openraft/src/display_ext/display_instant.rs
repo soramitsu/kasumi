@@ -1,8 +1,7 @@
 use std::fmt;
 
-use chrono::DateTime;
-use chrono::Local;
-use chrono::Utc;
+use time::OffsetDateTime;
+use time::UtcOffset;
 
 use crate::Instant;
 
@@ -37,7 +36,8 @@ impl<'a, T, const SIMPLE: bool, const LOCAL: bool> DisplayInstant<'a, T, SIMPLE,
 }
 
 impl<T, const SIMPLE: bool, const LOCAL: bool> fmt::Display for DisplayInstant<'_, T, SIMPLE, LOCAL>
-where T: Instant
+where
+    T: Instant,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Convert Instant to SystemTime
@@ -54,24 +54,39 @@ where T: Instant
             }
         };
 
-        if LOCAL {
-            let datetime: DateTime<Local> = sys_t.into();
-
-            if SIMPLE {
-                write!(f, "{}", datetime.format("%H:%M:%S%.6f"))
-            } else {
-                write!(f, "{}", datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ%z"))
+        let utc = OffsetDateTime::from(sys_t);
+        let datetime = if LOCAL {
+            match UtcOffset::local_offset_at(utc) {
+                Ok(offset) => utc.to_offset(offset),
+                Err(_) => utc,
             }
         } else {
-            let datetime: DateTime<Utc> = sys_t.into();
-
-            if SIMPLE {
-                write!(f, "{}", datetime.format("%H:%M:%S%.6f"))
-            } else {
-                write!(f, "{}", datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ%z"))
-            }
-        }
+            utc
+        };
+        write_timestamp(f, datetime, SIMPLE)
     }
+}
+
+fn write_timestamp(f: &mut impl fmt::Write, datetime: OffsetDateTime, simple: bool) -> fmt::Result {
+    if !simple {
+        write!(f, "{}T", datetime.date())?;
+    }
+    write!(
+        f,
+        "{:02}:{:02}:{:02}.{:06}",
+        datetime.hour(),
+        datetime.minute(),
+        datetime.second(),
+        datetime.microsecond(),
+    )?;
+    if !simple {
+        let offset = datetime.offset().whole_seconds();
+        let sign = if offset < 0 { '-' } else { '+' };
+        // Historical local offsets can include seconds. The diagnostic rounds them to minutes.
+        let minutes = (offset.unsigned_abs() + 30) / 60;
+        write!(f, "Z{sign}{:02}{:02}", minutes / 60, minutes % 60)?;
+    }
+    Ok(())
 }
 
 pub(crate) trait DisplayInstantExt<'a, T> {
@@ -79,7 +94,8 @@ pub(crate) trait DisplayInstantExt<'a, T> {
 }
 
 impl<T> DisplayInstantExt<'_, T> for T
-where T: Instant
+where
+    T: Instant,
 {
     fn display(&self) -> DisplayInstant<'_, T, true> {
         DisplayInstant(self)
@@ -91,6 +107,25 @@ mod tests {
 
     use crate::display_ext::DisplayInstantExt;
     use crate::TokioInstant;
+
+    #[test]
+    fn instant_timestamp_formats_utc_and_historical_local_offsets() {
+        use super::*;
+
+        let utc = OffsetDateTime::from_unix_timestamp_nanos(123_456_789).unwrap();
+        let east = UtcOffset::from_hms(5, 30, 0).unwrap();
+        let west = UtcOffset::from_hms(-3, -29, -30).unwrap();
+        for (offset, simple, expected) in [
+            (UtcOffset::UTC, false, "1970-01-01T00:00:00.123456Z+0000"),
+            (east, true, "05:30:00.123456"),
+            (east, false, "1970-01-01T05:30:00.123456Z+0530"),
+            (west, false, "1969-12-31T20:30:30.123456Z-0330"),
+        ] {
+            let mut output = String::new();
+            write_timestamp(&mut output, utc.to_offset(offset), simple).unwrap();
+            assert_eq!(output, expected);
+        }
+    }
 
     /// Check the result by a human.
     #[test]

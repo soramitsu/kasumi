@@ -930,21 +930,15 @@ impl Drop for FacadeOpening {
         if self.complete() {
             return;
         }
-        if let Some(owner) = self.core.take() {
-            std::mem::forget(owner);
-        }
-        if let Some(owner) = self.database.take() {
-            std::mem::forget(owner);
-        }
-        if let Some(owner) = self.gate.take() {
-            std::mem::forget(owner);
-        }
-        if let Some(owner) = self.held.take() {
-            std::mem::forget(owner);
-        }
-        if let Some(owner) = self.changed.take() {
-            std::mem::forget(owner);
-        }
+        // Keep every remaining control when disposal has not returned. The
+        // native mutex and condition variable have platform-specific drop glue.
+        std::mem::forget((
+            self.core.take(),
+            self.database.take(),
+            self.gate.take(),
+            self.held.take(),
+            self.changed.take(),
+        ));
         std::mem::forget(std::mem::replace(
             &mut self.steps,
             std::array::from_fn(|_| crate::native_backend::DisposalObservation::default()),
@@ -962,7 +956,7 @@ impl Database {
             admission,
             group_id,
             cache,
-            create_format: crate::DirectoryPageFormat::Fixed,
+            create_format: crate::DirectoryPageFormat::default(),
         }
     }
 

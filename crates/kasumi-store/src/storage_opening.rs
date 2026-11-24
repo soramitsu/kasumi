@@ -77,8 +77,7 @@ pub struct NodeStorageConfig {
     pub cached_files: usize,
 }
 
-/// Options for creating native storage. Existing configurations select the
-/// fixed page format. Reopening uses the format recorded by the database.
+/// Options for creating native storage. New groups use packed directory pages by default. Reopening uses the format recorded by the database.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeStorageCreateOptions {
     storage: NodeStorageConfig,
@@ -87,7 +86,7 @@ pub struct NodeStorageCreateOptions {
 
 impl From<NodeStorageConfig> for NodeStorageCreateOptions {
     fn from(storage: NodeStorageConfig) -> Self {
-        storage.with_directory_page_format(kasumi_kv::DirectoryPageFormat::Fixed)
+        storage.with_directory_page_format(kasumi_kv::DirectoryPageFormat::default())
     }
 }
 
@@ -176,6 +175,7 @@ impl NodeGroupIdentity {
 
 pub enum NodeOpeningMode {
     Create,
+    CreateTarget(Uuid),
     OwnedEmpty(NodeGroupIdentity),
     Existing,
 }
@@ -237,6 +237,7 @@ impl OpeningFile {
             Self::Synthetic { .. } => Err(io::ErrorKind::Unsupported.into()),
         }
     }
+    #[cfg(any(test, feature = "test-utils"))]
     fn cache_limit(&self) -> u64 {
         match self {
             Self::Physical(file) => file.disk().native_storage_config().cache.byte_limit,
@@ -805,6 +806,13 @@ impl RegisteredNodeOpening {
             TypedOwnerLookup::Missing => OpeningLookup::Missing,
         }
     }
+    /// Sample native handles without delaying an operation that holds the
+    /// opening. A missing observation cannot establish that close is complete.
+    pub(crate) fn active_native_handles(&self) -> Option<usize> {
+        let state = self.registration.owner().state.try_lock()?;
+        state.engine.report().active_transactions()
+    }
+
     /// Dispose actual native owner, keeping the composite node allocation live.
     pub(crate) fn dispose_native(&self) -> io::Result<DatabaseOpenSettlement> {
         let owner = self.registration.owner();
@@ -996,6 +1004,16 @@ impl RegisteredNodeOpening {
         state.file.physical()?.identity()
     }
 
+    /// Read the materialization stamp from the enrolled directory descriptor.
+    pub fn target_directory_stamp(&self) -> anyhow::Result<Option<Uuid>> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
+        }
+        state.file.physical()?.target_directory_stamp()
+    }
+
     /// Admit one call into the open database. Under the opening's state this
     /// checks that the opening is open and not stopped, and takes a
     /// transaction admission; the caller then makes its call on the
@@ -1036,6 +1054,7 @@ impl RegisteredNodeOpening {
             .ok_or(kasumi_kv::StorageError::DatabaseClosed)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -1049,10 +1068,12 @@ impl RegisteredNodeOpening {
         .configure_cache(config)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
         self.admit_call()?.cache_stats()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache(
         &self,
         work_limit: usize,
@@ -1073,6 +1094,7 @@ impl RegisteredNodeOpening {
         self.admit_call()?.cache_warmup_status()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
         self.admit_call()?.request_cache_warm_retry()
     }

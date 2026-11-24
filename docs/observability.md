@@ -68,6 +68,10 @@ phase at its reported revision and may be superseded by a later transition.
 The route does not reveal the recovery request, target placement, or dispatch
 inputs. The protected 1 MiB response limit and original release checks apply.
 
+An installed Control administrator can read the same response with
+`kasumictl --profile <control-profile> recovery-observation <operation-uuid>`.
+The command prints the protected response and exits successfully on HTTP 200.
+
 Control administrator authorization itself requires a current Control quorum
 barrier. If that cannot be established, all protected endpoints return 503
 (`control_quorum`); they do not release counters using an old policy. On HA
@@ -83,9 +87,11 @@ memory pressure (the RSS high-water) nor exhausted operation slots or bytes can
 refuse it. A second concurrent observation tries the shared pool as before and
 otherwise waits up to 2 s for the slot, then returns 503 (`admission`). Each
 observation is bounded by the 1 MiB response limit, so one slot bounds the
-permanent charge. The authentication record that every protected request
-writes to the service audit store is part of the protected boundary and still
-needs storage admission: a full disk or RSS pressure that refuses that write
+permanent charge. The service audit writer reserves another 4 KiB for one
+authenticated record when ordinary request slots are exhausted. The record
+keeps that reservation until its task joins. Concurrent records need ordinary
+admission while the slot is occupied. Each protected request still needs a
+durable write to the service audit store: a full disk or RSS pressure that refuses that write
 returns 503 (`audit_unavailable`). A scrape never waits on a database's
 maintenance: storage figures are copies the node workers publish (below).
 
@@ -200,17 +206,25 @@ Available metrics include:
   that another independent source copy or any distributed source is fenced.
 
 Health and readiness JSON include
-`admission.resident_reserved_bytes_by_origin`, whose six fixed counters sum to
+`admission.resident_reserved_bytes_by_origin`, whose counters sum to
 `admission.resident_reserved_bytes` in the same locked ledger sample.
 `ordinary_operation` counts retained operation grants; `other_ordinary` counts
 other resident grants, including native installed work; `audit_maintenance`
 counts maintenance grants; `scoped_application_source` counts source grants
-acquired in maintenance scope; `native_cache` counts native cache grants; and
+acquired in maintenance scope. `native_cache` counts native cache grants.
+`text_shard_cache` counts retained Tantivy readers and temporary grants for the text warmup worker.
 `document_source` counts selected-source metadata and logical document backing.
 Active operations and bookkeeping are excluded. These values measure reserved
 capacity, including unused headroom, rather than RSS, decoded data size, or actual
 cache occupancy. A grant keeps its original category when retained or resized
 and leaves the counters when released. The breakdown is JSON-only.
+
+Each available group's protected health JSON reports `text_warmup`. Its revision,
+visited shards and skipped shards describe the current sweep of the selected
+directory. `complete` means every shard in that sweep fit in the cache.
+`capacity_limited` records a refused optional grant. The registered database
+monitor revisits the directory after capacity returns, a cache eviction or a new
+publication. The sweep count is cumulative for this database process.
 
 A 200 response always carries every family, and every per-group family for
 every rostered group. Unknown values are `NaN` in Prometheus, so the series
@@ -251,8 +265,10 @@ scrape_configs:
 ```
 
 The scraper must run under an operator-controlled identity permitted to read these
-private files. Keep the selected profile's credential watcher running and update
-the scraper's trust and certificate files during explicit rotation. A dedicated
+private files. Keep the selected profile's credential watcher running. Certificate rotation
+publishes new client certificate files under `profiles/generation-<id>` and
+deletes the old ones: point the scraper at the files `profiles/control.json`
+names afterwards. A dedicated
 credential family can be revoked independently, but it still requires current
 Control administrator policy. A copied profile does not renew itself.
 

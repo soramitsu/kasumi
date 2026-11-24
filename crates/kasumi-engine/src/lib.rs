@@ -19,10 +19,18 @@ pub use retirement_source::InstalledRetirementSource;
 mod accounting;
 mod output;
 pub use output::AdmittedOutput;
+mod application_checkpoint;
+mod application_primary;
+mod application_records;
 mod application_sources;
+mod application_structured;
+mod application_text;
+mod directory_replacement;
+pub use application_text::{TextWarmupState, TextWarmupStatus};
 mod audit_source;
 mod current_json;
 mod document_encoding;
+mod document_gc;
 mod document_restore;
 mod document_source;
 mod document_store;
@@ -53,6 +61,11 @@ pub use target_invocation::{
 };
 pub use target_signer::TargetSigner;
 mod backup_binding;
+pub use backup_binding::ControlBackupSessions;
+pub use service::backup_session_pages::{
+    ControlBackupSessionBinding, ControlBackupSessionCursor, ControlBackupSessionDecision,
+    ControlBackupSessionEntry, ControlBackupSessionPage, MAX_CONTROL_BACKUP_SESSION_PAGE,
+};
 mod bootstrap;
 pub mod control;
 mod materialization_row;
@@ -65,23 +78,28 @@ mod snapshot_index;
 mod staged_terminal;
 mod state;
 mod target_resolution;
+mod tenant_audit_directory;
 pub use bootstrap::{
     ControlGenesis, ControlLifecycleGenesis, ExistingIncarnation, LocalRestoreRequest,
-    MaterializedTargetReplica, OpenedReplica, OriginalRecoveryWorkspace, PreparedReplicaRestore,
-    ReplicaPlacement, ReplicaRestoreConfig, ReplicatedBootstrap, ReplicatedGenesis, RestoreSource,
-    TargetMaterializationConfig, TargetReplica, TargetReplicaConfig, TargetReplicaStartup,
-    VerifiedTargetMaterialization, initialize_replicated, materialize_target_replica,
-    open_existing_local, open_existing_replicated, open_local, open_local_with_incarnation,
-    open_replicated, open_target_replica, persisted_bootstrap_digest,
-    persisted_bootstrap_digest_at, prepare_replicated_restore, recovery_workspace_bytes,
-    restore_local, resume_target_materialization,
+    MaterializedTargetReplica, OpenedReplica, OriginalRecoveryWorkspace, ReplicaPlacement,
+    ReplicatedBootstrap, ReplicatedGenesis, RestoreSource, TargetMaterializationConfig,
+    TargetReplica, TargetReplicaConfig, TargetReplicaStartup, VerifiedTargetMaterialization,
+    initialize_replicated, materialize_target_replica, open_existing_local,
+    open_existing_replicated, open_local, open_local_with_incarnation, open_replicated,
+    open_target_replica, persisted_bootstrap_digest, persisted_bootstrap_digest_at, restore_local,
+    resume_target_materialization,
 };
 pub use security_audit::{
     ArchivePrune, SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind,
     SecurityOutcome, TransportAuditMetadata,
 };
 pub use service::{
-    CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
+    AuthoritySignerKeyInventory, AuthoritySignerKeys, BackupSourceCapability, CustodyResponseFence,
+    Database, LocalRecoveryCheckpoint, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
+    LocalRecoveryKeyRead, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
+    RemoteDataCatalogReader, ResponseFence, RetiredCustody, RetirementResponseFence, SignerCatalog,
+    TargetCheckpointInventory, TargetCheckpointSource, TargetJournalExclusion, TargetWriterNetwork,
+    VerifiedBackupSource,
 };
 pub use state::{
     Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,
@@ -141,10 +159,11 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
 
 mod target_journal;
 pub use target_journal::{
-    AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
-    InitialInitializePermit, MaterializationFile, MaterializationNode,
-    ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetJournal,
-    TargetJournalInstallation, TargetJournalIntent, VerifiedInitialMembership,
+    AcceptedInitialDispatchPrebind, CurrentTargetJournalWriter, InitialDispatchReservation,
+    InitialDispatchStatus, InitialInitializePermit, MaterializationFile, MaterializationNode,
+    MissingTargetWriter, ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup,
+    TargetCleanupStage, TargetFileBinding, TargetJournal, TargetJournalInstallation,
+    TargetJournalIntent, TargetOwnerDrain, TargetWriterRead, VerifiedInitialMembership,
     VerifiedTargetInitializationAssociation, VerifiedTargetServingProjection,
 };
 

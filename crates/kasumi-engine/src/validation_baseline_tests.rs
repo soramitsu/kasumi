@@ -392,6 +392,23 @@ impl Read for CountedReader<'_> {
 }
 
 #[test]
+fn bootstrap_generation_preparation_returns_the_original_stop_after_decode() {
+    let scratch = scratch().unwrap();
+    let image = fresh().fixture_snapshot(&scratch.disk).unwrap();
+    let before = scratch.disk.snapshot().live_files;
+    let decoded = crate::snapshot_codec::read(&scratch.disk, &mut image.reader()).unwrap();
+    let stop = Error::new(ErrorCode::Unavailable, "original bootstrap generation stop");
+    let error =
+        TenantEngine::from_bootstrap_state("validation", decoded, &|| Err(stop.clone().into()))
+            .err()
+            .expect("generation preparation must observe its original restore owner");
+    let original = error.downcast_ref::<Error>().unwrap();
+    assert_eq!(original.code, stop.code);
+    assert_eq!(original.message, stop.message);
+    assert_eq!(scratch.disk.snapshot().live_files, before);
+}
+
+#[test]
 #[allow(
     clippy::result_large_err,
     reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
@@ -772,8 +789,8 @@ fn binding_candidate(
     }
     row.record.position.index = 2;
     let mut builder = crate::backup_binding::Builder::new(disk, 64 << 20, &state.incarnation)?;
-    builder.push(&row, &state)?;
     crate::backup_binding::advance(&mut state.backup_binding_head, &row)?;
+    builder.push(&row, &state)?;
     let bindings = builder.finish(&state.backup_binding_head)?;
     let mut candidate = Candidate::empty(state)?;
     candidate.bindings = bindings;

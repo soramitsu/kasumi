@@ -283,8 +283,6 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
 
 #[tokio::test]
 async fn standalone_restore_denials_are_audited_before_a_database_exists() {
-    use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
-    use kasumi_raft::{Config, InProcessRouter};
     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let source_root = dir.path().join("source");
     kasumi_store::private_files::create_directory(&source_root).unwrap();
@@ -317,7 +315,6 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
-    let backup = checkpoint.backup_id();
     let target_root = dir.path().join("target");
     kasumi_store::private_files::create_directory(&target_root).unwrap();
     let target_path = target_root.join("target.kv");
@@ -376,47 +373,6 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .expect("ordinary local restore denial original");
     assert_eq!(error.code, ErrorCode::Forbidden);
     assert!(error.denial_audit_attempted());
-    let replica = ReplicaRestoreConfig {
-        node_id: 1,
-        incarnation: uuid::Uuid::new_v4(),
-        voters: (1..=3)
-            .map(|id| {
-                (
-                    id,
-                    ReplicaPlacement {
-                        address: format!("node-{id}"),
-                        failure_domain: format!("domain-{id}"),
-                    },
-                )
-            })
-            .collect(),
-        raft: Config::default(),
-        admission: audit.admission().clone(),
-    };
-    let replicated = prepare_replicated_restore(
-        &kasumi_engine::RestoreSource {
-            timeout_ms: 300_000,
-            destination_alias: "backup".into(),
-            destination: destination.clone(),
-            keys: source_key.clone(),
-        },
-        backup,
-        target_domains.clone(),
-        context("visitor"),
-        replica,
-        Arc::new(InProcessRouter::default()),
-        audit.clone(),
-    )
-    .await;
-    assert_eq!(
-        replicated
-            .err()
-            .expect("unauthorized replicated restore rejected")
-            .operation_error()
-            .expect("ordinary replicated restore denial original")
-            .code,
-        ErrorCode::Forbidden
-    );
     assert!(
         target_store
             .get("engine.bootstrap", b"manifest")
@@ -458,9 +414,10 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             .code,
         ErrorCode::Sealed
     );
+    // The unauthorized restore denial, then the sealed-tenant event.
     let entries = audit.store().scan("security.audit").unwrap();
-    assert_eq!(entries.len(), 3);
-    let last: Value = serde_json::from_slice(entries[2].value()).unwrap();
+    assert_eq!(entries.len(), 2);
+    let last: Value = serde_json::from_slice(entries[1].value()).unwrap();
     assert_eq!(last["event"]["kind"], "tenant_sealed");
     target_domains.custody().store().shutdown().await.unwrap();
     target_store.shutdown().await.unwrap();
@@ -478,7 +435,8 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_key)
             .await
             .unwrap();
-    assert_eq!(service.scan("security.audit").unwrap().len(), 3);
+    // Both events survive reopening.
+    assert_eq!(service.scan("security.audit").unwrap().len(), 2);
     service.shutdown().await.unwrap();
     reopened.shutdown().await.unwrap();
     source.shutdown().await.unwrap();

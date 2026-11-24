@@ -34,6 +34,10 @@ use std::time::{Duration, Instant};
 mod support;
 use support::{FIRST_CLEAN, FIRST_KILLED, Fixtures, SECOND_CLEAN, layout};
 
+// All three deployed copies retain the same installation UUID. The serving
+// registry admits one owner for that UUID in a process, including through reopen.
+static DEPLOYED_SERVING_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const TENANT: &str = "default";
 /// Manifests carry a digest instead of any longer string.
 const LONG_STRING: usize = 4096;
@@ -324,8 +328,8 @@ async fn rebind(root: &Path, original: &str) -> Result<BTreeMap<String, Vec<u8>>
 
     let mut groups = vec![(
         CONTROL_TENANT.to_owned(),
-        &config.control.keys,
-        &config.control.custody_keys,
+        &config.hosted_control().unwrap().keys,
+        &config.hosted_control().unwrap().custody_keys,
         StorageAccess::node_control(),
     )];
     for tenant in &config.tenants {
@@ -410,7 +414,7 @@ impl Serving {
             .clone()
             .context("a standalone runtime has its administration")?;
         let security = runtime.security_audit().store().clone();
-        let control = runtime.control_database().clone();
+        let control = runtime.control_database().unwrap().clone();
         let (stop, shutdown) = watch::channel(false);
         let task = tokio::spawn(runtime.serve(shutdown));
         let serving = Self {
@@ -423,10 +427,11 @@ impl Serving {
         };
         let started = Instant::now();
         while serving.registry.database(&administrator()).is_err() {
-            ensure!(
-                !serving.task.is_finished() && started.elapsed() < PATIENCE,
-                "the deployed tenant did not serve"
-            );
+            if serving.task.is_finished() || started.elapsed() >= PATIENCE {
+                return serving
+                    .finish(Err(anyhow::anyhow!("the deployed tenant did not serve")))
+                    .await;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(serving)
@@ -436,7 +441,9 @@ impl Serving {
         Ok(self.registry.database(&administrator())?)
     }
 
-    async fn stop(self) -> Result<()> {
+    // Finish every serving attempt before another copy with the same
+    // installation UUID starts, including when a read or audit fails.
+    async fn finish<T>(self, checks: Result<T>) -> Result<T> {
         let Self {
             stop,
             task,
@@ -446,8 +453,20 @@ impl Serving {
             control,
         } = self;
         drop((registry, administration, security, control));
-        stop.send(true)?;
-        task.await?
+        let signal = stop.send(true);
+        let joined = task
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result);
+        let drain = joined.and_then(|()| Ok(signal?));
+        match (checks, drain) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(check), Ok(())) => Err(check),
+            (Ok(_), Err(drain)) => Err(drain),
+            (Err(check), Err(drain)) => {
+                Err(check.context(drain.context("deployed fixture shutdown also failed")))
+            }
+        }
     }
 }
 
@@ -870,10 +889,6 @@ async fn remove_in_flight(database: &Database, manifest: &Value) -> Result<()> {
 }
 
 async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
-    // These historical stores retain the same installed node identity. Only one
-    // copy may own its serving registration in this test process at a time.
-    static DEPLOYED_NODE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _node = DEPLOYED_NODE.lock().await;
     let fixture = match &source {
         Source::Packed(_, fixture) => Some(*fixture),
         Source::Directory(_) => None,
@@ -892,8 +907,40 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     }
     let bootstraps = rebind_in_child(&copy)?;
 
-    // First open: the deployed build's snapshot and journal tail.
+    // Each phase returns its original evidence after its serving owner joins.
     let serving = Serving::start(&copy).await?;
+    let checks = exercise_deployed_state(&copy, &serving, killed).await;
+    let (expected, selected) = serving.finish(checks).await?;
+    check_node_files(&copy)?;
+    let serving = Serving::start(&copy).await?;
+    let checks = verify_reopened_state(&copy, &serving, expected, selected, &bootstraps).await;
+    serving.finish(checks).await
+}
+
+fn snapshot_manifest(
+    store: &Arc<TenantStore>,
+) -> Result<kasumi_store::application_manifest::ApplicationManifest> {
+    let view = store.read_view()?;
+    let selected = kasumi_store::application_manifest::ApplicationManifest::load_at(&view)?
+        .context("new snapshot has no application descriptor manifest")?;
+    view.close()?;
+    ensure!(
+        selected.tenant == TENANT
+            && selected.document_count > 0
+            && selected.records.count() >= selected.document_count
+    );
+    Ok(selected)
+}
+
+async fn exercise_deployed_state(
+    copy: &Copy,
+    serving: &Serving,
+    killed: bool,
+) -> Result<(
+    Vec<Value>,
+    kasumi_store::application_manifest::ApplicationManifest,
+)> {
+    let manifest = &copy.manifest;
     let database = serving.database()?;
     let group = database.raft_group();
     ensure!(
@@ -925,7 +972,7 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         remove_in_flight(&database, manifest).await?;
     }
     check_manifest(&database, manifest).await?;
-    check_credentials(&copy, &serving)?;
+    check_credentials(copy, serving)?;
     let control = serving.control.engine().generation()?;
     ensure!(
         control.state.audit_retention.next_sequence
@@ -957,8 +1004,9 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     })
     .await?;
     let store = database.stores().application().clone();
+    let selected = snapshot_manifest(&store)?;
     let cycles = store.storage_maintenance_status()?.cycles_completed;
-    let control = configured_control_context(&copy.config.control)?;
+    let control = configured_control_context(copy.config.hosted_control().unwrap())?;
     let requested = serving
         .administration
         .request_storage_compaction(&control)
@@ -978,18 +1026,170 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         answers(&database, manifest).await? == expected,
         "answers changed across the snapshot and compaction"
     );
-    drop((store, database));
-    serving.stop().await?;
+    Ok((expected, selected))
+}
 
-    // What the current code left on disk keeps every pinned layout, and the
-    // bootstrap manifests are the deployed build's bytes. The root may list
-    // garbage again: a reclaim round can start after the cycle, and the next
-    // open finishes it.
-    check_node_files(&copy)?;
-
-    // Second open: this build's own snapshot of the deployed state.
-    let serving = Serving::start(&copy).await?;
+async fn verify_reopened_state(
+    copy: &Copy,
+    serving: &Serving,
+    expected: Vec<Value>,
+    selected: kasumi_store::application_manifest::ApplicationManifest,
+    bootstraps: &BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let manifest = &copy.manifest;
     let database = serving.database()?;
+    let audit = database.tenant_audit_status(&administrator()).await?;
+    audit.validate()?;
+    let generation = database.engine().generation()?;
+    ensure!(audit.tenant == TENANT && audit.incarnation == generation.incarnation());
+    ensure!(audit.position.stream_id == generation.audit_retention().stream_id);
+    let capacity = database.tenant_audit_capacity(&administrator()).await?;
+    capacity.validate()?;
+    ensure!(
+        capacity.tenant == audit.tenant
+            && capacity.incarnation == audit.incarnation
+            && capacity.stream_id == audit.position.stream_id
+            && capacity.capacity.budget() == audit.budget
+    );
+    let request = kasumi_types::TenantAuditVerifyRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let verified = database
+        .verify_tenant_audit(&administrator(), request.clone())
+        .await?;
+    verified.validate(&request)?;
+    ensure!(
+        verified.stream_id == audit.position.stream_id
+            && verified.through_index == audit.position.archive_segments
+    );
+    let request = kasumi_types::TenantAuditExportRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let page = database
+        .export_tenant_audit(&administrator(), request.clone())
+        .await?;
+    page.validate(&request)?;
+    ensure!(
+        page.stream_id == audit.position.stream_id
+            && page.through_sequence == audit.position.next_sequence
+    );
+    if let Some(cursor) = page.cursor() {
+        let next = kasumi_types::TenantAuditExportRequest {
+            cursor: Some(cursor.clone()),
+            limit: 1,
+        };
+        let next_page = database
+            .export_tenant_audit(&administrator(), next.clone())
+            .await?;
+        next_page.validate(&next)?;
+        ensure!(next_page.records[0].sequence == cursor.next_sequence);
+        let mut unsigned = cursor;
+        unsigned.ticket = None;
+        ensure!(
+            database
+                .export_tenant_audit(
+                    &administrator(),
+                    kasumi_types::TenantAuditExportRequest {
+                        cursor: Some(unsigned),
+                        limit: 1
+                    }
+                )
+                .await
+                .unwrap_err()
+                .code
+                == kasumi_types::ErrorCode::CursorExpired
+        );
+    }
+    drop(page);
+    drop(verified);
+    drop((capacity, audit, generation));
+    let mut reader = administrator();
+    reader.scopes.remove(&Action::Audit);
+    ensure!(
+        database
+            .tenant_audit_status(&reader)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::Forbidden
+    );
+    let key_request = kasumi_types::ReadKeyRetentionRequest {
+        scope: kasumi_types::KeyRetentionScope::Tenant {
+            tenant: TENANT.to_owned(),
+        },
+        cursor: None,
+        limit: 1,
+    };
+    let keys = database
+        .read_key_retention(&administrator(), key_request.clone())
+        .await?;
+    keys.validate(&key_request)?;
+    ensure!(matches!(
+        &keys.coverage,
+        kasumi_types::KeyRetentionCoverage::Incomplete { .. }
+    ));
+    ensure!(
+        keys.entries.len() == 1
+            && matches!(
+                &keys.entries[0].reference,
+                kasumi_types::KeyReference::Catalog { .. }
+            )
+    );
+    let cursor = keys
+        .next_cursor
+        .as_ref()
+        .context("distinct application and custody catalogs must paginate")?
+        .clone();
+    drop(keys);
+    let next_request = kasumi_types::ReadKeyRetentionRequest {
+        cursor: Some(cursor.clone()),
+        ..key_request.clone()
+    };
+    let next = database
+        .read_key_retention(&administrator(), next_request.clone())
+        .await?;
+    next.validate(&next_request)?;
+    ensure!(
+        next.entries
+            .first()
+            .is_some_and(|entry| *entry > cursor.after)
+    );
+    drop(next);
+    let mut stale = cursor;
+    stale.inventory_sha256 = if stale.inventory_sha256 == "0".repeat(64) {
+        "1".repeat(64)
+    } else {
+        "0".repeat(64)
+    };
+    let stale = kasumi_types::ReadKeyRetentionRequest {
+        cursor: Some(stale),
+        ..key_request.clone()
+    };
+    ensure!(
+        database
+            .read_key_retention(&administrator(), stale)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::CursorExpired
+    );
+    let mut unprivileged = administrator();
+    unprivileged.scopes.remove(&Action::Admin);
+    ensure!(
+        database
+            .read_key_retention(&unprivileged, key_request)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::Forbidden
+    );
+    let reopened_manifest = snapshot_manifest(database.stores().application())?;
+    ensure!(
+        reopened_manifest == selected,
+        "compaction or reopen changed the selected application snapshot"
+    );
     ensure!(
         answers(&database, manifest).await? == expected,
         "answers changed across the restart"
@@ -1007,7 +1207,7 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
             "{tenant}'s bootstrap manifest changed"
         );
     }
-    check_credentials(&copy, &serving)?;
+    check_credentials(copy, serving)?;
     let current = database
         .get(&administrator(), "blobs", "blob-current")
         .await?
@@ -1033,11 +1233,17 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         "the deployed large document changed"
     );
     drop(untouched);
-    drop(database);
-    serving.stop().await
+    Ok(())
 }
 
-fn run(name: &'static str, fixture: &'static str) {
+fn run(
+    name: &'static str,
+    fixture: &'static str,
+    check: impl for<'a> AsyncFnOnce(Source<'a>) -> Result<()> + Send + 'static,
+) {
+    let _owner = DEPLOYED_SERVING_OWNER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // The installed stack of a generated installation needs more than
     // libtest's thread.
     std::thread::Builder::new()
@@ -1052,7 +1258,7 @@ fn run(name: &'static str, fixture: &'static str) {
                 .unwrap()
                 .block_on(Box::pin(async move {
                     let fixtures = Fixtures::load();
-                    serve_deployed_copy(Source::Packed(&fixtures, fixture))
+                    check(Source::Packed(&fixtures, fixture))
                         .await
                         .unwrap_or_else(|error| panic!("{fixture}: {error:#}"));
                 }));
@@ -1063,18 +1269,55 @@ fn run(name: &'static str, fixture: &'static str) {
 }
 
 #[test]
+fn a_failed_deployed_read_joins_its_owner_before_reopening_the_installation() {
+    run("deployed failed read", FIRST_CLEAN, async |source| {
+        let copy = install(source)?;
+        rebind_in_child(&copy)?;
+        let serving = Serving::start(&copy).await?;
+        let original = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::AuditUnavailable,
+            "fixture read audit failure",
+        );
+        let error = serving
+            .finish::<()>(Err(original.clone().into()))
+            .await
+            .unwrap_err();
+        ensure!(error.downcast_ref::<kasumi_types::Error>() == Some(&original));
+        ensure!(
+            error.chain().count() == 1,
+            "unexpected drain failure: {error:#}"
+        );
+        let reopened = Serving::start(&copy).await?;
+        let checks = reopened.database().and_then(|database| {
+            ensure!(
+                database.engine().generation()?.incarnation()
+                    == copy.manifest["installation"]["incarnation"]
+                        .as_str()
+                        .context("deployed tenant incarnation")?
+            );
+            Ok(())
+        });
+        reopened.finish(checks).await
+    });
+}
+
+#[test]
 fn the_store_the_first_build_stopped_cleanly_serves_snapshots_compacts_and_reopens() {
-    run("deployed 12140939 clean", FIRST_CLEAN);
+    run("deployed 12140939 clean", FIRST_CLEAN, serve_deployed_copy);
 }
 
 #[test]
 fn the_store_the_first_build_was_killed_in_recovers_and_serves() {
-    run("deployed 12140939 killed", FIRST_KILLED);
+    run(
+        "deployed 12140939 killed",
+        FIRST_KILLED,
+        serve_deployed_copy,
+    );
 }
 
 #[test]
 fn the_store_the_second_build_served_keeps_its_reference_snapshot_readable() {
-    run("deployed cf9959f1 clean", SECOND_CLEAN);
+    run("deployed cf9959f1 clean", SECOND_CLEAN, serve_deployed_copy);
 }
 
 /// A copy `scripts/deployed_format_fixture.py` wrote, before it is packed:
@@ -1084,6 +1327,9 @@ fn a_named_local_copy_serves_like_the_committed_ones() {
     let Some(copy) = std::env::var_os("KASUMI_DEPLOYED_FORMAT_COPY") else {
         return;
     };
+    let _owner = DEPLOYED_SERVING_OWNER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     std::thread::Builder::new()
         .name("deployed local copy".into())
         .stack_size(64 << 20)

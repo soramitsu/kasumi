@@ -264,6 +264,8 @@ struct Resources {
     directory: Option<NodeDiskDirectory>,
     root: Option<NodeDiskFile>,
     root_failed: bool,
+    // Preserve the descriptor that first fenced this group during eviction.
+    failed_eviction_slot: Option<usize>,
     entries: Vec<Entry>,
     // Admits the entry table's current capacity.
     charge: Option<DiskMemoryLease>,
@@ -422,6 +424,10 @@ impl NodeSegmentGroupCleanup {
         Ok(crate::private_files::DirectoryIdentity::from_verified(
             guard.open()?.directory()?.verified_identity()?,
         ))
+    }
+
+    pub fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        self.owner.target_directory_stamp()
     }
 
     pub fn root_identity(&self) -> Result<Option<FileIdentity>> {
@@ -626,15 +632,20 @@ impl NodeSegmentGroup {
         guard.phase = Phase::Acquiring;
         let (root, relative) = self.disk.binding(&self.path)?;
         let directory = match acquisition {
-            Acquisition::Opening(NodeOpeningMode::Create) => {
+            Acquisition::Opening(
+                mode @ (NodeOpeningMode::Create | NodeOpeningMode::CreateTarget(_)),
+            ) => {
                 let name = relative
                     .file_name()
                     .context("segment group path has no final component")?;
                 let name = CString::new(name.as_bytes())?;
                 let parent = relative.parent().unwrap_or(Path::new(""));
-                self.disk
-                    .open_directory(root, parent)?
-                    .create_child(&name, DiskWork::Foreground)?
+                let parent = self.disk.open_directory(root, parent)?;
+                if let NodeOpeningMode::CreateTarget(stamp) = mode {
+                    parent.create_target_child(&name, *stamp)?
+                } else {
+                    parent.create_child(&name, DiskWork::Foreground)?
+                }
             }
             Acquisition::Opening(NodeOpeningMode::OwnedEmpty(_) | NodeOpeningMode::Existing)
             | Acquisition::Cleanup => {
@@ -674,6 +685,7 @@ impl NodeSegmentGroup {
             directory: Some(directory),
             root: None,
             root_failed: false,
+            failed_eviction_slot: None,
             entries: Vec::new(),
             charge: None,
             high_water: [0; 2],
@@ -700,7 +712,7 @@ impl NodeSegmentGroup {
         }
         let root_path = relative.join(ROOT_FILE_NAME);
         match acquisition {
-            Acquisition::Opening(NodeOpeningMode::Create) => {
+            Acquisition::Opening(NodeOpeningMode::Create | NodeOpeningMode::CreateTarget(_)) => {
                 resources.root = Some(self.disk.create_file(
                     root,
                     &root_path,
@@ -735,8 +747,9 @@ impl NodeSegmentGroup {
                 acquisition_stage!("existing-census", self.census(resources, slots))?;
             }
             Acquisition::Cleanup => {
-                // Only an interrupted cleanup leaves an empty directory; it
-                // holds nothing to recognize or to lose.
+                // A crash between directory and root creation, or after the
+                // last file unlink, can leave the directory empty. The caller
+                // verifies its materialization stamp before deleting it.
                 if self.listing_summary()?.0 != 0 {
                     resources.root = Some(self.disk.open_file(root, &root_path)?);
                     self.verify_root(resources, &[PREPARED, READY])?;
@@ -850,8 +863,10 @@ impl NodeSegmentGroup {
             // and original error in the same slot instead of starting a retry.
             #[cfg(test)]
             self.census_checkpoint(CensusTestStage::RetryClose)?;
-            for slot in slots.iter_mut().filter(|slot| slot.handle.is_some()) {
-                self.evict(resources, slot)?;
+            for (index, slot) in slots.iter_mut().enumerate() {
+                if slot.handle.is_some() {
+                    self.evict(resources, index, slot)?;
+                }
             }
             // Retain the paid entry allocation, root and directory across the
             // bounded retry. No file was written during this opening census.
@@ -892,6 +907,10 @@ impl NodeSegmentGroup {
         Ok(self.effect(outcome)?)
     }
 
+    pub(crate) fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        Ok(self.state.read().open()?.directory()?.target_stamp()?)
+    }
+
     pub(crate) fn identity(&self) -> Result<NodeGroupIdentity> {
         let guard = self.state.read();
         let Phase::Open(resources) = &guard.phase else {
@@ -909,6 +928,7 @@ impl NodeSegmentGroup {
         })
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn disk(&self) -> &Arc<NodeDisk> {
         &self.disk
     }
@@ -1071,11 +1091,11 @@ impl NodeSegmentGroup {
             .min_by_key(|(_, slot)| slot.used.load(Ordering::Relaxed))
             .map(|(index, _)| index)
             .ok_or(io::ErrorKind::StorageFull)?;
-        self.evict(resources, &mut slots[victim])?;
+        self.evict(resources, victim, &mut slots[victim])?;
         Ok(victim)
     }
 
-    fn evict(&self, resources: &mut Resources, slot: &mut Slot) -> io::Result<()> {
+    fn evict(&self, resources: &mut Resources, index: usize, slot: &mut Slot) -> io::Result<()> {
         let handle = slot.handle.as_mut().expect("occupied cache cell");
         if slot.dirty.load(Ordering::Acquire) {
             // Closing needs a settled extent. This synchronizes the file and
@@ -1104,6 +1124,7 @@ impl NodeSegmentGroup {
             NodeDiskCloseOutcome::Entered(Err(error)) => {
                 // The exact owner and its original outcome stay in this cell.
                 slot.failed = true;
+                resources.failed_eviction_slot = Some(index);
                 self.fence();
                 Err(error)
             }
@@ -1802,7 +1823,10 @@ impl NodeSegmentGroup {
         let mut first = None;
         let mut retained = false;
         let mut retryable = true;
-        for slot in slots.iter_mut() {
+        // A secondary refusal from a lower-numbered cache slot must not hide
+        // the original eviction failure, including on subsequent drain calls.
+        let (earlier, remaining) = slots.split_at_mut(resources.failed_eviction_slot.unwrap_or(0));
+        for slot in remaining.iter_mut().chain(earlier) {
             let Some(handle) = slot.handle.as_mut() else {
                 continue;
             };

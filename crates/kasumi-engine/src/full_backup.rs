@@ -28,6 +28,33 @@ impl PublishedRoot {
     }
 }
 
+#[derive(Debug)]
+struct AuditCopyFailure {
+    object_id: uuid::Uuid,
+    upload: Option<anyhow::Error>,
+    readback: anyhow::Error,
+}
+
+impl std::fmt::Display for AuditCopyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "audit object {} readback: {:#}",
+            self.object_id, self.readback
+        )?;
+        if let Some(upload) = &self.upload {
+            write!(f, ", original upload: {upload:#}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for AuditCopyFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.readback.as_ref())
+    }
+}
+
 struct StateStream {
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     buffer: Vec<u8>,
@@ -212,6 +239,7 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
         session_id: uuid::Uuid,
+        alias: Option<&str>,
     ) -> Result<(PublishedRoot, kasumi_store::VerifiedBackupSession)> {
         self.access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
@@ -240,19 +268,43 @@ impl Database {
         let mut intent_reservation = self
             .admission()
             .reserve(16 << 20, Some(cancellation.clone()))?;
-        let intent = BackupSessionIntent {
-            session_id,
-            tenant: state.tenant.clone(),
-            source_incarnation: state.incarnation.clone(),
-            revision: state.revision,
-            principal: context.principal.clone(),
-            request_id: context.request_id.clone(),
-        };
-        intent.validate()?;
-        let intent_bytes = self
-            .store
-            .encrypt_session_record(state.revision, &intent)
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup intent encryption failed"))?;
+        // A fresh native call has its own authenticated request ID. If Control
+        // already committed the original intent before its response was lost,
+        // resume only its immutable capture and ciphertext. A newer generation
+        // cannot be substituted for that original snapshot.
+        let (intent, intent_bytes) =
+            if let Some(record) = self.backup_owner(&context, destination, session_id).await? {
+                let claim = &record.claim;
+                if claim.principal != context.principal
+                    || claim.source_incarnation != state.incarnation
+                    || claim.revision != state.revision
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "original backup capture unavailable or differs",
+                    ));
+                }
+                let bytes = self
+                    .original_backup_intent_for_effect(&context, &record)
+                    .await?;
+                (claim.intent(), bytes)
+            } else {
+                let intent = BackupSessionIntent {
+                    session_id,
+                    tenant: state.tenant.clone(),
+                    source_incarnation: state.incarnation.clone(),
+                    revision: state.revision,
+                    principal: context.principal.clone(),
+                    request_id: context.request_id.clone(),
+                };
+                intent.validate()?;
+                let bytes = self
+                    .claim_backup_intent(&context, destination, &intent, &generation, alias)
+                    .await?;
+                (intent, bytes)
+            };
+        self.engine
+            .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         destination
             .session_put(
                 session_id,
@@ -260,11 +312,12 @@ impl Database {
                 intent_bytes.into(),
             )
             .await
-            .map_err(|_| {
+            .map_err(|original| {
                 Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup intent publication uncertain; resolve the same session identity",
                 )
+                .with_physical_source(original)
             })?;
         let session = self
             .backup_session(&context, destination, session_id)
@@ -673,17 +726,20 @@ impl Database {
                     "backup audit accounting exceeded",
                 ));
             }
-            let _uncertain = tokio::select! {
+            let upload = tokio::select! {
                 result = destination.put(link.object_id, kasumi_store::BackupUpload::received(ciphertext)) => result,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             ownership.check()?;
             let copied = tokio::select! {
-                result = destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit copy unavailable"))?,
+                result = destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result.map_err(|readback| {
+                    Error::new(ErrorCode::Unavailable, "backup audit copy unavailable")
+                        .with_physical_source(AuditCopyFailure { object_id: link.object_id, upload: upload.err(), readback }.into())
+                })?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             let verified = tokio::select! {
-                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &copied, &link) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup audit copy verification failed"))?,
+                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &copied, &link) => result.map_err(|original| Error::new(ErrorCode::Corruption, "backup audit copy verification failed").with_physical_source(original))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             if verified != reference {

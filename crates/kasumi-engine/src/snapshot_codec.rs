@@ -1,6 +1,7 @@
 //! Canonical tenant snapshots consist of independently bounded semantic records.
 //! The decoder builds unpublished state one record at a time and accepts it only
 //! after checking strict record ordering, counts, byte totals, digest, and EOF.
+use crate::state::snapshot_validation::VerifiedRecords;
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,7 +12,7 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"KASUMIT8";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 25;
+pub(crate) const RECORD_KINDS: u8 = 26;
 pub(crate) const FRAME_HEADER_BYTES: usize = 9;
 #[path = "snapshot_record_work.rs"]
 mod record_work;
@@ -43,6 +44,49 @@ pub(crate) fn measure_typed_json(
     value: &impl Serialize,
     observe: impl FnMut(&[u8]),
 ) -> anyhow::Result<(u64, u64)> {
+    measure_with_meter(value, observe, record_work::Meter::default())
+}
+
+/// The structural charge is additive in sites, scalar bytes and wire bytes.
+/// Replace the exact charge and length of a null body in the real DTO with
+/// those of the measured body. Preserve the depth consumed by the DTO itself.
+pub(crate) fn measure_document_json(
+    document: &Document,
+    observe_body: impl FnMut(&[u8]),
+) -> anyhow::Result<((u64, u64), (u64, u64))> {
+    let body = measure_with_meter(
+        &CanonicalJsonValue(&document.body),
+        observe_body,
+        record_work::Meter::document_body(),
+    )?;
+    // A short body costs less to revisit than a second DTO with a null
+    // placeholder. Both routes use the same serializer and structural meter.
+    if body.0 <= 64 {
+        return Ok((body, measure_typed_json(document, |_| {})?));
+    }
+    validate_name(&document.id)?;
+    let frame = Document {
+        id: document.id.clone(),
+        version: document.version,
+        body: serde_json::Value::Null,
+    };
+    let (frame_bytes, frame_work) = measure_typed_json(&frame, |_| {})?;
+    let replace = |frame: u64, placeholder, actual| {
+        frame
+            .checked_sub(placeholder)
+            .and_then(|n| n.checked_add(actual))
+            .ok_or_else(|| anyhow::anyhow!("document measurement overflow"))
+    };
+    let bytes = replace(frame_bytes, 4, body.0)?;
+    let work = replace(frame_work, record_work::measure(b"null")?, body.1)?;
+    Ok((body, (bytes, work)))
+}
+
+fn measure_with_meter(
+    value: &impl Serialize,
+    observe: impl FnMut(&[u8]),
+    meter: record_work::Meter,
+) -> anyhow::Result<(u64, u64)> {
     struct Writer<F> {
         meter: record_work::Meter,
         observe: F,
@@ -57,10 +101,7 @@ pub(crate) fn measure_typed_json(
             Ok(())
         }
     }
-    let mut writer = Writer {
-        meter: record_work::Meter::default(),
-        observe,
-    };
+    let mut writer = Writer { meter, observe };
     serde_json::to_writer(&mut writer, value)?;
     let bytes = writer.meter.wire_bytes();
     Ok((bytes, writer.meter.finish()?))
@@ -73,6 +114,7 @@ pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
         21 => crate::staged_terminal::MAX_SNAPSHOT_RECORD_BYTES as u64,
         22 => crate::target_resolution::MAX_SNAPSHOT_RECORD_BYTES as u64,
         24 => crate::backup_binding::MAX_SNAPSHOT_RECORD_BYTES as u64,
+        25 => crate::backup_binding::intents::MAX_ROW as u64 + 256,
         _ => anyhow::bail!("unsupported snapshot record kind"),
     })
 }
@@ -105,6 +147,7 @@ pub(crate) enum Record {
     TargetResolution(Box<crate::target_resolution::Row>),
     RecoveryCompletionHistory(String, Box<RecoveryCompletionHistory>),
     BackupBinding(Box<crate::backup_binding::Row>),
+    LifecycleIntentHistory(Box<LifecycleIntentRow>),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -156,6 +199,9 @@ impl Record {
             Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
             Self::TargetResolution(row) => (22, format!("{:020}", row.ordinal), String::new()),
             Self::RecoveryCompletionHistory(k, _) => (23, k.clone(), String::new()),
+            Self::LifecycleIntentHistory(row) => {
+                (25, format!("{:020}", row.ordinal), String::new())
+            }
             Self::BackupBinding(row) => (24, format!("{:020}", row.ordinal), String::new()),
         }
     }
@@ -272,12 +318,13 @@ pub(crate) fn records_with_resolver<'a>(
                         Record::Archived(name.clone(), id.clone(), reference.clone())
                     })
             })),
-            5 | 24 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
-            6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
-                let mut header = value.clone();
-                header.chunks.clear();
-                Record::Stage(key.clone(), header)
-            })),
+            5 | 24 | 25 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
+            6 => Box::new(
+                state
+                    .staged_transactions
+                    .iter()
+                    .map(|(key, value)| Record::Stage(key.clone(), stage_header(value))),
+            ),
             7 => Box::new(state.staged_transactions.iter().flat_map(|(key, value)| {
                 value
                     .chunks
@@ -291,8 +338,7 @@ pub(crate) fn records_with_resolver<'a>(
                     .map(|key| Record::ActiveStage(key.clone())),
             ),
             9 => Box::new(state.change_feed.commits.iter().map(|(i, value)| {
-                let mut header = value.as_ref().clone();
-                header.records.clear();
+                let header = change_header(value);
                 Record::Change(*i, Arc::new(header))
             })),
             10 => unreachable!("change-feed loans handled above"),
@@ -371,6 +417,34 @@ pub(crate) fn records_with_resolver<'a>(
     ))
 }
 
+/// Project a feed commit without retaining any of its separately emitted events.
+pub(crate) fn change_header(commit: &ChangeCommit) -> ChangeCommit {
+    ChangeCommit {
+        revision: commit.revision,
+        first_sequence: commit.first_sequence,
+        records: Vec::new(),
+        record_bytes: commit.record_bytes,
+    }
+}
+
+/// Chunks are emitted independently. Project the header without copying the chunk map.
+pub(crate) fn stage_header(value: &StagedTransaction) -> StagedTransaction {
+    StagedTransaction {
+        scope: value.scope.clone(),
+        transaction_id: value.transaction_id.clone(),
+        manifest_digest: value.manifest_digest.clone(),
+        manifest: value.manifest.clone(),
+        chunks: Default::default(),
+        stored_chunk_bytes: value.stored_chunk_bytes,
+        uploaded_payload_bytes: value.uploaded_payload_bytes,
+        uploaded_operations: value.uploaded_operations,
+        uploaded_read_assertions: value.uploaded_read_assertions,
+        expires_at_ms: value.expires_at_ms,
+        ttl_ms: value.ttl_ms,
+        outcome: value.outcome.clone(),
+    }
+}
+
 /// The header's copy of the Control state; intents and changes are records.
 pub(crate) fn control_header(control: &LifecycleControlState) -> LifecycleControlState {
     LifecycleControlState {
@@ -381,6 +455,9 @@ pub(crate) fn control_header(control: &LifecycleControlState) -> LifecycleContro
         installation_policy: control.installation_policy.clone(),
         retired: control.retired,
         pending_change: control.pending_change,
+        intent_head: control.intent_head.clone(),
+        intent_source: Default::default(),
+        pending_intent: None,
         intents: Default::default(),
         changes: Default::default(),
     }
@@ -445,6 +522,9 @@ pub(crate) fn metadata_with_shared(
         retirements: Default::default(),
         retirement_bytes: state.retirement_bytes,
         audit_retention: state.audit_retention.clone(),
+        key_retirements: state.key_retirements.clone(),
+        target_journal_retirements: state.target_journal_retirements.clone(),
+        target_journal_writers: state.target_journal_writers.clone(),
         audits: Default::default(),
     }
 }
@@ -484,12 +564,26 @@ impl Write for Bounded {
     }
 }
 
+enum EncodedPosition {
+    Record((u8, String, String)),
+    EndOfKind(u8),
+}
+
+impl EncodedPosition {
+    fn precedes(&self, next: &(u8, String, String)) -> bool {
+        match self {
+            Self::Record(previous) => previous < next,
+            Self::EndOfKind(previous) => *previous < next.0,
+        }
+    }
+}
+
 pub(crate) struct Encoder<'a> {
     writer: &'a mut dyn Write,
     digest: Sha256,
     count: u64,
     total: u64,
-    previous: Option<(u8, String, String)>,
+    previous: Option<EncodedPosition>,
 }
 impl<'a> Encoder<'a> {
     pub(crate) fn new(writer: &'a mut dyn Write) -> anyhow::Result<Self> {
@@ -510,10 +604,10 @@ impl<'a> Encoder<'a> {
         anyhow::ensure!(
             self.previous
                 .as_ref()
-                .is_none_or(|previous| previous < &key),
+                .is_none_or(|previous| previous.precedes(&key)),
             "snapshot records duplicated or unordered"
         );
-        self.previous = Some(key);
+        self.previous = Some(EncodedPosition::Record(key));
         let mut buffer = Bounded(Vec::new());
         serde_json::to_writer(&mut buffer, &record)?;
         anyhow::ensure!(
@@ -536,6 +630,63 @@ impl<'a> Encoder<'a> {
             .checked_add(FRAME_HEADER_BYTES as u64)
             .and_then(|n| n.checked_add(buffer.0.len() as u64))
             .ok_or_else(|| anyhow::anyhow!("snapshot byte overflow"))?;
+        Ok(())
+    }
+    /// Copy a whole ordered class from the same immutable image whose typed
+    /// records built this target. Rebinding changes neither live documents
+    /// nor feed items. Both the source AEAD and the new stream digest cover
+    /// every copied byte, including the record lengths and kind tags.
+    fn verified_documents(&mut self, source: &VerifiedRecords, kind: u8) -> anyhow::Result<()> {
+        use std::io::{Seek, SeekFrom};
+
+        anyhow::ensure!(matches!(kind, 3 | 10), "unexpected verified document class");
+        let layout = source.summary().kinds[usize::from(kind)];
+        if layout.records == 0 {
+            anyhow::ensure!(
+                layout.framed_bytes == 0,
+                "empty verified document class has bytes"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.previous
+                .as_ref()
+                .is_none_or(|previous| match previous {
+                    EncodedPosition::Record((last, _, _)) | EncodedPosition::EndOfKind(last) =>
+                        *last < kind,
+                }),
+            "verified snapshot class is out of order"
+        );
+        let offset = source.summary().kinds[..usize::from(kind)]
+            .iter()
+            .try_fold(MAGIC.len() as u64, |offset, row| {
+                offset
+                    .checked_add(row.framed_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("verified snapshot offset overflow"))
+            })?;
+        let mut reader = source.image().reader();
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut remaining = layout.framed_bytes;
+        let mut buffer = zeroize::Zeroizing::new(vec![0u8; 64 << 10]);
+        while remaining > 0 {
+            let take = remaining.min(buffer.len() as u64) as usize;
+            let chunk = &mut buffer[..take];
+            reader.read_exact(chunk)?;
+            // The materialization writer checks the original deadline and
+            // access before each bounded output block.
+            self.writer.write_all(chunk)?;
+            self.digest.update(chunk);
+            remaining -= take as u64;
+        }
+        self.count = self
+            .count
+            .checked_add(layout.records)
+            .ok_or_else(|| anyhow::anyhow!("snapshot record count overflow"))?;
+        self.total = self
+            .total
+            .checked_add(layout.framed_bytes)
+            .ok_or_else(|| anyhow::anyhow!("snapshot framing overflow"))?;
+        self.previous = Some(EncodedPosition::EndOfKind(kind));
         Ok(())
     }
     pub(crate) fn finish(self) -> anyhow::Result<()> {
@@ -574,6 +725,49 @@ pub(crate) fn write_with_resolver(
     resolver: Option<&dyn DocumentResolver>,
     writer: &mut dyn Write,
 ) -> anyhow::Result<()> {
+    write_records(
+        state,
+        receipts,
+        backup_bindings,
+        terminals,
+        target_resolutions,
+        DocumentFrames::Resolve(resolver),
+        writer,
+    )
+}
+
+/// Only the freshly rebound target may reuse these bytes. Subsequent
+/// generations always use their own selected resolver.
+pub(crate) fn write_verified_genesis(
+    generation: &crate::Generation,
+    source: &VerifiedRecords,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    write_records(
+        &generation.state,
+        &generation.receipts,
+        &generation.backup_bindings,
+        &generation.terminals,
+        &generation.target_resolutions,
+        DocumentFrames::Verified(source),
+        writer,
+    )
+}
+
+enum DocumentFrames<'a> {
+    Resolve(Option<&'a dyn DocumentResolver>),
+    Verified(&'a VerifiedRecords),
+}
+
+fn write_records(
+    state: &TenantState,
+    receipts: &crate::mutation_receipt::View,
+    backup_bindings: &crate::backup_binding::View,
+    terminals: &crate::staged_terminal::View,
+    target_resolutions: &crate::target_resolution::View,
+    documents: DocumentFrames<'_>,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         terminals.head() == &state.staged_terminal_head,
         "snapshot terminal owner differs"
@@ -590,6 +784,14 @@ pub(crate) fn write_with_resolver(
                 encoder.record(Record::Receipt(Box::new(row?)))?;
             }
         } else {
+            let resolver = match documents {
+                DocumentFrames::Verified(source) if matches!(kind, 3 | 10) => {
+                    encoder.verified_documents(source, kind)?;
+                    continue;
+                }
+                DocumentFrames::Resolve(resolver) => resolver,
+                DocumentFrames::Verified(_) => None,
+            };
             for record in records_with_resolver(state, kind, None, resolver)? {
                 encoder.record(record?)?;
             }
@@ -607,7 +809,23 @@ pub(crate) fn write_with_resolver(
     for row in backup_bindings.records() {
         encoder.record(Record::BackupBinding(Box::new(row?)))?;
     }
+    write_lifecycle_history(&mut encoder, state)?;
     encoder.finish()
+}
+pub(crate) fn write_lifecycle_history(
+    encoder: &mut Encoder<'_>,
+    state: &TenantState,
+) -> anyhow::Result<()> {
+    if let Some(control) = &state.lifecycle_control
+        && let Some(head) = &control.intent_head
+    {
+        let reader = control.intent_storage()?;
+        for index in 1..=head.count {
+            let original = reader.row(head, index, control.installation.max_state_bytes)?;
+            encoder.record(Record::LifecycleIntentHistory(original.row))?;
+        }
+    }
+    Ok(())
 }
 
 /// Positions address payload bytes in the immutable, authenticated image.
@@ -645,7 +863,10 @@ impl StreamSummary {
         let framed = payload
             .checked_add(FRAME_HEADER_BYTES as u64)
             .ok_or_else(|| anyhow::anyhow!("snapshot framing overflow"))?;
-        let selected = &mut self.kinds[usize::from(kind)];
+        let selected = self
+            .kinds
+            .get_mut(usize::from(kind))
+            .ok_or_else(|| anyhow::anyhow!("snapshot kind is outside the layout roster"))?;
         selected.records = selected
             .records
             .checked_add(1)
@@ -680,7 +901,7 @@ impl StreamSummary {
         self.kinds
             .iter()
             .enumerate()
-            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24))
+            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24 | 25))
             .try_fold(64u64, |total, (number, kind)| {
                 // Names are bounded at validation; include duplicated map keys,
                 // Arc/descriptor control and conservative tree/vector capacity.
@@ -751,13 +972,11 @@ pub(crate) fn bounded_json_work(wire_bytes: u64, sites: u64) -> anyhow::Result<u
     record_work::bounded_work(wire_bytes, sites)
 }
 
-fn finish_summary(
-    reader: &mut dyn Read,
+fn authenticated_summary(
     digest: Sha256,
     mut summary: StreamSummary,
+    footer: &[u8; 48],
 ) -> anyhow::Result<StreamSummary> {
-    let mut footer = [0; 48];
-    reader.read_exact(&mut footer)?;
     anyhow::ensure!(
         summary.records > 0
             && u64::from_be_bytes(footer[..8].try_into()?) == summary.records
@@ -765,7 +984,6 @@ fn finish_summary(
             && digest.finalize().as_slice() == &footer[16..],
         "snapshot terminal authentication differs"
     );
-    anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
     summary.bytes = summary
         .bytes
         .checked_add(56)
@@ -773,48 +991,37 @@ fn finish_summary(
     Ok(summary)
 }
 
-/// Authenticate typed framing with fixed scratch before allocating any JSON
-/// record. Kind hints determine admission only; `visit` must independently bind
-/// every hint to its actual decoded enum before forwarding a semantic record.
-pub(crate) fn inspect(reader: &mut dyn Read) -> anyhow::Result<StreamSummary> {
-    let mut magic = [0; 8];
-    reader.read_exact(&mut magic)?;
-    anyhow::ensure!(&magic == MAGIC, "unsupported tenant snapshot format");
-    let mut hash = Sha256::new();
-    hash.update(magic);
-    let mut summary = StreamSummary::empty();
-    let mut previous = 0;
-    let mut buffer = [0; 64 << 10];
-    loop {
-        let mut length = [0; 8];
-        reader.read_exact(&mut length)?;
-        let bytes = u64::from_be_bytes(length);
-        if bytes == 0 {
-            return finish_summary(reader, hash, summary);
-        }
-        let mut kind = [0];
-        reader.read_exact(&mut kind)?;
+fn finish_summary(
+    reader: &mut dyn Read,
+    digest: Sha256,
+    summary: StreamSummary,
+    verified: Option<&VerifiedRecords>,
+) -> anyhow::Result<StreamSummary> {
+    let mut footer = [0; 48];
+    reader.read_exact(&mut footer)?;
+    if let Some(source) = verified {
+        let mut whole_image = digest.clone();
+        whole_image.update(0u64.to_be_bytes());
+        whole_image.update(footer);
         anyhow::ensure!(
-            (summary.records == 0 && kind[0] == 0)
-                || (summary.records > 0 && kind[0] > 0 && kind[0] >= previous),
-            "snapshot typed frames duplicated or unordered"
+            hex::encode(whole_image.finalize()) == source.image().sha256(),
+            "materialized snapshot image changed"
         );
-        summary.add(kind[0], bytes)?;
-        previous = kind[0];
-        hash.update(length);
-        hash.update(kind);
-        let mut remaining = bytes;
-        let mut work = record_work::Meter::default();
-        while remaining != 0 {
-            let take = usize::try_from(remaining.min(buffer.len() as u64))?;
-            reader.read_exact(&mut buffer[..take])?;
-            hash.update(&buffer[..take]);
-            work.consume(&buffer[..take])?;
-            remaining -= take as u64;
-        }
-        summary.record_work(kind[0], work.finish()?)?;
     }
+    let summary = authenticated_summary(digest, summary, &footer)?;
+    if let Some(source) = verified {
+        anyhow::ensure!(
+            &summary == source.summary(),
+            "materialized snapshot layout changed"
+        );
+    }
+    anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
+    Ok(summary)
 }
+
+#[path = "snapshot_inspection.rs"]
+mod inspection;
+pub(crate) use inspection::{StreamInspector, inspect};
 
 /// Visit canonical records without retaining preceding records. Successful return
 /// proves framing, canonical encoding, strict order, terminal authentication and
@@ -822,6 +1029,14 @@ pub(crate) fn inspect(reader: &mut dyn Read) -> anyhow::Result<StreamSummary> {
 /// caller; observing a record before the terminal proof never authorizes publish.
 pub(crate) fn visit<E: From<anyhow::Error>>(
     reader: &mut dyn Read,
+    visitor: impl FnMut(RecordPosition, Record) -> std::result::Result<(), E>,
+) -> std::result::Result<StreamSummary, E> {
+    visit_image(reader, None, visitor)
+}
+
+fn visit_image<E: From<anyhow::Error>>(
+    reader: &mut dyn Read,
+    verified: Option<&VerifiedRecords>,
     mut visitor: impl FnMut(RecordPosition, Record) -> std::result::Result<(), E>,
 ) -> std::result::Result<StreamSummary, E> {
     let mut magic = [0; 8];
@@ -838,6 +1053,7 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
     let mut lineage = 0u64;
     let mut audit = None;
     let mut audit_next = 0u64;
+    let mut intent_record_limit = 0u64;
     loop {
         let mut length = [0; 8];
         let size = (|| -> anyhow::Result<u64> {
@@ -848,7 +1064,7 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
         if size == 0 {
             return (|| -> anyhow::Result<StreamSummary> {
                 anyhow::ensure!(audit == Some(audit_next), "audit final sequence differs");
-                finish_summary(reader, digest, summary)
+                finish_summary(reader, digest, summary, verified)
             })()
             .map_err(E::from);
         }
@@ -859,6 +1075,21 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                 size <= record_limit(kind[0])?,
                 "snapshot typed record exceeds byte limit"
             );
+            if kind[0] == 25 {
+                anyhow::ensure!(
+                    size <= intent_record_limit,
+                    "lifecycle snapshot row exceeds selected byte allowance"
+                );
+            }
+            // A replay reads from the same frozen, authenticated spool. Keep the
+            // original per-kind admission before allocating any payload.
+            let measured = verified.map(|source| &source.summary().kinds[usize::from(kind[0])]);
+            if let Some(bound) = measured {
+                anyhow::ensure!(
+                    size <= bound.maximum_payload_bytes,
+                    "snapshot replay exceeds the verified record size"
+                );
+            }
             let position = RecordPosition {
                 offset: summary
                     .bytes
@@ -871,8 +1102,15 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
             digest.update(length);
             digest.update(kind);
             digest.update(&bytes);
-            let work = record_work::measure(&bytes)?;
-            let record = decode_record(&bytes)?;
+            // The initial structural visit compared canonical bytes and measured
+            // decode work. Only verified immutable replay can reuse those facts.
+            let (record, work) = match measured {
+                Some(bound) => (serde_json::from_slice(&bytes)?, bound.maximum_decode_work),
+                None => {
+                    let work = record_work::measure(&bytes)?;
+                    (decode_record(&bytes)?, work)
+                }
+            };
             let order = record.order();
             anyhow::ensure!(
                 order.0 == kind[0],
@@ -893,7 +1131,20 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                         summary.records == 1 && empty_records(header),
                         "snapshot header contains embedded records"
                     );
+                    if let Some(control) = &header.lifecycle_control
+                        && let Some(head) = &control.intent_head
+                    {
+                        anyhow::ensure!(
+                            head.encoded_bytes <= header.limits.max_lifecycle_intent_bytes,
+                            "lifecycle snapshot prefix exceeds installed byte budget"
+                        );
+                        let installed = crate::backup_binding::intents::installed_row_limit(
+                            control.installation.max_state_bytes,
+                        ) as u64;
+                        intent_record_limit = installed.saturating_add(256).min(head.encoded_bytes);
+                    }
                     header.audit_retention.validate()?;
+                    header.validate_key_retirement_scopes(crate::control::CONTROL_TENANT)?;
                     audit = Some(header.audit_retention.pruned_before);
                     audit_next = header.audit_retention.next_sequence;
                 }
@@ -922,6 +1173,14 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                     row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
                     "invalid terminal staged record"
                 ),
+                Record::LifecycleIntentHistory(row) => {
+                    row.intent.request.validate()?;
+                    anyhow::ensure!(
+                        row.intent.request_sha256 == staged_digest(&row.intent.request)?.0
+                            && row.ordinal > 0,
+                        "invalid retained lifecycle commitment"
+                    );
+                }
                 Record::BackupBinding(row) => {
                     row.framed_bytes()?;
                 }
@@ -1006,6 +1265,8 @@ pub(crate) struct Decoded {
     /// Every receipt row was compared with the reopening replica's durable
     /// checkpoint rows while decoding, so `receipts` already is those rows.
     pub(crate) receipts_verified: bool,
+    /// Built from the same typed live records that produced the staged bodies.
+    pub(crate) document_indexes: Option<kasumi_query::SnapshotIndexBuilder>,
 }
 /// A reopening replica's own checkpoint: decoding compares rows with what it
 /// already published under `checkpoint_sha256` instead of staging them.
@@ -1032,6 +1293,59 @@ pub(crate) fn read_reopening(
     reader: &mut dyn Read,
     reopen: Option<&ReopenRows<'_>>,
 ) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    read_placed(disk, SnapshotInput::Local { reader, reopen })
+}
+
+pub(crate) fn read_verified_target(
+    records: &VerifiedRecords,
+    tenant: &str,
+    incarnation: &str,
+    check: &dyn Fn() -> anyhow::Result<()>,
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    read_placed(
+        records.image().disk(),
+        SnapshotInput::VerifiedTarget {
+            records,
+            tenant,
+            incarnation,
+            check,
+        },
+    )
+}
+
+enum SnapshotInput<'a> {
+    Local {
+        reader: &'a mut dyn Read,
+        reopen: Option<&'a ReopenRows<'a>>,
+    },
+    VerifiedTarget {
+        records: &'a VerifiedRecords,
+        tenant: &'a str,
+        incarnation: &'a str,
+        check: &'a dyn Fn() -> anyhow::Result<()>,
+    },
+}
+
+fn read_placed(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    input: SnapshotInput<'_>,
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    let (reopen, target) = match &input {
+        SnapshotInput::Local { reopen, .. } => (*reopen, None),
+        SnapshotInput::VerifiedTarget {
+            tenant,
+            incarnation,
+            ..
+        } => (None, Some((*tenant, *incarnation))),
+    };
+    let mut document_indexes = match &input {
+        SnapshotInput::VerifiedTarget { records, .. }
+            if records.summary().kinds[4].records == 0 =>
+        {
+            Some(kasumi_query::SnapshotIndexBuilder::default())
+        }
+        _ => None,
+    };
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<ReceiptSink> = None;
     let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
@@ -1039,19 +1353,44 @@ pub(crate) fn read_reopening(
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let mut documents: Option<crate::document_restore::Builder> = None;
     let mut document_table_limit = None;
-    let summary = visit(reader, |_, record| {
+    let accept = |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
+                if let Some((tenant, incarnation)) = target {
+                    anyhow::ensure!(header.tenant == tenant, "restore document tenant differs");
+                    kasumi_types::validate_name(incarnation)?;
+                }
                 anyhow::ensure!(
                     state.is_none() && empty_records(&header),
                     "snapshot header contains embedded records"
                 );
                 Ok(())
             })?;
-            if header.backup_binding_head.count > 0 {
+            let intent_bytes = header
+                .lifecycle_control
+                .as_ref()
+                .and_then(|control| control.intent_head.as_ref())
+                .map_or(0, |head| head.encoded_bytes);
+            if intent_bytes > header.limits.max_lifecycle_intent_bytes {
+                return Err(
+                    anyhow::anyhow!("snapshot intent prefix exceeds installed budget").into(),
+                );
+            }
+            let backup_bytes = header.backup_binding_head.encoded_bytes;
+            if backup_bytes > header.limits.max_backup_binding_bytes {
+                return Err(anyhow::anyhow!(
+                    "snapshot backup binding prefix exceeds installed budget"
+                )
+                .into());
+            }
+            if header.backup_binding_head.count > 0 || intent_bytes > 0 {
                 backup_bindings = Some(crate::backup_binding::Builder::new(
                     disk,
-                    crate::backup_binding::scratch_limit(header.limits.max_backup_binding_bytes)?,
+                    crate::backup_binding::scratch_limit(
+                        backup_bytes.checked_add(intent_bytes).ok_or_else(|| {
+                            anyhow::anyhow!("Control permanent scratch bound overflow")
+                        })?,
+                    )?,
                     &header.backup_binding_head.origin_incarnation,
                 )?);
             }
@@ -1128,7 +1467,7 @@ pub(crate) fn read_reopening(
                 document_table_limit
                     .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
                 &state.tenant,
-                &state.incarnation,
+                target.map_or(state.incarnation.as_str(), |(_, incarnation)| incarnation),
             )?);
             if let Some(rows) = reopen.filter(|rows| rows.documents) {
                 kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -1157,6 +1496,13 @@ pub(crate) fn read_reopening(
                         collection.documents.is_empty() && collection.archived_documents.is_empty(),
                         "collection contains embedded documents"
                     );
+                    if !collection.definition.indexes.is_empty() {
+                        // Every collection header precedes the first document.
+                        document_indexes = None;
+                    }
+                    if let Some(building) = &mut document_indexes {
+                        building.add_collection(&collection.definition)?;
+                    }
                     state.collections.insert(k, collection);
                 }
                 Record::Document(k, document) => {
@@ -1164,6 +1510,9 @@ pub(crate) fn read_reopening(
                         .as_mut()
                         .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
                         .push(&document)?;
+                    if let Some(building) = &mut document_indexes {
+                        building.add_document(&k, &document)?;
+                    }
                     state
                         .collections
                         .get_mut(&k)
@@ -1181,6 +1530,15 @@ pub(crate) fn read_reopening(
                         .ok_or_else(|| anyhow::anyhow!("archive collection missing"))?
                         .archived_documents
                         .insert(id, reference);
+                }
+                Record::LifecycleIntentHistory(row) => {
+                    let control = state.lifecycle_control.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("lifecycle intent row outside installed Control")
+                    })?;
+                    backup_bindings
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("unexpected lifecycle history row"))?
+                        .push_intent(&row, control, state.limits.max_lifecycle_intent_bytes)?;
                 }
                 Record::BackupBinding(row) => {
                     backup_bindings
@@ -1352,9 +1710,25 @@ pub(crate) fn read_reopening(
             }
             Ok(())
         })
-    })?;
+    };
+    let summary = match input {
+        SnapshotInput::Local { reader, .. } => visit(reader, accept)?,
+        SnapshotInput::VerifiedTarget { records, check, .. } => {
+            visit_image(&mut records.reader(check), Some(records), accept)?
+        }
+    };
     kasumi_store::ScratchOperationFailure::ordinary(|| {
-        let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+        let mut state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+        anyhow::ensure!(
+            state
+                .lifecycle_control
+                .as_ref()
+                .and_then(|control| control.intent_head.as_ref())
+                == backup_bindings
+                    .as_ref()
+                    .and_then(|builder| builder.intent_head.as_ref()),
+            "snapshot lifecycle prefix count, bytes or digest differs"
+        );
         let backup_bindings = match backup_bindings {
             Some(builder) => builder.finish(&state.backup_binding_head)?,
             None => {
@@ -1368,6 +1742,8 @@ pub(crate) fn read_reopening(
                 empty
             }
         };
+        backup_bindings.bind_intents(&mut state);
+        crate::state::lifecycle::validate_restored_intents(&state)?;
         let receipts_verified = matches!(receipts, Some(ReceiptSink::Durable(_)));
         let receipts = match receipts {
             Some(ReceiptSink::Staged(builder)) => builder.finish(&state.mutation_receipt_head)?,
@@ -1416,10 +1792,8 @@ pub(crate) fn read_reopening(
             Some(builder) => builder.finish()?,
             None => crate::document_restore::StagedDocuments::empty(
                 disk,
-                document_table_limit
-                    .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
                 &state.tenant,
-                &state.incarnation,
+                target.map_or(state.incarnation.as_str(), |(_, incarnation)| incarnation),
             )?,
         };
         Ok(Decoded {
@@ -1431,6 +1805,7 @@ pub(crate) fn read_reopening(
             target_resolutions,
             documents,
             receipts_verified,
+            document_indexes,
         })
     })
 }
@@ -1474,6 +1849,50 @@ mod tests {
         .state
         .clone()
     }
+    #[test]
+    fn verified_replay_rejects_an_independently_valid_image_with_equal_layout() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
+        let mut state = state();
+        let mut bytes = Vec::new();
+        write(&state, &mut bytes).unwrap();
+        let image = kasumi_store::SnapshotImage::from_bytes(&scratch.disk, &bytes).unwrap();
+        let source = crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+            image,
+            128 << 20,
+            || Ok(()),
+        )
+        .unwrap()
+        .into_records();
+        let decoded =
+            super::read_verified_target(&source, &state.tenant, "restored", &|| Ok(())).unwrap();
+        assert_eq!(decoded.summary, *source.summary());
+        assert!(decoded.document_indexes.is_some());
+        assert!(
+            super::read(&scratch.disk, &mut bytes.as_slice())
+                .unwrap()
+                .document_indexes
+                .is_none()
+        );
+        drop(decoded);
+
+        Arc::make_mut(&mut state.policy).grants[0].principal = "other".into();
+        let mut substituted = Vec::new();
+        write(&state, &mut substituted).unwrap();
+        assert_ne!(bytes, substituted);
+        let layout = visit::<anyhow::Error>(&mut substituted.as_slice(), |_, _| Ok(())).unwrap();
+        assert_eq!(&layout, source.summary());
+        let error =
+            visit_image::<anyhow::Error>(&mut substituted.as_slice(), Some(&source), |_, _| Ok(()))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("materialized snapshot image changed"),
+            "{error:#}"
+        );
+    }
+
     #[test]
     fn empty_decoded_snapshots_retain_scope_without_scratch_databases() {
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);

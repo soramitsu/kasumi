@@ -9,6 +9,8 @@ use kasumi_store::private_files;
 use kasumi_types::*;
 use uuid::Uuid;
 
+use crate::observability::test_evidence::observed_reply;
+
 fn http(profile: &ClientProfile, identity: bool) -> reqwest::Client {
     http_with_timeout(profile, identity, Duration::from_secs(15))
 }
@@ -459,7 +461,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     let management = runtime.administration.as_ref().unwrap().clone();
     let registry = runtime.registry.clone();
     assert_eq!(telemetry.lifecycle(), Lifecycle::Starting);
-    let database = runtime.control.database.clone();
+    let database = runtime.control.as_ref().unwrap().database.clone();
     let tenant_database = runtime.tenants[0].database.clone();
     let application = runtime.tenants[0].store.clone();
     let (stop, shutdown) = watch::channel(false);
@@ -530,7 +532,8 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     );
     let response = ready_response(&client, &ready, &operator, "initial_serving").await;
     assert_eq!(response.headers()["cache-control"], "no-store");
-    let value: serde_json::Value = response.json().await.unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&observed_reply("initial-ready", response).await).unwrap();
     assert_eq!(value["ready"], true);
     assert!(
         no_identity
@@ -595,6 +598,13 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(value["readiness_coverage"]["detail_limit"], 128);
     assert_eq!(value["standalone_recovery_pending"], false);
     assert_eq!(value["backup_requests"]["create"]["inflight"], 0);
+    assert_eq!(
+        value["backup_sessions"],
+        serde_json::json!({
+            "claimed_without_terminal": 0, "completed": 0, "aborted": 0,
+            "last_binding_revision": 0,
+        })
+    );
     assert_eq!(
         value["service_audit"]["retention"]["archive_backlog_bytes"],
         0
@@ -667,15 +677,13 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
             .iter()
             .all(|group| group["quorum"] == true && group["authority_remaining_seconds"].is_null())
     );
-    let text = client
+    let response = client
         .get(&metrics)
         .bearer_auth(&*operator)
         .send()
         .await
-        .unwrap()
-        .text()
-        .await
         .unwrap();
+    let text = String::from_utf8(observed_reply("initial-metrics", response).await).unwrap();
     assert!(text.contains("kasumi_ready 1\n") && text.contains("kasumi_service_audit_hot_bytes "));
     assert!(text.contains("kasumi_local_group_audit_hot_bytes{tenant=\"tenant-a\"}"));
     assert!(text.contains("kasumi_service_audit_archive_backlog_bytes 0\n"));
@@ -849,17 +857,14 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .unwrap();
     assert!(committed > 0);
 
-    assert_eq!(
-        client
-            .get(&health)
-            .bearer_auth(&*operator)
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16(),
-        200
-    );
+    let response = client
+        .get(&health)
+        .bearer_auth(&*operator)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    observed_reply("health", response).await;
 
     // Standalone execution rejects Raft membership operations without changing
     // its readiness epoch or invalidating a held healthy response.
@@ -1213,7 +1218,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     // A committed roster larger than the diagnostic page cannot get a complete
     // coverage certificate from groups that have never been installed here.
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
-    let context = configured_control_context(&config.control).unwrap();
+    let context = configured_control_context(config.hosted_control().unwrap()).unwrap();
     let mut topology = plane.topology(&context).await.unwrap().unwrap();
     for index in 0..129 {
         topology.topology.tenants.insert(
@@ -1291,9 +1296,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     let hold = gate(&telemetry).await;
     let pending = request(&client, &metrics, &operator);
     entered(&hold).await;
-    database
+    let original = configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let changed = database
         .administer(
-            configured_control_context(&config.control).unwrap(),
+            original.clone(),
             Operation::SetPolicy(Policy {
                 grants: vec![Grant {
                     principal: "replacement-administrator".into(),
@@ -1303,8 +1309,34 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
                 strict_read_audit: false,
             }),
         )
+        .await;
+    if let Err(error) = changed {
+        assert_eq!(error.code, ErrorCode::UnknownOutcome, "{error:?}");
+        eprintln!("observability policy revocation returned {error:?}");
+        // This write revokes its own caller. Resolve the original effect on the
+        // Control leader before releasing the already-authorized metrics request.
+        let mut replacement = original.clone();
+        replacement.principal = "replacement-administrator".into();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                database.raft_group().linearizable_barrier().await.unwrap();
+                if database
+                    .engine()
+                    .authorize(&replacement, None, Action::Admin)
+                    .is_ok()
+                    && database
+                        .engine()
+                        .authorize(&original, None, Action::Admin)
+                        .is_err_and(|denied| denied.code == ErrorCode::Forbidden)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| panic!("unresolved original policy revocation: {error:?}"));
+    }
     hold.release.notify_one();
     withheld(pending, 403, Some("forbidden")).await;
     let last_epoch = management.readiness_epoch().unwrap();
@@ -1469,11 +1501,9 @@ async fn protected_archive_outage_and_due_backlog() {
     drop(after);
     drop(before);
 
-    let value: serde_json::Value = ready_response(&client, &ready, &operator, "archive_outage")
-        .await
-        .json()
-        .await
-        .unwrap();
+    let response = ready_response(&client, &ready, &operator, "archive_outage").await;
+    let value: serde_json::Value =
+        serde_json::from_slice(&observed_reply("archive-outage", response).await).unwrap();
     assert_eq!(value["ready"], true);
     let group = value["groups"]
         .as_array()
@@ -1502,7 +1532,7 @@ async fn protected_archive_outage_and_due_backlog() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let text = response.text().await.unwrap();
+    let text = String::from_utf8(observed_reply("archive-outage-metrics", response).await).unwrap();
     assert!(text.contains("kasumi_ready 1\n"));
     assert!(text.contains(&format!(
         "kasumi_local_group_audit_archive_backlog_bytes{{tenant=\"tenant-a\"}} {due}\n"
@@ -1640,6 +1670,7 @@ async fn installed_healthy_group_coverage() {
         ready: &str,
         operator: &str,
         management: &Arc<crate::administration::Administration>,
+        label: &str,
     ) -> serde_json::Value {
         let mut last_503 = serde_json::Value::Null;
         let response = tokio::time::timeout(Duration::from_secs(120), async {
@@ -1673,7 +1704,7 @@ async fn installed_healthy_group_coverage() {
             )
         });
         assert_eq!(response.headers()["cache-control"], "no-store");
-        let body = response.bytes().await.unwrap();
+        let body = observed_reply(label, response).await;
         assert!(
             body.len() <= (1 << 20),
             "diagnostic response exceeded 1 MiB"
@@ -1681,7 +1712,7 @@ async fn installed_healthy_group_coverage() {
         serde_json::from_slice(&body).unwrap()
     }
 
-    let value = healthy(&client, &ready, &operator, &management).await;
+    let value = healthy(&client, &ready, &operator, &management, "healthy-129").await;
     phase("first-healthy-certificate");
     // Serving reconciliation publishes committed routes before readiness can
     // certify them; an opened runtime intentionally has no data routes yet.
@@ -1734,15 +1765,13 @@ async fn installed_healthy_group_coverage() {
         value["persistent_disk"]["charged_bytes"].as_u64().unwrap()
             <= value["persistent_disk"]["max_bytes"].as_u64().unwrap()
     );
-    let text = client
+    let response = client
         .get(&metrics)
         .bearer_auth(&*operator)
         .send()
         .await
-        .unwrap()
-        .text()
-        .await
         .unwrap();
+    let text = String::from_utf8(observed_reply("metrics-129", response).await).unwrap();
     for expected in [
         "kasumi_ready 1\n",
         "kasumi_readiness_groups_expected 129\n",
@@ -1782,10 +1811,21 @@ async fn installed_healthy_group_coverage() {
         response.json::<serde_json::Value>().await.unwrap()["ready"],
         true
     );
-    let refreshed = healthy(&client, &ready, &operator, &management).await;
+    let refreshed = healthy(
+        &client,
+        &ready,
+        &operator,
+        &management,
+        "after-rejected-membership",
+    )
+    .await;
     assert_eq!(refreshed["ready"], true);
     assert_eq!(
         refreshed["readiness_coverage"]["membership_epoch"],
+        serde_json::to_value(changed).unwrap()
+    );
+    assert_eq!(
+        refreshed["readiness_coverage"]["covered_epoch"],
         serde_json::to_value(changed).unwrap()
     );
     assert_eq!(refreshed["readiness_coverage"]["expected_groups"], GROUPS);
@@ -1834,7 +1874,8 @@ async fn installed_healthy_group_coverage() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let failed: serde_json::Value = response.json().await.unwrap();
+    let failed: serde_json::Value =
+        serde_json::from_slice(&observed_reply("negative-group-129", response).await).unwrap();
     assert_eq!(failed["ready"], true);
     assert_eq!(failed["readiness_coverage"]["expected_groups"], GROUPS);
     assert_eq!(failed["readiness_coverage"]["examined_groups"], GROUPS);
@@ -2030,7 +2071,7 @@ async fn standalone_control_closure_stops_daemon() {
     .await
     .unwrap();
     let management = runtime.administration.as_ref().unwrap().clone();
-    let control_store = runtime.control.store.clone();
+    let control_store = runtime.control.as_ref().unwrap().store.clone();
     let (_stop, shutdown) = watch::channel(false);
     let mut serving = tokio::spawn(runtime.serve(shutdown));
     let client = http(&control, true);

@@ -51,6 +51,9 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "rpc_recovery_tests.rs"]
 mod recovery_tests;
+#[cfg(test)]
+#[path = "rpc_remote_backup_tests.rs"]
+mod remote_backup_tests;
 
 #[cfg(test)]
 #[path = "rpc_control_signer_tests.rs"]
@@ -69,6 +72,8 @@ pub struct NativeAdmin {
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
     control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
+    backup: Option<crate::remote_backup::Endpoint>,
+    catalog: Option<crate::data_member_catalog::DataCatalogListener>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
@@ -106,6 +111,23 @@ async fn routed(
         .map_err(status)
 }
 
+fn administrative_peer(request: &Request<PrivateReadJsonRequest>) -> Result<String, Status> {
+    request
+        .extensions()
+        .get::<crate::tls::AuthenticatedTlsPeer>()
+        .and_then(|p| p.certificate_pin())
+        .map(hex::encode)
+        .ok_or_else(|| Status::unauthenticated("administrative mTLS identity required"))
+}
+fn backup_body<T: serde::de::DeserializeOwned>(
+    request: Request<PrivateReadJsonRequest>,
+) -> Result<T, Status> {
+    let body = request.into_inner().request_json;
+    if body.len() > kasumi_types::MAX_REMOTE_BACKUP_BYTES {
+        return Err(Status::resource_exhausted("backup request exceeds bound"));
+    }
+    decode_json(&body).map_err(status)
+}
 fn receipt(value: kasumi_types::WriteReceipt) -> WriteReceipt {
     WriteReceipt {
         revision: value.revision,
@@ -761,6 +783,8 @@ impl NativeAdmin {
             management: None,
             telemetry: crate::observability::Telemetry::new(),
             control_signer: None,
+            backup: None,
+            catalog: None,
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -769,6 +793,30 @@ impl NativeAdmin {
         mut self,
         management: Arc<crate::administration::Administration>,
     ) -> Self {
+        self.backup = match (&management.control, &management.backup_source) {
+            (crate::administration::ControlAccess::Local(control), _)
+                if management
+                    .config
+                    .control
+                    .as_ref()
+                    .is_some_and(|hosted| hosted.backup_sources.is_some()) =>
+            {
+                Some(crate::remote_backup::Endpoint::Control(control.clone()))
+            }
+            (_, Some(source)) => Some(crate::remote_backup::Endpoint::Source(source.clone())),
+            _ => None,
+        };
+        self.catalog = management
+            .config
+            .remote_control
+            .as_ref()
+            .and_then(|remote| {
+                Some(crate::data_member_catalog::DataCatalogListener {
+                    control: remote.root.control_incarnation,
+                    grant: remote.catalog_reader.as_ref()?.clone(),
+                    admission: management.admission().clone(),
+                })
+            });
         self.management = Some(management);
         self
     }
@@ -791,6 +839,47 @@ impl NativeAdmin {
             .max_decoding_message_size(MAX_REQUEST_BYTES)
             .max_encoding_message_size(MAX_RESPONSE_BYTES)
     }
+    async fn private_read_input<Q: serde::de::DeserializeOwned>(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<
+        (
+            Q,
+            RequestContext,
+            Arc<kasumi_engine::Database>,
+            kasumi_engine::ResponseFence<'static>,
+        ),
+        Status,
+    > {
+        let context = verified(&self.auth, &request).await?;
+        let input: Q = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.admitted_response_fence(&context))
+            .await
+            .map_err(status)?;
+        Ok((input, context, database, fence))
+    }
+
+    async fn private_read_reply<T: serde::Serialize + Send + Sync + 'static>(
+        &self,
+        context: &RequestContext,
+        result: kasumi_types::Result<kasumi_engine::AdmittedOutput<T>>,
+        fence: kasumi_engine::ResponseFence<'static>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let output = result.map_err(|error| self.registry.status(context, error))?;
+        response_owner::PendingReply::new(output, fence)
+            .convert(|value, fence| {
+                Ok(PrivateReadJsonResponse {
+                    response_json: response_owner::encode_json(value, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, context)
+            .await
+    }
+
     async fn database(
         &self,
         context: &RequestContext,
@@ -901,6 +990,295 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn exchange_backup_binding(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = administrative_peer(&request)?;
+        let body = backup_body::<kasumi_types::RemoteBackupCommand>(request)?;
+        let Some(crate::remote_backup::Endpoint::Control(control)) = &self.backup else {
+            return Err(Status::unavailable("backup Control unavailable"));
+        };
+        let fence = self
+            .auth
+            .audit_result(&actor, control.admitted_response_fence(&actor))
+            .await
+            .map_err(status)?;
+        let result = control
+            .execute_remote_backup(actor.clone(), peer, body)
+            .await;
+        self.private_read_reply(&actor, result, fence).await
+    }
+    async fn read_data_member_catalog(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = administrative_peer(&request)?;
+        let Some(listener) = &self.catalog else {
+            return Err(Status::unavailable("Data inventory reader not installed"));
+        };
+        let input = request.into_inner().request_json;
+        let limit = kasumi_types::DATA_MEMBER_CATALOG_BYTES;
+        if input.len() > limit {
+            return Err(Status::resource_exhausted(
+                "Data service inventory request exceeds bound",
+            ));
+        }
+        let admitted = listener
+            .admission
+            .reserve_resident((8 * limit) as u64)
+            .map_err(status)?;
+        let read: kasumi_types::DataMemberCatalogRead = decode_json(&input).map_err(status)?;
+        let authorize = || {
+            listener
+                .grant
+                .authorize(listener.control, &actor, &peer, &read)
+        };
+        self.auth
+            .audit_result(&actor, authorize())
+            .await
+            .map_err(status)?;
+        read.validate().map_err(status)?;
+        let incarnation = read.incarnation.to_string();
+        let lookup = || {
+            self.registry
+                .installed_generation(&read.tenant, &incarnation)?
+                .ok_or_else(|| {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        "Data serving generation unavailable",
+                    )
+                })
+        };
+        let db = self
+            .auth
+            .audit_result(&actor, lookup())
+            .await
+            .map_err(status)?;
+        let observed = self
+            .auth
+            .audit_result(
+                &actor,
+                db.read_enrolled_data_member_catalog(&read, listener.control, &actor)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let (_, bytes) = kasumi_types::staged_digest(observed.as_ref()).map_err(status)?;
+        if bytes > limit {
+            return Err(Status::resource_exhausted(
+                "Data service inventory reply exceeds bound",
+            ));
+        }
+        let mut response_json = Vec::with_capacity(bytes);
+        serde_json::to_writer(&mut response_json, observed.as_ref())
+            .map_err(|_| Status::internal("Data inventory encoding failed"))?;
+        self.auth
+            .audit_result(
+                &actor,
+                db.check_enrolled_data_member_catalog_release(
+                    &read,
+                    &observed,
+                    &actor,
+                    listener.control,
+                )
+                .await,
+            )
+            .await
+            .map_err(status)?;
+        let release = authorize().and_then(|()| {
+            if !Arc::ptr_eq(&lookup()?, &db) {
+                return Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "Data serving route changed",
+                ));
+            }
+            Ok(())
+        });
+        self.auth
+            .audit_result(&actor, release)
+            .await
+            .map_err(status)?;
+        let mut response = Response::new(PrivateReadJsonResponse { response_json });
+        response
+            .extensions_mut()
+            .insert(response_owner::ReplyOwner::new((observed, admitted)));
+        Ok(response)
+    }
+    async fn read_backup_inventory(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = administrative_peer(&request)?;
+        let body = backup_body::<kasumi_types::BackupInventoryCommand>(request)?;
+        let Some(crate::remote_backup::Endpoint::Control(control)) = &self.backup else {
+            return Err(Status::unavailable("backup Control unavailable"));
+        };
+        let fence = self
+            .auth
+            .audit_result(&actor, control.admitted_response_fence(&actor))
+            .await
+            .map_err(status)?;
+        let result = control
+            .read_remote_backup_inventory(actor.clone(), peer, body)
+            .await;
+        self.private_read_reply(&actor, result, fence).await
+    }
+    async fn confirm_backup_source(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = administrative_peer(&request)?;
+        let body = backup_body::<kasumi_types::RemoteBackupChallenge>(request)?;
+        let Some(crate::remote_backup::Endpoint::Source(source)) = &self.backup else {
+            return Err(Status::unavailable("backup source unavailable"));
+        };
+        let result = source.confirm(&actor, &peer, &body).await;
+        let observed = self
+            .auth
+            .audit_result(&actor, result)
+            .await
+            .map_err(status)?;
+        let response = encode_json(observed.observation()).map_err(status)?;
+        self.auth
+            .audit_result(
+                &actor,
+                actor
+                    .authorization
+                    .check_live()
+                    .and_then(|()| observed.release()),
+            )
+            .await
+            .map_err(status)?;
+        Ok(Response::new(PrivateReadJsonResponse {
+            response_json: response,
+        }))
+    }
+
+    async fn read_key_retention(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::ReadKeyRetentionRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.read_key_retention(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn retire_key_versions(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::RetireKeyVersionsRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.retire_key_versions(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn abort_key_retirement(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::RetireKeyVersionsRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.abort_key_retirement(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn key_retirement_status(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::KeyRetirementStatusRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.key_retirement_status(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn tenant_audit_status(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (_, context, database, fence) = self
+            .private_read_input::<kasumi_types::TenantAuditStatusRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.tenant_audit_status(&context).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn tenant_audit_capacity(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (_, context, database, fence) = self
+            .private_read_input::<kasumi_types::TenantAuditCapacityRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.tenant_audit_capacity(&context).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn verify_tenant_audit(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::TenantAuditVerifyRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.verify_tenant_audit(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn export_tenant_audit(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::TenantAuditExportRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.export_tenant_audit(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
     async fn control_signer_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,
@@ -912,6 +1290,13 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         request: Request<SecurityAuditJsonRequest>,
     ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
         self.security_audit_rpc(request, security_audit::AuditOperation::Status)
+            .await
+    }
+    async fn security_audit_capacity(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Capacity)
             .await
     }
     async fn security_audit_export(

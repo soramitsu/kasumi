@@ -6,6 +6,14 @@ The repository supplies a [systemd unit template](../deploy/kasumi.service),
 not an installed or running production service. Validate the template on the
 chosen distribution before enabling it.
 
+## Protected readiness coverage
+
+The administrative TLS endpoints require the installed client identity and Control bearer. In the JSON returned by `/ready`, `readiness_coverage.membership_epoch` identifies the current topology version, installed-route generation and effective Raft membership generation. The `covered_epoch` field identifies the worker's last retained complete sweep. A null value means that no complete sweep is retained. A stale or partial sweep cannot establish readiness. Compare both full tuples together with `complete`, `fresh`, and the expected and examined group counts. The detail page contains up to 128 groups. A completed negative group probe counts as examined and contributes to the separate healthy-group count.
+
+The corresponding protected Prometheus families use `kasumi_readiness_epoch_` and `kasumi_readiness_covered_epoch_` followed by `topology_version`, `installed_routes` or `actual_membership`. The protected JSON preserves the exact unsigned integer values across the full range.
+
+The frozen native component probe retains the original HTTP replies and a committed recovery readback. Invoke `scripts/run_observability_probes.py` with `python3 -I -B -S`, an accepted `--evidence` directory, the native `--journal`, and a fresh `--attempt-id` and `--output`. Its journal entry is a component rehearsal. Final G11 acceptance additionally requires the installed three-member data, Control and authority groups, durable backup inventory, issuer and membership observations, and the full scenario roster.
+
 ## Build and configuration
 
 ```sh
@@ -51,6 +59,18 @@ and one `credentials_file` JSON bundle for S3. Every authority partition needs
 its own token file because JWT resources name one exact partition. Missing,
 extra, duplicate or noncanonical partition keys are rejected; the old single
 `bearer_file` authority setting is unsupported.
+For a Control node to report an issuer's signer key inventory, install a
+separate `catalog_bearer_files` map in that serving authority configuration.
+Each entry names a private file containing an Authority-partition JWT with
+the Read scope for a current Authority administrator. Use a separate file
+from the node's serving token. The Control reader contacts and rechecks every
+current voter and learner over its pinned endpoint. A missing credential,
+unreachable member or changed inventory leaves that partition unreported.
+For the Control members' own signer keys, each voter and learner answers
+through its enrolled cluster connection. A signer page can contain fewer
+entries than requested. Follow its continuation until the last page and
+inspect the coverage field. A missing node report or changed membership
+prevents a complete observation.
 Publish renewed credentials using a new private file, sync it, atomically rename
 it over the installed path and sync the parent directory. Every finite pooled
 operation reads one fresh snapshot after anchoring its original deadline and
@@ -418,7 +438,41 @@ location again (omit `tenant_audit_cache` for the default), make sure its parent
 is still inside an installed root, and run the command with the new directory as
 the source.
 
+## Inspecting a tenant audit stream
+
+Run `kasumid tenant-audit status <profile>` using the administrative endpoint of
+a tenant or Control profile with a tenant-wide audit grant. The response binds
+the tenant and incarnation, revision, retention budget, archive head, hot tail
+and stream position. The existing `kasumid audit status <control-profile>`
+reports the node's service-security audit stream.
+
+Use `kasumid audit capacity CONTROL_PROFILE` to inspect the service audit store’s hot and archive budgets, maintenance reserve and pending publication.
+
+Use `kasumid tenant-audit capacity PROFILE` to inspect hot and archive budgets
+and a pending publication. For a chronological export, make an owner-only
+request file with `{"cursor":null,"limit":64}` and run
+`kasumid tenant-audit export PROFILE REQUEST_JSON`. Each response fixes the
+exclusive end and numbers every event. To continue while `next_sequence`
+is below `through_sequence`, supply the page fields except `records` as
+`cursor` and keep the original ticket. The Rust client exposes this as
+`page.cursor()`. Preserve completed pages before advancing.
+
+For archive verification, run `kasumid tenant-audit verify PROFILE REQUEST_JSON`
+with `{"cursor":null,"limit":4}`. Read each cache and destination result.
+Pages follow the immutable predecessor chain from its captured head. Send
+the returned cursor string in the next request. When neither copy verifies,
+the continuation retries that object. A page can verify up to eight objects.
+Both operations recheck the audit grant before releasing data. A changed
+policy, expired cursor or restarted issuing database requires a fresh capture.
+
 ## Recovery procedures
+
+Before reopening an offline volume, compare its incarnation and recovery point
+with the independently retained deployment record. Kasumi verifies stored
+authentication and consistency, but an older complete image can satisfy those
+checks. The first release trusts installation storage and defers the external
+anti-rollback witness. Preserve the original volume while resolving a mismatch
+and follow the authorized backup recovery procedure before returning to service.
 
 After one replica crashes, restart it with the same path, identity, deployment
 binding and permitted key dependencies. It replays durable state and rebuilds
@@ -529,3 +583,128 @@ Check strict-read audit failure and node pressure using the same policies and
 budgets as production. The repository's loopback/VM tests establish software
 behavior; they do not measure a selected provider's network, storage or power
 failure characteristics.
+
+### Dedicated Control voter enrollment
+
+For each dedicated Control voter, configure replicated mode and an empty
+`tenants` array. Use the Control process's own database ID, TLS identity and
+private storage. The top-level `replication` roster contains its Control peers
+and the three original Control voters. Give the three voters distinct failure
+domains. Install an audit placement for `__kasumi_control` and the configured
+Control and service-security key providers.
+
+Set `control.remote_data` to a topology object with `nodes` and `tenants`.
+Supply each data node's HTTPS endpoint, failure domain and certificate pins.
+Each tenant route specifies its incarnation, `"mode": "replicated"`, and three
+data voter IDs. For an initially empty routing catalog, use an empty object for
+each map. Data and Control node IDs, endpoints and TLS pins are separate.
+Run `kasumid check-config` and then `kasumid provision-node` on each new
+Control voter. Enrollment persists the shared routing catalog in Control genesis
+and creates only the local Control and service-security stores. It needs no
+tenant key providers. Data-only operation through a remote Control quorum still
+requires qualification before deployment.
+
+For Data voter replacement, also enroll each prospective voter in the Data transport pool and the Control catalog sources described below. The Data administrator changes the Raft membership. The Control administrator then publishes the tenant route using the installed incarnation and both voter sets. [Membership replacement](administration.md#membership-replacement)
+
+#### Backup bindings on dedicated data and Control members
+
+Before provisioning a new data-only member that will publish backups, configure
+`remote_control.backup`. Give its `principal` a Control-resource credential
+with the single `write` scope. In Control policy, grant that exact principal
+`write` on `backup_bindings`. Set `bearer_file` to its private renewable
+credential file. Its `tls` certificate and private key must present the
+current leaf used by the data member's serving Authority client. Enroll its
+current and planned replacement leaf hashes in `source_certificate_pins` on
+both sides and in that data peer's installed roster. Each running client uses
+the actual leaf that was loaded when the node opened. Use the existing
+`remote_control.endpoints` and `server_ca` for the Control voters. Keep the
+topology reader and backup writer credentials in separate files.
+
+On each dedicated Control voter, configure `control.backup_sources` with
+`tls`, `server_ca`, a private renewable `bearer_file`, `callback_principal`,
+and a `members` map keyed by data node ID. For each data node, configure its
+`admin.endpoint`, `admin.certificate_pins`, `writer_principal` and
+`source_certificate_pins`. Each writer must identify one enrolled data member
+in the committed topology. The callback credential names the Control resource
+and has the single `read` scope. Enroll its principal and the SHA-256 leaf
+pins of the Control callbacks as `callback_principal` and
+`callback_certificate_pins` on each data member. The administrative listeners
+must trust the corresponding client CAs and admit those client certificate pins.
+
+Each Data voter that may verify a backup after a leadership change needs
+access to the tenant wrapping keys used by the original writer, including
+the required historical versions. With file keyrings, install the same
+tenant provider identity and key versions on those voters. For a remote key
+provider, grant each verifier access to that identity. Test this by stopping
+the original writer, reopening the object store and running both `kasumid
+backup status` and `kasumid backup verify` against the newly elected leader
+with the original session UUID. The status reads the durable outcome. Verify
+also opens the encrypted objects and returns the full original checkpoint.
+
+For global signer and security audit key inventory, enroll a separate Control
+reader on each dedicated Data voter. Set `remote_control.catalog_reader.principal`
+and `client_certificate_pins` to its service identity and approved client leaf
+hashes. Its `groups` map binds each local tenant name to its installed
+incarnation UUID. Issue this principal a renewable, expiring bearer for the
+exact Control resource with the single `audit` scope.
+
+On each dedicated Control voter, set `control.catalog_sources` to the reader's
+`principal`, `tls`, `client_certificate_pins`, private `bearer_file` and
+`server_ca`. Its `members` map binds each enrolled Data node ID to its recorded
+`verifier.node_id`, `verifier.installation_id`, `admin.endpoint` and
+`admin.certificate_pins`. Its `groups` map binds each Data tenant to its
+`incarnation` UUID and ascending `members` list, including learners. The administrative
+listeners must accept the reader's mTLS identity. These service grants and
+routes are part of the original node enrollment. A protected key inventory
+reports missing coverage when a currently enrolled physical catalog cannot
+be verified through the group's leader.
+
+To include a Data member's installed target journal, set `target_journals` to
+`true` in both `control.catalog_sources` and its `remote_control.catalog_reader`
+grant at enrollment. Each journal must identify the enrolled Control root and
+the physical verifier for its Data group. During inventory the member verifies
+each retained checkpoint against its original source and reports unreadable
+materializations in the returned coverage. Dedicated Control
+voters authenticate their original encrypted enrollment and Control genesis
+on each page to establish that their role excludes a target. A voter with a
+missing enrollment, a different verifier or an unreported recovery target
+leaves coverage incomplete.
+
+Run `kasumid check-config` and provision with these routes on each new member.
+Startup compares the configured delegation to the original encrypted enrollment.
+Install rotating bearer values by atomic replacement of their original private
+files. A session retry uses the original destination and session UUID, including
+when Control selected the claim before the data member received the response.
+Existing enrollments without a backup delegation retain their original coverage.
+Remote bindings alone provide no proof of a tenant's complete key-retirement inventory.
+
+### Historical wrapping keys for retained objects
+
+The optional runtime field `tenant_historical_keys` maps a locally configured tenant or Control to its additional file or Transit key providers. The security audit uses its own `security_audit.historical_keys` list. Each list supplements that domain's installed primary. Historical providers need unwrap permission. New records and live catalogs continue to use the writable primary.
+
+Startup opens the providers and binds their identities and TLS trust to the encrypted store before replay. Preserve this roster across restarts. A moved file keyring with the same identity or refreshed Transit credential can reopen the same roster. Omitting an enrolled roster or changing its resource or CA causes startup to fail. Standalone operator backups include configured historical file keyrings. External providers require their own key backup. Key retirement still requires a complete dependency inventory.
+
+
+The private `kasumid key-retention read <profile> <request-json>` command accepts the
+application or Control administrator profile for the requested scope. The initial
+request includes an explicit null cursor and a limit from 1 to 256. To continue,
+copy the returned cursor into the same request. The local report identifies each
+installed application and custody catalog, exact wrapping versions, retained
+tenant audit segments and authenticated history manifest and chunk objects.
+A history object that cannot be authenticated appears by ID in the missing
+dependencies. Each page checks the full selected history inventory. A rotation or membership change
+expires the cursor. An incomplete report cannot authorize retiring a key.
+
+Use `key-retention status` with the scope and a decimal `retirement_id` to
+read the last accepted ordinal. On a fresh installation it is zero. For
+`key-retention retire`, use the next ordinal as a decimal string, the exact
+coverage digest, the provider and key reference, and the first version to
+keep. Use the application profile for its tenant scope. A Control
+administrator handles the Control scope and the `target_journal` scope
+owned by the enrolled lifecycle Control. Retain the request until the decision is known. After an interrupted
+request, repeat the identical request or read its status. To cancel an
+undecided fence, submit the identical request with `key-retention abort`.
+The replicated floor rejects later writes that depend on an older version.
+The operator controls key removal at the provider. A completed scope record
+covers only that scope. Check all other installations and scopes that use the
+same provider key before changing it.

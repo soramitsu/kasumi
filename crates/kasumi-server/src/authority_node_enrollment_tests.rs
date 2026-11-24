@@ -29,6 +29,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
+        Self::with_lease(1000).await
+    }
+    async fn with_lease(max_lease_ms: u64) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let root = directory.path();
@@ -68,7 +71,7 @@ impl Fixture {
                 },
             )]),
             lifecycle_controls: BTreeMap::new(),
-            max_lease_ms: 1000,
+            max_lease_ms,
             clock_rate_error_ppm: 0,
         };
         let signer = InstallationSigningRoot::from_pkcs8(
@@ -182,6 +185,7 @@ impl Fixture {
             keys: keys("application")?,
             custody_keys: keys("custody")?,
             security_audit: SecurityAuditConfig {
+                historical_keys: Vec::new(),
                 keys: keys("security")?,
                 retention: Default::default(),
                 archive: None,
@@ -597,3 +601,6 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     });
     Ok(())
 }
+
+#[path = "issuer_process_setup.rs"]
+mod issuer_process_setup;

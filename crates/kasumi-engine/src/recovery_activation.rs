@@ -183,10 +183,8 @@ pub(crate) fn retained_action(
             let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity else {
                 return Err(conflict("activation lacks exact Control intent identity"));
             };
-            let current = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|c| c.intents.get(&id))
+            let current = &*state
+                .lifecycle_intent(id)?
                 .ok_or_else(|| conflict("retained activation Control intent absent"))?;
             let committed = phase(state, operation, id)?;
             if committed.sequence >= retained.sequence
@@ -277,10 +275,8 @@ pub(crate) fn validate_original(
             let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity else {
                 return Err(conflict("activation reference differs"));
             };
-            let current = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|c| c.intents.get(&id))
+            let current = &*state
+                .lifecycle_intent(id)?
                 .ok_or_else(|| conflict("activation intent absent"))?;
             if receipt.admitted_at_ms >= expected.not_after_ms
                 || receipt.admitted_at_ms >= current.original_credential_expires_at_ms

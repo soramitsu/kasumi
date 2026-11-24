@@ -5,8 +5,9 @@ The measured interval is 86,400 seconds of continuous authenticated workload.
 Starting the nine installed daemons and stopping them again each have their
 own budget outside that interval. The workload is an owned candidate
 ``kasumictl session`` fed one write and one read-back per cycle; every reply is
-retained and each heartbeat is a count over those raw rows. Credential renewal
-happens before every session rotation, and archival, backup and membership
+retained and each heartbeat is a count over those raw rows. An authenticated
+read proves issuer-managed credential renewal before every session rotation.
+Archival, backup and membership
 maintenance run from the operator's plan while the workload continues.
 
 ``--rehearsal-seconds`` runs the same code over a short interval. A rehearsal
@@ -25,8 +26,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
+import uuid
 
 if __name__ == "__main__":
     _scripts = Path(__file__).resolve(strict=True).parent
@@ -43,16 +46,17 @@ import domain_run
 from domain_run import require
 import process_ha_topology as topology
 import repeatable_assembly as owned
+import run_backup_cleanup
 
 KIND = "ha-soak"
 RUNNER = "scripts/run_ha_soak.py"
-MODULES = ()
+MODULES = ("scripts/run_backup_cleanup.py", *run_backup_cleanup.MODULES)
 PLAN_SCHEMA = "kasumi-ha-soak-plan-v1"
 # The qualifying contract. A run with any other value is a rehearsal.
 QUALIFYING = {"duration_seconds": 86400, "heartbeat_seconds": 60, "session_seconds": 1500,
               "startup_seconds": 3600, "drain_seconds": 3600}
-# A session keeps one credential snapshot, which lives at most an hour; rotate
-# well inside it, renewing the installed credential first.
+# The client reloads its operator-owned credential for each request. Retain
+# a separately authenticated renewal observation before opening each session.
 KEYS = 1024
 REPLY_SECONDS = 60
 COMMAND_SECONDS = 3600
@@ -67,9 +71,132 @@ MAINTENANCE = {
 RENEWAL = "credential-renewal"
 
 
-def absolute(value, label):
-    require(isinstance(value, str) and Path(value).is_absolute()
-            and Path(value).resolve(strict=True) == Path(value), label + " is not a canonical path")
+def credential_observation(value, profile_sha256, previous=None):
+    owned.exact(value, {"profile_sha256", "bearer_sha256", "expires_at_ms"},
+                "authenticated soak credential")
+    require(value["profile_sha256"] == profile_sha256
+            and isinstance(value["bearer_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["bearer_sha256"])
+            and type(value["expires_at_ms"]) is int and value["expires_at_ms"] > 0,
+            "observed credential differs from the installed soak profile")
+    if previous is not None:
+        require(value["bearer_sha256"] != previous["bearer_sha256"]
+                and value["expires_at_ms"] > previous["expires_at_ms"],
+                "external issuer has not advanced the authenticated soak credential")
+    return value
+
+
+def archive_position(response):
+    position = response["position"]
+    stream = uuid.UUID(position["stream_id"])
+    through = position["pruned_before"]
+    require(stream.int > 0 and type(through) is int and through >= 0
+            and response["persistence_failed"] is False, "invalid soak audit stream position")
+    head = position["archive_head"]
+    if head is None:
+        require(through == 0, "soak audit position has no archive head")
+    else:
+        require(head["stream_id"] == position["stream_id"]
+                and head["object"]["next_sequence"] == through
+                and 0 <= head["object"]["first_sequence"] < through
+                and re.fullmatch(r"[0-9a-f]{64}", head["object"]["ciphertext_sha256"]),
+                "soak archive head differs from the stream position")
+    return stream, through
+
+
+def archive_progress(before, after):
+    stream, start = archive_position(before)
+    current, end = archive_position(after)
+    require(current == stream and end > start, "no new records archived on the original soak stream")
+
+
+def archive_observer(commands):
+    first = commands["archival"][0]
+    require(len(first) >= 4, "soak archival command requires a service audit profile")
+    return [first[0], "audit", "status", first[3]]
+
+
+def backup_creation(commands):
+    creates = [command for command in commands["backup"] if command[1:3] == ["backup", "create"]]
+    require(len(creates) == 1 and len(creates[0]) == 6,
+            "soak backup needs one original checkpoint creation")
+    command = creates[0]
+    require(Path(command[3]).is_absolute() and Path(command[5]).is_absolute(),
+            "soak backup must specify its installed profile and checkpoint path")
+    return command
+
+
+def backup_readback(command, created):
+    path = Path(command[5])
+    owned.exact(created, {"session_id", "checkpoint"}, "soak backup creation")
+    session = created["session_id"]
+    require(uuid.UUID(session).int > 0 and created["checkpoint"] == str(path),
+            "soak backup returned another checkpoint")
+    return {operation: [command[0], "backup", operation, command[3], command[4], session]
+            for operation in ("status", "verify")}
+
+
+def check_completed_backup(command, created, checkpoint, outputs, profile):
+    path = Path(command[5])
+    require(profile["resource"]["kind"] == "database"
+            and checkpoint["source_incarnation"] == profile["resource"]["incarnation"],
+            "soak backup differs from the workload database incarnation")
+    run_backup_cleanup.validate_checkpoints(created, checkpoint, outputs["status"], outputs["verify"],
+                                            path.parent, tenant=profile["tenant"], checkpoint_name=path.name)
+
+
+def membership_commands(commands, retain):
+    """Execute the same typed request bytes that will be replayed from custody."""
+    bound, requests = [], []
+    for index, command in enumerate(commands):
+        require(len(command) == 5 and command[1] in ("--config", "--profile"),
+                "soak membership requires an installed administrative client and one request")
+        original_path, request = retain(f"membership-request-{index}", command[4])
+        bound.append([*command[:4], str(original_path)])
+        requests.append(request)
+    return bound, requests
+
+
+def membership_completed(commands, requests, replies):
+    issued = set()
+    in_progress = set()
+    for command, request, reply in zip(commands, requests, replies, strict=True):
+        if command[3] == "manage":
+            action = request.get("operation")
+            if action == "add_learner" and type(reply.get("caught_up")) is int and (
+                    reply["caught_up"] == request["node_id"] > 0):
+                return
+            if action == "change_membership" and reply.get("changed") is True:
+                return
+            if action in ("publish_membership", "publish_data_membership") and reply.get("published") is True:
+                return
+        elif reply.get("kind") == "operation":
+            status = reply["status"]
+            committed = status["command"]
+            if committed["action"]["kind"] not in ("enroll_learner", "replace_voters", "revoke_member"):
+                continue
+            op = committed["operation_id"]
+            if request["kind"] == "start" and request["command"] == committed:
+                issued.add(op)
+            elif request["kind"] in ("resume", "status") and request["operation_id"] == op:
+                if request["kind"] == "resume" and op in in_progress:
+                    issued.add(op)
+            else:
+                continue
+            if status["phase"].get("kind") in ("prepared", "dispatched", "draining"):
+                in_progress.add(op)
+                if request["kind"] == "resume":
+                    issued.add(op)
+            if op in issued and status["phase"] == {"kind": "completed"}:
+                return
+    raise ValueError("soak membership maintenance did not complete a membership operation")
+
+
+def absolute(value, label, installed):
+    require(isinstance(value, str) and Path(value).is_absolute() and os.path.normpath(value) == value,
+            label + " is not a canonical path")
+    if installed:
+        require(Path(value).resolve(strict=True) == Path(value), label + " is not a canonical path")
     return value
 
 
@@ -81,23 +208,23 @@ def plan_command(binaries, kind, step):
             and all(isinstance(argument, str) for argument in arguments),
             "soak maintenance step is malformed")
     # kasumictl names its client file before the operation.
-    words = arguments[2:] if binary == "kasumictl" and arguments[0] == "--config" else arguments
+    words = arguments[2:] if binary == "kasumictl" and arguments[0] in ("--config", "--profile") else arguments
     require(any(binary == family and tuple(words[:len(prefix)]) == prefix
                 for family, prefix in MAINTENANCE[kind][1]),
             "soak " + kind + " step is outside its product command family")
     return [binaries[binary], *arguments]
 
 
-def check_plan(plan, binaries):
+def check_plan(plan, binaries, *, installed=True):
     owned.exact(plan, {"schema", "profile", "collection", "readiness", "maintenance"}, "soak plan")
     require(plan["schema"] == PLAN_SCHEMA, "unsupported soak plan")
-    absolute(plan["profile"], "soak client profile")
+    absolute(plan["profile"], "soak client profile", installed)
     require(isinstance(plan["collection"], str) and plan["collection"], "soak collection is absent")
     require(isinstance(plan["readiness"], list) and plan["readiness"]
             and len(set(plan["readiness"])) == len(plan["readiness"]),
             "soak readiness clients are absent or repeated")
     for client in plan["readiness"]:
-        absolute(client, "soak readiness client")
+        absolute(client, "soak readiness client", installed)
     owned.exact(plan["maintenance"], set(MAINTENANCE), "soak maintenance")
     commands = {}
     for kind, steps in plan["maintenance"].items():
@@ -252,6 +379,16 @@ def execute(run, parameters, topology_path, plan_path, pause):
     topology_file = run.configuration("ha-topology", topology_path)
     plan = owned.read(plan_file)
     maintenance = check_plan(plan, binaries)
+    create = backup_creation(maintenance)
+
+    def retain_request(name, path):
+        retained = run.configuration(name, path)
+        return retained, owned.read(retained)
+
+    membership = "membership-maintenance"
+    maintenance[membership], member_requests = membership_commands(maintenance[membership], retain_request)
+    profile = run.configuration("soak-profile", plan["profile"])
+    profile_sha256 = hashlib.sha256(profile.read_bytes()).hexdigest()
     admitted = topology.inspect(Path(topology_path).resolve(strict=True), run.environment)
     require(owned.read(topology_file) == owned.read(Path(topology_path)),
             "HA topology plan changed while it was retained")
@@ -306,10 +443,17 @@ def execute(run, parameters, topology_path, plan_path, pause):
         workload.attach("workload", identifier)
 
     topology.verify_unchanged(admitted, run.environment)
+    observe = [binaries["kasumid"], "credential", "observe", plan["profile"]]
+    previous_credential = credential_observation(
+        owned.read(run.command("credential-baseline", observe, REPLY_SECONDS)), profile_sha256)
+    archive_command = archive_observer(maintenance)
     measured_start = services.enter("measured")
     workload = Workload(run, plan, measured_start, duration)
+    stopped = []
     try:
         open_session(workload)
+        original_archive = owned.read(run.command("archive-baseline", archive_command, REPLY_SECONDS))
+        archive_position(original_archive)
         pending = sorted((fraction * duration, kind) for kind, (fraction, _) in MAINTENANCE.items())
         rotation = parameters["session_seconds"]
         events = {}
@@ -321,23 +465,43 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 _, kind = pending.pop(0)
                 started = workload.elapsed()
                 steps = []
+                member_replies = []
                 for index, command in enumerate(maintenance[kind]):
+                    if command == create:
+                        checkpoint = Path(create[5])
+                        require(not checkpoint.exists()
+                                and not checkpoint.with_suffix(".backup-attempt.json").exists(),
+                                "soak backup checkpoint or its original journal already exists")
                     steps.append(f"{kind}-{index}")
-                    run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                    output = run.command(steps[-1], command, COMMAND_SECONDS, scenario=kind)
+                    if kind == membership:
+                        member_replies.append(owned.read(output))
+                    if command == create:
+                        created = owned.read(output)
+                        saved = run.configuration("soak-checkpoint", create[5])
+                        verified = {op: owned.read(run.command("backup-proof-" + op, argv, COMMAND_SECONDS))
+                                    for op, argv in backup_readback(create, created).items()}
+                        check_completed_backup(create, created, owned.read(saved), verified, owned.read(profile))
+                if kind == "archival":
+                    result = run.command("archive-progress", archive_command, REPLY_SECONDS)
+                    archive_progress(original_archive, owned.read(result))
+                if kind == membership:
+                    membership_completed(maintenance[kind], member_requests, member_replies)
                 events[kind] = {"id": kind, "elapsed_seconds": started,
                                 "finished_elapsed_seconds": workload.elapsed(), "steps": steps}
             elif now >= rotation and now < duration - interval:
-                # Renew while the old session still holds its own snapshot,
-                # then hand the workload to a session that loads the new one.
+                # The installed external issuer rotates the private file.
+                # The candidate proves the new bearer in a protected read.
                 started = workload.elapsed()
                 step = f"{RENEWAL}-{len(details['sessions']):04d}"
-                run.command(step, [binaries["kasumid"], "credential", "renew", plan["profile"]],
-                            COMMAND_SECONDS, scenario=RENEWAL)
+                observation = run.command(step, observe, REPLY_SECONDS, scenario=RENEWAL)
+                previous_credential = credential_observation(owned.read(observation),
+                                                             profile_sha256, previous_credential)
                 events.setdefault(RENEWAL, {"id": RENEWAL, "elapsed_seconds": started,
                                             "finished_elapsed_seconds": workload.elapsed(),
                                             "steps": []})["steps"].append(step)
                 workload.pause()
-                services.end_input("workload")
+                stopped.append(services.end_input("workload"))
                 open_session(workload)
                 rotation += parameters["session_seconds"]
             else:
@@ -346,10 +510,10 @@ def execute(run, parameters, topology_path, plan_path, pause):
     finally:
         workload.close()
     drain_start = services.enter("drain")
-    services.end_input("workload")
+    stopped.append(services.end_input("workload"))
     topology.verify_unchanged(admitted, run.environment)
     for node in reversed(admitted["nodes"]):
-        services.stop(node["id"])
+        stopped.append(services.stop(node["id"]))
     rows = [json.loads(line) for line in (run.output / "workload.jsonl").read_bytes().splitlines()]
     beats = heartbeat_rows(rows, duration, interval)
     with (run.output / "heartbeats.jsonl").open("xb") as stream:
@@ -362,6 +526,8 @@ def execute(run, parameters, topology_path, plan_path, pause):
                    heartbeats=owned.ref(run.output, run.output / "heartbeats.jsonl"),
                    workload=owned.ref(run.output, run.output / "workload.jsonl"))
     run.save()
+    for receipt in stopped:
+        domain_run.service_disposition(receipt)
     require(all(row["verdict"] == "ok" for row in rows)
             and all(later["successful_operations"] > earlier["successful_operations"]
                     for earlier, later in zip(beats, beats[1:])),
@@ -441,13 +607,16 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 for item in report["configurations"]}
     admission = acceptance.json_reference(custody, details["admission"])
     nodes = admission["nodes"]
+    plan = acceptance.read_json(retained["soak-plan"])
+    request_ids = [f"membership-request-{i}" for i in range(len(plan["maintenance"]["membership-maintenance"]))]
+    topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and set(retained) == {
-                "soak-plan", "ha-topology", *("node-" + node["id"] for node in nodes)}
+                "soak-plan", "soak-profile", "soak-checkpoint", "ha-topology",
+                *("node-" + node["id"] for node in nodes), *request_ids}
             and admission["plan_sha256"] == acceptance.sha256(retained["ha-topology"])
             and acceptance.read_json(retained["ha-topology"])["nodes"] == [
                 {key: node[key] for key in ("id", "role", "group", "config")} for node in nodes],
             "soak run retained another topology or configuration roster")
-    plan = acceptance.read_json(retained["soak-plan"])
     phases = details["phases"]
     owned.exact(phases, {"measured", "drain"}, "soak phases")
     measured = acceptance.number(phases["drain"], "drain start") - \
@@ -518,7 +687,30 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
             == heartbeat_rows(rows, duration, interval),
             "soak heartbeats differ from the recomputed raw workload")
     # Maintenance: the plan's exact candidate commands, inside the interval.
-    commands = check_plan(plan, paths)
+    commands = check_plan(plan, paths, installed=False)
+
+    def original_request(name, _path):
+        reference = next(item["file"] for item in report["configurations"] if item["id"] == name)
+        return Path(report["custody_root"]) / reference["path"], owned.read(retained[name])
+
+    membership = "membership-maintenance"
+    commands[membership], member_requests = membership_commands(commands[membership], original_request)
+    archive_command = archive_observer(commands)
+    for step in ("archive-baseline", "archive-progress"):
+        require(receipts[step]["exit_code"] == 0
+                and receipts[step]["record"]["command"] == archive_command
+                and receipts[step]["record"]["executable"]["sha256"] == domain["binaries"]["kasumid"],
+                "soak archival observation differs from the planned audit stream")
+    archive_progress(acceptance.json_reference(custody, logs["archive-baseline"]),
+                     acceptance.json_reference(custody, logs["archive-progress"]))
+    observe = [paths["kasumid"], "credential", "observe", plan["profile"]]
+    baseline = receipts["credential-baseline"]
+    require(baseline["exit_code"] == 0 and baseline["record"]["command"] == observe
+            and baseline["record"]["executable"]["sha256"] == domain["binaries"]["kasumid"],
+            "soak credential baseline differs from the candidate observation")
+    profile_sha256 = acceptance.sha256(retained["soak-profile"])
+    previous_credential = credential_observation(
+        acceptance.json_reference(custody, logs["credential-baseline"]), profile_sha256)
     require([event["id"] for event in details["maintenance"]] == sorted([RENEWAL, *commands]),
             "soak maintenance roster differs")
     events = []
@@ -527,8 +719,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                     "soak maintenance event")
         kind = event["id"]
         observed = [row["step"] for row in facts["scenarios"][kind]]
-        expected = commands[kind] if kind != RENEWAL else [
-            [paths["kasumid"], "credential", "renew", plan["profile"]]] * len(observed)
+        expected = commands[kind] if kind != RENEWAL else [observe] * len(observed)
         require(0 < event["elapsed_seconds"] <= event["finished_elapsed_seconds"] < duration
                 and event["steps"] == observed and len(observed) == len(expected)
                 and all(receipts[step]["record"]["command"] == command
@@ -538,6 +729,26 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                         for step, command in zip(observed, expected)),
                 "soak maintenance did not run its planned candidate commands in the interval: "
                 + kind)
+        if kind == RENEWAL:
+            for step in observed:
+                previous_credential = credential_observation(
+                    acceptance.json_reference(custody, logs[step]), profile_sha256,
+                    previous_credential)
+        if kind == "backup":
+            create = backup_creation(commands)
+            created = acceptance.json_reference(custody, logs[observed[expected.index(create)]])
+            verified = {}
+            for op, argv in backup_readback(create, created).items():
+                step = "backup-proof-" + op
+                require(receipts[step]["record"]["command"] == argv and receipts[step]["exit_code"] == 0
+                        and receipts[step]["record"]["executable"]["sha256"] == domain["binaries"]["kasumid"],
+                        "soak backup readback differs from the original session")
+                verified[op] = acceptance.json_reference(custody, logs[step])
+            check_completed_backup(create, created, owned.read(retained["soak-checkpoint"]), verified,
+                                   owned.read(retained["soak-profile"]))
+        if kind == membership:
+            membership_completed(expected, member_requests,
+                                 [acceptance.json_reference(custody, logs[step]) for step in observed])
         first = next(item for item in domain["processes"] if item["id"] == observed[0])
         events.append({"id": kind, "elapsed_seconds": event["elapsed_seconds"],
                        "log": first["log"]})

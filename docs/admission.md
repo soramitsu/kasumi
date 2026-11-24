@@ -35,7 +35,7 @@ The byte budget includes governor bookkeeping, resident reservations and active
 workspaces. A fixed ledger holds at most `max_reservations` charges (4096 in newly
 generated default policy), including zero-byte charges. Each runtime facade has
 `max_snapshot_startups` inventory slots (64 by default). The core also has
-`max_startup_scopes` retained startup-scope slots (64 by default). These numeric policy
+`max_startup_scopes` prepaid startup-terminal slots (64 by default). These numeric policy
 fields and the enclosing runtime admission object are required in serialized
 configuration; missing fields and unknown aliases are rejected. Programmatic
 `Default` is a policy for new callers, not a configuration migration.

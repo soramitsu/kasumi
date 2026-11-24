@@ -172,6 +172,34 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             Status::unknown("recovery stop may be committed; resume exact operation cleanup")
         })
     }
+    async fn read_issuer_stop(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        let context = self.context(&request).await?;
+        let input: RecoveryPhaseRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let read = || async {
+            self.runtime
+                .issuer_stop_status(&context, &input)
+                .await
+                .map_err(failure)
+        };
+        let value = self
+            .auth
+            .audit_result(&context, read().await)
+            .await
+            .map_err(status)?;
+        let response = ControlJsonResponse {
+            response_json: encode(&value).map_err(status)?,
+        };
+        if read().await.map_err(status)? != value {
+            return Err(Status::unavailable(
+                "issuer observation changed before release",
+            ));
+        }
+        Ok(Response::new(response))
+    }
     async fn read_phase(
         &self,
         request: Request<ControlJsonRequest>,

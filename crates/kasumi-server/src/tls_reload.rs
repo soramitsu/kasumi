@@ -14,7 +14,7 @@ pub(crate) enum ListenerSource {
     Mutual(MutualTlsEndpoint),
 }
 impl ListenerSource {
-    fn load(&self) -> Result<(CertificatePin, Arc<rustls::ServerConfig>)> {
+    pub(crate) fn load(&self) -> Result<(CertificatePin, Arc<rustls::ServerConfig>)> {
         match self {
             Self::OAuth(files) => {
                 let identity = files.load()?;

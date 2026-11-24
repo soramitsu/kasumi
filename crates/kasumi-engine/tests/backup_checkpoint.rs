@@ -1646,6 +1646,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
 struct PhasePayloads {
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     observed: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
+    early_escrow: Arc<std::sync::atomic::AtomicU64>,
 }
 impl PhasePayloads {
     fn at(&self, phase: &str, event: &str) -> u64 {
@@ -1677,6 +1678,15 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PhasePayloads {
         }
         let mut fields = Fields::default();
         event.record(&mut fields);
+        if fields.phase == "restore.load_authorized" && fields.event == "restore_phase_started" {
+            self.early_escrow.store(
+                self.admission
+                    .snapshot()
+                    .resident_reserved_bytes_by_origin
+                    .audit_maintenance,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         let payload = reserved_payload_bytes(&self.admission);
         self.observed
             .lock()
@@ -1725,6 +1735,7 @@ async fn local_restore_releases_materialization_workspace_before_its_mandatory_a
         timeout_ms: 60_000,
     };
     let phases = PhasePayloads {
+        early_escrow: Default::default(),
         admission: fixture.audit.admission().clone(),
         observed: Default::default(),
     };
@@ -1753,6 +1764,13 @@ async fn local_restore_releases_materialization_workspace_before_its_mandatory_a
     // started database owns the restored engine, so the materialization
     // workspace, with its fixed 64 MiB floor, is released between these two
     // adjacent phase events; background work moves the ledger far less.
+    assert_eq!(
+        phases
+            .early_escrow
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2 * AuditRetentionBudget::MAINTENANCE_BYTES,
+        "target audit escrow must be charged before reading the graph",
+    );
     let started = phases.at("restore.start_prepared", "restore_phase_ended");
     let audited = phases.at("restore.maintenance_audit", "restore_phase_started");
     assert!(

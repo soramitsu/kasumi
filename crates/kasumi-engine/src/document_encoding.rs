@@ -3,7 +3,8 @@
 //! Large string leaves are immutable content-addressed chunks. A sink must use a
 //! tenant/incarnation-scoped encrypted namespace, verify an existing chunk before
 //! reusing it, and durably install every chunk before publishing its manifest.
-//! No object is deleted here: generation/snapshot reachability owns reclamation.
+//! No object is deleted here: `document_gc` and a restore's reconciliation own
+//! reclamation, by what the current state and the selected snapshot name.
 //! Readers must retain the exact selected native view and reserve the bounded
 //! output, decoded Value and callback workspace before calling this module.
 #[cfg(test)]
@@ -13,6 +14,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 pub(crate) const STRING_THRESHOLD: usize = 4096;
@@ -29,6 +31,30 @@ pub(crate) struct BodyLimits {
     pub fragments: usize,
     pub blobs: usize,
     pub depth: usize,
+}
+
+/// A freshly encoded object and the SHA-256 of those exact borrowed bytes.
+/// Decoded manifests and references cannot construct one from a claimed digest.
+#[derive(Clone, Copy)]
+pub(crate) struct EncodedObject<'a> {
+    bytes: &'a [u8],
+    digest: [u8; 32],
+}
+impl<'a> EncodedObject<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            digest: Sha256::digest(bytes).into(),
+        }
+    }
+
+    pub(crate) fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(crate) fn digest(self) -> [u8; 32] {
+        self.digest
+    }
 }
 
 /// This digest is a content identity, not a complete physical storage key.
@@ -112,7 +138,7 @@ struct Encoder<'a, F> {
     blobs: usize,
     put: &'a mut F,
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Encoder<'_, F> {
     fn json_inline<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<()> {
         serde_json::to_writer(InlineWriter(self), value)?;
         Ok(())
@@ -149,11 +175,12 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
             "document blob limit exceeded"
         );
         chunks.try_reserve(1)?;
+        let object = EncodedObject::new(bytes);
         let reference = BlobReference {
-            sha256: Sha256::digest(bytes).into(),
+            sha256: object.digest(),
             bytes: bytes.len() as u64,
         };
-        (self.put)(&reference, bytes)?;
+        (self.put)(object)?;
         chunks.push(reference);
         self.blobs += 1;
         Ok(())
@@ -166,6 +193,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
         let before = self.digest.bytes;
         // Hash the original logical spelling, independently of the physical codec.
         serde_json::to_writer(&mut self.digest, string)?;
+        let canonical_bytes = self.digest.bytes - before;
         let encoding = classify(string);
         let mut chunks = Vec::new();
         match encoding {
@@ -179,6 +207,18 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
                     self.put_chunk(&STANDARD.decode(encoded)?, &mut chunks)?;
                 }
             }
+            // Every JSON escape expands its input. The measured size proves
+            // the exact spelling between the quotes is the original UTF-8.
+            Encoding::Json
+                if canonical_bytes <= BLOB_CHUNK_BYTES && canonical_bytes - 2 == string.len() =>
+            {
+                let mut chunk = Vec::new();
+                chunk.try_reserve_exact(canonical_bytes)?;
+                chunk.push(b'"');
+                chunk.extend_from_slice(string.as_bytes());
+                chunk.push(b'"');
+                self.put_chunk(&chunk, &mut chunks)?;
+            }
             Encoding::Json => {
                 let mut writer = ChunkWriter {
                     encoder: self,
@@ -191,7 +231,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
         }
         self.fragment(Fragment::String(StringReference {
             encoding,
-            canonical_bytes: (self.digest.bytes - before) as u64,
+            canonical_bytes: canonical_bytes as u64,
             chunks,
         }))
     }
@@ -248,7 +288,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Encoder<'_, F> {
 }
 
 struct InlineWriter<'a, 'b, F>(&'a mut Encoder<'b, F>);
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Write for InlineWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Write for InlineWriter<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.inline(bytes).map_err(io::Error::other)?;
         Ok(bytes.len())
@@ -265,7 +305,7 @@ struct ChunkWriter<'a, 'b, F> {
     chunks: &'a mut Vec<BlobReference>,
     pending: Vec<u8>,
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> ChunkWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> ChunkWriter<'_, '_, F> {
     fn finish(&mut self) -> Result<()> {
         if !self.pending.is_empty() {
             self.encoder.put_chunk(&self.pending, self.chunks)?;
@@ -274,7 +314,7 @@ impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> ChunkWriter<'_, '_, F> {
         Ok(())
     }
 }
-impl<F: FnMut(&BlobReference, &[u8]) -> Result<()>> Write for ChunkWriter<'_, '_, F> {
+impl<F: FnMut(EncodedObject<'_>) -> Result<()>> Write for ChunkWriter<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -309,14 +349,14 @@ fn classify(string: &str) -> Encoding {
             return Encoding::UpperHex;
         }
     }
+    // STANDARD requires canonical padding and zero unused bits. Earlier
+    // chunks must be complete groups, since only the final chunk may pad.
+    let chunk_bytes = BLOB_CHUNK_BYTES / 3 * 4;
     if bytes.len().is_multiple_of(4)
-        && !bytes[..bytes.len().saturating_sub(2)].contains(&b'=')
-        && bytes.chunks(BLOB_CHUNK_BYTES / 3 * 4).all(|chunk| {
-            // Exact round trip rejects non-zero trailing bits and alternate spellings.
-            STANDARD
-                .decode(chunk)
-                .is_ok_and(|raw| STANDARD.encode(raw).as_bytes() == chunk)
-        })
+        && (bytes.len() <= chunk_bytes || !bytes[..bytes.len() - 2].contains(&b'='))
+        && bytes
+            .chunks(chunk_bytes)
+            .all(|part| STANDARD.decode(part).is_ok())
     {
         return Encoding::Base64;
     }
@@ -326,8 +366,8 @@ fn classify(string: &str) -> Encoding {
 pub(crate) fn encode_body(
     body: &Value,
     limits: BodyLimits,
-    mut put: impl FnMut(&BlobReference, &[u8]) -> Result<()>,
-) -> Result<BodyManifest> {
+    mut put: impl FnMut(EncodedObject<'_>) -> Result<()>,
+) -> Result<(BodyManifest, Vec<u8>)> {
     let mut encoder = Encoder {
         limits,
         digest: CanonicalDigest::new(limits.canonical_bytes),
@@ -344,11 +384,9 @@ pub(crate) fn encode_body(
         canonical_sha256: encoder.digest.hash.finalize().into(),
         fragments: encoder.fragments,
     };
-    manifest.validate(limits)?;
-    // Check the durable representation's limit without retaining an encoded copy.
-    let mut count = CanonicalDigest::new(limits.manifest_bytes);
-    serde_json::to_writer(&mut count, &manifest)?;
-    Ok(manifest)
+    // Both staging paths persist exactly these validated, size-limited bytes.
+    let wire = manifest.to_bytes(limits)?;
+    Ok((manifest, wire))
 }
 
 impl BodyManifest {
@@ -445,7 +483,6 @@ impl BodyManifest {
         Ok(manifest)
     }
 
-    #[cfg(test)]
     pub(crate) fn blob_references(&self) -> impl Iterator<Item = &BlobReference> {
         self.fragments
             .iter()
@@ -501,9 +538,29 @@ fn ensure_io(ok: bool) -> io::Result<()> {
 pub(crate) fn reconstruct_body<B: AsRef<[u8]>>(
     manifest: &BodyManifest,
     limits: BodyLimits,
+    get: impl FnMut(&BlobReference) -> Result<B>,
+) -> Result<Cow<'_, [u8]>> {
+    let bytes = manifest.validate(limits)?;
+    let output = match manifest.fragments.as_slice() {
+        [Fragment::Literal(text)] => Cow::Borrowed(text.as_bytes()),
+        _ => Cow::Owned(join_fragments(manifest, bytes, get)?),
+    };
+    ensure!(
+        output.len() == bytes,
+        "document reconstructed length differs"
+    );
+    ensure!(
+        <[u8; 32]>::from(Sha256::digest(output.as_ref())) == manifest.canonical_sha256,
+        "document reconstructed digest differs"
+    );
+    Ok(output)
+}
+
+fn join_fragments<B: AsRef<[u8]>>(
+    manifest: &BodyManifest,
+    bytes: usize,
     mut get: impl FnMut(&BlobReference) -> Result<B>,
 ) -> Result<Vec<u8>> {
-    let bytes = manifest.validate(limits)?;
     let mut output = Vec::new();
     output.try_reserve_exact(bytes)?;
     for fragment in &manifest.fragments {
@@ -550,14 +607,6 @@ pub(crate) fn reconstruct_body<B: AsRef<[u8]>>(
             }
         }
     }
-    ensure!(
-        output.len() == bytes,
-        "document reconstructed length differs"
-    );
-    ensure!(
-        <[u8; 32]>::from(Sha256::digest(&output)) == manifest.canonical_sha256,
-        "document reconstructed digest differs"
-    );
     Ok(output)
 }
 

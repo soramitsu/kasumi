@@ -52,12 +52,12 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
         (
             "control".to_owned(),
             "control-keys.json".to_owned(),
-            &config.control.keys,
+            &config.hosted_control()?.keys,
         ),
         (
             "control-custody".to_owned(),
             "control-custody-keys.json".to_owned(),
-            &config.control.custody_keys,
+            &config.hosted_control()?.custody_keys,
         ),
     ];
     for tenant in &config.tenants {
@@ -72,6 +72,23 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
             format!("custody-{id}-keys.json"),
             &tenant.custody_keys,
         ));
+    }
+    for (index, provider) in config.security_audit.historical_keys.iter().enumerate() {
+        inputs.push((
+            format!("security-historical:{index}"),
+            format!("security-historical-{index}-keys.json"),
+            provider,
+        ));
+    }
+    for (tenant, history) in &config.tenant_historical_keys {
+        let id = hex::encode(Sha256::digest(tenant.as_bytes()));
+        for (index, provider) in history.iter().enumerate() {
+            inputs.push((
+                format!("historical:{tenant}:{index}"),
+                format!("historical-{id}-{index}-keys.json"),
+                provider,
+            ));
+        }
     }
     ensure!(
         inputs

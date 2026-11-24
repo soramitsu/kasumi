@@ -87,13 +87,14 @@ impl DestinationConfig {
         }
         Ok(())
     }
-    pub(crate) fn open(
+    pub(crate) fn install(
         &self,
+        index: &mut kasumi_store::ExactBackupDestinationIndex,
         persistent_disk: Arc<kasumi_store::NodeDisk>,
         owner: Option<&crate::backup_destination_installation::InstalledOwner<'_>>,
-    ) -> Result<Arc<dyn BackupDestination>> {
+    ) -> Result<kasumi_types::BackupNamespaceBinding> {
         self.validate()?;
-        Ok(match self {
+        match self {
             Self::Filesystem {
                 directory,
                 max_bytes,
@@ -102,12 +103,12 @@ impl DestinationConfig {
                 owner
                     .context("filesystem backup requires a retained installed owner")?
                     .require_binding(&persistent_disk, namespace_binding)?;
-                Arc::new(FilesystemBackupDestination::open_enrolled(
+                index.install_filesystem(Arc::new(FilesystemBackupDestination::open_enrolled(
                     directory,
                     *max_bytes,
                     persistent_disk,
                     namespace_binding,
-                )?)
+                )?))
             }
             Self::S3 {
                 endpoint,
@@ -117,7 +118,7 @@ impl DestinationConfig {
                 credentials_file,
                 ca_certificate,
                 max_bytes,
-            } => Arc::new(S3BackupDestination::new(S3BackupConfig {
+            } => index.install_s3(Arc::new(S3BackupDestination::new(S3BackupConfig {
                 endpoint: endpoint.clone(),
                 region: region.clone(),
                 bucket: bucket.clone(),
@@ -130,8 +131,8 @@ impl DestinationConfig {
                     .map(|path| crate::runtime::read_bounded(path, 1 << 20))
                     .transpose()?,
                 max_bytes: *max_bytes,
-            })?),
-        })
+            })?)),
+        }
     }
 }
 pub(crate) fn validate_filesystem_location(directory: &std::path::Path) -> Result<()> {
@@ -193,6 +194,12 @@ pub enum ManagementCommand {
     PublishMembership {
         voters: BTreeSet<u64>,
     },
+    PublishDataMembership {
+        tenant: String,
+        incarnation: Uuid,
+        previous_voters: BTreeSet<u64>,
+        voters: BTreeSet<u64>,
+    },
     /// The verified context must name the reserved control tenant.
     ApprovePeerPool {
         expected_topology_version: u64,
@@ -222,8 +229,11 @@ pub(crate) struct ManagedTenant {
 mod command_jobs;
 #[path = "configured_tenant_enrollment.rs"]
 mod configured_tenant_enrollment;
+#[path = "administration_membership.rs"]
+mod membership;
 #[path = "administration_observability.rs"]
 mod observability;
+pub(crate) use membership::publish_data_voters;
 #[path = "administration_topology.rs"]
 mod topology;
 use command_jobs::CommandJobs;
@@ -322,13 +332,68 @@ impl ManagementGate {
     }
 }
 
+/// The single boundary through which this node reaches Control: its hosted
+/// group, or a dedicated Control quorum over authenticated remote routes.
+#[derive(Clone)]
+pub(crate) enum ControlAccess {
+    Local(Arc<Database>),
+    Remote(Arc<crate::remote_control::RemoteControl>),
+}
+/// Committed routes: the hosted group's applied topology, or the newest
+/// topology the dedicated Control signed for this node.
+pub(crate) enum CommittedRoutes {
+    Local(kasumi_engine::AdmittedOutput<kasumi_engine::control::VersionedTopology>),
+    Remote(Arc<crate::remote_control::RemoteTopology>),
+}
+impl CommittedRoutes {
+    pub(crate) fn topology(&self) -> &ControlTopology {
+        match self {
+            Self::Local(topology) => &topology.topology,
+            Self::Remote(topology) => &topology.topology,
+        }
+    }
+}
+/// A data-only node never changes Control state; its dedicated Control quorum
+/// owns every topology, lifecycle and Control administration command.
+pub(crate) fn remote_control_only() -> kasumi_types::Error {
+    kasumi_types::Error::new(
+        kasumi_types::ErrorCode::Unavailable,
+        "this data-only node reaches Control remotely; submit Control changes to a dedicated Control node",
+    )
+}
+impl ControlAccess {
+    /// The hosted Control database, or a fixed refusal on a data-only node.
+    pub(crate) fn local(&self) -> kasumi_types::Result<&Arc<Database>> {
+        match self {
+            Self::Local(database) => Ok(database),
+            Self::Remote(_) => Err(remote_control_only()),
+        }
+    }
+    pub(crate) fn remote(&self) -> Option<&Arc<crate::remote_control::RemoteControl>> {
+        match self {
+            Self::Local(_) => None,
+            Self::Remote(remote) => Some(remote),
+        }
+    }
+    pub(crate) fn routes(&self) -> Result<CommittedRoutes> {
+        Ok(match self {
+            Self::Local(database) => {
+                CommittedRoutes::Local(ControlPlane::local_topology(database)?)
+            }
+            Self::Remote(remote) => CommittedRoutes::Remote(remote.topology()?),
+        })
+    }
+}
+
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
     authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
     node: NodeStore,
     registry: DatabaseRegistry,
-    control: Arc<Database>,
-    control_context: RequestContext,
+    pub(crate) control: ControlAccess,
+    pub(crate) backup_source: Option<Arc<crate::remote_backup::DataTransport>>,
+    // The hosted Control operator; a data-only node has none.
+    control_context: Option<RequestContext>,
     audit: Arc<SecurityAudit>,
     cluster: Option<Arc<ClusterNetwork>>,
     destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
@@ -390,10 +455,20 @@ impl ManagementInvocation {
         Ok(ManagementResponseFence {
             invocation: self,
             source: self.source.database.response_fence(&self.context)?,
-            control: self
-                .manager
-                .control
-                .response_fence(&self.manager.control_context)?,
+            control: match (&self.manager.control, &self.manager.control_context) {
+                (ControlAccess::Local(control), Some(context)) => {
+                    Some(control.response_fence(context)?)
+                }
+                // A data-only node holds no Control state to fence; its
+                // selected source and data authorization are rechecked below.
+                (ControlAccess::Remote(_), None) => None,
+                _ => {
+                    return Err(kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        "Control operator unavailable",
+                    ));
+                }
+            },
         })
     }
     pub async fn execute(&self) -> kasumi_types::Result<serde_json::Value> {
@@ -411,12 +486,14 @@ impl ManagementInvocation {
 pub struct ManagementResponseFence<'a> {
     invocation: &'a ManagementInvocation,
     source: kasumi_engine::ResponseFence<'a>,
-    control: kasumi_engine::ResponseFence<'a>,
+    control: Option<kasumi_engine::ResponseFence<'a>>,
 }
 impl ManagementResponseFence<'_> {
     pub fn check_release(&self) -> kasumi_types::Result<()> {
         self.source.check()?;
-        self.control.check()?;
+        if let Some(control) = &self.control {
+            control.check()?;
+        }
         let selected = self.invocation;
         selected
             .source
@@ -449,11 +526,11 @@ impl ManagementResponseFence<'_> {
                 )
             })?;
         }
-        selected.manager.control.engine().authorize(
-            &selected.manager.control_context,
-            None,
-            Action::Admin,
-        )?;
+        if let (ControlAccess::Local(control), Some(context)) =
+            (&selected.manager.control, &selected.manager.control_context)
+        {
+            control.engine().authorize(context, None, Action::Admin)?;
+        }
         Ok(())
     }
 }
@@ -466,11 +543,13 @@ impl Administration {
 
     pub(crate) fn security_audit_workspace(
         &self,
+        separately_admitted_page: bool,
     ) -> kasumi_types::Result<kasumi_engine::admission::Reservation> {
         // Decoded records, their encoded page and transport response coexist.
         // This explicit charge also covers installations with tiny document limits.
+        let copies = if separately_admitted_page { 2 } else { 4 };
         self.admission.reserve(
-            (4 * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
+            (copies * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
             None,
         )
     }
@@ -667,7 +746,7 @@ impl Administration {
         authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
         node: NodeStore,
         registry: DatabaseRegistry,
-        control: Arc<Database>,
+        control: ControlAccess,
         audit: Arc<SecurityAudit>,
         cluster: Option<Arc<ClusterNetwork>>,
         tenants: Vec<ManagedTenant>,
@@ -698,8 +777,38 @@ impl Administration {
             let incarnation = state.incarnation().to_owned();
             generations.insert((name, incarnation), tenant);
         }
-        let control_context = crate::runtime::configured_control_context(&config.control)?;
-        registry.observe_membership(&control)?;
+        let backup_source = config
+            .remote_control
+            .as_ref()
+            .and_then(|remote| remote.backup.as_ref().map(|access| (remote, access)))
+            .map(|(remote, access)| {
+                crate::remote_backup::DataTransport::open(remote, access, admission.clone())
+            })
+            .transpose()?;
+        if let Some(source) = &backup_source {
+            registry.install_remote_backup(source.clone())?;
+        }
+        let control_context = match (&control, &config.control) {
+            (ControlAccess::Local(database), Some(hosted)) => {
+                let context = crate::runtime::configured_control_context(hosted)?;
+                if let Some(sources) = &hosted.catalog_sources {
+                    database.install_remote_data_catalog_reader(
+                        crate::data_member_catalog::InstalledReader::open(sources, &admission)?,
+                    )?;
+                }
+                if let Some(sources) = &hosted.backup_sources {
+                    database.install_remote_backup_verifier(
+                        crate::remote_backup::ControlVerifier::open(sources, &admission)?,
+                    )?;
+                }
+                registry.install_backup_control(database, &context)?;
+                registry.observe_membership(database)?;
+                Some(context)
+            }
+            // A dedicated Control writer, when enrolled, is attached to the data sources above.
+            (ControlAccess::Remote(_), None) => None,
+            _ => anyhow::bail!("configured Control placement differs from its access"),
+        };
         let readiness = crate::readiness::Coverage::new(&admission)?;
         // Protected observations keep one pre-reserved workspace, so node
         // admission pressure cannot refuse a scrape (see ObservationState).
@@ -714,6 +823,7 @@ impl Administration {
             registry,
             control,
             control_context,
+            backup_source,
             audit,
             cluster,
             destinations,
@@ -732,15 +842,39 @@ impl Administration {
             observation,
         }))
     }
+    /// The hosted Control operator, or a fixed refusal on a data-only node.
+    /// Identity for looking up this node's own installed retirement source.
+    /// It is never sent to a peer or used to submit Control commands.
+    fn retirement_registry_context(&self, tenant: &str) -> RequestContext {
+        match &self.control_context {
+            Some(control) => RequestContext {
+                tenant: tenant.to_owned(),
+                ..control.clone()
+            },
+            None => RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
+                principal: "kasumi-node".into(),
+                tenant: tenant.to_owned(),
+                scopes: BTreeSet::from([Action::Admin]),
+                request_id: Uuid::new_v4().to_string(),
+            },
+        }
+    }
+
+    fn control_context(&self) -> kasumi_types::Result<&RequestContext> {
+        self.control_context
+            .as_ref()
+            .ok_or_else(remote_control_only)
+    }
     fn current(&self, context: &RequestContext) -> Result<SelectedTenant> {
         context.authorization.check_live()?;
         if context.tenant == crate::runtime::CONTROL_TENANT {
-            return Ok(SelectedTenant::new(self.control.clone()));
+            return Ok(SelectedTenant::new(self.control.local()?.clone()));
         }
         let database = self.registry.database(context)?;
         let generation = database.engine().generation()?;
-        let topology = ControlPlane::local_topology(&self.control)?;
-        let topology = &topology.topology;
+        let topology = self.control.routes()?;
+        let topology = topology.topology();
         ensure!(
             topology
                 .tenants
@@ -921,6 +1055,44 @@ impl Administration {
     ) -> Result<serde_json::Value> {
         self.authorized(source, context, false).await?;
         match command {
+            ManagementCommand::PublishDataMembership {
+                tenant,
+                incarnation,
+                previous_voters,
+                voters,
+            } => {
+                require_control(context)?;
+                ensure!(
+                    self.config
+                        .control
+                        .as_ref()
+                        .is_some_and(|control| control.remote_data.is_some()),
+                    "remote Data membership publication requires a dedicated Control voter"
+                );
+                let database = self.control.local()?;
+                self.event(
+                    context,
+                    SecurityEventKind::Membership,
+                    SecurityOutcome::Started,
+                )
+                .await?;
+                publish_data_voters(
+                    database,
+                    context,
+                    &tenant,
+                    incarnation,
+                    &previous_voters,
+                    &voters,
+                )
+                .await?;
+                self.event(
+                    context,
+                    SecurityEventKind::Membership,
+                    SecurityOutcome::Succeeded,
+                )
+                .await?;
+                Ok(serde_json::json!({"published":true}))
+            }
             ManagementCommand::ApprovePeerPool {
                 expected_topology_version,
             } => {
@@ -978,13 +1150,31 @@ impl Administration {
                 .await?;
                 let state = source.database.engine().generation()?;
                 let metrics = source.database.raft_group().metrics();
-                let control_metrics = self.control.raft_group().metrics();
+                let control_leader = match &self.control {
+                    ControlAccess::Local(control) => control.raft_group().metrics().current_leader,
+                    ControlAccess::Remote(remote) => remote.status().control_leader,
+                };
+                let applied_membership =
+                    metrics
+                        .membership_config
+                        .log_id()
+                        .as_ref()
+                        .filter(|membership| {
+                            metrics
+                                .last_applied
+                                .as_ref()
+                                .is_some_and(|applied| membership.index <= applied.index)
+                        });
                 Ok(
                     serde_json::json!({"incarnation":state.incarnation(),"revision":state.revision(),"suspended":state.suspended(),"pending_restore":state.pending_restore(),
                     "mode":if source.database.raft_group().is_local() { "standalone" } else { "replicated" },
                     "observation":"local_committed_state","retired":state.retired(),"node_id":metrics.id,
                     "leader":metrics.current_leader,
-                    "control_leader":control_metrics.current_leader,
+                    "raft_snapshot_index":metrics.snapshot.map(|log| log.index),
+                    "raft_membership_index":applied_membership.map(|log| log.index),
+                    "raft_applied_index":metrics.last_applied.map(|log| log.index),
+                    "raft_voters":applied_membership.map(|_| metrics.membership_config.membership().voter_ids().collect::<Vec<_>>()),
+                    "control_leader":control_leader,
                     "control_topology_version": if context.tenant==crate::runtime::CONTROL_TENANT {
                         state.local_control_topology_version()
                     } else { None },
@@ -1095,18 +1285,19 @@ impl Administration {
                         "Raft membership requires replicated mode"
                     )
                 );
-                let topology = self.committed_topology()?;
-                let node = topology
-                    .nodes
-                    .get(&node_id)
-                    .context("learner absent from approved control metadata")?;
-                ensure!(
-                    self.config
-                        .replication
-                        .as_ref()
-                        .is_some_and(|r| r.peers.iter().any(|p| p.node_id == node_id)),
-                    "learner requires configured pinned transport"
-                );
+                let replication = self
+                    .config
+                    .replication
+                    .as_ref()
+                    .context("replication missing")?;
+                let peer = replication
+                    .peers
+                    .iter()
+                    .find(|peer| peer.node_id == node_id)
+                    .context("learner requires configured pinned transport")?
+                    .clone();
+                let local_voter = replication.node_id;
+                let access = self.control.clone();
                 self.event(
                     context,
                     SecurityEventKind::Membership,
@@ -1124,11 +1315,36 @@ impl Administration {
                     .await?;
                 let selected = source.clone();
                 let original_context = context.clone();
-                let learner = kasumi_raft::BasicNode::new(node.endpoint.clone());
                 self.command_jobs
                     .execute(
                         tokio::time::Instant::now() + std::time::Duration::from_secs(30),
                         async move {
+                            let learner = match access {
+                                ControlAccess::Local(control) => {
+                                    let topology = ControlPlane::local_topology(&control)?;
+                                    let node =
+                                        topology.topology.nodes.get(&node_id).context(
+                                            "learner absent from approved control metadata",
+                                        )?;
+                                    kasumi_raft::BasicNode::new(node.endpoint.clone())
+                                }
+                                ControlAccess::Remote(remote) => {
+                                    let incarnation = selected
+                                        .database
+                                        .engine()
+                                        .generation()?
+                                        .incarnation()
+                                        .to_owned();
+                                    remote
+                                        .approved_learner(
+                                            &original_context.tenant,
+                                            &incarnation,
+                                            local_voter,
+                                            &peer,
+                                        )
+                                        .await?
+                                }
+                            };
                             // The child may wait behind a prior accepted command
                             // after this caller has disappeared. Recheck original
                             // authority immediately before Raft dispatch.
@@ -1164,9 +1380,12 @@ impl Administration {
                         "Raft membership requires replicated mode"
                     )
                 );
-                let topology = self.committed_topology()?;
-                validate_voters(&topology, &voters)?;
-                topology.validate_voter_override(&context.tenant, &voters)?;
+                let routes = self.control.routes()?;
+                validate_voters(routes.topology(), &voters)?;
+                routes
+                    .topology()
+                    .validate_voter_override(&context.tenant, &voters)?;
+                drop(routes);
                 let metrics = source.database.raft_group().metrics();
                 ensure!(
                     voters.iter().all(|id| metrics
@@ -1192,10 +1411,43 @@ impl Administration {
                     .await?;
                 let selected = source.clone();
                 let original_context = context.clone();
+                let remote_peers = self
+                    .control
+                    .remote()
+                    .map(|remote| {
+                        let replication = self
+                            .config
+                            .replication
+                            .as_ref()
+                            .context("Data replication missing")?;
+                        let peers = voters
+                            .iter()
+                            .map(|id| {
+                                replication
+                                    .peers
+                                    .iter()
+                                    .find(|peer| peer.node_id == *id)
+                                    .cloned()
+                                    .context("voter requires configured pinned transport")
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok::<_, anyhow::Error>((remote.clone(), peers))
+                    })
+                    .transpose()?;
                 self.command_jobs
                     .execute(
                         tokio::time::Instant::now() + std::time::Duration::from_secs(30),
                         async move {
+                            if let Some((remote, peers)) = remote_peers {
+                                membership::confirm_original_route(
+                                    &remote,
+                                    &selected.database,
+                                    &original_context.tenant,
+                                    &voters,
+                                    &peers,
+                                )
+                                .await?;
+                            }
                             selected.store.check_access()?;
                             selected.database.engine().authorize(
                                 &original_context,
@@ -1253,9 +1505,9 @@ impl Administration {
                             .is_some_and(|applied| applied.index >= log.index)),
                     "membership has not applied locally"
                 );
-                let plane = ControlPlane::new(self.control.clone())?;
+                let plane = ControlPlane::new(self.control.local()?.clone())?;
                 let current = plane
-                    .topology(&self.control_context)
+                    .topology(self.control_context()?)
                     .await?
                     .context("route missing")?;
                 let mut topology = current.topology;
@@ -1277,7 +1529,7 @@ impl Administration {
                     .await?;
                     plane
                         .replace_topology(
-                            self.control_context.clone(),
+                            self.control_context()?.clone(),
                             topology,
                             Precondition::Version(current.version),
                             key,
@@ -1346,9 +1598,9 @@ impl Administration {
         context: &RequestContext,
         expected: u64,
     ) -> Result<serde_json::Value> {
-        self.authorized(&self.current(&self.control_context)?, context, true)
+        self.authorized(&self.current(self.control_context()?)?, context, true)
             .await?;
-        let plane = ControlPlane::new(self.control.clone())?;
+        let plane = ControlPlane::new(self.control.local()?.clone())?;
         let current = plane
             .topology(context)
             .await?
@@ -1470,10 +1722,10 @@ impl Administration {
         target: &ManagedTenant,
         expected: u64,
     ) -> Result<serde_json::Value> {
-        self.authorized(&self.current(&self.control_context)?, context, true)
+        self.authorized(&self.current(self.control_context()?)?, context, true)
             .await?;
         self.verify_provision_peers(tenant, target, true).await?;
-        let plane = ControlPlane::new(self.control.clone())?;
+        let plane = ControlPlane::new(self.control.local()?.clone())?;
         let current = plane
             .topology(context)
             .await?
@@ -1538,10 +1790,10 @@ impl Administration {
             let Some(_tenant) = self.gate.try_enter_tenant(&tenant) else {
                 continue;
             };
-            let context = RequestContext {
-                tenant: tenant.clone(),
-                ..self.control_context.clone()
-            };
+            // This internal selection reads only the installed source route.
+            // A data-only node has no Control operator; it uses the same
+            // service identity for its own tenant.
+            let context = self.retirement_registry_context(&tenant);
             if !matches!(
                 self.registry.retirement_source(&context, &incarnation),
                 Ok(kasumi_engine::InstalledRetirementSource::Serving(_))
@@ -1614,6 +1866,14 @@ impl Administration {
     /// The active guard remains valid so admitted recovery can finish normally.
     pub(crate) fn close_management_admission(&self) {
         self.gate.close();
+        for tenant in self
+            .generations
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+        {
+            tenant.database.seal_admission();
+        }
     }
 
     /// Fixed closure cause and key-lease class of a node control plane that
@@ -1621,15 +1881,14 @@ impl Administration {
     /// no in-process fresh admission: only reopening the daemon recovers it.
     /// An orderly shutdown is not a closure.
     pub(crate) fn control_closure(&self) -> Option<(&'static str, &'static str)> {
-        self.control
+        // A data-only node reports its remote access separately.
+        let ControlAccess::Local(control) = &self.control else {
+            return None;
+        };
+        control
             .serving_failure_class()
             .filter(|cause| *cause != "shutting_down")
-            .map(|cause| {
-                (
-                    cause,
-                    self.control.key_lease_failure_class().unwrap_or("none"),
-                )
-            })
+            .map(|cause| (cause, control.key_lease_failure_class().unwrap_or("none")))
     }
 
     /// One reconciliation pass, as startup runs it: a pass that stops early is
@@ -1664,9 +1923,22 @@ impl Administration {
         if let Err(error) = self.close_retired_generations().await {
             outcome.failed(ReconcileStep::RetiredGenerations, &error);
         }
-        let topology =
-            ControlPlane::local_topology(&self.control).context(ReconcileStep::ControlTopology)?;
-        let topology = &topology.topology;
+        if self
+            .config
+            .control
+            .as_ref()
+            .is_some_and(|control| control.remote_data.is_some())
+        {
+            // Every routed application is owned by remote data voters.
+            return Ok(());
+        }
+        // A data-only node installs routes from the newest topology its
+        // dedicated Control signed; a Control outage keeps installed routes.
+        let topology = self
+            .control
+            .routes()
+            .context(ReconcileStep::ControlTopology)?;
+        let topology = topology.topology();
         for (tenant, route) in &topology.tenants {
             let Some(_tenant) = self.gate.try_enter_tenant(tenant) else {
                 continue;
@@ -1803,9 +2075,7 @@ impl Administration {
             .cloned()
             .collect::<Vec<_>>();
         for tenant in &generations {
-            if let Some(lease) = &tenant.lease {
-                lease.close();
-            }
+            tenant.database.seal_admission();
         }
         for (index, tenant) in generations.into_iter().enumerate() {
             if let Some(network) = &self.cluster {
@@ -1835,18 +2105,19 @@ impl Administration {
                     )));
                 }
             }
+            if let Err(failure) = tenant.database.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                    continue;
+                }
+            }
             if let Some(lease) = &tenant.lease
                 && let Err(error) = lease.shutdown().await
             {
                 report.merge(&error);
                 if error.completion() == DrainCompletion::Retained {
                     retained = Some(error);
-                }
-            }
-            if let Err(failure) = tenant.database.shutdown().await {
-                report.merge(&failure);
-                if failure.completion() == DrainCompletion::Retained {
-                    retained = Some(failure);
                 }
             }
         }

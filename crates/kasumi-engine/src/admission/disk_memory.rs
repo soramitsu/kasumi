@@ -306,6 +306,53 @@ mod tests {
     use crate::admission::{AdmissionConfig, NodeAdmission};
     use kasumi_store::NodeDiskMemoryAdmission;
 
+    // The original grant is refunded only by the shared control's actual
+    // deallocation, whichever concurrently dropped alias is last.
+    #[test]
+    fn original_proposal_budget_control_deallocates_before_its_actual_ledger_refund() {
+        let node = NodeAdmission::with_fixed_memory(
+            AdmissionConfig {
+                max_inflight_operations: 1,
+                ..Default::default()
+            },
+            1 << 30,
+            0,
+        )
+        .unwrap();
+        let baseline = node.snapshot();
+        let required = ProposalBudget::required_bytes().unwrap();
+        let budget = ProposalBudget::new(node.reserve(required, None).unwrap());
+        let charged = node.snapshot();
+        let address = budget.allocation_address();
+        let copies = (0..8).map(|_| budget.clone()).collect::<Vec<_>>();
+        drop(budget);
+        crate::allocation_tests::check_deallocation(
+            address,
+            move || {
+                let gate = Arc::new(std::sync::Barrier::new(copies.len()));
+                std::thread::scope(|scope| {
+                    for copy in copies {
+                        let gate = gate.clone();
+                        scope.spawn(move || {
+                            gate.wait();
+                            drop(copy);
+                        });
+                    }
+                });
+            },
+            || {
+                let paused = node.snapshot();
+                assert_eq!(paused.reserved_bytes, charged.reserved_bytes);
+                assert_eq!(paused.live_reservations, charged.live_reservations);
+                assert_eq!(paused.inflight_operations, charged.inflight_operations);
+            },
+        );
+        let released = node.snapshot();
+        assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(released.live_reservations, baseline.live_reservations);
+        assert_eq!(released.inflight_operations, baseline.inflight_operations);
+    }
+
     #[test]
     fn installed_box_stays_charged_after_facade_drop_with_operation_slots_full() {
         let node =

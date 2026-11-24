@@ -36,9 +36,10 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     config.native.listen = native;
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
+    let hosted = config.control.as_mut().unwrap();
     for transit in [
-        &mut config.control.keys,
-        &mut config.control.custody_keys,
+        &mut hosted.keys,
+        &mut hosted.custody_keys,
         &mut config.security_audit.keys,
     ]
     .into_iter()

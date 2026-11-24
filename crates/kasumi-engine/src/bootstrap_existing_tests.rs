@@ -155,7 +155,7 @@ impl Installation {
         image: &SnapshotImage,
         manifest_bytes: impl AsRef<[u8]>,
         custody_digest: &str,
-        first_chunk: Option<Vec<u8>>,
+        mut first_chunk: Option<Vec<u8>>,
     ) -> anyhow::Result<()> {
         bind_deployment(&self.stores, b"local-v1")?;
         let mut reader = image.reader();
@@ -165,7 +165,7 @@ impl Installation {
                 vec![0; (image.len() - index * CHUNK as u64).min(CHUNK as u64) as usize];
             reader.read_exact(&mut chunk)?;
             if index == 0 {
-                chunk = first_chunk.clone().unwrap_or(chunk);
+                chunk = first_chunk.take().unwrap_or(chunk);
             }
             self.stores.application().write_batch(&[WriteOp::put(
                 NS,
@@ -302,6 +302,102 @@ fn assert_rejected<T, E: Into<crate::SnapshotFailure>>(result: std::result::Resu
             kasumi_store::StorageCensusDisposition::Retired
         );
     }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns the original native failure custody."
+)]
+async fn bootstrap_load_admits_the_authenticated_extent_before_fetching_chunks()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let disk = fixture.node.scratch_disk();
+    let bytes = 1u64 << 50;
+    let manifest = ApplicationBootstrapManifest {
+        format: 2,
+        bytes,
+        chunks: bytes.div_ceil(CHUNK as u64),
+        digest: "0".repeat(64),
+    };
+    let failure = load_chunks(&manifest, disk, |_| {
+        panic!("bootstrap read preceded admission of its scratch extent")
+    })
+    .unwrap_err();
+    assert_eq!(
+        failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::StorageFull
+    );
+    fixture.seed_bootstrap()?;
+    let live = load(fixture.stores.application())?.unwrap();
+    let view = fixture.stores.read_view()?;
+    let pinned = load_at(&view, disk)?.unwrap();
+    assert_eq!(live, pinned);
+    view.close()?;
+    drop((live, pinned));
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns the original native failure custody."
+)]
+async fn target_digest_stops_before_reading_the_next_encrypted_chunk()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let first = vec![0x1b; CHUNK];
+    let last = [0x92];
+    let expected = hex::encode(
+        Sha256::new()
+            .chain_update(&first)
+            .chain_update(last)
+            .finalize(),
+    );
+    let manifest = ApplicationBootstrapManifest {
+        format: 2,
+        bytes: CHUNK as u64 + 1,
+        chunks: 2,
+        digest: expected.clone(),
+    };
+    fixture.first_publish(
+        &fixture.image()?,
+        serde_json::to_vec(&manifest)?,
+        &expected,
+        Some(first),
+    )?;
+    let token = kasumi_query::QueryCancellation::default();
+    let mut checks = 0;
+    let stopped = target::verify_persisted_digest(&fixture.stores, &expected, || {
+        checks += 1;
+        if checks == 3 {
+            token.cancel();
+        }
+        Ok(token.check()?)
+    })
+    .unwrap_err();
+    let stopped = stopped
+        .downcast_ref::<Error>()
+        .expect("original cancellation");
+    assert_eq!(stopped.code, ErrorCode::ResourceExhausted);
+    assert_eq!(stopped.message, token.check().unwrap_err().message);
+    // Without cancellation, the same opening observes the missing second
+    // row. After that original row arrives both domains authenticate.
+    let missing =
+        target::verify_persisted_digest(&fixture.stores, &expected, || Ok(())).unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("target bootstrap chunk absent")
+    );
+    fixture
+        .stores
+        .application()
+        .write_batch(&[WriteOp::put(NS, 1u64.to_be_bytes(), last)])?;
+    target::verify_persisted_digest(&fixture.stores, &expected, || Ok(()))?;
+    fixture.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -700,6 +796,9 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         32 << 20,
         fixture.storage.persistent.clone(),
     )?;
+    let (control, operator) =
+        crate::service::backup_test_control(&database, &context, true).await?;
+    database.install_backup_control(&control, &operator)?;
     let backup = database
         .backup_checkpoint(context.clone(), &destination, uuid::Uuid::new_v4())
         .await?;
@@ -707,7 +806,22 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         .verify_backup_checkpoint(context.clone(), &destination, backup.backup_id())
         .await?;
     let expected_revision = database.engine().generation()?.state.revision;
+    let outcomes = control
+        .engine()
+        .generation()?
+        .control_backup_sessions()
+        .expect("durable Control backup ledger");
+    assert_eq!(
+        (
+            outcomes.claimed_without_terminal,
+            outcomes.completed,
+            outcomes.aborted
+        ),
+        (0, 1, 0)
+    );
     database.shutdown().await?;
+    control.shutdown().await?;
+    drop(control);
     drop(database);
     fixture.shutdown().await;
     let Installation {
@@ -767,10 +881,19 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         serde_json::json!({"value": 7})
     );
     assert_eq!(reopened.mutate(context.clone(), mutation).await?, receipt);
+    let (control, operator) =
+        crate::service::backup_test_control(&reopened, &context, false).await?;
+    reopened.install_backup_control(&control, &operator)?;
+    assert_eq!(
+        control.engine().generation()?.control_backup_sessions(),
+        Some(outcomes)
+    );
     reopened
         .verify_backup_checkpoint(context, &destination, backup.backup_id())
         .await?;
     reopened.shutdown().await?;
+    control.shutdown().await?;
+    drop(control);
     drop(reopened);
     stores.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
@@ -1432,6 +1555,7 @@ fn spawn_form_child(
 ) -> anyhow::Result<std::process::Child> {
     Ok(std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .current_dir(root)
         .env(FORM_STAGE, stage)
         .env(FORM_ROOT, root)
         .stdout(std::process::Stdio::null())
@@ -1564,7 +1688,10 @@ async fn a_writer_that_dies_inside_its_next_snapshot_task_reopens_from_the_previ
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
     // Aborted by its own snapshot task, after the ready marker.
-    assert!(!status.success());
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGABRT)
+    );
     assert!(
         root.join("ready").exists(),
         "child failed before its crash point: {}",
@@ -1678,6 +1805,7 @@ async fn segment_child(
 fn run_segment_child(root: &std::path::Path, test: &str, stage: &str) -> anyhow::Result<()> {
     let output = std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .current_dir(root)
         .env(FORM_STAGE, stage)
         .env(FORM_ROOT, root)
         .output()?;
@@ -2308,7 +2436,7 @@ async fn pressure_reopen(
     drop(database);
     let fixture = fixture.reopen().await?;
     let admission = fixture.audit.admission();
-    let legacy = recovery_workspace_bytes(&fixture.stores)?;
+    let full_estimate = recovery_workspace_bytes(&fixture.stores)?;
     let snapshot_bytes = kasumi_raft::recovery_snapshot_bytes(&fixture.stores)?;
     assert!(
         snapshot_bytes > 120 << 20,
@@ -2326,20 +2454,20 @@ async fn pressure_reopen(
     }
     // Manifest reads can release short-lived storage work between the probe
     // and actual reservation. Keep a real 32 MiB margin for this smaller image.
-    let leave = remaining_budget.unwrap_or_else(|| legacy.checked_sub(32 << 20).unwrap());
+    let leave = remaining_budget.unwrap_or_else(|| full_estimate.checked_sub(32 << 20).unwrap());
     let held_bytes = low
         .checked_sub(leave)
         .expect("fixture can retain its competitor");
     let held = admission.reserve_waiting(held_bytes, None)?;
     assert_eq!(
-        admission.reserve(legacy, None).err().unwrap().code,
+        admission.reserve(full_estimate, None).err().unwrap().code,
         ErrorCode::ResourceExhausted
     );
     let before = admission.snapshot();
     let workspace = OriginalRecoveryWorkspace::reserve(&fixture.stores, admission)?;
     let after = admission.snapshot();
     eprintln!(
-        "admitted original reopen rows={rows} logical_bytes={logical_bytes} snapshot_bytes={snapshot_bytes} legacy={legacy} headroom={leave} held={held_bytes} ordinary_before_hold={low} reserved_before={} reserved_after={} rss_before={} rss_after={} metered_sha256={:?}",
+        "admitted original reopen rows={rows} logical_bytes={logical_bytes} snapshot_bytes={snapshot_bytes} full_estimate={full_estimate} headroom={leave} held={held_bytes} ordinary_before_hold={low} reserved_before={} reserved_after={} rss_before={} rss_after={} metered_sha256={:?}",
         before.reserved_bytes,
         after.reserved_bytes,
         before.resident_bytes,

@@ -272,7 +272,10 @@ fn committed_empty_writer_is_a_live_owner_until_its_success_guard_retires() {
         opening.close().settlement(),
         DatabaseOpenSettlement::WaitingForTransactions
     );
+    assert!(opening.database().is_none());
+    assert_eq!(opening.report().active_transactions(), Some(1));
     drop(committed);
+    assert_eq!(opening.report().active_transactions(), Some(0));
     finish(opening, &admission);
 }
 

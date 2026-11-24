@@ -342,8 +342,7 @@ impl Jobs {
         }
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    fn start_task<T: Send + 'static>(
+    pub(super) fn start_task<T: Send + 'static>(
         &self,
         task: impl Future<Output = anyhow::Result<T>> + Send + 'static,
     ) -> Result<Call<T>> {

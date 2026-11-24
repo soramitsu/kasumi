@@ -44,19 +44,169 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })
 }
+fn require_key_scope(
+    resource: &CredentialResource,
+    tenant: &str,
+    scope: &KeyRetentionScope,
+) -> Result<()> {
+    ensure!(
+        matches!((scope, resource),
+            (KeyRetentionScope::Tenant { tenant: selected }, CredentialResource::Database { .. }) if selected == tenant)
+            || matches!(
+                (scope, resource),
+                (
+                    KeyRetentionScope::Control {} | KeyRetentionScope::TargetJournal {},
+                    CredentialResource::Control { .. }
+                )
+            ),
+        "key retention scope differs from the selected profile"
+    );
+    Ok(())
+}
+
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
-        [command, action, profile] if command == "audit" && action == "status" => {
+        [command, action, profile, input] if command == "key-retention" => {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let input = private_files::read(Path::new(input), 128 << 10)?;
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let bearer = profile.bearer()?;
+            let result = match action.as_str() {
+                "read" => {
+                    let request: ReadKeyRetentionRequest = serde_json::from_slice(&input)?;
+                    if matches!(
+                        request.scope,
+                        KeyRetentionScope::SecurityAudit {}
+                            | KeyRetentionScope::Signer {}
+                            | KeyRetentionScope::TargetJournal {}
+                            | KeyRetentionScope::LocalRecovery {}
+                    ) {
+                        ensure!(
+                            matches!(profile.resource, CredentialResource::Control { .. }),
+                            "independent key inventory requires a Control profile"
+                        );
+                    } else {
+                        require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
+                    }
+                    serde_json::to_string_pretty(
+                        &client.read_key_retention(&bearer, &request).await?,
+                    )?
+                }
+                "status" => {
+                    let request: KeyRetirementStatusRequest = serde_json::from_slice(&input)?;
+                    require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
+                    serde_json::to_string_pretty(
+                        &client.key_retirement_status(&bearer, &request).await?,
+                    )?
+                }
+                "retire" | "abort" => {
+                    let request: RetireKeyVersionsRequest = serde_json::from_slice(&input)?;
+                    require_key_scope(&profile.resource, &profile.tenant, &request.scope)?;
+                    let status = if action == "retire" {
+                        client.retire_key_versions(&bearer, &request).await?
+                    } else {
+                        client.abort_key_retirement(&bearer, &request).await?
+                    };
+                    serde_json::to_string_pretty(&status)?
+                }
+                _ => anyhow::bail!(
+                    "usage: kasumid key-retention read|retire|abort|status PROFILE REQUEST_JSON"
+                ),
+            };
+            println!("{result}");
+        }
+        [command, action, profile]
+            if command == "tenant-audit" && matches!(action.as_str(), "status" | "capacity") =>
+        {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let expected = match profile.resource {
+                CredentialResource::Database { incarnation }
+                | CredentialResource::Control { incarnation } => incarnation,
+                _ => anyhow::bail!("tenant audit requires a database or Control credential"),
+            };
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let bearer = profile.bearer()?;
+            let (json, tenant, incarnation) = if action == "status" {
+                let result = client.tenant_audit_status(&bearer).await?;
+                (
+                    serde_json::to_string_pretty(&result)?,
+                    result.tenant,
+                    result.incarnation,
+                )
+            } else {
+                let result = client.tenant_audit_capacity(&bearer).await?;
+                (
+                    serde_json::to_string_pretty(&result)?,
+                    result.tenant,
+                    result.incarnation,
+                )
+            };
+            ensure!(
+                tenant == profile.tenant && incarnation == expected.to_string(),
+                "tenant audit observation belongs to a different tenant incarnation"
+            );
+            println!("{json}");
+        }
+        [command, action, profile, input]
+            if command == "tenant-audit" && matches!(action.as_str(), "verify" | "export") =>
+        {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let expected = match profile.resource {
+                CredentialResource::Database { incarnation }
+                | CredentialResource::Control { incarnation } => incarnation,
+                _ => anyhow::bail!("tenant audit requires a database or Control credential"),
+            };
+            let input = private_files::read(Path::new(input), 32 << 10)?;
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let bearer = profile.bearer()?;
+            let (json, tenant, incarnation) = if action == "export" {
+                let page = client
+                    .export_tenant_audit(&bearer, &serde_json::from_slice(&input)?)
+                    .await?;
+                (
+                    serde_json::to_string_pretty(&page)?,
+                    page.tenant,
+                    page.incarnation,
+                )
+            } else {
+                let page = client
+                    .verify_tenant_audit(&bearer, &serde_json::from_slice(&input)?)
+                    .await?;
+                (
+                    serde_json::to_string_pretty(&page)?,
+                    page.tenant,
+                    page.incarnation,
+                )
+            };
+            ensure!(
+                tenant == profile.tenant && incarnation == expected.to_string(),
+                "tenant audit page belongs to a different tenant incarnation"
+            );
+            println!("{json}");
+        }
+        [command, ..] if command == "tenant-audit" => {
+            anyhow::bail!(
+                "usage: kasumid tenant-audit status|capacity PROFILE | tenant-audit verify|export PROFILE REQUEST_JSON"
+            )
+        }
+        [command, action, profile]
+            if command == "audit" && matches!(action.as_str(), "status" | "capacity") =>
+        {
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;
             let mut client =
                 kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &client.security_audit_status(&profile.bearer()?).await?
-                )?
-            );
+            let bearer = profile.bearer()?;
+            let json = match action.as_str() {
+                "status" => {
+                    serde_json::to_string_pretty(&client.security_audit_status(&bearer).await?)?
+                }
+                _ => serde_json::to_string_pretty(&client.security_audit_capacity(&bearer).await?)?,
+            };
+            println!("{json}");
         }
         [command, action, profile, stream, index] if command == "audit" && action == "verify" => {
             let profile = ClientProfile::load(Path::new(profile))?;
@@ -99,7 +249,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             println!("{}", serde_json::json!({"prune":output}));
         }
         [command, ..] if command == "audit" => anyhow::bail!(
-            "usage: kasumid audit status PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX | audit prune PROFILE EXPORT_PAGE_JSON THROUGH_INDEX OUTPUT_JSON"
+            "usage: kasumid audit status|capacity PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX | audit prune PROFILE EXPORT_PAGE_JSON THROUGH_INDEX OUTPUT_JSON"
         ),
         _ => return Ok(false),
     }
@@ -301,4 +451,27 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
     );
     private_files::publish(output, &bytes)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_journal_retirement_uses_the_control_profile() {
+        let incarnation = Uuid::new_v4();
+        let control = CredentialResource::Control { incarnation };
+        let database = CredentialResource::Database { incarnation };
+        let tenant = crate::runtime::CONTROL_TENANT;
+        let journal = KeyRetentionScope::TargetJournal {};
+        assert!(require_key_scope(&control, tenant, &journal).is_ok());
+        assert!(require_key_scope(&database, "application", &journal).is_err());
+        for independent in [
+            KeyRetentionScope::Signer {},
+            KeyRetentionScope::SecurityAudit {},
+            KeyRetentionScope::LocalRecovery {},
+        ] {
+            assert!(require_key_scope(&control, tenant, &independent).is_err());
+        }
+    }
 }

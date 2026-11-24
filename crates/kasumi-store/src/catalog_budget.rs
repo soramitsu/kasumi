@@ -431,30 +431,41 @@ async fn production_backup_catalog_clone_denies_low_headroom_and_lives_with_back
     Ok(())
 }
 
-struct WideReferences {
+struct WideCiphertexts {
     inner: LocalKeyProvider,
     padding: AtomicUsize,
 }
-impl WideReferences {
+impl WideCiphertexts {
     fn pad(&self, wrapped: &mut WrappedKey) {
-        wrapped.key_ref = "x".repeat(self.padding.load(Ordering::SeqCst));
+        wrapped.ciphertext.push('.');
+        wrapped.ciphertext.extend(std::iter::repeat_n(
+            'x',
+            self.padding.load(Ordering::SeqCst),
+        ));
+    }
+    fn unpad(&self, wrapped: &WrappedKey) -> Result<WrappedKey> {
+        let (ciphertext, _) = wrapped
+            .ciphertext
+            .split_once('.')
+            .context("missing fixture padding")?;
+        let mut inner = wrapped.clone();
+        inner.ciphertext.truncate(ciphertext.len());
+        Ok(inner)
     }
 }
 #[async_trait]
-impl KeyProvider for WideReferences {
+impl KeyProvider for WideCiphertexts {
     async fn generate_key(&self, tenant: &str) -> Result<GeneratedKey> {
         let mut generated = self.inner.generate_key(tenant).await?;
         self.pad(&mut generated.wrapped);
         Ok(generated)
     }
     async fn unwrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
-        let mut inner = wrapped.clone();
-        inner.key_ref = self.inner.key_ref().into();
+        let inner = self.unpad(wrapped)?;
         self.inner.unwrap_key(tenant, &inner).await
     }
     async fn rewrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<WrappedKey> {
-        let mut inner = wrapped.clone();
-        inner.key_ref = self.inner.key_ref().into();
+        let inner = self.unpad(wrapped)?;
         let mut wrapped = self.inner.rewrap_key(tenant, &inner).await?;
         self.pad(&mut wrapped);
         Ok(wrapped)
@@ -475,7 +486,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
         fixture_scratch.clone(),
     )
     .unwrap();
-    let provider = Arc::new(WideReferences {
+    let provider = Arc::new(WideCiphertexts {
         inner: LocalKeyProvider::new([33; 32]),
         padding: AtomicUsize::new(MAX_KEY_CATALOG_BYTES),
     });

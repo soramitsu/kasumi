@@ -665,6 +665,12 @@ impl<'a> Parser<'a> {
             self.number()?;
             self.comma()?;
         }
+        // The current writer omits the default, preserving deployed bytes.
+        if self.bytes[self.pos..].starts_with(br#""max_lifecycle_intent_bytes":"#) {
+            self.field(b"max_lifecycle_intent_bytes")?;
+            self.number()?;
+            self.comma()?;
+        }
         self.field(b"max_policy_grants")?;
         let max_grants = self.number()?;
         self.comma()?;

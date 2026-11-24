@@ -100,13 +100,12 @@ impl NativeAdmin {
         };
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         let manager = self.auth.local_credentials().map_err(status)?.clone();
         let caller = context.clone();
-        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            caller.authorization.check_live()?;
+        let result = credential_worker(fence, move || {
             match operation {
                 CredentialOperation::Create => {
                     let specification = create_specification
@@ -120,13 +119,7 @@ impl NativeAdmin {
                     // An MCP credential cannot reach this listener, so a
                     // Control administrator renews it explicitly.
                     let renewable = own_family == Some(renewal.family_id)
-                        || (control
-                            && manager
-                                .status(renewal.family_id)
-                                .is_ok_and(|status| {
-                                    status.specification.audience
-                                        == kasumi_types::CredentialAudience::Mcp
-                                }));
+                        || (control && manager.is_mcp_family(renewal.family_id)?);
                     anyhow::ensure!(
                         renewable,
                         kasumi_types::Error::new(
@@ -155,37 +148,24 @@ impl NativeAdmin {
                 }
             }
         })
-        .await
-        .map_err(|_| Status::unavailable("credential worker stopped"))?;
-        let bytes = self
+        .await;
+        let (fence, bytes) = self
             .auth
-            .audit_result(
-                &context,
-                result.map_err(|error| {
-                    error
-                        .downcast_ref::<kasumi_types::Error>()
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            kasumi_types::Error::new(
-                                kasumi_types::ErrorCode::Unavailable,
-                                "credential operation failed",
-                            )
-                        })
-                }),
-            )
+            .audit_result(&context, result)
             .await
             .map_err(status)?;
-        let response = release_response(
+        let mut released = release_response(
             &self.auth,
             &context,
             fence,
-            CredentialJsonResponse {
-                response_json: bytes,
-            },
+            bytes,
             !matches!(operation, CredentialOperation::Status),
         )
         .await
         .map_err(status)?;
+        let response = CredentialJsonResponse {
+            response_json: std::mem::take(&mut *released),
+        };
         #[cfg(test)]
         if matches!(operation, CredentialOperation::Renew) {
             cancelled_reply::after_commit(own_family, &response)?;
@@ -228,9 +208,11 @@ impl NativeAdmin {
             Err((outcome, _)) => outcome.clone(),
         };
         let recorded = self.auth.record_recovery(context, outcome).await;
-        let response = result.map_err(|(_, refused)| refused)?;
+        let mut released = result.map_err(|(_, refused)| refused)?;
         recorded.map_err(status)?;
-        Ok(Response::new(response))
+        Ok(Response::new(CredentialJsonResponse {
+            response_json: std::mem::take(&mut *released),
+        }))
     }
 
     /// The recovery itself. A failure carries the outcome to record (denied
@@ -239,7 +221,7 @@ impl NativeAdmin {
         &self,
         recovery: &crate::auth::VerifiedRecovery,
         payload: Vec<u8>,
-    ) -> Result<CredentialJsonResponse, (kasumi_types::SecurityOutcome, Status)> {
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, (kasumi_types::SecurityOutcome, Status)> {
         let refused =
             |error: kasumi_types::Error| (crate::auth::recovery_outcome(error.code), status(error));
         let context = &recovery.context;
@@ -283,7 +265,7 @@ impl NativeAdmin {
                     "credential recovery scopes are no longer granted by current policy",
                 ));
             }
-            database.response_fence(context)
+            database.owned_response_fence(context)
         };
         let fence = self
             .auth
@@ -293,8 +275,7 @@ impl NativeAdmin {
         let manager = self.auth.local_credentials().map_err(refused)?.clone();
         let caller = context.clone();
         let proof = recovery.proof.clone();
-        let issued = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            caller.authorization.check_live()?;
+        let (fence, issued) = credential_worker(fence, move || {
             Ok(encode_json(&manager.recover(
                 &proof,
                 &renewal,
@@ -302,36 +283,53 @@ impl NativeAdmin {
             )?)?)
         })
         .await
-        .map_err(|_| {
-            refused(kasumi_types::Error::new(
-                kasumi_types::ErrorCode::Unavailable,
-                "credential worker stopped",
-            ))
-        })?
-        .map_err(|error| {
-            error
-                .downcast_ref::<kasumi_types::Error>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "credential operation failed",
-                    )
-                })
-        })
         .map_err(refused)?;
-        release_response(
-            &self.auth,
-            context,
-            fence,
-            CredentialJsonResponse {
-                response_json: issued,
-            },
-            true,
-        )
-        .await
-        .map_err(refused)
+        release_response(&self.auth, context, fence, issued, true)
+            .await
+            .map_err(refused)
     }
+}
+
+async fn credential_worker(
+    fence: kasumi_engine::ResponseFence<'static>,
+    work: impl FnOnce() -> anyhow::Result<Vec<u8>> + Send + 'static,
+) -> kasumi_types::Result<(
+    kasumi_engine::ResponseFence<'static>,
+    zeroize::Zeroizing<Vec<u8>>,
+)> {
+    use kasumi_types::{Error, ErrorCode};
+
+    fence
+        .run_blocking(move || {
+            work().map(zeroize::Zeroizing::new).map_err(|error| {
+                // Policy, input and renewal-budget refusals precede the ledger
+                // write. Preserve unobserved storage, encoding and signer failures.
+                let refused = error.chain().len() == 1
+                    && error.downcast_ref::<Error>().is_some_and(|e| {
+                        !e.has_physical_source()
+                            && matches!(
+                                e.code,
+                                ErrorCode::Unauthorized
+                                    | ErrorCode::Forbidden
+                                    | ErrorCode::InvalidArgument
+                                    | ErrorCode::NotFound
+                                    | ErrorCode::Conflict
+                                    | ErrorCode::ResourceExhausted
+                            )
+                    });
+                if refused {
+                    kasumi_serving::ChildFailure::Stopped(error)
+                } else {
+                    kasumi_serving::ChildFailure::Failed(error)
+                }
+            })
+        })
+        .await
+        .map_err(|error| {
+            error.downcast_ref::<Error>().cloned().unwrap_or_else(|| {
+                Error::new(ErrorCode::Unavailable, "credential operation failed")
+            })
+        })
 }
 
 #[cfg(test)]

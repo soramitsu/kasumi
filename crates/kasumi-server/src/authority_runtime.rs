@@ -172,6 +172,12 @@ impl AuthorityRuntimeConfig {
                 == roots.len(),
             "authority/control/security/signer-trust wrapping roots must be independent"
         );
+        for key in &self.security_audit.historical_keys {
+            ensure!(
+                !roots.contains(&key.validate()?),
+                "historical audit wrapping resource overlaps an authority key"
+            );
+        }
         self.security_audit.validate()?;
         Ok(())
     }
@@ -325,7 +331,7 @@ impl AuthorityRuntime {
             pending.signer_original_recoveries = Some(config.signer_verifier.node_start_inventory(&admission)?);
             let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
             let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
-            let auth = Authenticator::new(config.auth.clone())?;
+            let auth = Authenticator::new(config.auth.clone())?.on_node(&admission)?;
             let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
             let identity = config.replication.listener.tls.load()?;
             let ca = read_bounded(&config.replication.listener.client_ca, 1 << 20)?;
@@ -441,6 +447,7 @@ impl AuthorityRuntime {
                 }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?
             };
             pending.authorities.push(authority.clone());
+            signer_verifier.install_authority_key_catalogs(&authority, &audit)?;
             let group =
                 &config.installation.manifest.partitions[&config.installation.partition].group;
             let access = stores.clone();
@@ -761,3 +768,7 @@ mod participant_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "issuer_process_member.rs"]
+mod issuer_process_member;

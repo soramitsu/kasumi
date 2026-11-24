@@ -28,7 +28,7 @@ impl Plan {
         let snapshots =
             kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
         let sources = crate::application_sources::SourceRoots::required_fixed_admission_bytes()?;
-        let security_audit = kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES;
+        let security_audit = crate::SecurityAudit::WORKSPACE_BYTES;
         let audit_escrow = NodeAuditMaintenance::WORKSPACE_BYTES;
         let ordinary_protection = NodeAuditMaintenance::WORKSPACE_BYTES;
         let mut total = 0_u64;
@@ -121,12 +121,14 @@ fn replica_plan_keeps_workload_separate_and_proves_legacy_total_invalid() -> Res
     let legacy = legacy_invalid_config(&persistent, &scratch)?
         .max_inflight_bytes
         .unwrap();
-    // Same declared audit/cache obligations alone consume the old non-device
-    // total. The actual core/facade/snapshot/source owner quotes are additional.
+    // The legacy total funded archive maintenance before the service writer
+    // retained an additional transport job. Compare like-for-like obligations.
+    let legacy_security_audit = kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES;
+    assert!(plan.security_audit > legacy_security_audit);
     assert_eq!(
         legacy,
         plan.devices
-            + plan.security_audit
+            + legacy_security_audit
             + plan.audit_escrow
             + plan.ordinary_protection
             + plan.cache_work

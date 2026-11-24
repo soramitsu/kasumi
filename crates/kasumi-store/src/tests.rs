@@ -1234,6 +1234,47 @@ async fn a_late_success_cannot_undo_an_explicit_seal() {
 }
 
 #[tokio::test]
+async fn stale_provider_cannot_reintroduce_an_old_version_into_a_reopened_catalog() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let temporary = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(temporary.path(), memory.clone());
+    let (_directory, store, provider, clock) = fixture(memory, scratch).await;
+    provider.rotate();
+    store.rewrap_keys().await?;
+    store.rotate_data_key().await?;
+    let node = store.node.clone();
+    let before = node.catalog("tenant-a")?.unwrap();
+    assert!(before.keys.values().all(|wrapped| wrapped.version == 2));
+    store.shutdown().await?;
+    drop(store);
+
+    // The replacement can decrypt version two but still generates and
+    // rewraps under version one, as a stale provider configuration might.
+    let stale = Arc::new(LocalKeyProvider::new([41; 32]));
+    let store = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        "tenant-a".into(),
+        stale,
+        clock,
+    )
+    .await?;
+    for result in [store.rotate_data_key().await, store.rewrap_keys().await] {
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("regressed the installed wrapping version")
+        );
+    }
+    assert!(*store.catalog.read() == before);
+    assert!(node.catalog("tenant-a")?.as_ref() == Some(&before));
+    store.shutdown().await?;
+    drop(store);
+    node.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();

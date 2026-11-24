@@ -15,7 +15,7 @@ use std::sync::Arc;
 // document Value in its receipt. This is a per-record format bound, not a lifetime cap.
 const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES;
-const CATALOG: &str = "mutation-receipt-catalog";
+pub(crate) const CATALOG: &str = "mutation-receipt-catalog";
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     // Bound temporary working copies, indexes and commit overhead separately
     // from the canonical receipt quota; some histories can still exhaust it.

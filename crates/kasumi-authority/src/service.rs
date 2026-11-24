@@ -20,6 +20,8 @@ use uuid::Uuid;
 mod lifecycle_service;
 #[path = "maintenance_service.rs"]
 mod maintenance_service;
+#[path = "member_catalog_service.rs"]
+mod member_catalog_service;
 #[path = "request_jobs.rs"]
 mod request_jobs;
 use request_jobs::RequestJobs;
@@ -58,6 +60,7 @@ fn unknown(_cause: impl std::fmt::Display) -> Error {
     )
 }
 struct Drain {
+    interval_id: Uuid,
     term: u64,
     started: Duration,
     last: Duration,
@@ -113,11 +116,21 @@ pub struct AuthorityResponseFence {
     lease: Option<LeaseRequest>,
     lifecycle_lease: Option<LifecycleLeaseRequest>,
     term: u64,
+    member_catalog: Option<member_catalog_service::CatalogObservation>,
     _permit: RequestPermit,
 }
 impl AuthorityResponseFence {
     pub async fn release(&self) -> Result<()> {
-        if self.authority.barrier(&self.context).await? != self.term {
+        if let Some(catalog) = &self.member_catalog {
+            self.context.authorization.check_live()?;
+            self.authority.check_open()?;
+            self.authority
+                .group
+                .observation_barrier()
+                .await
+                .map_err(unavailable)?;
+            catalog.check_archives(&self.authority).await?;
+        } else if self.authority.barrier(&self.context).await? != self.term {
             return Err(unavailable("authority term changed before release"));
         }
         self.check()
@@ -136,13 +149,21 @@ impl AuthorityResponseFence {
         if self.authority.term() != self.term {
             return Err(unavailable("authority term changed"));
         }
-        if let Some(epoch) = self.policy_epoch
-            && self.authority.backend.authorize_admin(&self.context)? != epoch
-        {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                "authority policy changed before acknowledgement",
-            ));
+        if let Some(catalog) = &self.member_catalog {
+            catalog.check(&self.authority)?;
+        }
+        if let Some(epoch) = self.policy_epoch {
+            let current = if self.member_catalog.is_some() {
+                self.authority.backend.authorize_catalog(&self.context)?
+            } else {
+                self.authority.backend.authorize_admin(&self.context)?
+            };
+            if current != epoch {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "authority policy changed before acknowledgement",
+                ));
+            }
         }
         if let Some(request) = &self.lease {
             self.authority
@@ -183,11 +204,13 @@ pub struct IndependentAuthority {
     drains: Mutex<BTreeMap<String, Drain>>,
     settings: AuthorityNodeSettings,
     local_node_id: u64,
+    process_boot_id: Uuid,
     voters: BTreeMap<u64, BasicNode>,
     bootstrap: AuthorityBootstrap,
     bootstrap_digest: String,
     maintenance_transport: OnceLock<Arc<dyn AuthorityMaintenanceTransport>>,
     signer_publication_transport: OnceLock<Arc<dyn SignerPublicationTransport>>,
+    operational_catalogs: OnceLock<member_catalog_service::OperationalStores>,
 }
 impl IndependentAuthority {
     /// Explicit first enrollment under exclusive installation ownership. This
@@ -340,10 +363,12 @@ impl IndependentAuthority {
             drains: Mutex::new(BTreeMap::new()),
             settings,
             local_node_id: node_id,
+            process_boot_id: Uuid::new_v4(),
             voters,
             bootstrap,
             maintenance_transport: OnceLock::new(),
             signer_publication_transport: OnceLock::new(),
+            operational_catalogs: OnceLock::new(),
             bootstrap_digest,
         }))
     }
@@ -531,6 +556,7 @@ impl IndependentAuthority {
             lease,
             lifecycle_lease: None,
             term,
+            member_catalog: None,
             _permit: permit,
         }
     }
@@ -774,6 +800,16 @@ impl IndependentAuthority {
         if let Some(fence_digest) = &drained_fence {
             self.require_drain(fence_digest, term)?;
         }
+        if let AuthorityAction::StopTarget { target, .. } = &command.action {
+            self.note_issuer_stop(
+                &command,
+                target.incarnation,
+                term,
+                kasumi_types::IssuerStopStage::Submitting,
+                None,
+                None,
+            )?;
+        }
         let prepared = PreparedCommand {
             context: context.clone(),
             command,
@@ -883,6 +919,7 @@ fn require_drain_witness(
     for drain in drains.values_mut() {
         if now < drain.last {
             drain.started = now;
+            drain.interval_id = Uuid::new_v4();
         }
         drain.last = now;
     }
@@ -901,7 +938,8 @@ fn require_drain_witness(
             ));
         }
     }
-    let drain = drains.entry(digest.to_owned()).or_insert(Drain {
+    let drain = drains.entry(digest.to_owned()).or_insert_with(|| Drain {
+        interval_id: Uuid::new_v4(),
         term,
         started: now,
         last: now,

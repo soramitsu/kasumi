@@ -22,8 +22,7 @@ pub(crate) use mutation_capacity::admit_mutation_capacity;
 #[path = "snapshot_api.rs"]
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
-mod snapshot_bundle;
-pub(crate) use snapshot_bundle::inspect_reopening;
+pub(crate) mod snapshot_bundle;
 #[path = "snapshot_encoding_failure.rs"]
 pub(crate) mod snapshot_encoding_failure;
 #[path = "snapshot_validation.rs"]
@@ -37,8 +36,12 @@ use sha2::{Digest, Sha256};
 pub use snapshot_api::PreparedSnapshotRestore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+#[path = "backup_claim_state.rs"]
+pub(crate) mod backup_claim;
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "key_retirement_state.rs"]
+pub(crate) mod key_retirement;
 #[path = "lease_retention.rs"]
 pub(crate) mod lease_retention;
 #[path = "lifecycle_state.rs"]
@@ -141,22 +144,76 @@ impl Generation {
     /// Share persistent document roots and fixed point-history owners without
     /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
+        self.lease_with_collections(
+            self.state.collections.clone(),
+            Arc::new(QueryIndexes::default()),
+            true,
+        )
+    }
+
+    fn lease_with_collections(
+        &self,
+        collections: BTreeMap<String, CollectionState>,
+        indexes: Arc<QueryIndexes>,
+        history: bool,
+    ) -> Self {
         let mut state = crate::snapshot_codec::metadata(&self.state);
-        state.collections = self.state.collections.clone();
-        state.history_archives = self.state.history_archives.clone();
+        state.collections = collections;
+        if history {
+            state.history_archives = self.state.history_archives.clone();
+        }
         Self {
             receipts: self.receipts.clone(),
             backup_bindings: self.backup_bindings.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
-            indexes: Arc::new(QueryIndexes::default()),
+            indexes,
             snapshot_accounting: SnapshotAccounting::default(),
             application_selection: self.clone_application_selection(),
             staged_documents: self.staged_documents.clone(),
             document_sources: self.clone_document_sources(),
             _read_reservations: Vec::new(),
         }
+    }
+
+    /// A seek worker owns its exact selected source. Once it proves the
+    /// collection's durable tuple directory it can release unrelated indexes
+    /// and the generation-wide copy of its ordinary compound keys.
+    pub(crate) fn physical_seek_view(
+        &self,
+        name: &str,
+        admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
+    ) -> anyhow::Result<Option<Self>> {
+        if self.application_selection.get().is_none() {
+            return Ok(None);
+        }
+        if self.indexes.compound_count(name) == 0 {
+            return Ok(None);
+        }
+        let Some(collection) = self.state.collections.get(name) else {
+            return Ok(None);
+        };
+        // Upper bound on the scoped field/name metadata and its private map
+        // slots. Document and posting roots stay shared and no body is copied.
+        let mut bytes = 16_384u64;
+        for index in &collection.definition.indexes {
+            bytes += 1024 + index.name.len() as u64;
+            for field in &index.fields {
+                bytes += 1024 + 3 * field.path.len() as u64;
+            }
+        }
+        if !admit(bytes)? {
+            return Ok(None);
+        }
+        let Some(indexes) = self.indexes.published_seek_worker_projection(name) else {
+            return Ok(None);
+        };
+        Ok(Some(self.lease_with_collections(
+            std::iter::once((name.to_owned(), collection.clone())).collect(),
+            Arc::new(indexes),
+            false,
+        )))
     }
 
     pub(crate) fn read_view(
@@ -182,6 +239,13 @@ impl Generation {
     }
     pub(crate) fn snapshot_bytes(&self) -> Result<usize> {
         self.snapshot_accounting.bytes(&self.state)
+    }
+
+    fn encoded_snapshot_bytes(&self) -> Result<u64> {
+        let resident = u64::try_from(self.snapshot_bytes()?)
+            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?;
+        crate::target_resolution::with_permanent_bytes(&self.state, resident)
+            .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
     }
 }
 
@@ -282,6 +346,9 @@ fn genesis_metadata(
                 .try_into()
                 .expect("digest width"),
         )),
+        key_retirements: KeyRetirementState::default(),
+        target_journal_retirements: KeyRetirementState::default(),
+        target_journal_writers: Vec::new(),
         audits: imbl::Vector::new(),
     };
     Ok(state)
@@ -316,8 +383,15 @@ pub struct TenantEngine {
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
     pub(crate) audit_maintenance:
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
+    /// Online collection of document objects no state names. Its candidates
+    /// and fence change only under `apply_lock`.
+    pub(crate) object_gc: Arc<crate::document_gc::ObjectGc>,
     /// The form of this group's own standalone snapshots.
     local_snapshot_form: LocalSnapshotForm,
+    /// Edit journal custody of the ordinary primary directory.
+    pub(crate) primary: crate::application_primary::PrimaryOwner,
+    /// Journal and generation custody of the persisted text directory.
+    pub(crate) text: crate::application_text::TextOwner,
 }
 
 /// How a standalone (`local-v1`) group stores the snapshots it keeps for its own
@@ -407,11 +481,55 @@ impl LocalSnapshotForm {
 }
 
 enum ApplyScope {
-    Committed,
+    Committed {
+        membership_epoch: u64,
+    },
     #[cfg(any(test, feature = "test-utils"))]
     Fixture(Arc<kasumi_store::ScratchDisk>),
 }
 impl ApplyScope {
+    fn check_retirement_membership(
+        &self,
+        state: &TenantState,
+        operation: &Operation,
+    ) -> Result<()> {
+        let observed = match operation {
+            Operation::BeginKeyRetirement(begin) => Some(begin.membership_epoch),
+            Operation::CompleteKeyRetirement(complete) => state
+                .key_retirements
+                .fence
+                .as_ref()
+                .filter(|fence| fence.request_sha256 == complete.request_sha256)
+                .map(|fence| fence.membership_epoch),
+            Operation::CompleteTargetJournalRetirement(complete) => state
+                .target_journal_retirements
+                .fence
+                .as_ref()
+                .filter(|fence| fence.request_sha256 == complete.request_sha256)
+                .map(|fence| fence.membership_epoch),
+            _ => None,
+        };
+        if let Some(observed) = observed {
+            let applied = match self {
+                Self::Committed { membership_epoch } => *membership_epoch,
+                #[cfg(any(test, feature = "test-utils"))]
+                Self::Fixture(_) => {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "key retirement requires an applied membership",
+                    ));
+                }
+            };
+            if observed != applied {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "key retirement membership changed before ordered apply",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn stage_terminals(
         &self,
         pending: crate::staged_terminal::Pending,
@@ -419,7 +537,7 @@ impl ApplyScope {
     ) -> std::result::Result<crate::staged_terminal::View, kasumi_store::ScratchOperationFailure>
     {
         match self {
-            Self::Committed => pending.stage().map_err(Into::into),
+            Self::Committed { .. } => pending.stage().map_err(Into::into),
             #[cfg(any(test, feature = "test-utils"))]
             Self::Fixture(disk) => pending.stage_fixture(disk, _previous_state),
         }
@@ -476,6 +594,7 @@ fn capture_tenant_snapshot(
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         let checkpoint_generation = generation.clone();
+        let checkpoint_store = engine.application_sources.get().map(|_| store.clone());
         Ok(
             kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
                 write(&generation, &store, writer).map_err(Into::into)
@@ -497,6 +616,14 @@ fn capture_tenant_snapshot(
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
                 )?);
+                if let Some(store) = &checkpoint_store {
+                    crate::application_checkpoint::stage(
+                        store,
+                        &checkpoint_generation,
+                        context,
+                        &mut writes,
+                    )?;
+                }
                 Ok(writes)
             }),
         )
@@ -541,11 +668,8 @@ fn journal_record_bytes(proposal_bytes: usize) -> Option<u64> {
         .checked_add(256 << 10)
 }
 
-impl kasumi_raft::StateMachineBackend for TenantEngine {
-    fn close_application(&self) {
-        self.seal();
-    }
-    fn apply_with_publisher(
+impl TenantEngine {
+    fn apply_committed(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         input: kasumi_raft::AppliedInput<'_>,
@@ -578,6 +702,11 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 .apply_target(position, bytes, publisher)
                 .map_err(Into::into);
         }
+        if bytes.starts_with(backup_claim::PREFIX) {
+            return self
+                .apply_backup_claim(position, bytes, publisher)
+                .map_err(Into::into);
+        }
         if bytes.starts_with(tenant_audit::PREFIX) {
             return self
                 .apply_audit_prune(position, bytes, publisher)
@@ -585,10 +714,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         }
         ordered_command::apply_ordinary(self, input, publisher)
     }
-    fn supports_group_apply(&self) -> bool {
-        self.application_sources.get().is_some()
-    }
-    fn apply_group_with_publisher(
+    fn apply_committed_group(
         &self,
         positions: &[kasumi_raft::AppliedEntryContext],
         inputs: &[&[u8]],
@@ -607,6 +733,41 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .map(|(position, bytes)| ByteBoundCommand::check(position, bytes))
             .collect::<anyhow::Result<Vec<_>>>()?;
         ordered_command::apply_ordinary_group(self, commands, publisher)
+    }
+}
+
+impl kasumi_raft::StateMachineBackend for TenantEngine {
+    fn close_application(&self) {
+        self.seal();
+    }
+    fn apply_with_publisher(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let outcome = self.apply_committed(position, input, publisher);
+        // After the entry's escrow has ended. A failed apply fences its
+        // machine: nothing optional follows it.
+        if outcome.is_ok() {
+            self.object_gc_step();
+        }
+        outcome
+    }
+    fn supports_group_apply(&self) -> bool {
+        self.application_sources.get().is_some()
+    }
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[kasumi_raft::AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let outcome = self.apply_committed_group(positions, inputs, publisher);
+        if outcome.is_ok() {
+            self.object_gc_step();
+        }
+        outcome
     }
     fn capture_snapshot(
         &self,
@@ -735,6 +896,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
             )?;
             generation.backup_bindings = binding_installation.view.clone();
+            generation
+                .backup_bindings
+                .bind_intents(&mut generation.state);
             let installation = generation.terminals.prepare_install(
                 store,
                 &generation.state,
@@ -753,6 +917,55 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             writes.extend_from_slice(binding_installation.writes());
             writes.extend_from_slice(installation.writes());
             writes.extend_from_slice(target_installation.writes());
+            // The ordinary structured directory follows the installed
+            // sources: reopen keeps a current one at or ahead of this
+            // snapshot, and anything else selects a generation rebuilt from
+            // the restored indexes.
+            if selection.is_some()
+                && let Some(sources) = self.application_sources.get()
+            {
+                crate::application_structured::prepare_restore(
+                    &sources.structured,
+                    sources.primary_installation().0.application(),
+                    &generation.state,
+                    &generation.indexes,
+                    &context.meta,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
+            }
+            if context.mode == kasumi_raft::SnapshotRestoreMode::Reopen {
+                crate::application_checkpoint::verify(store, &generation, context)?;
+            } else if selection.is_some() {
+                crate::application_checkpoint::stage(store, &generation, context, &mut writes)?;
+            }
+            // The ordinary primary directory follows the installed sources:
+            // reopen keeps a current one at or ahead of this snapshot, and
+            // anything else selects a generation rebuilt from it.
+            if selection.is_some() {
+                crate::application_primary::prepare_restore(
+                    &self.primary,
+                    store,
+                    &generation.state,
+                    &context.meta,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
+            }
+            // The text directory follows the installed sources: reopen keeps
+            // a current one at or ahead of this snapshot, and anything else
+            // selects a generation rebuilt from it.
+            if selection.is_some() {
+                crate::application_text::prepare_restore(
+                    &self.text,
+                    store,
+                    &generation.state,
+                    generation.document_resolver(),
+                    &crate::application_text::snapshot_boundary(&context.meta)?,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
+            }
             let retirement = custody_snapshot::retired(&generation.state)?;
             #[cfg(test)]
             let retirement_probe =
@@ -840,6 +1053,9 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         // of the previous generation keep the root they selected, and the
         // held apply owner admits no other capture. A failure leaves the
         // restart to redo it.
+        // The restore replaces what the collector verified against. A failure
+        // leaves collection off, as it leaves the restart to redo this.
+        engine.object_gc.suspend();
         if let Some(documents) = &generation.staged_documents {
             anyhow::ensure!(
                 selection.is_some() || !documents.reads_published(),
@@ -870,6 +1086,8 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
                 .map_err(|_| anyhow::anyhow!("restored application selection already installed"))?;
         }
         engine.leases.replace(&engine.current, Arc::new(generation));
+        // Both object namespaces now hold exactly this snapshot's objects.
+        engine.object_gc.reset();
         Ok(())
     }
 }
@@ -939,9 +1157,344 @@ impl TenantEngine {
             .application_selection
             .set(selection)
             .map_err(|_| anyhow::anyhow!("bootstrap selection already installed"))?;
+        self.object_gc
+            .install(sources.primary_installation().1.clone());
         self.application_sources
             .set(sources)
             .map_err(|_| anyhow::anyhow!("application source already installed"))?;
+        Ok(())
+    }
+    /// One bounded unit of document object collection, after a committed
+    /// apply has ended. It runs outside that apply's native escrow, in
+    /// transactions of its own, so no failure or refusal here can reach the
+    /// committed entry: it only defers the collection.
+    pub(crate) fn object_gc_step(&self) {
+        // A standalone entry's journal record that still waits on this thread
+        // belongs to a publication that did not carry it. No write of the
+        // collector may commit that record in its place.
+        if !self.object_gc.wants_step() || kasumi_store::deferred_batch_waiting() {
+            return;
+        }
+        let Some(sources) = self.application_sources.get() else {
+            return;
+        };
+        let Ok(_apply) = self.apply_lock.lock() else {
+            return;
+        };
+        let Some(current) = self.current.load_full() else {
+            return;
+        };
+        let Some(selection) = current.application_selection.get() else {
+            return;
+        };
+        if current.state.retired {
+            return;
+        }
+        let Ok(scope) =
+            crate::document_store::Scope::new(&current.state.tenant, &current.state.incarnation)
+        else {
+            return;
+        };
+        self.object_gc.step(&crate::document_gc::Step {
+            state: &current.state,
+            snapshot_revision: &|| {
+                selection.with_base_snapshot_records(None, &current.state, |_, _, _, revision| {
+                    Ok(revision)
+                })
+            },
+            store: sources.primary_installation().0.application(),
+            scope,
+        });
+    }
+    #[cfg(test)]
+    pub(crate) fn select_wrong_structured_history_for_test(
+        &self,
+        applied: kasumi_store::structured_manifest::StructuredApplied,
+    ) -> anyhow::Result<()> {
+        use kasumi_store::{
+            NamespaceStage, SelectedGeneration, ordered_pages::TreeRoot,
+            structured_manifest as structured,
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let sources = self.application_sources.get().expect("installed sources");
+        let selected = current
+            .application_selection
+            .get()
+            .expect("selected Raft boundary");
+        let store = sources.primary_installation().0.application();
+        while !sources.structured.finish_replacement_for_test(store)? {}
+        let family =
+            SelectedGeneration::adopt(store, structured::FAMILY, &structured::INITIAL_SPACE)?;
+        let stage = NamespaceStage::begin_generation(store, structured::FAMILY)?;
+        stage.seal_empty()?;
+        // An empty directory would lose the matching query row if selected.
+        // Only the supplied log or command identity distinguishes it.
+        let manifest = structured::StructuredManifest::new(
+            &current.state.tenant,
+            &current.state.incarnation,
+            current.state.revision_base,
+            current.state.revision,
+            Some(applied),
+            current.indexes.structured_layout_sha256(),
+            stage.namespace(),
+            TreeRoot::new_tree(),
+        );
+        let mut writes = family.switch_writes(store, &[&stage])?;
+        writes.push(manifest.write()?);
+        store.write_batch(&writes)?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selected, None)?,
+            "field fixture could not reselect actual Raft position"
+        );
+        sources
+            .structured
+            .maintenance_due
+            .store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_structured_rebuild_for_test(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let sources = self.application_sources.get().expect("installed sources");
+        let selected = current
+            .application_selection
+            .get()
+            .expect("selected source");
+        let applied = selected.structured_applied()?.expect("authenticated entry");
+        let store = sources.primary_installation().0.application();
+        // A previous small generation could still own a handful of retired
+        // pages. Its real scheduled cleanup must settle before seeding another.
+        while !sources.structured.finish_replacement_for_test(store)? {}
+        let mut partial = crate::application_structured::seed_for_test(
+            &sources.structured,
+            store,
+            &current.state,
+            &current.indexes,
+            applied.as_ref(),
+        )?;
+        store.write_batch(&partial.take_writes())?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selected, None)?,
+            "partial field directory was not selected"
+        );
+        let partial = self.current_generation()?;
+        let new = partial.application_selection.get().expect("partial source");
+        anyhow::ensure!(
+            new.with_structured_records(
+                None,
+                &partial.state,
+                || partial.indexes.structured_layout_sha256(),
+                |_| Ok(())
+            )?
+            .is_none(),
+            "partially built structured directory served before recovery"
+        );
+        sources
+            .structured
+            .maintenance_due
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn substitute_text_history_for_test(
+        &self,
+        boundary: Option<kasumi_store::text_manifest::TextBoundary>,
+    ) -> anyhow::Result<()> {
+        use kasumi_store::{
+            NamespaceStage, SelectedGeneration, ordered_pages::TreeRoot, text_manifest::*,
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let selection = current
+            .application_selection
+            .get()
+            .expect("installed sources");
+        let sources = self.application_sources.get().expect("installed store");
+        let store = sources.primary_installation().0.application();
+        let family = SelectedGeneration::adopt(store, FAMILY, &INITIAL_SPACE)?;
+        let stage = NamespaceStage::begin_generation(store, FAMILY)?;
+        stage.seal_empty()?;
+        let mut manifest = TextManifest::new(
+            &current.state.tenant,
+            &current.state.incarnation,
+            current.state.revision_base,
+            current.state.revision,
+            TextStatus::Current,
+            stage.namespace(),
+            TreeRoot::new_tree(),
+            0,
+            0,
+            0,
+        );
+        manifest.boundary = boundary;
+        let mut writes = family.switch_writes(store, &[&stage])?;
+        writes.push(manifest.write()?);
+        store.write_batch(&writes)?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selection, None)?,
+            "substituted text root not selected"
+        );
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn select_wrong_primary_history_for_test(&self) -> anyhow::Result<()> {
+        use kasumi_store::primary_manifest::PrimaryManifest;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let selection = current
+            .application_selection
+            .get()
+            .expect("installed sources");
+        let applied = selection.primary_entry()?.expect("selected ordinary entry");
+        let sources = self.application_sources.get().expect("installed store");
+        let store = sources.primary_installation().0.application();
+        // The complete directory has the right row bytes, totals and
+        // revision but names another term's log. Only its secondary root is
+        // substituted. The committed application/custody boundary stays real.
+        let meta = kasumi_raft::SnapshotMeta {
+            last_log_id: Some(kasumi_raft::LogId {
+                index: applied.index,
+                ..Default::default()
+            }),
+            last_membership: Default::default(),
+            snapshot_id: "foreign-primary-term".into(),
+        };
+        let mut writes = Vec::new();
+        crate::application_primary::prepare_restore(
+            &self.primary,
+            store,
+            &current.state,
+            &meta,
+            false,
+            &mut writes,
+        )?;
+        store.write_batch(&writes)?;
+        let stored = PrimaryManifest::load(store)?.expect("physically complete primary");
+        anyhow::ensure!(
+            stored.is_current()
+                && stored.revision == current.state.revision
+                && !stored.matches_applied(Some(&applied)),
+            "fixture failed to install a different log identity"
+        );
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selection, None)?,
+            "fixture failed to select substituted secondary"
+        );
+        let replaced = self.current_generation()?;
+        let selected = replaced
+            .application_selection
+            .get()
+            .expect("selected original Raft boundary");
+        anyhow::ensure!(
+            selected
+                .with_primary_records(None, &replaced.state, |_, _| Ok(()))?
+                .is_none(),
+            "serving reader accepted another primary log identity"
+        );
+        self.primary.caught_up();
+        Ok(())
+    }
+
+    /// The registered idle monitor and the foreground writer share the same
+    /// apply owner. Cold completion selects the same committed logical state
+    /// on the new physical root. Existing readers keep their previous root.
+    pub(crate) fn primary_maintenance_step(&self) -> anyhow::Result<()> {
+        if !self.primary.needs_maintenance() || kasumi_store::deferred_batch_waiting() {
+            return Ok(());
+        }
+        let Some(sources) = self
+            .application_sources
+            .get()
+            .filter(|s| s.rebases_selections())
+        else {
+            return Ok(());
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let Some(selection) = current
+            .application_selection
+            .get()
+            .filter(|_| !current.state.retired)
+        else {
+            return Ok(());
+        };
+        let Some(applied) = selection.primary_entry()? else {
+            self.primary.caught_up();
+            return Ok(());
+        };
+        if crate::application_primary::maintain(
+            &self.primary,
+            sources.primary_installation().0.application(),
+            &current.state,
+            &applied,
+        )? {
+            if selection
+                .with_primary_records(None, &current.state, |_, _| Ok(()))?
+                .is_none()
+                && !self.rebase_selected(sources, current, selection, None)?
+            {
+                return Ok(());
+            }
+            self.primary.caught_up();
+        }
+        Ok(())
+    }
+    /// Publish one bounded structured-index window against the exact selected
+    /// generation. The apply owner prevents a producer from moving the cursor
+    /// or its physical source during this native transaction.
+    pub(crate) fn structured_maintenance_step(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let Some(sources) = self
+            .application_sources
+            .get()
+            .filter(|s| s.rebases_selections())
+        else {
+            return Ok(());
+        };
+        let owner = &sources.structured;
+        if !owner.maintenance_due.load(Ordering::Acquire) || kasumi_store::deferred_batch_waiting()
+        {
+            return Ok(());
+        }
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let Some(selection) = current
+            .application_selection
+            .get()
+            .filter(|_| !current.state.retired)
+        else {
+            return Ok(());
+        };
+        let Some(applied) = selection.structured_applied()? else {
+            return Ok(());
+        };
+        if crate::application_structured::maintain(
+            owner,
+            sources.primary_installation().0.application(),
+            &current.state,
+            &current.indexes,
+            current.document_resolver(),
+            applied.as_ref(),
+        )? {
+            if selection
+                .with_structured_records(
+                    None,
+                    &current.state,
+                    || current.indexes.structured_layout_sha256(),
+                    |_| Ok(()),
+                )?
+                .is_none()
+                && !self.rebase_selected(sources, current, selection, None)?
+            {
+                return Ok(());
+            }
+            owner.maintenance_due.store(false, Ordering::Release);
+        }
         Ok(())
     }
     pub(crate) fn seal_application_source_consumers(&self) {
@@ -1022,7 +1575,17 @@ impl TenantEngine {
         else {
             return Ok(false);
         };
-        let Some(selected) = sources.rebase(selection, stale.bootstrap.as_ref())? else {
+        self.rebase_selected(sources, previous, selection, stale.bootstrap.as_ref())
+    }
+
+    fn rebase_selected(
+        &self,
+        sources: &crate::application_sources::SourceRootsRef,
+        previous: &Generation,
+        selection: &crate::application_sources::SelectedApplication,
+        bootstrap: Option<&kasumi_store::SnapshotImage>,
+    ) -> anyhow::Result<bool> {
+        let Some(selected) = sources.rebase(selection, bootstrap)? else {
             return Ok(false);
         };
         let resolver = previous.resolver_for_selection(sources.clone(), selected.clone())?;
@@ -1094,6 +1657,12 @@ impl TenantEngine {
         }
         let mut joined = false;
         let quote = (|| -> anyhow::Result<u64> {
+            let generation = self.generation()?;
+            let state = &generation.state;
+            let text_arena = match self.snapshot_store.get() {
+                Some(store) => self.text.writer_quote(store, state, command)?,
+                None => 0,
+            };
             if matches!(
                 command.operation,
                 Operation::CreateCollection(_)
@@ -1106,11 +1675,15 @@ impl TenantEngine {
                     | Operation::BeginStaged(_)
                     | Operation::AppendStaged(_)
                     | Operation::StopStaged(_)
+                    | Operation::BeginKeyRetirement(_)
+                    | Operation::RegisterTargetJournalWriter(_)
+                    | Operation::CompleteTargetJournalRetirement(_)
+                    | Operation::AbortTargetJournalRetirement(_)
+                    | Operation::CompleteKeyRetirement(_)
+                    | Operation::AbortKeyRetirement(_)
             ) {
-                return Ok(0);
+                return Ok(text_arena);
             }
-            let generation = self.generation()?;
-            let state = &generation.state;
             let mut bytes = crate::accounting::encoded_len(command)? as u64;
             fn document_work<'a>(
                 mut mutations: impl Iterator<Item = &'a Mutation>,
@@ -1126,6 +1699,7 @@ impl TenantEngine {
             // and can refuse small records that the actual publication fits.
             let mut typed = match &command.operation {
                 Operation::Mutate(batch) => document_work(batch.operations.iter())?,
+                Operation::ActivateSchema(request) => schema::publication_work(command, request)?,
                 _ => crate::snapshot_codec::inspect_typed_json_work(command)?,
             };
             let staged = if let Operation::FinalizeStaged(reference) = &command.operation {
@@ -1209,6 +1783,7 @@ impl TenantEngine {
             // typed quote; encoded after-images remain through joint publication.
             maximum
                 .checked_mul(2)
+                .and_then(|n| n.checked_add(text_arena))
                 .and_then(|n| n.checked_add(bytes.checked_mul(24)?))
                 .and_then(|n| n.checked_add(typed.checked_mul(2)?))
                 .and_then(|n| n.checked_add(patched.checked_mul(16)?))
@@ -1269,7 +1844,7 @@ impl TenantEngine {
             sources.is_none() || position.is_some(),
             "runtime publication lacks actual applied position"
         );
-        let prepared_writes = sources
+        let mut prepared_writes = sources
             .map(|sources| {
                 accepted.prepare_publication_writes(
                     sources,
@@ -1277,6 +1852,14 @@ impl TenantEngine {
                 )
             })
             .transpose()?;
+        let _structured = match (sources, prepared_writes.as_mut()) {
+            (Some(sources), Some(prepared)) => accepted.join_structured_writes(
+                sources,
+                position.expect("checked applied position"),
+                prepared,
+            )?,
+            _ => None,
+        };
         let writes = prepared_writes
             .as_ref()
             .map_or(&[][..], |prepared| prepared.writes());
@@ -1372,6 +1955,22 @@ impl TenantEngine {
     }
 
     fn publish_generation(&self, next: Option<Arc<Generation>>) {
+        // A newly captured selection was taken under the apply lock, after
+        // every object deletion committed so far: later applies read object
+        // presence through it. A generation that keeps its predecessor's
+        // selection ends no fence.
+        if let Some(selected) = next
+            .as_ref()
+            .and_then(|next| next.application_selection.get())
+            && self
+                .current
+                .load()
+                .as_ref()
+                .and_then(|current| current.application_selection.get())
+                .is_none_or(|current| current.id() != selected.id())
+        {
+            self.object_gc.selection_published();
+        }
         self.leases.publish(&self.current, next);
     }
 
@@ -1423,6 +2022,17 @@ impl TenantEngine {
     /// Installed before Raft replay or native publication. Pure arithmetic
     /// engine fixtures have no store; a serving database retains this exact
     /// capability through generation reads and ordered state publication.
+    /// Directory text once ordered publication can maintain it: application
+    /// sources and the snapshot store are both installed. Earlier generations
+    /// keep a resident index.
+    pub(crate) fn text_residency(&self) -> kasumi_query::TextResidency {
+        if self.application_sources.get().is_some() && self.snapshot_store.get().is_some() {
+            kasumi_query::TextResidency::Directory
+        } else {
+            kasumi_query::TextResidency::Resident
+        }
+    }
+
     pub(crate) fn install_storage_access(
         &self,
         store: &Arc<kasumi_store::TenantStore>,
@@ -1486,7 +2096,7 @@ impl TenantEngine {
         if self.bootstrap_sha256.get().is_none()
             && store.storage_access().purpose().is_local_fixture()
         {
-            let image = Self::logical_snapshot_of(previous, store.scratch_disk())?;
+            let image = Self::logical_snapshot_of(previous, store.scratch_disk(), None)?;
             self.bootstrap_sha256
                 .set(image.sha256().into())
                 .map_err(|_| {
@@ -1555,8 +2165,10 @@ impl TenantEngine {
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         store.write_batch(&writes).map_err(terminal_error)?;
+        let mut state = previous.state.clone();
+        binding_installation.view.bind_intents(&mut state);
         self.publish_generation(Some(Arc::new(Generation {
-            state: previous.state.clone(),
+            state,
             receipts: receipt_installation.view,
             backup_bindings: binding_installation.view,
             terminals: installation.view,
@@ -1671,6 +2283,8 @@ impl TenantEngine {
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
+            primary: Default::default(),
+            text: Default::default(),
             local_snapshot_form: LocalSnapshotForm::from_process_default(),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
@@ -1679,6 +2293,7 @@ impl TenantEngine {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
+            object_gc: Arc::default(),
             leases: lease_retention::LeaseManager::default(),
             current: ArcSwapOption::from_pointee(Generation {
                 target_resolutions: crate::target_resolution::View::empty(
@@ -1715,15 +2330,7 @@ impl TenantEngine {
     ) -> std::result::Result<Self, SnapshotFailure> {
         let decoded = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(SnapshotFailure::from)?;
-        let engine = Self::from_bootstrap_state(
-            expected_tenant,
-            decoded.state,
-            decoded.receipts,
-            decoded.backup_bindings,
-            decoded.terminals,
-            decoded.target_resolutions,
-            Some(decoded.documents),
-        )?;
+        let engine = Self::from_bootstrap_state(expected_tenant, decoded, &|| Ok(()))?;
         engine
             .bootstrap_sha256
             .set(bytes.sha256().into())
@@ -1733,13 +2340,10 @@ impl TenantEngine {
 
     fn from_bootstrap_state(
         expected_tenant: &str,
-        state: TenantState,
-        receipts: crate::mutation_receipt::View,
-        backup_bindings: crate::backup_binding::View,
-        terminals: crate::staged_terminal::View,
-        target_resolutions: crate::target_resolution::View,
-        documents: Option<crate::document_restore::StagedDocuments>,
+        decoded: crate::snapshot_codec::Decoded,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> anyhow::Result<Self> {
+        let state = decoded.state;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -1749,14 +2353,17 @@ impl TenantEngine {
         }
         let uninitialized = UninitializedEngine::new(&state)?;
         let engine = uninitialized.engine();
-        let generation = engine.prepare_state(
+        let generation = engine.prepare_state_checked(
             &uninitialized.baseline(),
             state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            documents,
+            decoded.receipts,
+            decoded.backup_bindings,
+            decoded.terminals,
+            decoded.target_resolutions,
+            Some(decoded.documents),
+            decoded.receipts_verified,
+            decoded.document_indexes,
+            check,
         )?;
         Ok(uninitialized.finish(generation))
     }
@@ -1895,13 +2502,15 @@ impl TenantEngine {
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
         handoff_workspace: impl FnOnce() -> Result<Workspace>,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> std::result::Result<(kasumi_store::SnapshotImage, Self), SnapshotFailure> {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
         }
         use crate::backup_verify::VerificationPhase;
         let phase = VerificationPhase::start("restore.release_validation_indexes", None);
-        let image = source.into_image();
+        check()?;
+        let records = source.into_records();
         phase.complete();
         let phase = VerificationPhase::start("restore.materialization_admission", None);
         // Both encrypted point-table caches are now destroyed. Reserve the
@@ -1909,39 +2518,61 @@ impl TenantEngine {
         let _workspace = handoff_workspace()?;
         phase.complete();
         let phase = VerificationPhase::start("restore.snapshot_decode", None);
-        let scratch_disk = image.disk().clone();
-        let crate::snapshot_codec::Decoded {
-            mut state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            documents,
-            ..
-        } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
-            .map_err(SnapshotFailure::from)?;
-        drop(image);
+        let scratch_disk = records.image().disk().clone();
+        let mut decoded = crate::snapshot_codec::read_verified_target(
+            &records,
+            expected_tenant,
+            &incarnation,
+            check,
+        )
+        .map_err(SnapshotFailure::from)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
-        Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        // Source objects were staged under the authenticated source header.
-        // Retarget their physical keys only after validating the restore lineage;
-        // the content digests and every collection/feed descriptor stay exact.
-        let documents = documents.rebind_scope(&state.tenant, &state.incarnation)?;
+        check()?;
+        Self::rebind_restored_state(&mut decoded.state, incarnation, checkpoint, target_origin)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.prepare_generation", None);
-        let engine = Self::from_bootstrap_state(
-            expected_tenant,
-            state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            Some(documents),
-        )?;
+        let engine = Self::from_bootstrap_state(expected_tenant, decoded, check)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.genesis_snapshot", None);
-        let image = engine.logical_snapshot(&scratch_disk)?;
+        check()?;
+        let generation = engine.generation()?;
+        if !generation.snapshot_accounting.fits(&generation.state)? {
+            return Err(
+                Error::new(ErrorCode::Corruption, "snapshot byte accounting mismatch").into(),
+            );
+        }
+        let limit = crate::target_resolution::snapshot_limit(&generation.state)?;
+        let logical = generation.encoded_snapshot_bytes()?;
+        // A target with enough scratch can stream the two unchanged classes
+        // out of its verified source. If the extra simultaneous extent does
+        // not fit, release that source and use its already staged objects.
+        let image = match snapshot_api::reserved_spool(&scratch_disk, limit, logical) {
+            Ok(mut spool) => {
+                crate::snapshot_codec::write_verified_genesis(
+                    &generation,
+                    &records,
+                    &mut snapshot_api::CheckedIo {
+                        io: &mut spool,
+                        check,
+                    },
+                )
+                .map_err(snapshot_encoding_failure::encoding_error)?;
+                drop(records);
+                kasumi_store::SnapshotImage::freeze(spool)
+                    .map_err(snapshot_encoding_failure::encoding_error)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::StorageFull => {
+                drop(records);
+                check()?;
+                Self::logical_snapshot_of(&generation, &scratch_disk, Some(check))?
+            }
+            Err(error) => {
+                return Err(snapshot_encoding_failure::encoding_error(error.into()).into());
+            }
+        };
+
+        check()?;
         engine
             .bootstrap_sha256
             .set(image.sha256().into())
@@ -2272,6 +2903,22 @@ impl TenantEngine {
         let terminal_owner = previous.terminals.clone();
         let mut next = previous.state.clone();
         next.revision = revision;
+        if matches!(command.operation, Operation::LifecycleControl(_)) {
+            previous.backup_bindings.bind_intents(&mut next);
+        }
+        if matches!(
+            &command.operation,
+            Operation::LifecycleControl(LifecycleControlCommand::CommitIntent(_))
+        ) && matches!(scope, ApplyScope::Committed { .. })
+            && next
+                .lifecycle_control
+                .as_ref()
+                .is_some_and(|control| control.intent_source.0.is_none())
+        {
+            return Err(
+                anyhow::anyhow!("ordered lifecycle intent lacks its installed namespace").into(),
+            );
+        }
         let result = if command.context.tenant != next.tenant {
             Err(Error::new(ErrorCode::Forbidden, "tenant access denied").into())
         } else if let Err(error) = command
@@ -2281,6 +2928,8 @@ impl TenantEngine {
         {
             Err(error.into())
         } else if let Err(error) = authorize_resource(&next, &command.context) {
+            Err(error.into())
+        } else if let Err(error) = scope.check_retirement_membership(&next, &command.operation) {
             Err(error.into())
         } else {
             if let Some(key) = staged_command_key(command).map_err(anyhow::Error::from)?
@@ -2330,6 +2979,12 @@ impl TenantEngine {
             Operation::Suspend(_) => "suspend",
             Operation::RetireSource(_) => "retire",
             Operation::AbortRetirement(_) => "retire_stop",
+            Operation::BeginKeyRetirement(_) => "key_retirement_fence",
+            Operation::RegisterTargetJournalWriter(_) => "target_journal_writer_register",
+            Operation::CompleteTargetJournalRetirement(_) => "target_journal_key_retirement",
+            Operation::AbortTargetJournalRetirement(_) => "target_journal_key_retirement_stop",
+            Operation::CompleteKeyRetirement(_) => "key_retirement",
+            Operation::AbortKeyRetirement(_) => "key_retirement_stop",
             Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_) => {
                 "audit"
             }
@@ -2424,6 +3079,28 @@ impl TenantEngine {
                 &terminals,
             );
         }
+        let intent_row =
+            crate::backup_binding::intents::take_candidate(&mut next, &applied.command_sha256)?;
+        if let Some((_, head)) = &intent_row {
+            if head.encoded_bytes > next.limits.max_lifecycle_intent_bytes {
+                return self.prepare_resource_rejection(
+                    previous,
+                    next,
+                    command,
+                    Some(Error::new(
+                        ErrorCode::QuotaExceeded,
+                        "permanent lifecycle history byte budget exhausted",
+                    )),
+                    &terminals,
+                );
+            }
+            Arc::make_mut(
+                next.lifecycle_control
+                    .as_mut()
+                    .expect("prepared lifecycle intent"),
+            )
+            .intent_head = Some(head.clone());
+        }
         let snapshot_accounting = previous
             .snapshot_accounting
             .updated(
@@ -2452,6 +3129,7 @@ impl TenantEngine {
                     &changed,
                     previous.document_resolver(),
                     previous.document_resolver(),
+                    self.text_residency(),
                 )
                 .map_err(crate::index_source::into_anyhow)?,
             )
@@ -2459,6 +3137,9 @@ impl TenantEngine {
             previous.indexes.clone()
         };
         let terminals = scope.stage_terminals(terminal_pending, &previous.state)?;
+        if let Some((row, _)) = &intent_row {
+            previous.backup_bindings.persist_intent(row)?;
+        }
         let candidate = Arc::new(Generation {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
@@ -2610,11 +3291,20 @@ impl TenantEngine {
         generation: &Generation,
         writer: &mut dyn std::io::Write,
     ) -> Result<()> {
+        Self::encode_generation(generation, writer)
+            .map_err(snapshot_encoding_failure::encoding_error)
+    }
+
+    // Internal bundle writers retain their destination's original I/O failure.
+    // Public snapshot APIs classify it at the end of the owned operation.
+    pub(crate) fn encode_generation(
+        generation: &Generation,
+        writer: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
         if !generation.snapshot_accounting.fits(&generation.state)? {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "snapshot byte accounting mismatch",
-            ));
+            return Err(
+                Error::new(ErrorCode::Corruption, "snapshot byte accounting mismatch").into(),
+            );
         }
         crate::snapshot_codec::write_with_resolver(
             &generation.state,
@@ -2625,7 +3315,6 @@ impl TenantEngine {
             generation.document_resolver(),
             writer,
         )
-        .map_err(snapshot_encoding_failure::encoding_error)
     }
 
     pub(crate) fn logical_snapshot(
@@ -2633,18 +3322,26 @@ impl TenantEngine {
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
     ) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
-        Self::logical_snapshot_of(&generation, scratch_disk)
+        Self::logical_snapshot_of(&generation, scratch_disk, None)
     }
 
     fn logical_snapshot_of(
         generation: &Generation,
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+        check: Option<&dyn Fn() -> anyhow::Result<()>>,
     ) -> Result<kasumi_store::SnapshotImage> {
-        kasumi_store::SnapshotImage::capture(
+        snapshot_api::capture_reserved(
             scratch_disk,
             crate::target_resolution::snapshot_limit(&generation.state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
-            |writer| Ok(Self::write_generation(generation, writer)?),
+            generation.encoded_snapshot_bytes()?,
+            |writer| match check {
+                Some(check) => Ok(Self::write_generation(
+                    generation,
+                    &mut snapshot_api::CheckedIo { io: writer, check },
+                )?),
+                None => Ok(Self::write_generation(generation, writer)?),
+            },
         )
         // Keeps write_generation's classification; scratch spool creation
         // and flush failures are classified by the same rule.
@@ -2716,6 +3413,7 @@ impl TenantEngine {
             summary,
             documents,
             receipts_verified,
+            document_indexes,
         } = crate::snapshot_codec::read_reopening(disk, reader, reopen)
             .map_err(SnapshotFailure::from)?;
         if expected.is_some_and(|expected| expected != summary) {
@@ -2734,11 +3432,13 @@ impl TenantEngine {
             target_resolutions,
             Some(documents),
             receipts_verified,
+            document_indexes,
             check,
         )
         .map_err(Into::into)
     }
 
+    #[cfg(test)]
     #[allow(
         clippy::too_many_arguments,
         reason = "keep each authenticated snapshot owner explicit through validation and generation handoff"
@@ -2762,6 +3462,7 @@ impl TenantEngine {
             target_resolutions,
             documents,
             false,
+            None,
             &|| Ok(()),
         )
     }
@@ -2780,6 +3481,7 @@ impl TenantEngine {
         target_resolutions: crate::target_resolution::View,
         documents: Option<crate::document_restore::StagedDocuments>,
         receipts_verified: bool,
+        document_indexes: Option<kasumi_query::SnapshotIndexBuilder>,
         check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> anyhow::Result<Generation> {
         check()?;
@@ -2876,13 +3578,34 @@ impl TenantEngine {
                 (&current.state.lifecycle_control, &state.lifecycle_control)
         {
             for (id, intent) in &old.intents {
-                if incoming.intents.get(id) != Some(intent) {
+                if incoming.intent(*id)?.as_deref() != Some(intent) {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted a permanent lifecycle intent",
                     )
                     .into());
                 }
+            }
+            if let Some(committed) = &old.intent_head {
+                let successor = incoming.intent_head.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot omitted the selected lifecycle intent prefix",
+                    )
+                })?;
+                anyhow::ensure!(
+                    successor.count >= committed.count,
+                    "snapshot rolled back permanent lifecycle intents"
+                );
+                let row = incoming.intent_storage()?.row(
+                    successor,
+                    committed.count,
+                    incoming.installation.max_state_bytes,
+                )?;
+                anyhow::ensure!(
+                    crate::backup_binding::intents::row_sha256(&row)? == committed.sha256,
+                    "snapshot substituted the original lifecycle intent prefix"
+                );
             }
             for (id, change) in &old.changes {
                 let Some(actual) = incoming.changes.get(id) else {
@@ -2950,6 +3673,7 @@ impl TenantEngine {
                 .into());
             }
             for (id, document) in &collection.documents {
+                check()?;
                 validate_name(id)?;
                 if id != document.id() || document.version() > collection.data_epoch {
                     return Err(Error::new(
@@ -3107,6 +3831,7 @@ impl TenantEngine {
             .validate_state(&state)
             .map_err(terminal_error)?;
         for row in backup_bindings.records() {
+            check()?;
             row.map_err(terminal_error)?
                 .validate(&state)
                 .map_err(terminal_error)?;
@@ -3191,14 +3916,14 @@ impl TenantEngine {
             )
             .into());
         }
-        // The final index build validates every definition and body, including
-        // schema-only collections, and enforces unique indexes. Repeating those
-        // passes above would decrypt and decode each staged body three times.
         check()?;
-        let indexes = Arc::new(
-            crate::index_source::build_with_resolver(&state, resolver)
-                .map_err(crate::index_source::into_anyhow)?,
-        );
+        let indexes = Arc::new(match document_indexes {
+            Some(building) => building.finish(self.text_residency())?,
+            None => {
+                crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
+                    .map_err(crate::index_source::into_anyhow)?
+            }
+        });
         check()?;
         Ok(Generation {
             receipts,
@@ -3419,6 +4144,11 @@ fn apply_operation(
             if state.document_count > limits.max_documents
                 || state.logical_bytes > limits.max_logical_bytes
                 || state.mutation_receipt_head.encoded_bytes > limits.max_mutation_receipt_bytes
+                || state
+                    .lifecycle_control
+                    .as_ref()
+                    .and_then(|c| c.intent_head.as_ref())
+                    .is_some_and(|h| h.encoded_bytes > limits.max_lifecycle_intent_bytes)
                 || state.backup_binding_head.encoded_bytes > limits.max_backup_binding_bytes
                 || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
@@ -3456,6 +4186,25 @@ fn apply_operation(
         }
         Operation::AbortRetirement(request) => {
             retirement::abort(state, &command.context, request, revision).map_err(Into::into)
+        }
+        Operation::BeginKeyRetirement(request) => {
+            key_retirement::begin(state, command, request, revision).map_err(Into::into)
+        }
+        Operation::CompleteKeyRetirement(request) => {
+            key_retirement::complete(state, command, request, revision, false).map_err(Into::into)
+        }
+        Operation::RegisterTargetJournalWriter(participant) => {
+            key_retirement::register_writer(state, command, participant, revision)
+                .map_err(Into::into)
+        }
+        Operation::CompleteTargetJournalRetirement(request) => {
+            key_retirement::complete(state, command, request, revision, true).map_err(Into::into)
+        }
+        Operation::AbortKeyRetirement(request) => {
+            key_retirement::abort(state, command, request, revision, false).map_err(Into::into)
+        }
+        Operation::AbortTargetJournalRetirement(request) => {
+            key_retirement::abort(state, command, request, revision, true).map_err(Into::into)
         }
         Operation::Audit(event) => {
             validate_read_audit(state, command, event, revision)?;
@@ -3963,6 +4712,7 @@ pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_result_bytes == 0
         || limits.max_result_bytes > (8 << 20)
         || limits.max_mutation_receipt_bytes == 0
+        || limits.max_lifecycle_intent_bytes == 0
         || limits.max_backup_binding_bytes == 0
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
@@ -4000,6 +4750,10 @@ pub(super) fn validate_limit_budgets(limits: &Limits, current: &Limits) -> Resul
         || raised(
             limits.max_mutation_receipt_bytes,
             current.max_mutation_receipt_bytes,
+        )
+        || raised(
+            limits.max_lifecycle_intent_bytes,
+            current.max_lifecycle_intent_bytes,
         )
         || raised(
             limits.max_backup_binding_bytes,
@@ -4091,7 +4845,14 @@ pub(crate) fn read_audit_action(event: &AuditEvent) -> Result<Action> {
             Ok(Action::Read)
         }
         "receipt" | "mutation_capacity_admission" => Ok(Action::Write),
-        "schema_activation_status" | "schema_read" | "policy_limits_read" => Ok(Action::Admin),
+        "tenant_audit_status"
+        | "tenant_audit_capacity"
+        | "tenant_audit_verify"
+        | "tenant_audit_export" => Ok(Action::Audit),
+        "schema_activation_status"
+        | "schema_read"
+        | "policy_limits_read"
+        | "read_key_retention" => Ok(Action::Admin),
         _ => Err(Error::new(
             ErrorCode::InvalidArgument,
             "invalid read audit action",
@@ -4155,6 +4916,7 @@ pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result
 }
 fn validate_audits(state: &TenantState) -> Result<()> {
     state.audit_retention.validate()?;
+    state.validate_key_retirement_scopes(crate::control::CONTROL_TENANT)?;
     if !crate::accounting::audit_fits(state)
         || state.audit_retention.archive_bytes > state.limits.audit_retention.archive_bytes
     {

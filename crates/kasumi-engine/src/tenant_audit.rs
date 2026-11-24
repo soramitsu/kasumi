@@ -185,6 +185,47 @@ fn matches_prefix(reference: &AuditArchiveReference, retention: &AuditRetentionS
                 .map(|head| head.object.clone())
 }
 
+fn pending_publication(
+    store: &kasumi_store::TenantStore,
+    state: &TenantState,
+) -> Result<Option<AuditArchiveLink>> {
+    let Some(bytes) = store
+        .get_bounded(PREPARATION, b"pending", MAX_COMMAND)
+        .map_err(|err| {
+            err.downcast_ref::<Error>().cloned().unwrap_or_else(|| {
+                Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "tenant audit preparation could not be read",
+                )
+            })
+        })?
+    else {
+        return Ok(None);
+    };
+    let inspect = || -> anyhow::Result<_> {
+        let (reference, ciphertext) = decode(&bytes)?;
+        let object = InspectedAuditDependency::from_link(ciphertext, &reference.object)?;
+        ensure!(
+            object.reference() == &reference && object.source_tenant() == state.tenant,
+            "stored audit preparation identity differs"
+        );
+        if !matches_prefix(&reference, &state.audit_retention) {
+            return Ok(None);
+        }
+        let root = store.storage_access().purpose();
+        if root != object.source_purpose() {
+            crate::authorize_audit_source(state, root, object.source_purpose())?;
+        }
+        Ok(Some(reference.object))
+    };
+    inspect().map_err(|_| {
+        Error::new(
+            ErrorCode::Corruption,
+            "invalid persisted tenant audit preparation",
+        )
+    })
+}
+
 fn verify_prefix(
     state: &TenantState,
     store: &kasumi_store::TenantStore,
@@ -314,6 +355,62 @@ impl TenantEngine {
         self.prepare_audit_prune_inner()
     }
 
+    /// The apply lock pins the committed prefix across the local Store read.
+    /// Preparation publishes its pending row atomically. A concurrent retry
+    /// may replace that row, while this observation describes one exact read.
+    pub(crate) fn audit_capacity_observation(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(TenantAuditCapacity, u64, bool)> {
+        let _apply = self.apply_lock.lock().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "tenant apply ownership unavailable")
+        })?;
+        let generation = self.generation()?;
+        let state = &generation.state;
+        self.authorize_release(context, None, Action::Audit, state.policy_epoch)?;
+        let has_reservation = self
+            .audit_maintenance
+            .lock()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "tenant maintenance ownership unavailable",
+                )
+            })?
+            .is_some();
+        if !has_reservation {
+            return Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "tenant audit maintenance is not installed",
+            ));
+        }
+        let store = self
+            .snapshot_store
+            .get()
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "tenant storage is unavailable"))?;
+        let pending = pending_publication(store, state)?;
+        let observation = TenantAuditCapacity {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            revision: state.revision,
+            stream_id: state.audit_retention.stream_id,
+            capacity: AuditCapacity::new(
+                &state.audit_retention,
+                &state.limits.audit_retention,
+                crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
+                pending,
+            ),
+        };
+        observation
+            .validate()
+            .map_err(|error| Error::new(ErrorCode::Corruption, error.message))?;
+        Ok((
+            observation,
+            state.policy_epoch,
+            state.policy.strict_read_audit,
+        ))
+    }
+
     /// Cheap preflight for periodic maintenance. Preparation rechecks its own
     /// generation after obtaining the proposal gate and archive workspace.
     pub(crate) fn audit_prune_needed(&self) -> Result<bool> {
@@ -340,12 +437,19 @@ impl TenantEngine {
             .context("audit storage not installed")?;
         if let Some(bytes) = store.get_bounded(PREPARATION, b"pending", MAX_COMMAND)? {
             let (reference, ciphertext) = decode(&bytes)?;
-            if matches_prefix(&reference, retention) {
+            if matches_prefix(&reference, retention)
+                && !state
+                    .key_retirements
+                    .rejects(&KeyVersionRef::from(&reference.key))
+            {
                 Self::publish_prepared_audit(state, store, &reference, ciphertext)?;
                 return Ok(Some(bytes));
             }
             // Another committed transition won this prefix. Its local pending
             // object can never be adopted as the successor's archive identity.
+            // Neither can one sealed under a wrapping key version that a key
+            // retirement has fenced since: its hot records are still retained,
+            // so the prefix is sealed again under the current key.
         }
         let mut builder = AuditSegmentBuilder::new(
             retention.stream_id,
@@ -376,6 +480,12 @@ impl TenantEngine {
             return Ok(None);
         }
         let segment = store.encrypt_audit_segment(builder)?;
+        ensure!(
+            !state
+                .key_retirements
+                .rejects(&KeyVersionRef::from(&segment.reference.key)),
+            "tenant audit key catalog still wraps under a fenced key version"
+        );
         ensure!(
             retention
                 .archive_bytes
@@ -469,6 +579,15 @@ impl TenantEngine {
                 ErrorCode::Conflict,
                 "audit prefix changed or generation is closed",
             ))
+        } else if next
+            .key_retirements
+            .rejects(&KeyVersionRef::from(&reference.key))
+        {
+            // Sealed before the fence and committed after it. Every replica
+            // refuses the same reference; the proposer seals the prefix again.
+            Err(crate::state::key_retirement::fenced(&KeyVersionRef::from(
+                &reference.key,
+            )))
         } else if !retention
             .archive_bytes
             .checked_add(reference.ciphertext_bytes)
@@ -490,6 +609,7 @@ impl TenantEngine {
             // copy, so a transient destination outage cannot poison Raft replay.
             let segment = store.copy_audit_segment(reference.clone(), ciphertext)?;
             placement.cache().publish_blocking(&segment)?;
+            crate::tenant_audit_directory::append(store, retention.archive_segments, &reference)?;
             store.check_access()?;
             for _ in 0..reference.record_count {
                 next.audits
@@ -723,6 +843,63 @@ mod tests {
         .await?
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn key_inventory_observes_cache_and_external_archive_disappear_independently() {
+        let (_directory, node, engine, store, _archive) = fixture().await;
+        let command = prepare(engine.clone()).await.unwrap().unwrap();
+        apply(engine.clone(), command, 51).await.unwrap().unwrap();
+        let generation = engine.generation().unwrap();
+        let reference = generation
+            .state
+            .audit_retention
+            .archive_head
+            .clone()
+            .unwrap();
+        let worker_store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let disk = worker_store.persistent_disk();
+            let check = || {
+                crate::Database::check_tenant_audit_copies(
+                    &generation.state,
+                    &worker_store,
+                    &reference.object,
+                    &kasumi_query::QueryCancellation::default(),
+                )
+                .unwrap()
+            };
+            let healthy = (
+                AuditObjectCheck::Verified,
+                AuditObjectCheck::Verified,
+                Some(reference.clone()),
+            );
+            assert_eq!(check(), healthy);
+            for (folder, external) in [("external", true), ("tenant-audit-archives", false)] {
+                let active = std::path::Path::new(folder)
+                    .join(format!("{}.audit", reference.object.object_id));
+                let label = "fixture";
+                let offline = active.with_extension("offline");
+                let original = disk.open_file(label, &active).unwrap();
+                let parked = disk.publish_file(original, label, &offline).unwrap();
+                let (cache, destination, observed) = check();
+                let (available, absent) = if external {
+                    (cache, destination)
+                } else {
+                    (destination, cache)
+                };
+                assert_eq!(available, AuditObjectCheck::Verified);
+                assert_ne!(absent, AuditObjectCheck::Verified);
+                assert_eq!(observed.as_ref(), Some(&reference));
+                drop(disk.publish_file(parked, label, &active).unwrap());
+                assert_eq!(check(), healthy);
+            }
+        })
+        .await
+        .unwrap();
+        drop(engine);
+        store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_without_an_installed_placement_is_unavailable_and_selects_no_default() {
         let (directory, mut node, mut store) = fixture_store().await;
         let engine = TenantEngine::new(
@@ -925,6 +1102,10 @@ mod tests {
         let pending = store.get(PREPARATION, b"pending").unwrap().unwrap();
         let (reference, _) = decode(&pending).unwrap();
         assert_eq!(
+            pending_publication(&store, &before.state).unwrap().as_ref(),
+            Some(&reference.object)
+        );
+        assert_eq!(
             engine.generation().unwrap().state.audit_retention,
             before.state.audit_retention
         );
@@ -948,6 +1129,11 @@ mod tests {
         archive.fail.store(true, Ordering::SeqCst);
         apply(engine.clone(), command, 51).await.unwrap().unwrap();
         let current = engine.generation().unwrap();
+        assert!(
+            pending_publication(&store, &current.state)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             current.state.audit_retention.archive_head.as_ref(),
             Some(&reference)

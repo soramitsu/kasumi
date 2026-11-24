@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Encrypted durable storage, snapshots and backup objects for Kasumi."
 
 [features]
-test-utils = []
+test-utils = ["kasumi-kv/test-utils"]
 # Development diagnostic: count and time physical synchronizations per call
 # site (see src/sync_trace.rs). Off in every release and test build.
 sync-trace = []
@@ -41,6 +41,7 @@ quick-xml = "=0.42.0"
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [dev-dependencies]
+kasumi-kv = { workspace = true, features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
 axum = "0.8"

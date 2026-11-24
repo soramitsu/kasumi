@@ -82,170 +82,6 @@ pub struct ReplicatedBootstrap {
     pub voters: BTreeMap<u64, ReplicaPlacement>,
 }
 
-/// Trusted placement for one replica of a new restore generation. Every member
-/// uses the same backup UUID, fresh incarnation and three-voter placement.
-pub struct ReplicaRestoreConfig {
-    pub node_id: u64,
-    pub incarnation: uuid::Uuid,
-    pub voters: BTreeMap<u64, ReplicaPlacement>,
-    pub raft: Config,
-    pub admission: Arc<crate::admission::NodeAdmission>,
-}
-
-pub struct PreparedReplicaRestore {
-    pub database: Arc<Database>,
-    pub bootstrap: ReplicatedBootstrap,
-    pub backup_id: uuid::Uuid,
-    pub source_revision: u64,
-    /// Compare across replicas before activating a restored placement.
-    pub bootstrap_sha256: String,
-}
-
-/// Verify and install an encrypted backup into an EMPTY replica store. This
-/// starts no membership and cannot serve data: the pending restore marker is
-/// part of its durable bootstrap. Register each peer, initialize three voters,
-/// then `Database::complete_restore` must commit before explicit activation.
-#[allow(clippy::too_many_arguments)]
-pub async fn prepare_replicated_restore(
-    source: &RestoreSource,
-    backup_id: uuid::Uuid,
-    targets: Arc<TenantStorageSet>,
-    context: RequestContext,
-    replica: ReplicaRestoreConfig,
-    transport: Arc<dyn RaftTransport>,
-    security_audit: Arc<SecurityAudit>,
-) -> std::result::Result<PreparedReplicaRestore, crate::SnapshotFailure> {
-    security_audit.require_admission(&replica.admission)?;
-    let construction = DatabaseConstruction::new(targets.clone(), security_audit.clone())?;
-    let target = targets.application().clone();
-    if let Some(gate) = target.storage_access().serving_gate() {
-        crate::SnapshotFailure::ordinary(|| {
-            anyhow::ensure!(
-                gate.identity().incarnation == replica.incarnation,
-                "restore target incarnation differs from its signed serving authority"
-            );
-            Ok(())
-        })?;
-    }
-    let deadline = source.deadline()?;
-    let cancellation = kasumi_query::QueryCancellation::default();
-    let _cancel = crate::admission::CancelOnDrop(cancellation.clone());
-    let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
-    restore_access(&target, &security_audit, &context).await?;
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(
-            target
-                .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
-                .is_none()
-                && targets
-                    .custody()
-                    .store()
-                    .get("raft.meta", b"node_id")?
-                    .is_none(),
-            "restore target is already initialized"
-        );
-        Ok(())
-    })?;
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(
-            replica.node_id > 0
-                && replica.voters.contains_key(&replica.node_id)
-                && !replica.incarnation.is_nil(),
-            "invalid restore replica identity"
-        );
-        Ok(())
-    })?;
-    let verified = deadline
-        .run(Box::pin(backup_restore::load_authorized(
-            source,
-            backup_id,
-            &target,
-            backup_restore::RestoreAuthorization::Data(&context),
-            &security_audit,
-            &replica.admission,
-            deadline,
-            None,
-            Some(cancellation.clone()),
-        )))
-        .await??;
-    let source_revision = verified.state.metadata().revision;
-    let original = verified.state.metadata();
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(
-            replica.incarnation.to_string() != original.incarnation,
-            "restore requires a fresh incarnation"
-        );
-        Ok(())
-    })?;
-    let bootstrap = ReplicatedBootstrap {
-        genesis: ReplicatedGenesis::Application,
-        incarnation: replica.incarnation.to_string(),
-        initial_policy: Policy::clone(&original.policy),
-        initial_limits: original.limits.clone(),
-        voters: replica.voters,
-    };
-    bootstrap.validate()?;
-    let restored = verified
-        .into_genesis(
-            deadline,
-            replica.admission.clone(),
-            target.tenant().into(),
-            bootstrap.incarnation.clone(),
-            None,
-        )
-        .await?;
-    let identity = kasumi_raft::initial_storage_identity(
-        replica.node_id,
-        &format!("{}/{}", target.tenant(), bootstrap.incarnation),
-    )?;
-    deadline.check()?;
-    restore_access(&target, &security_audit, &context).await?;
-    let (restored, _gate) = publication::Publication {
-        stores: targets.clone(),
-        audit: security_audit.clone(),
-        contexts: vec![context.clone()],
-        cancellation,
-        deadline,
-    }
-    .persist(
-        restored,
-        _gate,
-        serde_json::to_vec(&("replicated", &bootstrap))?,
-        identity,
-    )
-    .await?;
-    let engine = restored.engine;
-    engine.install_storage_access(&target)?;
-    engine
-        .verify_bootstrap_dependencies_owned(replica.admission.clone())
-        .await?;
-    engine.install_audit_maintenance(&replica.admission)?;
-    let database = construction
-        .start_replicated(
-            engine,
-            &restored.bytes,
-            replica.node_id,
-            format!("{}/{}", target.tenant(), bootstrap.incarnation),
-            transport,
-            kasumi_raft::RaftGroupConfig {
-                raft: replica.raft,
-                limits: kasumi_raft::RaftLimits::default(),
-            },
-        )
-        .await?;
-    database.install_archive_destination(
-        source.destination_alias.clone(),
-        source.destination.clone(),
-    )?;
-    Ok(PreparedReplicaRestore {
-        database,
-        bootstrap,
-        backup_id,
-        source_revision,
-        bootstrap_sha256: restored.sha256,
-    })
-}
-
 impl ReplicatedBootstrap {
     pub fn validate(&self) -> anyhow::Result<()> {
         self.genesis.validate(&self.incarnation)?;
@@ -751,23 +587,10 @@ pub(crate) fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>>
     let Some(manifest) = read_current_manifest(store)? else {
         return Ok(None);
     };
-    let mut spool = EncryptedSpool::new(store.scratch_disk(), manifest.bytes)?;
-    for i in 0..manifest.chunks {
-        let bytes = store
-            .get_bounded(NS, &i.to_be_bytes(), CHUNK)?
-            .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
-        anyhow::ensure!(
-            bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
-            "invalid bootstrap chunk length"
-        );
-        spool.write_all(&bytes)?;
-    }
-    let snapshot = SnapshotImage::freeze(spool)?;
-    anyhow::ensure!(
-        snapshot.sha256() == manifest.digest,
-        "bootstrap digest mismatch"
-    );
-    Ok(Some(snapshot))
+    load_chunks(&manifest, store.scratch_disk(), |key| {
+        store.get_bounded(NS, key, CHUNK)
+    })
+    .map(Some)
 }
 
 fn load_at(
@@ -777,11 +600,24 @@ fn load_at(
     let Some(manifest) = read_current_manifest_at(view)? else {
         return Ok(None);
     };
+    load_chunks(&manifest, scratch_disk, |key| {
+        view.application_get(NS, key, CHUNK)
+    })
+    .map(Some)
+}
+
+fn load_chunks(
+    manifest: &ApplicationBootstrapManifest,
+    scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+    mut get: impl FnMut(&[u8]) -> anyhow::Result<Option<kasumi_store::PlaintextValue>>,
+) -> anyhow::Result<SnapshotImage> {
+    // The authenticated extent is known, just as it is for a Raft snapshot.
+    // Reserve ciphertext space once before reading the immutable chunks.
     let mut spool = EncryptedSpool::new(scratch_disk, manifest.bytes)?;
+    spool.reserve(manifest.bytes)?;
     for i in 0..manifest.chunks {
-        let bytes = view
-            .application_get(NS, &i.to_be_bytes(), CHUNK)?
-            .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
+        let bytes =
+            get(&i.to_be_bytes())?.ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
         anyhow::ensure!(
             bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
             "invalid bootstrap chunk length"
@@ -793,7 +629,7 @@ fn load_at(
         snapshot.sha256() == manifest.digest,
         "bootstrap digest mismatch"
     );
-    Ok(Some(snapshot))
+    Ok(snapshot)
 }
 
 fn validate_bootstrap_control_at(
@@ -1278,6 +1114,10 @@ pub async fn restore_local(
         Ok(())
     })?;
     phase.complete();
+    // Reserve the target's mandatory audit pool while its store is still empty.
+    // Verification and persistence can otherwise fill the shared governor with
+    // optional pages before start_prepared installs that very same pool.
+    let maintenance = crate::audit_maintenance::NodeAuditMaintenance::install(&admission)?;
     let phase = VerificationPhase::start("restore.load_authorized", Some(deadline));
     let verified = deadline
         .run(Box::pin(backup_restore::load_authorized(
@@ -1312,6 +1152,7 @@ pub async fn restore_local(
     let restored = verified
         .into_genesis(
             deadline,
+            cancellation.clone(),
             admission.clone(),
             target.tenant().into(),
             incarnation.to_string(),
@@ -1357,6 +1198,8 @@ pub async fn restore_local(
         phase.complete();
         database
     };
+    // The serving engine has adopted the pool for this exact MemoryCore.
+    drop(maintenance);
     let phase = VerificationPhase::start("restore.maintenance_audit", Some(deadline));
     database.install_archive_destination(
         source.destination_alias.clone(),
@@ -1471,7 +1314,7 @@ impl OriginalRecoveryWorkspace {
                 // A refusal here can be retried after the fresh store has drained.
                 let mut reservation = admission.reserve(scan, None)?;
                 let image = kasumi_raft::recovery_snapshot_backend(stores)?;
-                let layout = crate::state::inspect_reopening(&mut image.reader())?;
+                let layout = crate::state::snapshot_bundle::inspect_reopening(&mut image.reader())?;
                 let restore = layout.materialization_workspace()?;
                 let additional = restore
                     .checked_sub(Self::SCAN_BYTES)
@@ -1537,7 +1380,7 @@ impl<'a> From<(uuid::Uuid, &'a OriginalRecoveryWorkspace)> for ExistingIncarnati
 
 /// Admission estimate from bounded authenticated bootstrap/snapshot manifests.
 /// It does not deserialize resident application state or authorize serving.
-pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64> {
+pub(crate) fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64> {
     let manifest = read_current_manifest(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))?;
     let snapshot = kasumi_raft::recovery_snapshot_bytes(stores)?;

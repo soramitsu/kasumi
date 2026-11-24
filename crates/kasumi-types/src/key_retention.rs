@@ -18,6 +18,7 @@ pub const MAX_KEY_PROVIDER_BYTES: usize = 1024;
 pub const MAX_KEY_REF_BYTES: usize = 8192;
 pub const MAX_KEY_DEPENDENCIES: usize = 4096;
 pub const MAX_KEY_RETENTION_PAGE_ENTRIES: u16 = 256;
+pub const MAX_KEY_RETENTION_PAGE_BYTES: usize = 1 << 20;
 pub const MAX_MISSING_KEY_DEPENDENCIES: usize = 64;
 
 /// One installed wrapping resource. Each retained version is a separate
@@ -322,6 +323,8 @@ impl KeyRetentionEntry {
 #[serde(deny_unknown_fields)]
 pub struct KeyRetentionCursor {
     pub scope_sha256: String,
+    /// Binds the observed catalog contents even across rotations without a Raft command.
+    pub inventory_sha256: String,
     pub coverage_revision: u64,
     pub membership_epoch: u64,
     /// Last emitted entry; the next page starts strictly after it.
@@ -331,6 +334,7 @@ pub struct KeyRetentionCursor {
 impl KeyRetentionCursor {
     pub fn validate(&self) -> Result<()> {
         validate_sha256(&self.scope_sha256)?;
+        validate_sha256(&self.inventory_sha256)?;
         self.after.validate()
     }
 
@@ -390,6 +394,11 @@ impl ReadKeyRetentionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MissingKeyDependency {
+    /// The installed independent issuer partition has not reported its own catalogs.
+    AuthorityPartitionUnreported {
+        authority_id: Uuid,
+        partition: u16,
+    },
     /// The durable backup session index is not installed or not readable.
     SessionIndexUnavailable {},
     ArchiveUnavailable {
@@ -410,7 +419,10 @@ pub enum MissingKeyDependency {
 impl MissingKeyDependency {
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::SessionIndexUnavailable {} => Ok(()),
+            Self::AuthorityPartitionUnreported { authority_id, .. } if authority_id.is_nil() => {
+                Err(invalid("invalid unreported authority partition"))
+            }
+            Self::AuthorityPartitionUnreported { .. } | Self::SessionIndexUnavailable {} => Ok(()),
             Self::ArchiveUnavailable { id } | Self::RecordUnreadable { id, .. } => {
                 validate_name(id)
             }
@@ -532,6 +544,13 @@ impl KeyRetentionPage {
         }
         if let Some(next) = &self.next_cursor {
             next.require_current(&request.scope, revision, epoch)?;
+            if request
+                .cursor
+                .as_ref()
+                .is_some_and(|previous| previous.inventory_sha256 != next.inventory_sha256)
+            {
+                return Err(invalid("key retention continuation changed its inventory"));
+            }
             if self.entries.last() != Some(&next.after) {
                 return Err(invalid("key retention continuation differs from page"));
             }
@@ -552,9 +571,20 @@ pub struct RetireKeyVersionsRequest {
     pub expected_coverage_sha256: String,
 }
 
+/// Per-scope request ordinals stay spent after a bounded status record expires.
+fn retirement_number(id: &str) -> Result<u64> {
+    let number = id
+        .parse::<u64>()
+        .map_err(|_| invalid("invalid key retirement ordinal"))?;
+    if number == 0 || number.to_string() != id {
+        return Err(invalid("noncanonical key retirement ordinal"));
+    }
+    Ok(number)
+}
+
 impl RetireKeyVersionsRequest {
     pub fn validate(&self) -> Result<()> {
-        validate_name(&self.retirement_id)?;
+        retirement_number(&self.retirement_id)?;
         self.scope.validate()?;
         self.identity.validate()?;
         validate_sha256(&self.expected_coverage_sha256)?;
@@ -686,6 +716,781 @@ impl KeyRetirementStatus {
     }
 }
 
+/// Completed retirements retained by one scope, one per key identity.
+pub const MAX_KEY_RETIREMENT_IDENTITIES: usize = 32;
+/// Most recent explicit aborts retained for status reads.
+pub const MAX_KEY_RETIREMENT_ABORTS: usize = 8;
+/// Canonical encoding bound of one scope's replicated retirement state.
+pub const MAX_KEY_RETIREMENT_STATE_BYTES: usize = 64 << 10;
+
+/// Ordered command that commits the fence. The proposer observed complete
+/// coverage without a reference to a retired version at exactly this
+/// membership epoch and replicated dependency position.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BeginKeyRetirement {
+    pub request: RetireKeyVersionsRequest,
+    pub membership_epoch: u64,
+    pub expected_dependency_sha256: String,
+}
+
+impl BeginKeyRetirement {
+    pub fn validate(&self) -> Result<()> {
+        self.request.validate()?;
+        validate_sha256(&self.expected_dependency_sha256)
+    }
+}
+
+/// Ordered command that decides a fenced retirement. It applies only while
+/// the replicated dependency position is the one its coverage was recomputed
+/// at after the fence; a publication committed in between rejects it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteKeyRetirement {
+    pub retirement_id: String,
+    pub request_sha256: String,
+    pub completed_coverage_sha256: String,
+    pub expected_dependency_sha256: String,
+}
+
+impl CompleteKeyRetirement {
+    pub fn validate(&self) -> Result<()> {
+        retirement_number(&self.retirement_id)?;
+        validate_sha256(&self.request_sha256)?;
+        validate_sha256(&self.completed_coverage_sha256)?;
+        validate_sha256(&self.expected_dependency_sha256)
+    }
+}
+
+/// Ordered command that removes the fence of an undecided retirement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AbortKeyRetirement {
+    pub retirement_id: String,
+    pub request_sha256: String,
+}
+
+impl AbortKeyRetirement {
+    pub fn validate(&self) -> Result<()> {
+        retirement_number(&self.retirement_id)?;
+        validate_sha256(&self.request_sha256)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyRetirementStatusRequest {
+    pub scope: KeyRetentionScope,
+    pub retirement_id: String,
+}
+
+impl KeyRetirementStatusRequest {
+    pub fn validate(&self) -> Result<()> {
+        self.scope.validate()?;
+        retirement_number(&self.retirement_id).map(|_| ())
+    }
+}
+
+/// `None` reports only that this scope retains no status under the identity:
+/// a completed retirement that a later one superseded is no longer listed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyRetirementStatusResponse {
+    /// Greatest ordinal ever admitted in this scope, zero on a fresh scope.
+    pub last_ordinal: u64,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub status: Option<KeyRetirementStatus>,
+}
+
+impl KeyRetirementStatusResponse {
+    pub fn validate(&self, request: &KeyRetirementStatusRequest) -> Result<()> {
+        request.validate()?;
+        let Some(status) = &self.status else {
+            return Ok(());
+        };
+        status.validate()?;
+        if retirement_number(&status.request().retirement_id)? > self.last_ordinal
+            || status.request().retirement_id != request.retirement_id
+            || status.request().scope != request.scope
+        {
+            return Err(invalid("key retirement status belongs to another request"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AbortedKeyRetirement {
+    pub fence: KeyRetirementFence,
+    pub aborted_revision: u64,
+}
+
+/// Whether an ordered retirement command changed the replicated state or
+/// repeated a decision that state already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRetirementTransition {
+    Applied,
+    Repeated,
+}
+
+/// Replicated retirement state of one scope. An absent value in a persisted
+/// `TenantState` is this empty state, and an empty state is not written, so
+/// state that never began a retirement keeps its exact previous encoding.
+///
+/// At most one retirement is between its fence and its decision. Each identity
+/// keeps its latest completed record, whose bound is that identity's permanent
+/// floor: both the fence and every floor reject a new reference to a version
+/// they retire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyRetirementState {
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub fence: Option<KeyRetirementFence>,
+    /// Strictly ascending by key identity.
+    pub completed: Vec<KeyRetirementRecord>,
+    /// Oldest first, at most `MAX_KEY_RETIREMENT_ABORTS`.
+    pub aborted: Vec<AbortedKeyRetirement>,
+}
+
+/// A physical catalog stays registered after its host leaves the current
+/// topology. Retiring keys requires accounting for every original writer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterParticipant {
+    pub verifier: crate::TrustVerifierIdentity,
+    pub catalog: Uuid,
+}
+/// Older journal-registration entries predate retirement and carry only
+/// their physical identity. Current registrations authenticate every KEK minimum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum TargetWriterRegistration {
+    WithCatalog {
+        participant: TargetWriterParticipant,
+        catalog_minimums: KeyDependencySet,
+    },
+    Original(TargetWriterParticipant),
+}
+impl TargetWriterRegistration {
+    pub fn checked_participant(
+        &self,
+        retirements: &KeyRetirementState,
+    ) -> Result<&TargetWriterParticipant> {
+        match self {
+            Self::WithCatalog {
+                participant,
+                catalog_minimums,
+            } => {
+                retirements.require_writer_catalog(catalog_minimums)?;
+                Ok(participant)
+            }
+            Self::Original(participant) if retirements.is_empty() => Ok(participant),
+            Self::Original(_) => Err(conflict(
+                "historical writer registration cannot cross a retirement",
+            )),
+        }
+    }
+}
+pub(crate) fn writer_participants<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<TargetWriterParticipant>, D::Error> {
+    ascending(d, 1024, "registered target writers")
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTargetWriterChallenge {
+    pub challenge: TargetWriterChallenge,
+    pub signature: String,
+}
+impl TargetWriterChallenge {
+    pub fn participant(&self) -> TargetWriterParticipant {
+        TargetWriterParticipant {
+            verifier: self.verifier.clone(),
+            catalog: self.catalog,
+        }
+    }
+}
+/// Refresh one enrolled target at the expected globally committed state. The
+/// target obtains and checks that state independently from its original Control.
+/// Every affirmative writer protects first prepare, initial dispatch and terminal
+/// records. Peers implementing an earlier read-only protocol cannot acknowledge it.
+pub const TARGET_WRITER_PROTOCOL: u16 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshTargetWriter {
+    pub protocol: u16,
+    pub root: crate::ControlSigningRoot,
+    pub verifier: crate::TrustVerifierIdentity,
+    pub state_sha256: String,
+    pub nonce: uuid::Uuid,
+}
+impl RefreshTargetWriter {
+    pub fn validate(&self) -> Result<()> {
+        if self.protocol != TARGET_WRITER_PROTOCOL {
+            return Err(invalid("unsupported target writer protocol"));
+        }
+        self.root.validate()?;
+        self.verifier.validate()?;
+        validate_sha256(&self.state_sha256)?;
+        if self.nonce.is_nil() {
+            return Err(invalid("target writer refresh nonce is absent"));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterReceipt {
+    pub request_sha256: String,
+    pub catalog: uuid::Uuid,
+    pub state_sha256: String,
+}
+impl TargetWriterReceipt {
+    pub fn validate_for(&self, request: &RefreshTargetWriter) -> Result<()> {
+        request.validate()?;
+        if self.catalog.is_nil()
+            || self.state_sha256 != request.state_sha256
+            || self.request_sha256 != staged_digest(request)?.0
+        {
+            return Err(invalid(
+                "target writer receipt differs from the original request",
+            ));
+        }
+        Ok(())
+    }
+}
+/// The physical target requests its own current committed Control writer
+/// state. The nonce is generated and retained by that journal before the read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterChallenge {
+    pub protocol: u16,
+    pub root: crate::ControlSigningRoot,
+    pub verifier: crate::TrustVerifierIdentity,
+    pub catalog_minimums: KeyDependencySet,
+    pub catalog: uuid::Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_command: Option<Uuid>,
+    pub nonce: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterObservation {
+    pub challenge: TargetWriterChallenge,
+    pub observed_term: u64,
+    pub observed_revision: u64,
+    pub membership_epoch: u64,
+    pub observed_policy_epoch: u64,
+    pub retirements: KeyRetirementState,
+}
+impl TargetWriterObservation {
+    pub fn validate(&self) -> Result<()> {
+        if self.challenge.protocol != TARGET_WRITER_PROTOCOL {
+            return Err(invalid("unsupported target writer protocol"));
+        }
+        self.challenge.root.validate()?;
+        self.challenge.verifier.validate()?;
+        // Genesis is a real Control policy epoch and the first installed Raft
+        // membership may occupy index zero. The live signer proves both
+        // positions against its elected quorum and explicit authorization.
+        if self.challenge.catalog.is_nil()
+            || self.challenge.nonce.is_nil()
+            || self.observed_term == 0
+            || self.observed_revision == 0
+        {
+            return Err(invalid(
+                "target writer observation lacks its physical or quorum position",
+            ));
+        }
+        self.retirements
+            .require_writer_catalog(&self.challenge.catalog_minimums)?;
+        self.retirements
+            .validate_journal_scope(self.observed_revision)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTargetWriterObservation {
+    pub observation: TargetWriterObservation,
+    pub signature: String,
+}
+impl KeyRetirementState {
+    pub fn require_writer_catalog(&self, minimums: &KeyDependencySet) -> Result<()> {
+        if minimums.is_empty() || staged_digest(minimums)?.1 > MAX_KEY_RETIREMENT_STATE_BYTES {
+            return Err(invalid(
+                "target writer physical catalog minimums are absent or too large",
+            ));
+        }
+        for minimum in minimums.versions() {
+            if minimum.version < self.floor(&minimum.identity()) {
+                return Err(conflict(
+                    "physical target catalog depends on a retired wrapping version",
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.fence.is_none() && self.completed.is_empty() && self.aborted.is_empty()
+    }
+
+    fn retained_fences(&self) -> impl Iterator<Item = &KeyRetirementFence> {
+        self.fence
+            .iter()
+            .chain(self.completed.iter().map(|record| &record.fence))
+            .chain(self.aborted.iter().map(|record| &record.fence))
+    }
+
+    /// The newest fence survives in the active, completed or recent-abort set
+    /// until a strictly newer request takes its place.
+    pub fn last_ordinal(&self) -> Result<u64> {
+        self.retained_fences().try_fold(0, |greatest, fence| {
+            Ok(greatest.max(retirement_number(&fence.request.retirement_id)?))
+        })
+    }
+
+    pub fn target_writer_digest(&self) -> Result<String> {
+        self.validate_journal_scope(self.last_transition_revision())?;
+        Ok(staged_digest(&("kasumi.target-writer-position.v1", self))?.0)
+    }
+
+    /// Latest change of this retirement state. Unrelated Control observations
+    /// do not change the physical journal's durable dependency position.
+    pub fn last_transition_revision(&self) -> u64 {
+        self.fence
+            .iter()
+            .map(|f| f.fence_revision)
+            .chain(self.completed.iter().map(|r| r.completed_revision))
+            .chain(self.aborted.iter().map(|r| r.aborted_revision))
+            .max()
+            .unwrap_or(0)
+    }
+    pub fn validate_scope(&self, tenant: &str, control_tenant: &str, revision: u64) -> Result<()> {
+        self.validate_owner(revision, |scope| match scope {
+            KeyRetentionScope::Tenant { tenant: name } => {
+                name == tenant && tenant != control_tenant
+            }
+            KeyRetentionScope::Control {} => tenant == control_tenant,
+            _ => false,
+        })
+    }
+
+    pub fn validate_journal_scope(&self, revision: u64) -> Result<()> {
+        self.validate_owner(revision, |scope| {
+            matches!(scope, KeyRetentionScope::TargetJournal {})
+        })
+    }
+
+    fn validate_owner(
+        &self,
+        revision: u64,
+        owns: impl Fn(&KeyRetentionScope) -> bool,
+    ) -> Result<()> {
+        self.validate()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for fence in self.retained_fences() {
+            let owned = owns(&fence.request.scope);
+            if !owned
+                || fence.fence_revision > revision
+                || !seen.insert(&fence.request.retirement_id)
+            {
+                return Err(invalid(
+                    "key retirement scope, position or identity differs",
+                ));
+            }
+        }
+        if self
+            .completed
+            .iter()
+            .any(|r| r.completed_revision > revision)
+            || self.aborted.iter().any(|r| r.aborted_revision > revision)
+        {
+            return Err(invalid("key retirement decision is ahead of the snapshot"));
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.completed.len() > MAX_KEY_RETIREMENT_IDENTITIES
+            || self.aborted.len() > MAX_KEY_RETIREMENT_ABORTS
+            || !self.completed.is_sorted_by(|left, right| {
+                left.fence.request.identity < right.fence.request.identity
+            })
+        {
+            return Err(invalid("key retirement state is malformed"));
+        }
+        for record in &self.completed {
+            record.validate()?;
+        }
+        for aborted in &self.aborted {
+            aborted.fence.validate()?;
+            if aborted.aborted_revision <= aborted.fence.fence_revision {
+                return Err(invalid("key retirement aborted before its fence"));
+            }
+        }
+        if let Some(fence) = &self.fence {
+            fence.validate()?;
+            if fence.request.retire_below_version <= self.floor(&fence.request.identity) {
+                return Err(invalid("key retirement fence is below its floor"));
+            }
+        }
+        self.check_bytes()
+    }
+
+    fn check_bytes(&self) -> Result<()> {
+        if staged_digest(self)?.1 > MAX_KEY_RETIREMENT_STATE_BYTES {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "key retirement state exceeds its byte bound",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Versions of the identity strictly below this bound are permanently
+    /// retired. Zero means that no retirement of it has completed.
+    pub fn floor(&self, identity: &KeyIdentityRef) -> u64 {
+        self.completed
+            .iter()
+            .find(|record| record.fence.request.identity == *identity)
+            .map_or(0, |record| record.fence.request.retire_below_version)
+    }
+
+    /// Whether a dependency writer must refuse a new reference to this key:
+    /// an undecided fence or a completed retirement names it.
+    pub fn rejects(&self, key: &KeyVersionRef) -> bool {
+        self.rejects_version(&key.provider, &key.key_ref, key.version)
+    }
+
+    /// `rejects` for a borrowed catalog identity, without building a reference.
+    pub fn rejects_version(&self, provider: &str, key_ref: &str, version: u64) -> bool {
+        let names = |request: &RetireKeyVersionsRequest| {
+            request.identity.provider == provider
+                && request.identity.key_ref == key_ref
+                && version < request.retire_below_version
+        };
+        self.fence
+            .as_ref()
+            .is_some_and(|fence| names(&fence.request))
+            || self
+                .completed
+                .iter()
+                .any(|record| names(&record.fence.request))
+    }
+
+    pub fn status(&self, retirement_id: &str) -> Option<KeyRetirementStatus> {
+        if let Some(fence) = &self.fence
+            && fence.request.retirement_id == retirement_id
+        {
+            return Some(KeyRetirementStatus::Fenced {
+                fence: fence.clone(),
+            });
+        }
+        if let Some(record) = self
+            .completed
+            .iter()
+            .find(|record| record.fence.request.retirement_id == retirement_id)
+        {
+            return Some(KeyRetirementStatus::Completed {
+                record: record.clone(),
+            });
+        }
+        self.aborted
+            .iter()
+            .rev()
+            .find(|aborted| aborted.fence.request.retirement_id == retirement_id)
+            .map(|aborted| KeyRetirementStatus::Aborted {
+                fence: aborted.fence.clone(),
+                aborted_revision: aborted.aborted_revision,
+            })
+    }
+
+    /// Commit the fence at `revision`. Nothing changes when this returns an
+    /// error or `Repeated`.
+    pub fn begin(
+        &mut self,
+        command: &BeginKeyRetirement,
+        revision: u64,
+    ) -> Result<KeyRetirementTransition> {
+        command.validate()?;
+        let request = &command.request;
+        let request_sha256 = request.request_sha256()?;
+        match self.status(&request.retirement_id) {
+            Some(KeyRetirementStatus::Fenced { fence })
+                if fence.request_sha256 == request_sha256 =>
+            {
+                return Ok(KeyRetirementTransition::Repeated);
+            }
+            Some(KeyRetirementStatus::Completed { record })
+                if record.fence.request_sha256 == request_sha256 =>
+            {
+                return Ok(KeyRetirementTransition::Repeated);
+            }
+            Some(_) => {
+                return Err(conflict("key retirement identity was already used"));
+            }
+            None => {}
+        }
+        if self.last_ordinal()?.checked_add(1) != Some(retirement_number(&request.retirement_id)?) {
+            return Err(conflict(
+                "key retirement ordinal is spent or out of sequence",
+            ));
+        }
+        if self.fence.is_some() {
+            return Err(conflict("another key retirement holds the fence"));
+        }
+        let floor = self.floor(&request.identity);
+        if request.retire_below_version <= floor {
+            return Err(conflict("key versions are already retired"));
+        }
+        if floor == 0 && self.completed.len() >= MAX_KEY_RETIREMENT_IDENTITIES {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "key retirement identity bound exhausted",
+            ));
+        }
+        if revision == 0 {
+            return Err(invalid("key retirement fence lacks a revision"));
+        }
+        let mut next = self.clone();
+        next.fence = Some(KeyRetirementFence {
+            request: request.clone(),
+            request_sha256,
+            fence_revision: revision,
+            membership_epoch: command.membership_epoch,
+        });
+        next.check_bytes()?;
+        // Both terminal transitions must still fit after future revision growth.
+        // Trial the actual encodings on copies before publishing the fence.
+        let request_sha256 = request.request_sha256()?;
+        next.clone().complete(
+            &CompleteKeyRetirement {
+                retirement_id: request.retirement_id.clone(),
+                request_sha256: request_sha256.clone(),
+                completed_coverage_sha256: "f".repeat(64),
+                expected_dependency_sha256: command.expected_dependency_sha256.clone(),
+            },
+            u64::MAX,
+        )?;
+        next.clone().abort(
+            &AbortKeyRetirement {
+                retirement_id: request.retirement_id.clone(),
+                request_sha256,
+            },
+            u64::MAX,
+        )?;
+        *self = next;
+        Ok(KeyRetirementTransition::Applied)
+    }
+
+    /// Decide the fenced retirement at `revision`. Nothing changes when this
+    /// returns an error or `Repeated`.
+    pub fn complete(
+        &mut self,
+        command: &CompleteKeyRetirement,
+        revision: u64,
+    ) -> Result<KeyRetirementTransition> {
+        command.validate()?;
+        let fence = match self.status(&command.retirement_id) {
+            Some(KeyRetirementStatus::Completed { record })
+                if record.fence.request_sha256 == command.request_sha256 =>
+            {
+                return Ok(KeyRetirementTransition::Repeated);
+            }
+            Some(KeyRetirementStatus::Fenced { fence })
+                if fence.request_sha256 == command.request_sha256 =>
+            {
+                fence
+            }
+            _ => return Err(conflict("key retirement does not hold the fence")),
+        };
+        if revision <= fence.fence_revision {
+            return Err(invalid("key retirement completed before its fence"));
+        }
+        let identity = fence.request.identity.clone();
+        let record = KeyRetirementRecord {
+            fence,
+            completed_revision: revision,
+            completed_coverage_sha256: command.completed_coverage_sha256.clone(),
+        };
+        let mut next = self.clone();
+        next.fence = None;
+        match next
+            .completed
+            .binary_search_by(|existing| existing.fence.request.identity.cmp(&identity))
+        {
+            Ok(index) => next.completed[index] = record,
+            Err(index) => next.completed.insert(index, record),
+        }
+        next.validate()?;
+        *self = next;
+        Ok(KeyRetirementTransition::Applied)
+    }
+
+    /// Remove the fence at `revision` and keep the spent identity. Nothing
+    /// changes when this returns an error or `Repeated`.
+    pub fn abort(
+        &mut self,
+        command: &AbortKeyRetirement,
+        revision: u64,
+    ) -> Result<KeyRetirementTransition> {
+        command.validate()?;
+        let fence = match self.status(&command.retirement_id) {
+            Some(KeyRetirementStatus::Aborted { fence, .. })
+                if fence.request_sha256 == command.request_sha256 =>
+            {
+                return Ok(KeyRetirementTransition::Repeated);
+            }
+            Some(KeyRetirementStatus::Fenced { fence })
+                if fence.request_sha256 == command.request_sha256 =>
+            {
+                fence
+            }
+            Some(KeyRetirementStatus::Completed { .. }) => {
+                return Err(conflict("key retirement already completed"));
+            }
+            Some(_) => return Err(conflict("key retirement request differs")),
+            None => {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "key retirement is not retained",
+                ));
+            }
+        };
+        if revision <= fence.fence_revision {
+            return Err(invalid("key retirement aborted before its fence"));
+        }
+        let mut next = self.clone();
+        next.fence = None;
+        if next.aborted.len() == MAX_KEY_RETIREMENT_ABORTS {
+            next.aborted.remove(0);
+        }
+        next.aborted.push(AbortedKeyRetirement {
+            fence,
+            aborted_revision: revision,
+        });
+        next.validate()?;
+        *self = next;
+        Ok(KeyRetirementTransition::Applied)
+    }
+}
+
+/// Serialize a borrowed iterator once as a sequence, without collecting it.
+struct Each<I>(std::cell::RefCell<Option<I>>);
+
+impl<I: Iterator<Item = T>, T: Serialize> Serialize for Each<I> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.borrow_mut().take().into_iter().flatten())
+    }
+}
+
+impl crate::TenantState {
+    /// The applied topology and recovery operations select the possible
+    /// physical writers in addition to the ordinary Control dependency set.
+    pub fn journal_writer_dependency_sha256(&self) -> Result<String> {
+        let topology = self
+            .collections
+            .get("topology")
+            .and_then(|c| c.documents.get("current"))
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "writer topology is absent"))?;
+        let installation = self.lifecycle_control.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "writer Control installation is absent",
+            )
+        })?;
+        Ok(staged_digest(&(
+            "kasumi.target-writer-dependencies.v1",
+            self.key_dependency_sha256()?,
+            &self.target_journal_writers,
+            topology.version(),
+            &installation.installation,
+            &self.target_journal_retirements,
+        ))?
+        .0)
+    }
+    pub fn validate_key_retirement_scopes(&self, control_tenant: &str) -> Result<()> {
+        validate_ascending(
+            &self.target_journal_writers,
+            1024,
+            "registered target writers",
+        )?;
+        if self.tenant != control_tenant && !self.target_journal_writers.is_empty() {
+            return Err(invalid("target writer registrations belong to Control"));
+        }
+        let mut catalogs = BTreeSet::new();
+        for participant in &self.target_journal_writers {
+            participant.verifier.validate()?;
+            if participant.catalog.is_nil() || !catalogs.insert(participant.catalog) {
+                return Err(invalid("duplicated or missing physical target catalog"));
+            }
+        }
+        self.key_retirements
+            .validate_scope(&self.tenant, control_tenant, self.revision)?;
+        if self.tenant != control_tenant && !self.target_journal_retirements.is_empty() {
+            return Err(invalid(
+                "target journal retirement belongs to the installed Control",
+            ));
+        }
+        self.target_journal_retirements
+            .validate_journal_scope(self.revision)
+    }
+
+    /// Digest of every replicated record of this state that can name a
+    /// wrapping key version: the authority epoch, the audit archive chain,
+    /// retained history archives, recovery operations and, for Control, the
+    /// backup session bindings. A retirement decision commits only against
+    /// the exact position its coverage was observed at, so a publication that
+    /// commits in between rejects that decision.
+    pub fn key_dependency_sha256(&self) -> Result<String> {
+        let history = Each(std::cell::RefCell::new(Some(
+            self.history_archives.iter().map(|(id, archive)| {
+                (
+                    id,
+                    &archive.storage_destination,
+                    archive.storage_backup_session,
+                    &archive.manifest_object_id,
+                    &archive.manifest_ciphertext_sha256,
+                )
+            }),
+        )));
+        let recovery = Each(std::cell::RefCell::new(Some(
+            self.recovery_control
+                .operations
+                .iter()
+                .map(|(id, operation)| (id, operation.updated_revision, &operation.request_sha256)),
+        )));
+        Ok(staged_digest(&(
+            "kasumi.key-dependency-position.v1",
+            &self.tenant,
+            &self.incarnation,
+            self.policy_epoch,
+            (
+                self.audit_retention.stream_id,
+                self.audit_retention.archive_segments,
+                self.audit_retention
+                    .archive_head
+                    .as_ref()
+                    .map(|head| &head.object),
+            ),
+            history,
+            recovery,
+            &self.backup_binding_head,
+        ))?
+        .0)
+    }
+}
+
+fn conflict(message: &'static str) -> Error {
+    Error::new(ErrorCode::Conflict, message)
+}
+
 fn validate_ascending<T: Ord>(values: &[T], max: usize, name: &str) -> Result<()> {
     if values.len() > max {
         return Err(invalid(format!("{name} exceeds {max} entries")));
@@ -739,7 +1544,7 @@ impl<'de, T: Deserialize<'de> + Ord> Visitor<'de> for Ascending<T> {
     }
 }
 
-fn ascending<'de, D: Deserializer<'de>, T: Deserialize<'de> + Ord>(
+pub(crate) fn ascending<'de, D: Deserializer<'de>, T: Deserialize<'de> + Ord>(
     deserializer: D,
     max: usize,
     name: &'static str,
@@ -822,6 +1627,7 @@ mod tests {
     fn cursor(scope: &KeyRetentionScope, after: KeyRetentionEntry) -> KeyRetentionCursor {
         KeyRetentionCursor {
             scope_sha256: scope.sha256().unwrap(),
+            inventory_sha256: "e".repeat(64),
             coverage_revision: 10,
             membership_epoch: 3,
             after,
@@ -861,7 +1667,7 @@ mod tests {
 
     fn retirement() -> RetireKeyVersionsRequest {
         RetireKeyVersionsRequest {
-            retirement_id: "retire-a".into(),
+            retirement_id: "1".into(),
             scope: tenant(),
             identity: KeyIdentityRef {
                 provider: "file".into(),
@@ -1498,6 +2304,66 @@ mod tests {
         let kinds: BTreeSet<_> = references().iter().map(KeyReference::kind).collect();
         assert_eq!(kinds.len(), references().len());
         assert!(references().is_sorted());
+    }
+
+    #[test]
+    fn spent_retirement_ordinals_survive_abort_eviction_and_floor_replacement() {
+        let mut state = KeyRetirementState::default();
+        for n in 1..=12u64 {
+            let request = RetireKeyVersionsRequest {
+                retirement_id: n.to_string(),
+                retire_below_version: n + 1,
+                ..retirement()
+            };
+            let request_sha256 = request.request_sha256().unwrap();
+            let begin = BeginKeyRetirement {
+                request: request.clone(),
+                expected_dependency_sha256: "a".repeat(64),
+                membership_epoch: 1,
+            };
+            state.begin(&begin, n * 2).unwrap();
+            if n <= 10 {
+                state
+                    .abort(
+                        &AbortKeyRetirement {
+                            retirement_id: n.to_string(),
+                            request_sha256,
+                        },
+                        n * 2 + 1,
+                    )
+                    .unwrap();
+            } else {
+                state
+                    .complete(
+                        &CompleteKeyRetirement {
+                            retirement_id: n.to_string(),
+                            request_sha256,
+                            expected_dependency_sha256: "b".repeat(64),
+                            completed_coverage_sha256: "c".repeat(64),
+                        },
+                        n * 2 + 1,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(state.last_ordinal().unwrap(), n);
+        }
+        assert!(state.status("1").is_none());
+        assert!(state.status("11").is_none());
+        let saved = serde_json::to_vec(&state).unwrap();
+        let mut reopened: KeyRetirementState = serde_json::from_slice(&saved).unwrap();
+        for id in ["1", "11", "14", "013"] {
+            let begin = BeginKeyRetirement {
+                request: RetireKeyVersionsRequest {
+                    retirement_id: id.into(),
+                    retire_below_version: 100,
+                    ..retirement()
+                },
+                expected_dependency_sha256: "a".repeat(64),
+                membership_epoch: 1,
+            };
+            assert!(reopened.begin(&begin, 26).is_err());
+            assert_eq!(state, reopened);
+        }
     }
 
     #[test]

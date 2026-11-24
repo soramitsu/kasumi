@@ -504,6 +504,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             body,
             kasumi_serving::AuthorityMaintenanceRequest::Status { .. }
                 | kasumi_serving::AuthorityMaintenanceRequest::Configuration
+                | kasumi_serving::AuthorityMaintenanceRequest::MemberCatalog { .. }
         );
         let (reply, fence) = self
             .auth
@@ -644,6 +645,37 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
         self.release(&context, fence, response, false).await
     }
 
+    async fn read_issuer_stop(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        if request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .is_none()
+        {
+            return Err(Status::unauthenticated(
+                "actual mutually authenticated TLS peer required",
+            ));
+        }
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .issuer_stop_status(context.clone(), input)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(status)?,
+        };
+        self.release(&context, fence, response, false).await
+    }
     async fn verify_target_stop(
         &self,
         request: Request<AuthorityJsonRequest>,

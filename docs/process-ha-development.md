@@ -14,6 +14,13 @@ with three processes per role and three distinct groups. Configuration paths
 select original installed product configurations; this is not an alternate
 product configuration decoder.
 
+The three original Data voters may install a larger pinned transport pool.
+For the HA fault run, give the spare learner and all three Data voters the
+same peer entries. Keep the three original IDs in `initial_voters`. On each
+Control voter, enroll the learner's endpoint, failure domain and leaf pins
+under its node ID in `control.remote_data.nodes`. The runner checks these
+inputs before it starts any processes.
+
 Inspection records original input hashes and the actual executable hashes.
 It rejects shared or overlapping persistent/scratch roots, symlink roots,
 storage outside the selected node's roots, shared database paths, substituted
@@ -48,20 +55,11 @@ single-winner recovery, fresh read-only inspection, native readback, or a full
 24-hour workload. Its schema is intentionally separate from the release
 acceptance schema, and `DOMAIN_ADAPTERS` remains unchanged.
 
-## Product gap observed on 2026-09-27
+## Dedicated process qualification
 
-The current `RuntimeConfig::validate` requires local tenants unless the node
-is a recovery target. `RuntimeConfig::bootstrap` uses the same peer/voter set
-for Control and data. `control_genesis::bootstrap` derives Control nodes and
-tenant routes from that same local replication configuration. Merely allowing
-an empty tenant list would not establish independent Control and data quorums.
+Dedicated Control voters enroll the Data topology and host their own Control and service-security stores. Data-only members read the signed topology through their installed Control endpoints. The replacement scenario adds the learner and changes membership on the Data leader, then uses the Control administrator profile to confirm and publish the new voter set on the dedicated Control leader. Configure the catalog-reader identities for the original and replacement Data voters as described in the [operations guide](operations.md#dedicated-control-voter-enrollment).
 
-The required product change is an explicit installed Control topology and
-authenticated client boundary for data nodes, with Control-only processes
-hosting no tenant or target storage. The dedicated process integration fixture
-must provision nine separate roots and identities through current product APIs
-and exercise actual service commands. Existing colocated runtime fixtures and
-the Python process-custody tests do not establish that topology.
+The production fault and soak runs require nine separately provisioned original processes, their own storage and identities, and the installed spare. Retain the physical placement and failure-domain evidence with the run.
 
 Run the development tests with:
 

@@ -48,16 +48,62 @@ objects only after validating their original scope and content.
 
 This is a document-body change, not completion of C04. Collection descriptors,
 structured/text indexes and other metadata still have resident components.
-No blob garbage collection is added: current documents, old generations, feeds,
-leases, staged operations and recovery paths must remain readable. Existing
-archives are preserved, so reduced native value duplication does not imply an
-immediate reduction in total filesystem usage. Accounting and synthetic value
+Unreferenced body and blob objects are collected online (see
+[Document object collection](#document-object-collection)): current documents,
+the retained feed, the selected snapshot, old generations, leases, staged
+operations and recovery paths remain readable. Existing archives are
+preserved, so reduced native value duplication does not imply an immediate
+reduction in total filesystem usage. Accounting and synthetic value
 sizes are not production RSS measurements.
 
 Activation remains separate from source validation. A standalone process cannot
 be replaced through the existing restart procedure without an availability gap.
 Retaining an old executable is not proof that it can reopen new physical state;
 verify the complete rollback and service-continuity path before activation.
+
+## Document object collection
+
+An ordinary overwrite, a deletion and change-feed trimming each displace a
+stored descriptor. [`document_gc`](../crates/kasumi-engine/src/document_gc.rs)
+records the displaced manifest digest as a candidate when the generation is
+published. A candidate is only a hint. Its object is deleted when:
+
+- a bounded, resumable walk of a frozen published state finds no document and
+  no retained change after-image that names it, and no after-image staged
+  since that state names it (each staged after-image rescues its candidate);
+- the selected durable snapshot is at or beyond that state, so the durable
+  application directory no longer names it and a reopening replica still
+  holds every object its own snapshot names;
+- for a proof chunk, no registered owner remains. `engine.document.blob-links`
+  holds, per chunk, the number of published manifests that name it
+  (`0 ‖ scope ‖ chunk digest`, a big-endian `u64`) and one marker per counted
+  manifest (`1 ‖ scope ‖ manifest digest`). A restore clears the namespace
+  with the object rows it replaces; the collector then counts every live
+  manifest that can name a chunk (a census, a bounded number of manifest
+  reads per step) before it collects any chunk.
+
+Each step runs after a committed apply has ended, under the tenant apply lock
+and outside that apply's native escrow, and does one bounded unit: part of a
+walk, part of the census, one registering transaction or one deleting
+transaction. It never joins an application publication, so receipt joining,
+journal joining and the capacity admitted before proposal are unchanged, and
+a failure or refusal only defers collection.
+
+Readers keep the native root their generation selected, which retains rows a
+later root deleted. Writers are fenced: an apply decides whether an object is
+already published against the previous generation's selection, which predates
+a deletion committed after it. Every digest deleted since that selection stays
+in the collector's fence and is written again instead of being found present;
+publishing a generation with a newly captured selection ends the fence.
+
+Nothing about a cycle is durable. Every deleting transaction removes a
+manifest, its marker, its owner counts and each chunk whose last owner it was
+together, so any prefix of them leaves the store consistent. After a crash
+the reopening restore reconciles both object namespaces with its snapshot, as
+before, and replay displaces the later descriptors again. A tenant that never
+publishes a snapshot keeps its superseded objects until it does; the
+candidate buffer is bounded, and a candidate dropped under pressure keeps its
+object until the next restore.
 
 ## Durable application state
 
@@ -1880,12 +1926,12 @@ seam does not move postings, unique maps, Tantivy state or row directories to
 disk, and its collection metadata and allocation admission remain part of the
 open memory-accounting work.
 
-The existing `admission::snapshot_work` foundation retains the actual blocking
-child, output and original failure in an admitted census. It has no production
-query adapter yet. Merely changing `QueryOutput` or `SnapshotOutput` to carry an
-`anyhow::Error` is insufficient: an abandoned join handle eventually destroys
-that output. Adapt the retained operation owner before installing a fallible
-disk source, including explicit source-close failure and unclaimed output
+The unwired `admission::snapshot_work` census and its query-source adapter were
+deleted; a fallible disk source needs its retained owner built into the live
+Database and its shutdown drain. Merely changing `QueryOutput` or
+`SnapshotOutput` to carry an `anyhow::Error` is insufficient: an abandoned join
+handle eventually destroys that output. Build that retained operation owner
+before installing a fallible disk source, including explicit source-close failure and unclaimed output
 cleanup; uncertain native ownership stays retained. A resident-only adapter
 cannot be used as evidence that this failure path is qualified.
 The initial resident adapter can use `Infallible` as its source failure type,

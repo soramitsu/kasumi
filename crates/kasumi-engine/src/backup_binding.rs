@@ -1,6 +1,8 @@
 //! Permanent Control backup bindings. A generation selects an authenticated
 //! prefix of encrypted point rows; rows persisted ahead of the applied cursor
 //! cannot prove that a claim committed.
+#[path = "lifecycle_intent_store.rs"]
+pub(crate) mod intents;
 use crate::namespace_installation::PreparedRows;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES + 256;
-const CATALOG: &str = "backup-binding-catalog";
+pub(crate) const CATALOG: &str = "backup-binding-catalog";
 
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     // Bound temporary working copies, indexes and commit overhead separately
@@ -26,6 +28,14 @@ fn digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+fn point_key(session: uuid::Uuid, terminal: bool) -> String {
+    if terminal {
+        format!("terminal/{session}")
+    } else {
+        session.to_string()
+    }
+}
+
 fn id_key(key: &str) -> Vec<u8> {
     [b"id/".as_slice(), key.as_bytes()].concat()
 }
@@ -41,6 +51,8 @@ pub(crate) struct Row {
     pub previous_sha256: String,
     pub applied: crate::staged_terminal::AppliedIdentity,
     pub record: BackupBindingRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<kasumi_types::BackupBindingTerminal>,
 }
 impl Row {
     pub(crate) fn sha256(&self) -> Result<String> {
@@ -84,9 +96,8 @@ impl Row {
         self.validate_position()?;
         ensure!(
             state.tenant == crate::control::CONTROL_TENANT
-                && state.lifecycle_control.is_some()
                 && self.ordinal > 0
-                && self.key == self.record.claim.session_id.to_string()
+                && self.key == point_key(self.record.claim.session_id, self.terminal.is_some())
                 && digest(&self.previous_sha256)
                 && self.applied.incarnation == state.incarnation
                 && self.applied.revision > state.revision_base
@@ -99,6 +110,19 @@ impl Row {
     }
     fn validate_position(&self) -> Result<()> {
         self.record.validate()?;
+        ensure!(
+            self.key == point_key(self.record.claim.session_id, self.terminal.is_some()),
+            "backup binding kind or session differs"
+        );
+        if let Some(decision) = &self.terminal {
+            decision.validate(&self.record.claim)?;
+            ensure!(
+                matches!(self.applied.origin, crate::staged_terminal::AppliedOrigin::Raft { index, term, .. }
+                if index > self.record.position.index && term >= self.record.position.term),
+                "terminal precedes its claimed position"
+            );
+            return Ok(());
+        }
         ensure!(
             self.record.position.command_sha256 == self.applied.command_sha256
                 && matches!(
@@ -138,7 +162,10 @@ struct DurableRows {
 }
 enum Source {
     Durable(DurableRows),
-    Staged(Arc<EncryptedTable>),
+    Staged(
+        Arc<EncryptedTable>,
+        Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    ),
 }
 impl Source {
     fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
@@ -147,7 +174,7 @@ impl Source {
                 .store
                 .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
                 .map(crate::materialization_row::MaterializationRow::Stored),
-            Self::Staged(table) => table
+            Self::Staged(table, _) => table
                 .get(key)?
                 .map(crate::materialization_row::MaterializationRow::Staged),
         };
@@ -158,8 +185,48 @@ impl Source {
         Ok(result)
     }
 }
+/// Outcomes in this locally applied Control binding ledger. Destination-only
+/// sessions that predate Control binding have no entry here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ControlBackupSessions {
+    pub claimed_without_terminal: u64,
+    pub completed: u64,
+    pub aborted: u64,
+    pub last_binding_revision: u64,
+}
+
+impl ControlBackupSessions {
+    fn advanced(mut self, row: &Row) -> Result<Self> {
+        let count = match row.terminal.as_ref().map(|terminal| &terminal.outcome) {
+            None => &mut self.claimed_without_terminal,
+            Some(outcome) => {
+                self.claimed_without_terminal = self
+                    .claimed_without_terminal
+                    .checked_sub(1)
+                    .context("backup terminal without an outstanding claim")?;
+                match outcome {
+                    kasumi_types::BackupSessionOutcome::Complete { .. } => &mut self.completed,
+                    kasumi_types::BackupSessionOutcome::Aborted { .. } => &mut self.aborted,
+                }
+            }
+        };
+        *count = count
+            .checked_add(1)
+            .context("Control backup session count overflow")?;
+        self.last_binding_revision = row.applied.revision;
+        Ok(self)
+    }
+}
+
+impl crate::Generation {
+    pub fn control_backup_sessions(&self) -> Option<ControlBackupSessions> {
+        (self.tenant() == crate::control::CONTROL_TENANT).then_some(self.backup_bindings.sessions)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct View {
+    sessions: ControlBackupSessions,
     source: Option<Arc<Source>>,
     head: BackupBindingHead,
 }
@@ -173,6 +240,7 @@ impl std::fmt::Debug for View {
 impl View {
     pub(crate) fn empty(incarnation: &str) -> Result<Self> {
         Ok(Self {
+            sessions: ControlBackupSessions::default(),
             source: None,
             head: BackupBindingHead::empty(incarnation)?,
         })
@@ -203,9 +271,10 @@ impl View {
         )?;
         ensure!(
             digest(&index.sha256)
-                && uuid::Uuid::parse_str(&index.key)
+                && uuid::Uuid::parse_str(index.key.strip_prefix("terminal/").unwrap_or(&index.key))
                     .ok()
-                    .is_some_and(|id| !id.is_nil() && id.to_string() == index.key),
+                    .is_some_and(|id| !id.is_nil()
+                        && point_key(id, index.key.starts_with("terminal/")) == index.key),
             "backup binding ordinal identity invalid"
         );
         Ok(index)
@@ -214,6 +283,16 @@ impl View {
         ensure!(
             digest(&self.head.sha256),
             "invalid backup binding head digest"
+        );
+        ensure!(
+            self.sessions
+                .completed
+                .checked_add(self.sessions.aborted)
+                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(self.sessions.claimed_without_terminal))
+                == Some(self.head.count)
+                && self.sessions.last_binding_revision == self.head.last_applied_revision,
+            "Control backup session counts differ from selected prefix"
         );
         if self.head.count == 0 {
             ensure!(
@@ -243,7 +322,6 @@ impl View {
             self.head == state.backup_binding_head
                 && (self.head.count == 0
                     || (state.tenant == crate::control::CONTROL_TENANT
-                        && state.lifecycle_control.is_some()
                         && self.head.origin_incarnation == state.incarnation))
                 && (state.tenant == crate::control::CONTROL_TENANT
                     || (self.head.count == 0 && self.source.is_none()))
@@ -255,8 +333,22 @@ impl View {
     }
     pub(crate) fn get(&self, session: uuid::Uuid) -> Result<Option<Row>> {
         ensure!(!session.is_nil(), "nil backup binding point identity");
-        let key = session.to_string();
-        let Some(bytes) = self.bytes(&id_key(&key))? else {
+        self.point(&point_key(session, false))
+    }
+    pub(crate) fn terminal(&self, session: uuid::Uuid) -> Result<Option<Row>> {
+        let row = self.point(&point_key(session, true))?;
+        if let Some(terminal) = &row {
+            ensure!(
+                self.get(session)?.is_some_and(
+                    |claim| claim.record == terminal.record && claim.ordinal < terminal.ordinal
+                ),
+                "terminal backup decision differs from its original claim"
+            );
+        }
+        Ok(row)
+    }
+    fn point(&self, key: &str) -> Result<Option<Row>> {
+        let Some(bytes) = self.bytes(&id_key(key))? else {
             return Ok(None);
         };
         let row: Row = serde_json::from_slice(&bytes)?;
@@ -294,9 +386,9 @@ impl View {
         Ok(Some(row))
     }
     pub(crate) fn row(&self, ordinal: u64) -> Result<Row> {
-        let id = uuid::Uuid::parse_str(&self.index(ordinal)?.key)?;
+        let key = self.index(ordinal)?.key;
         let row = self
-            .get(id)?
+            .point(&key)?
             .context("backup binding indexed point missing")?;
         ensure!(row.ordinal == ordinal, "backup binding ordinal redirected");
         Ok(row)
@@ -362,13 +454,15 @@ impl View {
                     store: store.clone(),
                     binding: binding.clone(),
                 }))),
+                sessions: self.sessions,
                 head: self.head.clone(),
             };
             view.validate_state(state)?;
+            view.verify_restored_intents(state)?;
             for old in self.records() {
                 let old = old?;
                 let actual = view
-                    .get(old.record.claim.session_id)?
+                    .point(&old.key)?
                     .context("backup binding checkpoint row missing")?;
                 ensure!(
                     actual.sha256()? == old.sha256()?,
@@ -387,7 +481,7 @@ impl View {
             "backup binding checkpoint is already installed"
         );
         let rows = match self.source.as_deref() {
-            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            Some(Source::Staged(table, _)) => PreparedRows::Staged(table.clone()),
             None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("backup binding installation requires verified staged rows"),
         };
@@ -411,6 +505,7 @@ impl View {
                 store: store.clone(),
                 binding,
             }))),
+            sessions: self.sessions,
             head: self.head.clone(),
         };
         Ok(Installation {
@@ -453,6 +548,9 @@ impl View {
 }
 
 pub(crate) struct Builder {
+    memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    pub(crate) intent_head: Option<kasumi_types::LifecycleIntentHead>,
+    sessions: ControlBackupSessions,
     table: Arc<EncryptedTable>,
     head: BackupBindingHead,
 }
@@ -463,6 +561,9 @@ impl Builder {
         incarnation: &str,
     ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
+            sessions: ControlBackupSessions::default(),
+            intent_head: None,
+            memory: disk.memory().clone(),
             table: Arc::new(EncryptedTable::new(
                 disk,
                 limit,
@@ -479,7 +580,27 @@ impl Builder {
             self.table.get(&id_key(&row.key))?.is_none(),
             "duplicate permanent backup binding identity"
         );
-        advance(&mut self.head, row)?;
+        if row.terminal.is_some() {
+            let claim = self
+                .table
+                .get(&id_key(&row.record.claim.session_id.to_string()))?
+                .context("backup terminal is missing its original claim")?;
+            let original: Row = serde_json::from_slice(&claim)?;
+            ensure!(
+                original.terminal.is_none() && original.record == row.record,
+                "backup terminal claim differs"
+            );
+        }
+        let mut next = self.head.clone();
+        advance(&mut next, row)?;
+        ensure!(
+            next.count <= state.backup_binding_head.count
+                && next.encoded_bytes <= state.backup_binding_head.encoded_bytes
+                && next.encoded_bytes <= state.limits.max_backup_binding_bytes,
+            "backup binding rows exceed their selected count or byte budget"
+        );
+        self.head = next;
+        self.sessions = self.sessions.advanced(row)?;
         self.table
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
         self.table.insert(
@@ -497,7 +618,8 @@ impl Builder {
             "backup binding stream final root/count/bytes differ"
         );
         Ok(View {
-            source: Some(Arc::new(Source::Staged(self.table))),
+            sessions: self.sessions,
+            source: Some(Arc::new(Source::Staged(self.table, self.memory))),
             head: self.head,
         })
     }
@@ -541,13 +663,12 @@ impl Installation {
     }
 }
 
-#[cfg(test)]
 pub(crate) struct Pending {
+    sessions: ControlBackupSessions,
     previous: View,
     head: BackupBindingHead,
     row: Row,
 }
-#[cfg(test)]
 impl Pending {
     pub(crate) fn prepare(previous: &View, state: &TenantState, row: Row) -> Result<Self> {
         ensure!(
@@ -555,10 +676,18 @@ impl Pending {
             "backup binding starting prefix differs"
         );
         ensure!(
-            previous.get(row.record.claim.session_id)?.is_none(),
+            previous.point(&row.key)?.is_none(),
             "cannot rewrite permanent backup binding"
         );
         row.validate(state)?;
+        if row.terminal.is_some() {
+            ensure!(
+                previous
+                    .get(row.record.claim.session_id)?
+                    .is_some_and(|r| r.record == row.record),
+                "backup terminal requires the exact committed claim"
+            );
+        }
         let mut head = previous.head.clone();
         advance(&mut head, &row)?;
         ensure!(
@@ -566,6 +695,7 @@ impl Pending {
             "backup binding table budget exhausted"
         );
         Ok(Self {
+            sessions: previous.sessions.advanced(&row)?,
             previous: previous.clone(),
             head,
             row,
@@ -600,11 +730,12 @@ impl Pending {
                     _ => anyhow::bail!("partially published backup binding row/index"),
                 }
             }
-            Source::Staged(_) => {
+            Source::Staged(_, _) => {
                 anyhow::bail!("unpublished backup binding staging cannot serve writes")
             }
         }
         let view = View {
+            sessions: self.sessions,
             source: self.previous.source,
             head: self.head,
         };

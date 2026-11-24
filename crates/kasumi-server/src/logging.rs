@@ -1,23 +1,30 @@
 //! Daemon diagnostics contain operational events, never request bodies or secrets.
 use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn targets() -> Targets {
+fn targets(restore_timings: bool) -> Targets {
     // Dependencies can trace entire commands/documents. They must remain disabled
     // even when the host has an unrelated RUST_LOG setting. OpenRaft formats
     // storage error chains, so its fatal outcomes surface only through Kasumi's
     // fixed closure and typed failure classes. Kasumi's own engine, Raft and store warnings carry
     // fixed labels and component names, never error chains or tenant data.
-    Targets::new()
+    let targets = Targets::new()
         .with_target("kasumi_server", tracing::Level::INFO)
         .with_target("kasumi_engine", tracing::Level::WARN)
         .with_target("kasumi_raft", tracing::Level::WARN)
-        .with_target("kasumi_store", tracing::Level::WARN)
+        .with_target("kasumi_store", tracing::Level::WARN);
+    if restore_timings {
+        targets.with_target("kasumi_engine::restore_phase", tracing::Level::DEBUG)
+    } else {
+        targets
+    }
 }
 
 /// Install JSON diagnostics on stderr. CLI result documents remain on stdout.
 pub fn initialize() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(targets())
+        .with(targets(
+            std::env::var("KASUMI_RESTORE_PHASE_TIMINGS").as_deref() == Ok("1"),
+        ))
         .with(
             tracing_subscriber::fmt::layer()
                 .json()
@@ -143,9 +150,10 @@ pub(crate) fn process_drain_failed(registry: &'static str, error: &anyhow::Error
 }
 
 /// The final drain's grace expired with an owner still retained.
-pub(crate) fn process_drain_retained(grace: std::time::Duration) {
+pub(crate) fn process_drain_retained(grace: std::time::Duration, registry: &'static str) {
     tracing::error!(
         event = "process_drain_retained",
+        registry,
         grace_secs = grace.as_secs(),
         "a process-wide registry still retained an owner when the exit grace expired"
     );
@@ -396,9 +404,24 @@ mod tests {
     }
 
     #[test]
+    fn installed_restore_timings_enable_only_the_fixed_engine_phase_events() {
+        let level = &tracing::Level::DEBUG;
+        for enabled in [false, true] {
+            let filter = targets(enabled);
+            assert_eq!(
+                filter.would_enable("kasumi_engine::restore_phase", level),
+                enabled
+            );
+            for target in ["kasumi_engine", "kasumi_server", "kasumi_store", "openraft"] {
+                assert!(!filter.would_enable(target, level));
+            }
+        }
+    }
+
+    #[test]
     fn json_diagnostics_exclude_dependency_payloads_and_span_fields() {
         let bytes = Buffer(Arc::new(Mutex::new(Vec::new())));
-        let subscriber = tracing_subscriber::registry().with(targets()).with(
+        let subscriber = tracing_subscriber::registry().with(targets(false)).with(
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_ansi(false)
@@ -437,6 +460,10 @@ mod tests {
         assert_eq!(values[1]["fields"]["event"], "engine_warning");
         assert_eq!(values[2]["fields"]["event"], "original_engine_open_failed");
         assert_eq!(values[2]["fields"]["failure_class"], "io_storage_full");
+        crate::observability::test_evidence::native_observation(
+            "structured-events",
+            serde_json::json!(&values),
+        );
         for value in values {
             let encoded = value.to_string();
             assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));

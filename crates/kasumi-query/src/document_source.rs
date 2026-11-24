@@ -133,6 +133,74 @@ impl ReadFailure<Infallible> {
 pub trait DocumentSource: crate::CollectionRecords {
     /// Indexes captured with this exact source, including verified hydration.
     fn indexes(&self) -> &crate::QueryIndexes;
+    /// Visit the authenticated primary headers in increasing ID order.
+    /// A source without a selected header directory returns false before lending.
+    fn visit_primary_ids(
+        &self,
+        _cancellation: &QueryCancellation,
+        _lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        Ok(false)
+    }
+    /// Visit one field's ordered postings if this exact
+    /// generation has published them. An unsupported layout returns false
+    /// before lending any IDs. An installed but unreadable index returns an error.
+    fn visit_field_posting(
+        &self,
+        _field: usize,
+        _predicate: crate::FieldPredicate<'_>,
+        _cancellation: &QueryCancellation,
+        _lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        Ok(false)
+    }
+    fn has_ordered_unique_source(&self) -> bool {
+        false
+    }
+    /// A selected checkpoint with every compound tuple in complete order.
+    fn ranked_compound_count(
+        &self,
+        _index: usize,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<u64>, Self::Failure> {
+        Ok(None)
+    }
+    /// Read up to `ORDERED_TUPLE_WINDOW` consecutive owners from `[start, end)`.
+    /// Begin at `start` when ascending and `end - 1` when descending. A
+    /// nonempty interval in a selected ranked index must return an owner.
+    fn ranked_compound_window(
+        &self,
+        _index: usize,
+        _start: u64,
+        _end: u64,
+        _descending: bool,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+        Ok(None)
+    }
+    /// Return at most one window of representable compound tuples in native order.
+    /// The planner merges longer keys from the same generation into that order.
+    /// None means the directory is absent at this generation before any row
+    /// was returned. Installed page failures keep their original owner.
+    fn ordered_unique_window(
+        &self,
+        _index: usize,
+        _lower: std::ops::Bound<&[u8]>,
+        _upper: std::ops::Bound<&[u8]>,
+        _descending: bool,
+        _cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+        Ok(None)
+    }
+    /// Lend this exact generation's persisted text shards for the source's
+    /// collection. `Ok(None)` when no directory is current at this generation;
+    /// a directory that is selected but unreadable returns an error.
+    fn with_text_shards<T>(
+        &self,
+        _search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        Ok(None)
+    }
     /// Check cancellation before/after read work and immediately before lending.
     /// An expected version requires presence and an exact version match.
     fn with_record<T>(
@@ -199,6 +267,113 @@ impl<S: DocumentSource + ?Sized> crate::CollectionRecords for BoundSource<'_, S>
 impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     fn indexes(&self) -> &crate::QueryIndexes {
         self.source.indexes()
+    }
+    fn visit_primary_ids(
+        &self,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.check()?;
+        let available = self.source.visit_primary_ids(cancellation, |id| {
+            self.check()?;
+            lend(id)
+        })?;
+        self.check()?;
+        Ok(available)
+    }
+    fn has_ordered_unique_source(&self) -> bool {
+        self.source.has_ordered_unique_source()
+    }
+    fn ranked_compound_count(
+        &self,
+        index: usize,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<u64>, Self::Failure> {
+        self.check()?;
+        let count = self.source.ranked_compound_count(index, cancel)?;
+        self.check()?;
+        Ok(count)
+    }
+    fn ranked_compound_window(
+        &self,
+        index: usize,
+        start: u64,
+        end: u64,
+        descending: bool,
+        cancel: &QueryCancellation,
+    ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+        self.check()?;
+        let rows = self
+            .source
+            .ranked_compound_window(index, start, end, descending, cancel)?;
+        self.check()?;
+        if let Some(rows) = &rows {
+            let length = end
+                .checked_sub(start)
+                .map(|n| n.min(crate::ORDERED_TUPLE_WINDOW as u64));
+            if length != Some(rows.len() as u64)
+                || rows.iter().enumerate().any(|(offset, row)| {
+                    let expected = if descending {
+                        end - 1 - offset as u64
+                    } else {
+                        start + offset as u64
+                    };
+                    row.rank != expected || kasumi_types::validate_name(&row.id).is_err()
+                })
+            {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "invalid ranked compound window").into(),
+                );
+            }
+        }
+        Ok(rows)
+    }
+    fn ordered_unique_window(
+        &self,
+        index: usize,
+        lower: std::ops::Bound<&[u8]>,
+        upper: std::ops::Bound<&[u8]>,
+        descending: bool,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+        self.check()?;
+        let result =
+            self.source
+                .ordered_unique_window(index, lower, upper, descending, cancellation)?;
+        self.check()?;
+        if let Some(rows) = &result {
+            crate::ordered_tuple::check_window(rows, lower, upper, descending)?;
+        }
+        Ok(result)
+    }
+    fn visit_field_posting(
+        &self,
+        field: usize,
+        predicate: crate::FieldPredicate<'_>,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.check()?;
+        let available = self
+            .source
+            .visit_field_posting(field, predicate, cancellation, |id| {
+                self.check()?;
+                lend(id)
+            })?;
+        self.check()?;
+        Ok(available)
+    }
+    fn with_text_shards<T>(
+        &self,
+        search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        self.check()?;
+        let result = self.source.with_text_shards(|shards| {
+            self.check()?;
+            search(shards)
+        })?;
+        self.check()?;
+        Ok(result)
     }
     fn with_record<T>(
         &self,

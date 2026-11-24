@@ -47,7 +47,7 @@ pub enum DeploymentMode {
     Replicated,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsFiles {
     pub certificate: PathBuf,
@@ -152,6 +152,16 @@ pub struct TenantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
+    /// Protected, read-only catalog sources for dedicated Data groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_sources: Option<crate::data_member_catalog::DataCatalogSources>,
+    /// Protected callbacks for enrolled, dedicated data groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_sources: Option<crate::remote_backup::BackupSources>,
+    /// For a dedicated Control voter, the approved placement of remote data
+    /// groups. Its replication listener and peers remain the Control group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_data: Option<kasumi_engine::control::ControlTopology>,
     /// Explicit installed closed lifecycle protocol; absence disables this service.
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub lifecycle: Option<crate::lifecycle_runtime::LifecycleRuntimeConfig>,
@@ -195,6 +205,8 @@ fn validate_installed_incarnation(incarnation: Option<&str>, fixture: bool) -> R
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityAuditConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_keys: Vec<KeyProviderSettings>,
     pub keys: KeyProviderSettings,
     pub retention: kasumi_types::AuditRetentionBudget,
     #[serde(default)]
@@ -208,6 +220,17 @@ pub struct SecurityAuditConfig {
 impl SecurityAuditConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         self.retention.validate()?;
+        ensure!(
+            self.historical_keys.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+            "too many historical security audit keys"
+        );
+        let mut resources = BTreeSet::from([self.keys.validate()?]);
+        for key in &self.historical_keys {
+            ensure!(
+                resources.insert(key.validate()?),
+                "duplicate security audit wrapping resource"
+            );
+        }
         if let Some(archive) = &self.archive {
             archive.validate()?;
         }
@@ -233,6 +256,7 @@ impl SecurityAuditConfig {
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
+        self.install_archive_keys(&store, Arc::new(file_secret))?;
         let archive = self.destination(&store)?;
         SecurityAudit::initialize_with_archive(store, self.retention.clone(), archive, admission)
     }
@@ -242,6 +266,36 @@ impl SecurityAuditConfig {
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
+        self.open_with(store, admission, Arc::new(file_secret))
+    }
+
+    fn install_archive_keys(
+        &self,
+        store: &kasumi_store::TenantStore,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<()> {
+        let resolver = if self.historical_keys.is_empty() {
+            None
+        } else {
+            Some(
+                crate::local_recovery::keys::RecoveryKeys::open_with(
+                    &self.keys,
+                    &self.historical_keys,
+                    credential,
+                )?
+                .into_resolver(),
+            )
+        };
+        store.install_archive_read_keys(resolver)
+    }
+
+    fn open_with(
+        &self,
+        store: Arc<kasumi_store::TenantStore>,
+        admission: Arc<kasumi_engine::admission::NodeAdmission>,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<Arc<SecurityAudit>> {
+        self.install_archive_keys(&store, credential)?;
         let archive = self.destination(&store)?;
         SecurityAudit::open_with_archive(store, self.retention.clone(), archive, admission)
     }
@@ -269,6 +323,10 @@ pub struct ReplicationConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    /// Additional read-only wrapping resources for retained tenant objects.
+    /// Every configured roster binds to its encrypted application store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tenant_historical_keys: BTreeMap<String, Vec<KeyProviderSettings>>,
     /// Required explicit placement for exactly Control and configured tenants.
     #[serde(deserialize_with = "crate::audit_destination::deserialize_tenant_audit_placements")]
     pub tenant_audit_placements:
@@ -298,18 +356,58 @@ pub struct RuntimeConfig {
     pub mcp: McpEndpoint,
     pub native: MutualTlsEndpoint,
     pub admin: MutualTlsEndpoint,
-    pub control: ControlConfig,
+    /// The locally hosted Control group. A data-only node omits it and names
+    /// its dedicated Control quorum in `remote_control`; exactly one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ControlConfig>,
     pub security_audit: SecurityAuditConfig,
     pub tenants: Vec<TenantConfig>,
     #[serde(default)]
     pub replication: Option<ReplicationConfig>,
+    /// A data-only node's authenticated routes to its dedicated Control
+    /// quorum. The node hosts no Control replica, store or genesis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control: Option<crate::remote_control::RemoteControlConfig>,
+}
+
+/// Both callers run under the installed tenant's original recovery seat.
+/// Hosted Control also retains its own group's initial scratch failures. A
+/// data-only node recovers its actual local custody log under the tenant seat.
+pub(crate) fn recover_original_retirement(
+    hosted: Option<&Database>,
+    log: &kasumi_raft::ControlLog,
+    custody: &Arc<kasumi_store::CustodyStore>,
+) -> std::result::Result<bool, kasumi_store::ScratchOperationFailure> {
+    match hosted {
+        Some(database) => database.raft_group().recover_retired_custody(custody),
+        None => log.recover_retired(),
+    }
 }
 
 impl RuntimeConfig {
+    pub(crate) fn hosts_data_or_recovery_target(&self) -> bool {
+        !self.tenants.is_empty() || self.target_recovery.is_some()
+    }
+
     /// Explicit first HA node enrollment. All local catalogs and immutable
     /// genesis are installed under the original captured serving grants.
     pub async fn provision_node(&self) -> Result<()> {
         crate::data_node_enrollment::initialize(self.clone()).await
+    }
+
+    /// The locally hosted Control installation. A data-only node has none:
+    /// every caller that needs local Control state fails closed there.
+    pub fn hosted_control(&self) -> Result<&ControlConfig> {
+        self.control.as_ref().context(
+            "this data-only node reaches its dedicated Control remotely and hosts no Control group",
+        )
+    }
+
+    /// Mutable hosted Control installation for explicit configuration edits.
+    pub fn hosted_control_mut(&mut self) -> Result<&mut ControlConfig> {
+        self.control.as_mut().context(
+            "this data-only node reaches its dedicated Control remotely and hosts no Control group",
+        )
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -376,14 +474,58 @@ impl RuntimeConfig {
             Authenticator::mcp(self.auth.clone())?,
         )?;
         ensure!(
-            (!self.tenants.is_empty() || self.target_recovery.is_some())
-                && self.tenants.len() <= 10_000,
-            "configure 1–10000 tenants"
+            self.control.is_some() != self.remote_control.is_some(),
+            "configure exactly one of a hosted `control` group or `remote_control` access"
         );
+        let dedicated_control = self
+            .control
+            .as_ref()
+            .is_some_and(|control| control.remote_data.is_some());
+        ensure!(
+            (self.hosts_data_or_recovery_target() || dedicated_control)
+                && self.tenants.len() <= 10_000,
+            "configure at most 10000 tenants and an explicit role for a node with no tenants"
+        );
+        if let Some(config) = &self.control
+            && let Some(backup) = &config.backup_sources
+        {
+            ensure!(
+                config.lifecycle.is_some(),
+                "dedicated backup callbacks require the installed Control lifecycle"
+            );
+            backup.validate(
+                config
+                    .remote_data
+                    .as_ref()
+                    .context("backup callbacks require dedicated Control placement")?,
+            )?;
+        }
+        if let Some(control) = &self.control
+            && let Some(sources) = &control.catalog_sources
+        {
+            sources.validate(
+                control
+                    .remote_data
+                    .as_ref()
+                    .context("catalog reader requires dedicated Control placement")?,
+                control.backup_sources.as_ref(),
+            )?;
+        }
+        if let Some(remote) = self.control.as_ref().and_then(|c| c.remote_data.as_ref()) {
+            crate::control_genesis::dedicated_topology(self, remote)?;
+        }
+        if let Some(remote) = &self.remote_control {
+            crate::remote_control::validate_data_only(self, remote)?;
+        }
         self.security_audit.validate()?;
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.keys)
-            .chain([&self.control.keys, &self.control.custody_keys])
+            .chain(&self.security_audit.historical_keys)
+            .chain(
+                self.control
+                    .iter()
+                    .flat_map(|control| [&control.keys, &control.custody_keys]),
+            )
             .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
             .chain(
                 self.tenants
@@ -396,24 +538,40 @@ impl RuntimeConfig {
                 "application, custody, control, security, and signer trust domains require distinct wrapping keys"
             );
         }
-        validate_initial_policy(&self.control.initial_policy)?;
-        configured_control_context(&self.control)?;
-        #[cfg(any(test, feature = "test-utils"))]
-        let fixture_control = self.mode == DeploymentMode::Standalone
-            && !self.tenants.is_empty()
-            && self.tenants.iter().all(|tenant| {
-                matches!(
-                    tenant.serving,
-                    crate::serving_runtime::TenantServingConfig::LocalFixture
-                )
-            });
-        #[cfg(not(any(test, feature = "test-utils")))]
-        let fixture_control = false;
-        validate_installed_incarnation(self.control.incarnation.as_deref(), fixture_control)?;
-        if let Some(lifecycle) = &self.control.lifecycle {
-            lifecycle.validate(self.mode, self.control.incarnation.as_deref())?;
-            if let Some(recovery) = &lifecycle.recovery {
-                recovery.validate(self)?;
+        for (tenant, roster) in &self.tenant_historical_keys {
+            ensure!(
+                self.tenant_audit_placements.contains_key(tenant)
+                    && !roster.is_empty()
+                    && roster.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+                "historical read keys require a configured tenant and a bounded nonempty roster"
+            );
+            for key in roster {
+                ensure!(
+                    key_refs.insert(key.validate()?),
+                    "historical key duplicates a configured wrapping resource"
+                );
+            }
+        }
+        if let Some(control) = &self.control {
+            validate_initial_policy(&control.initial_policy)?;
+            configured_control_context(control)?;
+            #[cfg(any(test, feature = "test-utils"))]
+            let fixture_control = self.mode == DeploymentMode::Standalone
+                && !self.tenants.is_empty()
+                && self.tenants.iter().all(|tenant| {
+                    matches!(
+                        tenant.serving,
+                        crate::serving_runtime::TenantServingConfig::LocalFixture
+                    )
+                });
+            #[cfg(not(any(test, feature = "test-utils")))]
+            let fixture_control = false;
+            validate_installed_incarnation(control.incarnation.as_deref(), fixture_control)?;
+            if let Some(lifecycle) = &control.lifecycle {
+                lifecycle.validate(self.mode, control.incarnation.as_deref())?;
+                if let Some(recovery) = &lifecycle.recovery {
+                    recovery.validate(self)?;
+                }
             }
         }
         let mut tenants = BTreeSet::new();
@@ -476,19 +634,22 @@ impl RuntimeConfig {
             )?;
         }
         self.validate_tenant_audit_placements()?;
-        kasumi_engine::validate_genesis_inputs(
-            CONTROL_TENANT,
-            &uuid::Uuid::nil().to_string(),
-            &self.control.initial_policy,
-            &self.control.initial_limits,
-        )?;
+        if let Some(control) = &self.control {
+            kasumi_engine::validate_genesis_inputs(
+                CONTROL_TENANT,
+                &uuid::Uuid::nil().to_string(),
+                &control.initial_policy,
+                &control.initial_limits,
+            )?;
+        }
         match self.mode {
             DeploymentMode::Standalone => {
                 ensure!(
                     self.replication.is_none(),
                     "local mode cannot contain replicated bootstrap configuration"
                 );
-                for incarnation in std::iter::once(&self.control.incarnation)
+                let control = self.hosted_control()?;
+                for incarnation in std::iter::once(&control.incarnation)
                     .chain(self.tenants.iter().map(|t| &t.incarnation))
                     .flatten()
                 {
@@ -508,13 +669,15 @@ impl RuntimeConfig {
                     addresses.insert(replication.listener.listen),
                     "cluster listener must be separate from data/admin listeners"
                 );
-                self.bootstrap(
-                    &self.control.initial_policy,
-                    &self.control.initial_limits,
-                    self.control.incarnation.as_deref(),
-                )?
-                .context("replicated bootstrap missing")?
-                .validate()?;
+                if let Some(control) = &self.control {
+                    self.bootstrap(
+                        &control.initial_policy,
+                        &control.initial_limits,
+                        control.incarnation.as_deref(),
+                    )?
+                    .context("replicated bootstrap missing")?
+                    .validate()?;
+                }
                 for tenant in &self.tenants {
                     self.bootstrap(
                         &tenant.initial_policy,
@@ -540,7 +703,12 @@ impl RuntimeConfig {
     pub(crate) fn validate_selected_key_domains(&self, tenants: &[&TenantConfig]) -> Result<()> {
         let mut identities = BTreeSet::new();
         for settings in std::iter::once(&self.security_audit.keys)
-            .chain([&self.control.keys, &self.control.custody_keys])
+            .chain(&self.security_audit.historical_keys)
+            .chain(
+                self.control
+                    .iter()
+                    .flat_map(|control| [&control.keys, &control.custody_keys]),
+            )
             .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
             .chain(
                 tenants
@@ -552,6 +720,21 @@ impl RuntimeConfig {
                 identities.insert(serde_json::to_string(&settings.identity_descriptor()?)?),
                 "installed key domains share a wrapping identity"
             );
+        }
+        for tenant in self
+            .control
+            .iter()
+            .map(|_| CONTROL_TENANT)
+            .chain(tenants.iter().map(|t| t.tenant.as_str()))
+        {
+            if let Some(history) = self.tenant_historical_keys.get(tenant) {
+                for key in history {
+                    ensure!(
+                        identities.insert(serde_json::to_string(&key.identity_descriptor()?)?),
+                        "installed historical key overlaps another wrapping resource"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -1101,15 +1284,10 @@ impl crate::serving_owner::Owner for NodeServing {
             // A queued reconciliation must not start rebuilding a tenant while
             // shutdown joins maintenance. Already admitted recovery still owns
             // its management guard and is joined to its terminal outcome.
-            if let Some(manager) = &self.runtime.administration {
-                manager.close_management_admission();
-            }
+            self.runtime.seal_database_admission();
             self.runtime
                 .telemetry
                 .set_lifecycle(crate::observability::Lifecycle::Draining);
-            for lease in &self.runtime.serving_leases {
-                lease.close();
-            }
             #[cfg(test)]
             crate::startup_preparation::failure_checkpoint(self.runtime.config.database_id).await;
             let mut retained = None;
@@ -1148,7 +1326,10 @@ pub struct NodeRuntime {
     tenants: Vec<OpenedTenant>,
     custody_sources: Vec<OpenedCustody>,
     unavailable_sources: BTreeMap<String, String>,
-    control: OpenedTenant,
+    // The hosted Control group; a data-only node has none and reaches its
+    // dedicated Control through `remote_control` instead.
+    control: Option<OpenedTenant>,
+    remote_control: Option<Arc<crate::remote_control::RemoteControl>>,
     audit: Arc<SecurityAudit>,
     data_listeners: Vec<BoundListener>,
     cluster_listener: Option<BoundListener>,
@@ -1332,8 +1513,8 @@ impl NodeRuntime {
             .collect::<Result<BTreeMap<_, _>>>()?;
         let lifecycle_signer = config
             .control
-            .lifecycle
             .as_ref()
+            .and_then(|control| control.lifecycle.as_ref())
             .map(|settings| settings.signer())
             .transpose()?;
         #[cfg(test)]
@@ -1351,6 +1532,8 @@ impl NodeRuntime {
         }?;
         #[cfg(not(test))]
         let mcp_auth = Authenticator::mcp(config.auth.clone())?;
+        let auth = auth.on_node(&admission)?;
+        let mcp_auth = mcp_auth.on_node(&admission)?;
         let registry = DatabaseRegistry::default();
         registry.set_approved_nodes(
             config
@@ -1374,8 +1557,22 @@ impl NodeRuntime {
         );
         let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
         let admin_tls = kasumi_transport::ReloadableServerConfig::new(config.admin.load()?);
-        let control_provider = config.control.keys.provider(credential.clone())?;
-        let control_custody_provider = config.control.custody_keys.provider(credential.clone())?;
+        let control_providers = config
+            .control
+            .as_ref()
+            .map(|control| {
+                Ok::<_, anyhow::Error>((
+                    control.keys.provider(credential.clone())?,
+                    control.custody_keys.provider(credential.clone())?,
+                ))
+            })
+            .transpose()?;
+        // Installed routes only; the first observation waits for serving.
+        let remote_control = config
+            .remote_control
+            .as_ref()
+            .map(|remote| crate::remote_control::RemoteControl::open(remote, admission.clone()))
+            .transpose()?;
         let security_provider = config.security_audit.keys.provider(credential.clone())?;
         let mcp_socket = TcpListener::bind(config.mcp.listen).await?;
         let native_socket = TcpListener::bind(config.native.listen).await?;
@@ -1447,6 +1644,7 @@ impl NodeRuntime {
                 config.database_id,
                 crate::node_enrollment::Kind::Data,
             )?;
+            crate::node_enrollment::require_control_placement(&security_store, &config)?;
         }
         let enrollment_required = crate::node_enrollment::required(&config);
         let selected_tenants = config.tenants.iter().map(|tenant| {
@@ -1460,7 +1658,7 @@ impl NodeRuntime {
         config.validate_selected_key_domains(&selected_tenants)?;
         let audit = config
             .security_audit
-            .open(security_store, admission.clone())?;
+            .open_with(security_store, admission.clone(), credential.clone())?;
         pending.audits.push(audit.clone());
         auth.install_audit(audit.clone())?;
         mcp_auth.install_audit(audit.clone())?;
@@ -1492,48 +1690,66 @@ impl NodeRuntime {
             auth.install_local_credentials(credentials.clone())?;
             mcp_auth.install_local_credentials(credentials)?;
         }
+        let signer_catalog = signer_verifier.as_ref().map(|verifier| verifier.key_inventory(&authority_trusts)).transpose()?;
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
+            if let Some(catalog) = &signer_catalog {
+                cluster.install_signer_catalog(catalog.clone())?;
+            }
         }
-        crate::startup_progress::phase("opening the control group", "");
-        let control = async {
-            let control_stores = TenantStorageSet::open_existing(
-                node.clone(),
-                CONTROL_TENANT.into(),
-                control_provider.clone(),
-                control_custody_provider.clone(),
-                kasumi_store::StorageAccess::node_control(),
-            )
-            .await?;
-            pending.stores.push(control_stores.application().clone());
-            pending.stores.push(control_stores.custody().store().clone());
-            let expected_fingerprint = if config.mode == DeploymentMode::Replicated {
-                let enrolled = crate::node_enrollment::tenant_record(audit.store(), CONTROL_TENANT)?
-                    .context("Control enrollment receipt is missing")?;
-                Some(enrolled.bootstrap_sha256.context("Control enrollment fingerprint is missing")?)
-            } else {
-                None
-            };
-            let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed original inventory").claim(0).await;
-            Self::open_database(
-                &config,
-                control_stores,
-                config.control.initial_policy.clone(),
-                config.control.initial_limits.clone(),
-                config.control.incarnation.as_deref(),
-                expected_fingerprint.as_deref(),
-                cluster.as_ref(),
-                audit.clone(),
-                &mut pending.databases,
-                &mut constructor_seat,
-            )
-            .await
-        }
-        .await;
-        let control = match control {
-            Ok(control) => control,
-            Err(error) => return Err(error),
+        let control = match control_providers {
+            None => None,
+            Some((control_provider, control_custody_provider)) => {
+                crate::startup_progress::phase("opening the control group", "");
+                let hosted = config.hosted_control()?;
+                let control_stores = TenantStorageSet::open_existing(
+                    node.clone(),
+                    CONTROL_TENANT.into(),
+                    control_provider,
+                    control_custody_provider,
+                    kasumi_store::StorageAccess::node_control(),
+                )
+                .await?;
+                pending.stores.push(control_stores.application().clone());
+                pending.stores.push(control_stores.custody().store().clone());
+                let expected_fingerprint = if config.mode == DeploymentMode::Replicated {
+                    let enrolled = crate::node_enrollment::tenant_record(audit.store(), CONTROL_TENANT)?
+                        .context("Control enrollment receipt is missing")?;
+                    Some(enrolled.bootstrap_sha256.context("Control enrollment fingerprint is missing")?)
+                } else {
+                    None
+                };
+                let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed original inventory").claim(0).await;
+                Some(
+                    Self::open_database(
+                        &config,
+                        credential.clone(),
+                        control_stores,
+                        hosted.initial_policy.clone(),
+                        hosted.initial_limits.clone(),
+                        hosted.incarnation.as_deref(),
+                        expected_fingerprint.as_deref(),
+                        cluster.as_ref(),
+                        audit.clone(),
+                        &mut pending.databases,
+                        &mut constructor_seat,
+                    )
+                    .await?,
+                )
+            }
         };
+        if let (Some(control), Some(catalog)) = (&control, &signer_catalog) {
+            control.database.install_member_signer_key_inventory(catalog)?;
+        }
+        if let Some(owner) = &control
+            && config.control.as_ref().is_some_and(|hosted| hosted.remote_data.is_some()
+                && hosted.catalog_sources.as_ref().is_some_and(|sources| sources.target_journals))
+            && config.target_recovery.is_none()
+        {
+            owner.database.install_target_journal_exclusion(
+                crate::node_enrollment::target_journal_exclusion(config.database_id, &admission),
+            )?;
+        }
         let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
@@ -1550,6 +1766,7 @@ impl NodeRuntime {
             custody_sources: Vec::new(),
             unavailable_sources: BTreeMap::new(),
             control,
+            remote_control: remote_control.clone(),
             audit,
             data_listeners: Vec::new(),
             cluster_listener,
@@ -1572,17 +1789,22 @@ impl NodeRuntime {
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "data-runtime");
         let result = async {
-            let mut managed = vec![crate::administration::ManagedTenant {
-                database: runtime.control.database.clone(),
-                store: runtime.control.store.clone(),
-                bootstrap: runtime.control.bootstrap.clone(),
+            let mut active_recoveries = BTreeMap::new();
+            let mut managed = runtime.control.iter().map(|control| crate::administration::ManagedTenant {
+                database: control.database.clone(),
+                store: control.store.clone(),
+                bootstrap: control.bootstrap.clone(),
                 lease: None,
-            }];
+            }).collect::<Vec<_>>();
             for (tenant_index, configured_tenant) in config.tenants.iter().enumerate() {
                 if !selected_tenants.iter().any(|tenant| tenant.tenant == configured_tenant.tenant) {
-                    let selection = kasumi_engine::control::ControlPlane::select_local(&runtime.control.database)?;
-                    if let Some(current) = selection.decode_topology()? {
-                        ensure!(!current.topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
+                    // A remote route is checked when its topology is verified;
+                    // reconciliation never installs a tenant without an owner.
+                    if let Some(control) = &runtime.control {
+                        let selection = kasumi_engine::control::ControlPlane::select_local(&control.database)?;
+                        if let Some(current) = selection.decode_topology()? {
+                            ensure!(!current.topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
+                        }
                     }
                     // Configuration may stage a tenant, but cannot make an
                     // absent installation eligible for provider or grant work.
@@ -1629,12 +1851,12 @@ impl NodeRuntime {
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
                         let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
                         if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
+                        let recovery_owner = runtime.control.as_ref().map(|control| control.database.clone());
                         let mut recovery_seat = runtime.original_recoveries.as_ref().expect("installed original recovery inventory").claim(tenant_index + 1).await;
-                        let recovery_owner = runtime.control.database.clone();
                         let recovery_custody = custody_store.clone();
                         let recovered = recovery_seat.run_snapshot(async move {
                             tokio::task::spawn_blocking(move || {
-                                recovery_owner.raft_group().recover_retired_custody(&recovery_custody)
+                                recover_original_retirement(recovery_owner.as_deref(), &control, &recovery_custody)
                             }).await?.map_err(kasumi_engine::SnapshotFailure::from)
                         }).await;
                         if !matches!(recovered, Ok(false)) {
@@ -1692,6 +1914,7 @@ impl NodeRuntime {
                 let mut constructor_seat = runtime.original_recoveries.as_ref().expect("same installed original inventory").claim(tenant_index + 1).await;
                 let opened = Self::open_database(
                     &config,
+                    credential.clone(),
                     stores,
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
@@ -1708,6 +1931,8 @@ impl NodeRuntime {
                     if generation.restored_from().as_ref() != Some(&active.checkpoint) || generation.pending_restore().is_some() {
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
+                    ensure!(active_recoveries.insert(active.operation_id, Arc::downgrade(opened.database.stores())).is_none(),
+                        "standalone recovery operation owns more than one active generation");
                 }
                 managed.push(crate::administration::ManagedTenant {
                     database: opened.database.clone(),
@@ -1729,15 +1954,37 @@ impl NodeRuntime {
                 crate::startup_progress::phase("opened tenant", &detail);
                 runtime.tenants.push(opened);
             }
+            if let (Some(owner), Some(control)) = (&pending.standalone_owner, &runtime.control) {
+                let applications = runtime.tenants.iter().map(|tenant| (tenant.store.tenant().to_owned(), Arc::downgrade(&tenant.database))).collect();
+                crate::local_recovery::inventory::install(&config, owner, &runtime.audit, &control.database, applications, active_recoveries)?;
+            }
             if config.target_recovery.is_some() {
                 runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone(),runtime.original_recoveries.as_ref().expect("same installed original inventory")).await?);
+            }
+            if let (Some(remote), Some(target), Some(cluster)) =
+                (&config.remote_control, &runtime.target_recovery, &runtime.cluster)
+                && let Some(grant) = &remote.catalog_reader
+                && grant.target_journals
+            {
+                cluster.install_data_journals(crate::data_member_catalog::DataTargetJournals {
+                    root: remote.root.clone(),
+                    grant: grant.clone(),
+                    runtime: Arc::downgrade(target),
+                })?;
+            }
+            if let (Some(control), Some(target)) = (&runtime.control, &runtime.target_recovery) {
+                target.install_key_inventory(&control.database)?;
             }
             let administration = crate::administration::Administration::new(
                 config.clone(),
                 runtime.authority_trusts.clone(),
                 node.clone(),
                 registry.clone(),
-                runtime.control.database.clone(),
+                match (&runtime.control, &runtime.remote_control) {
+                    (Some(control), _) => crate::administration::ControlAccess::Local(control.database.clone()),
+                    (None, Some(remote)) => crate::administration::ControlAccess::Remote(remote.clone()),
+                    (None, None) => anyhow::bail!("node has no Control placement"),
+                },
                 runtime.audit.clone(),
                 runtime.cluster.clone(),
                 managed,
@@ -1769,22 +2016,30 @@ impl NodeRuntime {
             .into_axum_router()
             .layer(request_admission.clone());
             let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone(), runtime.original_recoveries.take().expect("same prepaid RPC inventory")).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
-            if let Some(verifier) = &runtime.signer_verifier {
-                native_admin = native_admin.with_control_signer(crate::control_signer_runtime::ControlSignerRuntime::new(
+            // Control signer maintenance publishes into a hosted Control group.
+            if let (Some(verifier), Some(control)) = (&runtime.signer_verifier, &runtime.control) {
+                let signer = crate::control_signer_runtime::ControlSignerRuntime::new(
                     config.replication.as_ref().context("remote signer requires installed replication")?.node_id,
-                    runtime.control.database.clone(), verifier.clone(), config.serving_authorities.clone(),
+                    control.database.clone(), verifier.clone(), config.serving_authorities.clone(),
                     runtime.authority_trusts.clone(), config.admin.tls.clone(), credential.clone(),
-                )?);
+                )?;
+                let reader: Arc<dyn kasumi_engine::AuthoritySignerKeyInventory> = signer.clone();
+                control.database.install_authority_signer_key_inventory(Arc::downgrade(&reader))?;
+                native_admin = native_admin.with_control_signer(signer);
             }
             #[cfg(test)]
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }
             let mut admin = tonic::service::Routes::new(native_admin.service());
             if let Some(signer) = lifecycle_signer {
-                if config.control.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
-                    let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, runtime.control.database.clone(), signer.clone(), runtime.authority_trusts.clone())?;
+                // Only a hosted Control installs a lifecycle signer.
+                let control = runtime.control.as_ref().context("lifecycle signer requires a hosted Control group")?.database.clone();
+                if config.hosted_control()?.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
+                    let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, control.clone(), signer.clone(), runtime.authority_trusts.clone())?;
+                    let writer_network:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
+                    control.install_target_writer_network(Arc::downgrade(&writer_network))?;
                     admin = admin.add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth.clone()).service());
                 }
-                admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
+                admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(control, signer, auth.clone())?.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
             let admin = admin.into_axum_router().layer(request_admission).merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
@@ -1794,7 +2049,10 @@ impl NodeRuntime {
                     (crate::tls_reload::ListenerSource::Mutual(config.native.clone()), native_tls.clone()),
                     (crate::tls_reload::ListenerSource::Mutual(config.admin.clone()), admin_tls.clone()),
                 ],
-                if config.replication.is_none() { Some((runtime.control.database.clone(), configured_control_context(&config.control)?)) } else { None },
+                match (&config.replication, &runtime.control) {
+                    (None, Some(control)) => Some((control.database.clone(), configured_control_context(config.hosted_control()?)?)),
+                    _ => None,
+                },
                 runtime.audit.clone(),
             ));
             runtime.data_listeners = vec![
@@ -1871,6 +2129,7 @@ impl NodeRuntime {
     #[allow(clippy::too_many_arguments)]
     async fn open_database(
         config: &RuntimeConfig,
+        credential: crate::serving_runtime::CredentialSource,
         stores: Arc<TenantStorageSet>,
         policy: Policy,
         limits: Limits,
@@ -1893,7 +2152,7 @@ impl NodeRuntime {
                     };
                 }
                 let store = stores.application().clone();
-                config.install_tenant_audit_archive(&store, None)?;
+                config.install_tenant_archives_with(&store, None, credential)?;
                 #[cfg(test)]
                 lifecycle_tests::refuse_database_open_for_test(
                     config.database_id,
@@ -1933,9 +2192,9 @@ impl NodeRuntime {
                     crate::startup_preparation::checkpoint(config.database_id, "data-database");
                     let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
                     let bootstrap_store = store.clone();
-                    network.register_group_with_bootstrap(
+                    network.register_database_group(
                         group,
-                        opened.database.raft_group().raft().clone(),
+                        &opened.database,
                         replication.peers.iter().map(|peer| peer.node_id).collect(),
                         fingerprint,
                         Arc::new(move || bootstrap_store.check_access()),
@@ -2001,8 +2260,9 @@ impl NodeRuntime {
     pub fn registry(&self) -> &DatabaseRegistry {
         &self.registry
     }
-    pub fn control_database(&self) -> &Arc<Database> {
-        &self.control.database
+    /// The hosted Control group's database; a data-only node has none.
+    pub fn control_database(&self) -> Option<&Arc<Database>> {
+        self.control.as_ref().map(|control| &control.database)
     }
     pub fn security_audit(&self) -> &Arc<SecurityAudit> {
         &self.audit
@@ -2100,29 +2360,49 @@ impl NodeRuntime {
             ));
         }
         let startup = async {
-            crate::startup_progress::phase("starting the control group", "");
-            if tasks
-                .wait_for_startup(self.initialize_original(&self.control), shutdown.changed())
-                .await?
-                .is_none()
-            {
-                return Ok(false);
-            }
-            if !tasks
-                .wait_for_startup(self.publish_control(), shutdown.changed())
-                .await?
-                .unwrap_or(false)
-            {
-                return Ok(false);
-            }
+            let routed: BTreeSet<String> = match (&self.control, &self.remote_control) {
+                (Some(control), _) => {
+                    crate::startup_progress::phase("starting the control group", "");
+                    if tasks
+                        .wait_for_startup(self.initialize_original(control), shutdown.changed())
+                        .await?
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
+                    if !tasks
+                        .wait_for_startup(self.publish_control(), shutdown.changed())
+                        .await?
+                        .unwrap_or(false)
+                    {
+                        return Ok(false);
+                    }
+                    kasumi_engine::control::ControlPlane::local_topology(&control.database)?
+                        .topology
+                        .tenants
+                        .keys()
+                        .cloned()
+                        .collect()
+                }
+                (None, Some(remote)) => {
+                    // A data-only node starts its groups and installs routes
+                    // only from a topology its dedicated Control signed.
+                    crate::startup_progress::phase("waiting for the remote Control topology", "");
+                    let Some(topology) = tasks
+                        .wait_for_startup(remote.wait_verified(), shutdown.changed())
+                        .await?
+                    else {
+                        return Ok(false);
+                    };
+                    topology.topology.tenants.keys().cloned().collect()
+                }
+                (None, None) => anyhow::bail!("node has no Control placement"),
+            };
             if let Some(manager) = &self.administration {
-                let topology =
-                    kasumi_engine::control::ControlPlane::local_topology(&self.control.database)?;
-                let topology = &topology.topology;
                 for tenant in &self.tenants {
                     // Configuration may contain staged tenants. Only a durable
                     // route authorizes starting its original group automatically.
-                    if topology.tenants.contains_key(tenant.store.tenant())
+                    if routed.contains(tenant.store.tenant())
                         && {
                             crate::startup_progress::phase(
                                 "starting tenant",
@@ -2162,6 +2442,11 @@ impl NodeRuntime {
                 tasks.data_stop.subscribe(),
             ));
         }
+        if let Some(remote) = self.remote_control.clone() {
+            tasks
+                .maintenance
+                .spawn(remote.refresh_while_serving(tasks.data_stop.subscribe()));
+        }
         if let Some(manager) = self.administration.clone() {
             tasks
                 .maintenance
@@ -2187,6 +2472,9 @@ impl NodeRuntime {
         use kasumi_engine::control::{
             ControlNode, ControlTopology, DeploymentMode as Mode, TenantRoute,
         };
+        if let Some(remote) = &self.config.hosted_control()?.remote_data {
+            return crate::control_genesis::dedicated_topology(&self.config, remote);
+        }
         let (nodes, voters, mode) = if let Some(replication) = &self.config.replication {
             (
                 replication.control_nodes()?,
@@ -2257,16 +2545,21 @@ impl NodeRuntime {
 
     async fn publish_control(&self) -> Result<bool> {
         use kasumi_engine::control::ControlPlane;
-        let plane = ControlPlane::new(self.control.database.clone())?;
-        let context = configured_control_context(&self.config.control)?;
+        let control = self
+            .control
+            .as_ref()
+            .context("Control publication requires a hosted Control group")?;
+        let hosted = self.config.hosted_control()?;
+        let plane = ControlPlane::new(control.database.clone())?;
+        let context = configured_control_context(hosted)?;
         let expected = self.expected_topology()?;
         loop {
-            self.control.store.check_access()?;
-            self.control
+            control.store.check_access()?;
+            control
                 .database
                 .engine()
                 .authorize(&context, None, Action::Admin)?;
-            let metrics = self.control.database.raft_group().metrics();
+            let metrics = control.database.raft_group().metrics();
             if metrics.current_leader == Some(metrics.id) {
                 let result = async {
                     plane.require_initialized(&context).await?;
@@ -2276,12 +2569,12 @@ impl NodeRuntime {
                         .context("installed Control topology is missing")?;
                     validate_configured_topology(&current.topology, &expected)?;
                     crate::lifecycle_runtime::require_applied(
-                        self.control
+                        control
                             .database
                             .engine()
                             .generation()?
                             .lifecycle_installation(),
-                        self.config.control.lifecycle.as_ref(),
+                        hosted.lifecycle.as_ref(),
                     )?;
                     Ok::<_, anyhow::Error>(())
                 }
@@ -2306,12 +2599,12 @@ impl NodeRuntime {
                 // Genesis alone does not establish readiness. A follower must
                 // observe an actual leader and applied Raft state, then validate
                 // its own current Control state. This is not a quorum read.
-                let selection = ControlPlane::select_local(&self.control.database)?;
+                let selection = ControlPlane::select_local(&control.database)?;
                 let current = selection.require_installed_topology()?;
                 validate_configured_topology(&current.topology, &expected)?;
                 crate::lifecycle_runtime::require_applied(
                     selection.lifecycle_installation(),
-                    self.config.control.lifecycle.as_ref(),
+                    hosted.lifecycle.as_ref(),
                 )?;
                 selection.check_access()?;
                 return Ok(true);
@@ -2320,11 +2613,29 @@ impl NodeRuntime {
         }
     }
 
+    // Seal client work at the front door. The serving grant also guards the
+    // Store's post-commit access check, so its renewal must remain live while
+    // the local Raft state machine finishes entries already sent to apply.
+    fn seal_database_admission(&self) {
+        for tenant in self.control.iter().chain(self.tenants.iter()) {
+            tenant.database.seal_admission();
+        }
+        // Refuse new Control observations and cancel the one in flight; the
+        // serving inventory then joins its refresh loop.
+        if let Some(remote) = &self.remote_control {
+            remote.close();
+        }
+        if let Some(manager) = &self.administration {
+            manager.close_management_admission();
+        }
+    }
+
     pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
         if self.closed {
             return self.startup_drain.complete();
         }
+        self.seal_database_admission();
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Draining);
         let mut retained = None;
@@ -2337,9 +2648,6 @@ impl NodeRuntime {
                 anyhow::anyhow!("original recovery custody remains retained"),
             );
             retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
-        }
-        for lease in &self.serving_leases {
-            lease.close();
         }
         observe(
             &mut self.startup_drain,
@@ -2378,17 +2686,6 @@ impl NodeRuntime {
             }
             outcome => outcome,
         };
-        for lease in &self.serving_leases {
-            let reported = self
-                .administration
-                .as_ref()
-                .is_some_and(|manager| manager.superseded_lease(lease));
-            observe(
-                &mut self.startup_drain,
-                &mut retained,
-                superseded(lease.shutdown().await, reported),
-            );
-        }
         if let Some(manager) = &self.administration {
             observe(
                 &mut self.startup_drain,
@@ -2396,10 +2693,12 @@ impl NodeRuntime {
                 manager.shutdown().await,
             );
         }
-        for (index, tenant) in std::iter::once(&self.control)
-            .chain(self.tenants.iter())
-            .enumerate()
-        {
+        // Join every registered Control observation and drop the installed
+        // routes before any group or store this node owns starts closing.
+        if let Some(remote) = &self.remote_control {
+            remote.drain().await;
+        }
+        for (index, tenant) in self.control.iter().chain(self.tenants.iter()).enumerate() {
             if let Err(error) = self.registry.remove(tenant.store.tenant()) {
                 retained = Some(kasumi_types::drain::DrainFailure::retained(
                     self.startup_drain
@@ -2427,6 +2726,21 @@ impl NodeRuntime {
                 &mut retained,
                 superseded(tenant.database.shutdown().await, reported),
             );
+        }
+        // Startup can also retain a lease before its database was published.
+        // A retained database drain must keep authorization for its retry.
+        if retained.is_none() {
+            for lease in &self.serving_leases {
+                let reported = self
+                    .administration
+                    .as_ref()
+                    .is_some_and(|manager| manager.superseded_lease(lease));
+                observe(
+                    &mut self.startup_drain,
+                    &mut retained,
+                    superseded(lease.shutdown().await, reported),
+                );
+            }
         }
         for (index, source) in self.custody_sources.iter().enumerate() {
             if let Some(cluster) = &self.cluster
@@ -2503,6 +2817,11 @@ impl NodeRuntime {
                 &mut retained,
                 node.drain_filesystem_children().await,
             );
+        }
+        if retained.is_some() {
+            // An unfinished tenant may still use its startup stores, the audit
+            // sink and the issuer verifier. Their owners survive cancellation.
+            return self.startup_drain.outcome(retained);
         }
         for store in &self.startup_stores {
             observe(
@@ -2656,7 +2975,7 @@ impl Drop for NodeRuntime {
         if !self.closed {
             // Application and audit admission close immediately. A retained
             // target may still have a Raft writer in its own generation store.
-            for tenant in std::iter::once(&self.control).chain(self.tenants.iter()) {
+            for tenant in self.control.iter().chain(self.tenants.iter()) {
                 tenant.database.seal_admission();
                 tenant.database.engine().seal();
                 tenant.store.seal();
@@ -2830,6 +3149,7 @@ pub fn example_config(
     Ok(RuntimeConfig {
         persistent_disk,
         scratch_disk,
+        tenant_historical_keys: BTreeMap::new(),
         tenant_audit_placements: BTreeMap::from([
             (
                 CONTROL_TENANT.into(),
@@ -2882,6 +3202,7 @@ pub fn example_config(
                     private_key: "/etc/kasumi/node-authority-key.pem".into(),
                 },
                 server_ca: "/etc/kasumi/authority-ca.pem".into(),
+                catalog_bearer_files: BTreeMap::new(),
                 bearer_files: BTreeMap::from([(
                     0,
                     "/etc/kasumi/credentials/authority-0-token".into(),
@@ -2914,7 +3235,10 @@ pub fn example_config(
         },
         native: mutual(9444),
         admin: mutual(9445),
-        control: ControlConfig {
+        control: Some(ControlConfig {
+            backup_sources: None,
+            catalog_sources: None,
+            remote_data: None,
             lifecycle: None,
             startup_principal: None,
             keys: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),
@@ -2925,8 +3249,9 @@ pub fn example_config(
             initial_policy: policy("operator"),
             initial_limits: Limits::default(),
             incarnation: Some(uuid::Uuid::from_u128(2).to_string()),
-        },
+        }),
         security_audit: SecurityAuditConfig {
+            historical_keys: Vec::new(),
             keys: transit("kasumi-node-security", "KASUMI_SECURITY_TRANSIT_TOKEN"),
             retention: kasumi_types::AuditRetentionBudget::default(),
             archive: None,
@@ -2956,6 +3281,7 @@ pub fn example_config(
                 })
                 .collect(),
         }),
+        remote_control: None,
     })
 }
 
@@ -3050,6 +3376,13 @@ impl AdminClientConfig {
         self.protected_http(reqwest::Method::GET, route).await
     }
 
+    /// Read the protected projection of one committed Control recovery.
+    pub async fn observe_recovery(&self, operation: uuid::Uuid) -> Result<(u16, String)> {
+        ensure!(!operation.is_nil(), "nil recovery operation");
+        self.protected_http(reqwest::Method::GET, &format!("/recovery/{operation}"))
+            .await
+    }
+
     /// Ask the node to start a storage compaction cycle on every database it
     /// owns at the next maintenance step (`POST /maintenance/compaction`).
     pub async fn request_compaction(&self) -> Result<(u16, String)> {
@@ -3078,7 +3411,7 @@ impl AdminClientConfig {
             .http2_prior_knowledge()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
-        let response = client
+        let mut response = client
             .request(
                 method,
                 format!("{}{route}", self.endpoint.trim_end_matches('/')),
@@ -3088,9 +3421,24 @@ impl AdminClientConfig {
             .await
             .with_context(|| format!("{route} request failed"))?;
         let status = response.status().as_u16();
-        let body = response.bytes().await?;
-        ensure!(body.len() <= 1 << 20, "observation response exceeds 1 MiB");
-        Ok((status, String::from_utf8_lossy(&body).into_owned()))
+        const LIMIT: usize = 1 << 20;
+        ensure!(
+            response.content_length().is_none_or(|n| n <= LIMIT as u64),
+            "observation response exceeds 1 MiB"
+        );
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                chunk.len() <= LIMIT - body.len(),
+                "observation response exceeds 1 MiB"
+            );
+            body.try_reserve_exact(chunk.len())?;
+            body.extend_from_slice(&chunk);
+        }
+        Ok((
+            status,
+            String::from_utf8(body).context("invalid UTF-8 in observation response")?,
+        ))
     }
 }
 
@@ -3106,7 +3454,7 @@ fn fixture_config() -> RuntimeConfig {
     config.admission = kasumi_engine::admission::AdmissionConfig::default();
     config.mode = DeploymentMode::Standalone;
     config.replication = None;
-    config.control.incarnation = None;
+    config.hosted_control_mut().unwrap().incarnation = None;
     config.serving_authorities.clear();
     config.signer_verifier = None;
     for tenant in &mut config.tenants {
@@ -3211,11 +3559,11 @@ async fn provision_local_fixture_domains(
     let outcome = crate::startup_preparation::capture("local fixture enrollment", async {
         let entries = std::iter::once((
             CONTROL_TENANT,
-            &config.control.initial_policy,
-            &config.control.initial_limits,
-            &config.control.keys,
-            &config.control.custody_keys,
-            config.control.incarnation.as_deref(),
+            &config.hosted_control().unwrap().initial_policy,
+            &config.hosted_control().unwrap().initial_limits,
+            &config.hosted_control().unwrap().keys,
+            &config.hosted_control().unwrap().custody_keys,
+            config.hosted_control().unwrap().incarnation.as_deref(),
             kasumi_store::StorageAccess::node_control(),
         ))
         .chain(config.tenants.iter().map(|tenant| {
@@ -3284,7 +3632,7 @@ async fn provision_local_fixture_domains(
         }
         let plane =
             kasumi_engine::control::ControlPlane::new(control.context("fixture Control missing")?)?;
-        let context = configured_control_context(&config.control)?;
+        let context = configured_control_context(config.hosted_control().unwrap())?;
         plane.initialize(context.clone()).await?;
         plane
             .replace_topology(
@@ -3661,14 +4009,14 @@ mod tests {
         for mode in [DeploymentMode::Standalone, DeploymentMode::Replicated] {
             let original = installed_config_for_decode_test(mode);
             let mut missing_control = original.clone();
-            missing_control.control.incarnation = None;
+            missing_control.hosted_control_mut().unwrap().incarnation = None;
             assert!(missing_control.validate().is_err());
             let mut missing_tenant = original;
             missing_tenant.tenants[0].incarnation = None;
             assert!(missing_tenant.validate().is_err());
         }
         let fixture = fixture_config();
-        assert!(fixture.control.incarnation.is_none());
+        assert!(fixture.hosted_control().unwrap().incarnation.is_none());
         assert!(
             fixture
                 .tenants
@@ -3754,13 +4102,13 @@ mod tests {
     #[test]
     fn rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners() {
         let mut config = fixture_config();
-        config.control.keys = config.tenants[0].keys.clone();
+        config.hosted_control_mut().unwrap().keys = config.tenants[0].keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.tenants[0].custody_keys = config.tenants[0].keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.control.custody_keys = config.tenants[0].custody_keys.clone();
+        config.hosted_control_mut().unwrap().custody_keys = config.tenants[0].custody_keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.security_audit.keys = config.tenants[0].keys.clone();
@@ -3798,7 +4146,8 @@ mod tests {
         config.tenants[0].initial_policy = Policy::default();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.control.initial_policy.grants[0].actions = BTreeSet::from([Action::Admin]);
+        config.hosted_control_mut().unwrap().initial_policy.grants[0].actions =
+            BTreeSet::from([Action::Admin]);
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.admin.tls.private_key = "relative-key.pem".into();
@@ -3808,7 +4157,7 @@ mod tests {
     fn replicated() -> RuntimeConfig {
         let mut config = fixture_config();
         config.mode = DeploymentMode::Replicated;
-        config.control.incarnation = Some(uuid::Uuid::new_v4().to_string());
+        config.hosted_control_mut().unwrap().incarnation = Some(uuid::Uuid::new_v4().to_string());
         config.tenants[0].incarnation = Some(uuid::Uuid::new_v4().to_string());
         let mut listener = config.admin.clone();
         listener.listen = "127.0.0.1:9446".parse().unwrap();
@@ -4852,9 +5201,10 @@ mod lifecycle_tests {
         config.admin.listen = admin;
         config.mcp.protocol =
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
+        let hosted = config.control.as_mut().unwrap();
         for transit in [
-            &mut config.control.keys,
-            &mut config.control.custody_keys,
+            &mut hosted.keys,
+            &mut hosted.custody_keys,
             &mut config.security_audit.keys,
         ]
         .into_iter()
@@ -4918,7 +5268,7 @@ mod lifecycle_tests {
             })
             .await
             .unwrap();
-            let operator = configured_control_context(&config.control).unwrap();
+            let operator = configured_control_context(config.hosted_control().unwrap()).unwrap();
             let control = manager.authorized_database(&operator).await.unwrap();
             if round > 0 {
                 // This low-level LocalFixture has no production enrollment
@@ -5132,15 +5482,16 @@ mod lifecycle_tests {
                 });
                 control
                     .administer(
-                        configured_control_context(&config.control).unwrap(),
+                        configured_control_context(config.hosted_control().unwrap()).unwrap(),
                         Operation::SetPolicy(policy),
                     )
                     .await
                     .unwrap();
-                config.control.startup_principal = Some("rotated-startup-operator".into());
+                config.hosted_control_mut().unwrap().startup_principal =
+                    Some("rotated-startup-operator".into());
             } else {
                 assert_eq!(
-                    configured_control_context(&config.control)
+                    configured_control_context(config.hosted_control().unwrap())
                         .unwrap()
                         .principal,
                     "rotated-startup-operator"
@@ -5173,6 +5524,81 @@ mod lifecycle_tests {
         }
         mock_stop.send_replace(true);
         mock.await.unwrap().unwrap();
+    }
+
+    async fn verify_member_key_pages(
+        databases: &[Arc<Database>],
+        leader: usize,
+        context: &RequestContext,
+    ) {
+        use kasumi_types::{KeyReference, KeyRetentionScope, ReadKeyRetentionRequest};
+        let expected = databases
+            .iter()
+            .flat_map(|database| {
+                let group = database.raft_group();
+                let binding = group.storage_domains().custody().binding();
+                [
+                    (group.node_id(), binding.application_catalog()),
+                    (group.node_id(), binding.custody_catalog()),
+                ]
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected.len(), 6);
+        let started = std::time::Instant::now();
+        loop {
+            let mut observed = BTreeSet::new();
+            let mut cursor = None;
+            let mut last = None;
+            let mut complete = false;
+            for _ in 0..32 {
+                let request = ReadKeyRetentionRequest {
+                    scope: KeyRetentionScope::Tenant {
+                        tenant: context.tenant.clone(),
+                    },
+                    limit: 1,
+                    cursor: cursor.take(),
+                };
+                let page = match databases[leader].read_key_retention(context, request).await {
+                    Ok(page) => page,
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            kasumi_types::ErrorCode::CursorExpired
+                                | kasumi_types::ErrorCode::Unavailable
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("read member key catalogs: {error:?}"),
+                };
+                assert!(page.entries.len() <= 1);
+                for entry in &page.entries {
+                    assert!(last.as_ref().is_none_or(|previous| previous < entry));
+                    last = Some(entry.clone());
+                    if let KeyReference::Catalog {
+                        node_id,
+                        catalog_id,
+                        ..
+                    } = entry.reference
+                    {
+                        observed.insert((node_id, catalog_id));
+                    }
+                }
+                cursor = page.next_cursor.clone();
+                if cursor.is_none() {
+                    complete = true;
+                    break;
+                }
+            }
+            if complete && observed == expected {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(45),
+                "paged catalog did not include all installed members: observed={observed:?} expected={expected:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -5297,6 +5723,28 @@ mod lifecycle_tests {
         })
     }
 
+    /// Capture each physical member once on a readiness deadline. Route
+    /// selection and the Control replica can lag independently of activation.
+    fn restored_route_diagnostics(
+        registries: &[DatabaseRegistry],
+        managers: &[Arc<crate::administration::Administration>],
+        controls: &[Arc<kasumi_engine::Database>],
+        context: &RequestContext,
+    ) -> Vec<String> {
+        registries.iter().zip(managers).zip(controls).map(|((registry,manager),control)| {
+            let metrics=control.raft_group().metrics();
+            let installed=registry.database(context).and_then(|database| {
+                database.engine().generation().map(|generation| (generation.incarnation().to_owned(),generation.revision()))
+            }).map_err(|error|(error.code,error.message));
+            let status=manager.prepare(context.clone(),crate::administration::ManagementCommand::Status{})
+                .map(|_|()).map_err(|error|(error.code,error.message));
+            let route=kasumi_engine::control::ControlPlane::local_topology(control).map(|selected|{
+                (selected.version,selected.topology.tenants.get(&context.tenant).map(|r|r.incarnation.clone()))
+            }).map_err(|error|error.to_string());
+            format!("member={} registry={installed:?} administrative_status={status:?} committed_route={route:?} Control={:?}",metrics.id,(metrics.state,metrics.current_term,metrics.current_leader,metrics.last_log_index,metrics.last_applied.map(|log|log.index)))
+        }).collect()
+    }
+
     async fn replicated_runtime_fixture_inner(
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
@@ -5355,27 +5803,40 @@ mod lifecycle_tests {
             mock_socket.local_addr().unwrap().port()
         );
         let (mock_stop, mock_shutdown) = watch::channel(false);
-        let mock = tokio::spawn(tls::serve_tls(
-            mock_socket,
-            kasumi_transport::server_config(
-                &mock_files.load().unwrap(),
-                ClientAuthentication::OAuth,
+        let mock_socket = mock_socket.into_std().unwrap();
+        let mock_tls = kasumi_transport::server_config(
+            &mock_files.load().unwrap(),
+            ClientAuthentication::OAuth,
+        )
+        .unwrap();
+        let mock_router = Router::new()
+            .route("/v1/transit/{*operation}", post(transit))
+            .route(
+                "/recovery-jwks",
+                axum::routing::get(move || {
+                    let jwks = recovery_jwks.clone();
+                    async move { Json(jwks) }
+                }),
             )
-            .unwrap(),
-            Router::new()
-                .route("/v1/transit/{*operation}", post(transit))
-                .route(
-                    "/recovery-jwks",
-                    axum::routing::get(move || {
-                        let jwks = recovery_jwks.clone();
-                        async move { Json(jwks) }
-                    }),
-                )
-                .with_state(Arc::new(TransitFixture::default())),
-            ListenerLimits::default(),
-            Arc::new(FixtureAudit),
-            mock_shutdown,
-        ));
+            .with_state(Arc::new(TransitFixture::default()));
+        // The external provider needs its own IO driver while the fixture's Raft and
+        // durable storage work is running. Keep the normal TLS and request deadlines.
+        let mock = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async move {
+                    tls::serve_tls(
+                        TcpListener::from_std(mock_socket)?,
+                        mock_tls,
+                        mock_router,
+                        ListenerLimits::default(),
+                        Arc::new(FixtureAudit),
+                        mock_shutdown,
+                    )
+                    .await
+                })
+        });
 
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -5449,6 +5910,7 @@ mod lifecycle_tests {
                     &mock_files.certificate,
                     &cluster_storage,
                     fenced_source,
+                    protected_prepare_only,
                 )
                 .await,
             )
@@ -5493,12 +5955,13 @@ mod lifecycle_tests {
                 peers: peers.clone(),
             });
             config.tenants[0].incarnation = Some(incarnation.clone());
-            config.control.incarnation = Some(control_incarnation.clone());
+            config.hosted_control_mut().unwrap().incarnation = Some(control_incarnation.clone());
             config.security_audit.keys.transit_mut().unwrap().key_name =
                 format!("node{node}-security");
+            let hosted = config.control.as_mut().unwrap();
             for settings in [
-                &mut config.control.keys,
-                &mut config.control.custody_keys,
+                &mut hosted.keys,
+                &mut hosted.custody_keys,
                 &mut config.security_audit.keys,
             ]
             .into_iter()
@@ -5514,13 +5977,16 @@ mod lifecycle_tests {
             }
             if node == 2 {
                 match bootstrap_fault {
-                    Some(BootstrapFault::ControlPolicy) => {
-                        config.control.initial_policy.grants.push(Grant {
+                    Some(BootstrapFault::ControlPolicy) => config
+                        .hosted_control_mut()
+                        .unwrap()
+                        .initial_policy
+                        .grants
+                        .push(Grant {
                             principal: "unexpected-bootstrap-principal".into(),
                             collection: None,
                             actions: BTreeSet::from([Action::Read]),
-                        })
-                    }
+                        }),
                     Some(BootstrapFault::TenantLimits) => {
                         config.tenants[0].initial_limits.max_documents -= 1
                     }
@@ -5641,6 +6107,7 @@ mod lifecycle_tests {
             assert_eq!(
                 runtime
                     .control_database()
+                    .unwrap()
                     .engine()
                     .generation()
                     .unwrap()
@@ -5692,7 +6159,7 @@ mod lifecycle_tests {
             }
             fn selected(runtime: &NodeRuntime, fault: BootstrapFault) -> &OpenedTenant {
                 match fault {
-                    BootstrapFault::ControlPolicy => &runtime.control,
+                    BootstrapFault::ControlPolicy => runtime.control.as_ref().unwrap(),
                     BootstrapFault::TenantLimits => &runtime.tenants[0],
                 }
             }
@@ -5808,7 +6275,7 @@ mod lifecycle_tests {
             recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             registries.push(runtime.registry.clone());
             managers.push(runtime.administration.clone().unwrap());
-            controls.push(runtime.control.database.clone());
+            controls.push(runtime.control.as_ref().unwrap().database.clone());
             cluster_networks.push(runtime.cluster.clone().unwrap());
             let (stop, shutdown) = watch::channel(false);
             stops.push(stop);
@@ -5846,8 +6313,10 @@ mod lifecycle_tests {
                         if metrics.current_leader == Some(metrics.id)
                             && managers[index]
                                 .execute_for_test(
-                                    control_context(&fixture_config().control.initial_policy)
-                                        .unwrap(),
+                                    control_context(
+                                        &fixture_config().hosted_control().unwrap().initial_policy,
+                                    )
+                                    .unwrap(),
                                     crate::administration::ManagementCommand::AddLearner {
                                         node_id: 4,
                                     },
@@ -5983,6 +6452,15 @@ mod lifecycle_tests {
         .await
         .unwrap();
         fixture_stage!("data leader selected: node {leader}");
+        if canonical
+            && !fenced_source
+            && !protected_prepare_only
+            && !initial_start_only
+            && restart_initial_inspection.is_none()
+        {
+            Box::pin(verify_member_key_pages(&databases, leader, &context)).await;
+        }
+
         fixture_stage!("creating docs collection");
         let creation = fixture_operation(|| {
             databases[leader].administer(
@@ -6351,8 +6829,10 @@ mod lifecycle_tests {
                         if metrics.current_leader == Some(metrics.id)
                             && managers[index]
                                 .execute_for_test(
-                                    control_context(&fixture_config().control.initial_policy)
-                                        .unwrap(),
+                                    control_context(
+                                        &fixture_config().hosted_control().unwrap().initial_policy,
+                                    )
+                                    .unwrap(),
                                     M::ChangeMembership {
                                         voters: final_voters.clone(),
                                     },
@@ -6550,6 +7030,19 @@ mod lifecycle_tests {
             // observe Prepare or resolve lost Start and Initialize replies
             // through the actual owned children. Terminal recovery is separate.
             if protected_prepare_only {
+                let data_leader = quorum_ready_leader(&databases, "Data signer inventory").await;
+                fixture_operation(|| {
+                    recovery.assert_data_member_service_inventories(
+                        &databases[data_leader],
+                        &recovery_handles,
+                    )
+                })
+                .await;
+                let leader = quorum_ready_leader(&controls, "issuer signer inventory").await;
+                fixture_operation(|| {
+                    recovery.assert_authority_signer_inventory(&controls[leader], &recovery_handles)
+                })
+                .await;
                 fixture_stage!("checking protected Prepare status");
                 fixture_operation(|| recovery.assert_protected_prepare_status(&configurations))
                     .await;
@@ -6560,6 +7053,25 @@ mod lifecycle_tests {
                 fixture_stage!("lost Start and Initialize reply status checked");
             }
             fixture_operation(|| recovery.close_targets()).await;
+            if protected_prepare_only {
+                // Pause the real serving owner between its client fence and its
+                // Raft join. Closing the shared independent grant here used to
+                // deny a follower's post-commit acknowledgment during shutdown.
+                let source = &databases[0];
+                source.stores().check_access().unwrap();
+                let pause =
+                    crate::startup_preparation::pause_failure(configurations[0].database_id);
+                stops[0].send_replace(true);
+                tokio::time::timeout(fixture_node_drain_timeout(), pause.entered())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    source.check_serving().unwrap_err().code,
+                    kasumi_types::ErrorCode::Unavailable
+                );
+                source.stores().check_access().unwrap();
+                pause.release();
+            }
             for stop in &stops {
                 stop.send_replace(true);
             }
@@ -6629,13 +7141,19 @@ mod lifecycle_tests {
         .await
         .unwrap();
         let context = fixture_operation(|| recovery.context(true)).await;
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let readiness = tokio::time::timeout(Duration::from_secs(20), async {
             while !restored_routes_ready(&registries, &managers, &context, incarnation) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if let Err(elapsed) = readiness {
+            let nodes = restored_route_diagnostics(&registries, &managers, &controls, &context);
+            let stages = recovery.target_recovery_stages(&context.tenant);
+            panic!(
+                "initial restored route readiness elapsed={elapsed:?} expected={incarnation} members={nodes:?} target_stages={stages:?}"
+            );
+        }
         let restored_databases = fixture_operation(|| recovery.databases()).await;
         let activation_facts = restored_databases
             .iter()
@@ -6655,6 +7173,20 @@ mod lifecycle_tests {
                 execution
             })
             .collect::<Vec<_>>();
+        if restart_initial_inspection.is_none() {
+            fixture_operation(|| {
+                recovery.assert_target_checkpoint_inventory(
+                    &controls,
+                    &configurations,
+                    &activation_facts[0]
+                        .origin
+                        .materialization
+                        .request
+                        .checkpoint,
+                )
+            })
+            .await;
+        }
         for manager in &managers {
             let status = manager
                 .execute_for_test(context.clone(), M::Status {})
@@ -6732,11 +7264,17 @@ mod lifecycle_tests {
             );
             let issue = &failure.issues()[0];
             assert_eq!(issue.component(), "abandoned target call");
-            assert_eq!(
-                issue.error().to_string(),
-                "backup verification deadline expired",
-                "unexpected abandoned target call: {failure:?}"
-            );
+            issue
+                .error()
+                .downcast_ref::<crate::target_runtime::TargetCallFailure>()
+                .expect("joined diagnostic retains its admitted cell")
+                .with_original(|original| {
+                    let operation = original
+                        .and_then(kasumi_engine::SnapshotFailure::operation_error)
+                        .expect("joined target deadline holds its original typed error");
+                    assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
+                    assert_eq!(operation.message, "backup verification deadline expired");
+                });
         }
         for stop in &stops {
             stop.send_replace(true);
@@ -6851,7 +7389,7 @@ mod lifecycle_tests {
             second_recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             second_registries.push(runtime.registry.clone());
             second_managers.push(runtime.administration.clone().unwrap());
-            second_controls.push(runtime.control.database.clone());
+            second_controls.push(runtime.control.as_ref().unwrap().database.clone());
             let (stop, shutdown) = watch::channel(false);
             second_stops.push(stop);
             second_tasks.push(tokio::spawn(runtime.serve(shutdown)));
@@ -6882,36 +7420,15 @@ mod lifecycle_tests {
         })
         .await;
         if let Err(elapsed) = readiness {
-            let registries = second_registries
-                .iter()
-                .map(|registry| {
-                    registry
-                        .database(&context)
-                        .and_then(|database| {
-                            database.engine().generation().map(|generation| {
-                                generation.incarnation() == incarnation.to_string()
-                            })
-                        })
-                        .map_err(|error| error.code)
-                })
-                .collect::<Vec<_>>();
-            let control_metrics = second_controls
-                .iter()
-                .map(|control| {
-                    let metrics = control.raft_group().metrics();
-                    (
-                        metrics.id,
-                        metrics.state,
-                        metrics.current_term,
-                        metrics.current_leader,
-                        metrics.last_log_index,
-                        metrics.last_applied.map(|log| log.index),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let nodes = restored_route_diagnostics(
+                &second_registries,
+                &second_managers,
+                &second_controls,
+                &context,
+            );
             let target_stages = recovery.target_recovery_stages(&context.tenant);
             panic!(
-                "restarted tenant registry readiness timed out: {elapsed:?}; registry results: {registries:?}; target recovery stages: {target_stages:?}; control metrics (node, state, term, leader, last log, last applied): {control_metrics:?}"
+                "restarted route readiness elapsed={elapsed:?} expected={incarnation} members={nodes:?} target_stages={target_stages:?}"
             );
         }
         fixture_stage!(
@@ -6952,7 +7469,8 @@ mod lifecycle_tests {
         .await
         .unwrap();
         assert_eq!(recovered.body["durable"], serde_json::json!(true));
-        let operator = control_context(&fixture_config().control.initial_policy).unwrap();
+        let operator =
+            control_context(&fixture_config().hosted_control().unwrap().initial_policy).unwrap();
         assert!(
             second_managers[0]
                 .execute_for_test(
@@ -7202,7 +7720,11 @@ async fn prepare_retired_source(
         };
     }
     let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
-        config.control.initial_limits.max_snapshot_bytes
+        config
+            .hosted_control()
+            .unwrap()
+            .initial_limits
+            .max_snapshot_bytes
     } else {
         config
             .tenants

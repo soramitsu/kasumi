@@ -376,9 +376,11 @@ macro_rules! forward_group_backend {
 forward_group_backend!(Box<T>);
 forward_group_backend!(std::sync::Arc<T>);
 
+#[cfg(any(test, feature = "test-utils"))]
 pub use memory::{FaultTiming, GroupOp, InMemoryGroup};
 
 /// Volatile group with explicit durable images for crash and fault tests.
+#[cfg(any(test, feature = "test-utils"))]
 mod memory {
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::{OsStr, OsString};

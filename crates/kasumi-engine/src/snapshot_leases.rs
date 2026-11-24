@@ -7,6 +7,7 @@ use crate::state::lease_retention::{LeaseHandle, PageAccess, PageSelection, Sele
 struct SelectedPageInput {
     handle: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
+    scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     scan_ids: Vec<String>,
     scan_has_more: bool,
     selected_input_bytes: u64,
@@ -17,6 +18,7 @@ impl SelectedPageInput {
         Self {
             handle: selected.handle,
             generation: selected.generation,
+            scan_reader: selected.scan_reader,
             scan_ids: selected.scan_ids,
             scan_has_more: selected.scan_has_more,
             selected_input_bytes: selected.selected_input_bytes,
@@ -29,7 +31,7 @@ impl Database {
     // Publication and selection share a mutex. Waiting for it, walking a changed
     // payload, and dropping retained roots run on owned blocking work, so they
     // cannot starve the async replication and credential-renewal tasks.
-    async fn snapshot_retention_work<T: Send + 'static>(
+    pub(super) async fn snapshot_retention_work<T: Send + 'static>(
         &self,
         cancellation: QueryCancellation,
         action: impl FnOnce(Arc<crate::TenantEngine>) -> Result<T> + Send + 'static,
@@ -37,17 +39,18 @@ impl Database {
         self.access()?;
         let registration = self.work.begin(cancellation.clone())?;
         let engine = self.engine.clone();
-        let worker = tokio::task::spawn_blocking(move || {
-            let result = action(engine);
-            (result, registration)
-        });
-        let (result, _registration) = tokio::select! {
+        let worker = self
+            .admission()
+            .memory()
+            .read_child(cancellation.clone(), None, move |_| {
+                action(engine).map(|output| (output, registration))
+            });
+        let (output, _registration) = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(5), worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot retention deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot retention worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot retention deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        result
+        Ok(output)
     }
 
     pub async fn open_snapshot_lease(
@@ -267,18 +270,9 @@ impl Database {
             queries: vec![],
             time_bounds: None,
         };
-        let generation = self
-            .hydrate_history(
-                input.generation,
-                &snapshot.documents,
-                &[],
-                &cancellation,
-                &mut input.memory,
-            )
-            .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = SnapshotWork {
-            generation,
+            generation: input.generation,
             request: snapshot,
             cancellation: cancellation.clone(),
             deadline: deadline.into_std(),
@@ -286,11 +280,19 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let mut work = self
+            .hydrate_history(work, &cancellation, SnapshotWork::history_inputs)
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        work.deadline = deadline.into_std();
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot page worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let output = output.into_admitted()?;
@@ -372,19 +374,7 @@ impl Database {
             .await?,
         );
         input.memory.reserve(input.selected_input_bytes)?;
-        // Admit the page worker's keys and request clone before creating them.
-        let key_bytes = input.scan_ids.iter().try_fold(1024u64, |bytes, id| {
-            bytes
-                .checked_add(request.collection.len() as u64)
-                .and_then(|bytes| bytes.checked_add(id.len() as u64))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DocumentKey>() as u64))
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "snapshot scan workspace overflow",
-                    )
-                })
-        })?;
+        // The history selector borrows the already admitted scan IDs.
         let request_bytes = crate::accounting::encoded_len(&request)?
             .checked_mul(3)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ScanSnapshotPage>()))
@@ -394,40 +384,17 @@ impl Database {
                     "snapshot scan workspace overflow",
                 )
             })?;
-        input
-            .memory
-            .reserve(key_bytes.checked_add(request_bytes as u64).ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "snapshot scan workspace overflow",
-                )
-            })?)?;
-        let keys = input
-            .scan_ids
-            .iter()
-            .map(|id| DocumentKey {
-                collection: request.collection.clone(),
-                id: id.clone(),
-            })
-            .collect::<Vec<_>>();
+        input.memory.reserve(request_bytes as u64)?;
         let strict = input.generation.state.policy.strict_read_audit
             || input.generation.state.collections[&request.collection]
                 .definition
                 .strict_read_audit;
-        let generation = self
-            .hydrate_history(
-                input.generation,
-                &keys,
-                &[],
-                &cancellation,
-                &mut input.memory,
-            )
-            .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = ScanWork {
             lease: input.handle.clone(),
-            generation,
+            generation: input.generation,
             deadline: deadline.into_std(),
+            scan_reader: input.scan_reader,
             ids: input.scan_ids,
             has_more: input.scan_has_more,
             request: request.clone(),
@@ -436,11 +403,19 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let mut work = self
+            .hydrate_history(work, &cancellation, ScanWork::history_inputs)
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        work.deadline = deadline.into_std();
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot scan worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let output = output.into_admitted()?;
@@ -459,6 +434,7 @@ struct ScanWork {
     lease: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
     deadline: std::time::Instant,
+    scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     ids: Vec<String>,
     has_more: bool,
     request: ScanSnapshotPage,
@@ -468,33 +444,49 @@ struct ScanWork {
     registration: Arc<WorkRegistration>,
 }
 struct ScanOutput {
-    response: Result<SnapshotScanPage>,
+    response: SnapshotScanPage,
     memory: kasumi_query::QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
 impl ScanOutput {
     fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotScanPage>> {
-        self.response.as_ref().map_err(|error| error.clone())?;
         self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
         let mut reservation = self.memory.into_workspace();
         reservation.retain_workspace();
         let charge = Arc::new(reservation);
         Ok(RegisteredOutput {
-            response: AdmittedOutput::new(self.response.expect("checked scan response"), charge),
+            response: AdmittedOutput::new(self.response, charge),
             _registration: self._registration,
         })
     }
 }
 impl ScanWork {
-    fn run(mut self) -> ScanOutput {
-        let generation = self.generation.clone();
-        let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
-        ScanOutput {
+    fn history_inputs(&mut self) -> history_reads::HistoryInputs<'_> {
+        history_reads::HistoryInputs {
+            generation: &mut self.generation,
+            keys: history_reads::HistoryKeys::Scan(&self.request.collection, &self.ids),
+            queries: &[],
+            memory: &mut self.memory,
+            deadline: self.deadline,
+            scan_reader: Some(&mut self.scan_reader),
+        }
+    }
+
+    fn run(mut self) -> Result<ScanOutput> {
+        let reads = match self.scan_reader.take() {
+            Some(shared) => {
+                DocumentReads::from_shared(&self.generation, self.deadline, Some(shared))
+            }
+            None => {
+                DocumentReads::new(&self.generation, self.deadline).map_err(document_load_error)?
+            }
+        };
+        let response = finish_document_read(reads, |reads| self.evaluate(reads))?;
+        Ok(ScanOutput {
             response,
             memory: self.memory,
             _registration: self.registration,
-        }
+        })
     }
     fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotScanPage> {
         let state = &self.generation.state;

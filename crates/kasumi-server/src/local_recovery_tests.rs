@@ -201,6 +201,7 @@ async fn backup(
                 incarnation,
             },
             source_keys: configured.keys.clone(),
+            historical_source_keys: Vec::new(),
             source_principal: "administrator".into(),
             destination: "local".into(),
             phase_timeout_ms: 60_000,
@@ -318,6 +319,16 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         LocalRecoveryPhase::Finished
     );
     let profile = ClientProfile::load(completed.client_profile.as_ref().unwrap()).unwrap();
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let published = operator.credentials.status(profile.family_id).unwrap();
+    assert_eq!(
+        published.specification.scopes,
+        BTreeSet::from([Action::Read, Action::Admin, Action::Audit])
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
     let runtime = NodeRuntime::open_using_storage(
         config.clone(),
         crate::runtime::file_secret,
@@ -325,6 +336,88 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     )
     .await
     .unwrap();
+    let control =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let query = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::LocalRecovery {},
+        cursor: None,
+        limit: 32,
+    };
+    let database = runtime.control_database().unwrap().clone();
+    let inventory = database
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(inventory.entries.iter().any(|row| matches!(
+        row.reference, KeyReference::LocalRecovery { operation_id } if operation_id == request.operation_id
+    )));
+    assert!(matches!(
+        &inventory.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
+    let active_catalogs = inventory
+        .entries
+        .iter()
+        .filter_map(|row| match row.reference {
+            KeyReference::Catalog {
+                domain, catalog_id, ..
+            } if matches!(
+                domain,
+                KeyCatalogDomain::Application | KeyCatalogDomain::RetirementCustody
+            ) =>
+            {
+                Some((domain, catalog_id))
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(active_catalogs.len(), 2);
+    assert_ne!(
+        active_catalogs[&KeyCatalogDomain::Application],
+        active_catalogs[&KeyCatalogDomain::RetirementCustody]
+    );
+    let store = runtime.security_audit().store();
+    let publication = record(store, request.operation_id)
+        .unwrap()
+        .publication
+        .unwrap()
+        .id;
+    let key = publication.as_bytes();
+    assert_eq!(
+        store.get(PUBLICATION_OWNERS, key).unwrap().as_deref(),
+        Some(request.operation_id.as_bytes().as_slice())
+    );
+    store
+        .write_batch(&[WriteOp::delete(PUBLICATION_OWNERS, key)])
+        .unwrap();
+    let historical = database
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(inventory.entries, historical.entries);
+    drop(historical);
+    let unrelated = Uuid::new_v4();
+    store
+        .write_batch(&[WriteOp::put(
+            PUBLICATION_OWNERS,
+            key,
+            unrelated.as_bytes().as_slice(),
+        )])
+        .unwrap();
+    assert!(
+        database
+            .read_key_retention(&control, query.clone())
+            .await
+            .is_err()
+    );
+    store
+        .write_batch(&[WriteOp::put(
+            PUBLICATION_OWNERS,
+            key,
+            request.operation_id.as_bytes().as_slice(),
+        )])
+        .unwrap();
+    drop(inventory);
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
@@ -335,6 +428,26 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     })
     .await
     .unwrap();
+    let restored = registry.database(&context()).unwrap();
+    let page = ReadKeyRetentionRequest { limit: 1, ..query };
+    for store in [
+        restored.stores().application(),
+        restored.stores().custody().store(),
+    ] {
+        let first = database
+            .read_key_retention(&control, page.clone())
+            .await
+            .unwrap();
+        let cursor = first.next_cursor.clone().unwrap();
+        drop(first);
+        store.rotate_data_key().await.unwrap();
+        assert!(matches!(
+            database.read_key_retention(&control, ReadKeyRetentionRequest { cursor: Some(cursor), ..page.clone() }).await,
+            Err(error) if error.code == ErrorCode::CursorExpired
+        ));
+    }
+    drop(restored);
+    drop(database);
     let mut client = kasumi_client::KasumiClient::connect(&profile.connection(false).unwrap())
         .await
         .unwrap();
@@ -586,6 +699,47 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let cache_directory = target.join("tenant-audit-archives");
     let archive = cache_directory.join(format!("{}.audit", segment.reference.object.object_id));
     drop(cache);
+    let control = operator.state.control().await.unwrap();
+    inventory::install(
+        &operator.config,
+        &operator.installed_owner,
+        &operator.audit,
+        &control,
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    let page = control
+        .read_key_retention(
+            &crate::standalone::offline_context(&control).unwrap(),
+            ReadKeyRetentionRequest {
+                scope: KeyRetentionScope::LocalRecovery {},
+                cursor: None,
+                limit: 32,
+            },
+        )
+        .await
+        .unwrap();
+    let expected = &segment.reference;
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.key == KeyVersionRef::from(&expected.key)
+                && entry.reference
+                    == KeyReference::AuditArchive {
+                        stream_id: expected.stream_id,
+                        first_sequence: expected.object.first_sequence,
+                    })
+    );
+    assert!(
+        matches!(&page.coverage, KeyRetentionCoverage::Incomplete {missing, ..} if
+        !missing.contains(&MissingKeyDependency::RecordUnreadable {
+            record_kind: KeyReferenceKind::AuditArchive, id: expected.object.object_id.to_string()
+        }))
+    );
+    drop(page);
+    drop(control);
+
     let persistent_disk = operator.store().persistent_disk().clone();
     let persistent_config = operator.config.persistent_disk.clone();
     let unrelated = target.join("unrelated.txt");
@@ -935,12 +1089,29 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_i
         .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
         .unwrap();
     let path = journal.target_directory.join("node.kv");
-    assert!(
-        operator
-            .target(&mut journal, TargetOpen::Materialize)
-            .await
-            .is_err()
+    let original = operator
+        .target(&mut journal, TargetOpen::Materialize)
+        .await
+        .err()
+        .expect("dispatched creation cannot recreate the absent target");
+    let failed = record(operator.store(), request.operation_id).unwrap();
+    assert_eq!(failed.status.phase_id, journal.status.phase_id);
+    assert_eq!(
+        failed.status.last_failure.as_deref(),
+        Some(original.to_string().as_str())
     );
+    // Read the error through the independent cold operator before invoking
+    // resume: its outer failure handler has never run for this direct attempt.
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let cold = status_with_storage(&configuration, request.operation_id, storage.clone())
+        .await
+        .unwrap();
+    assert_eq!(cold.last_failure, failed.status.last_failure);
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
     assert!(!path.exists());
     let persistent_disk = operator.store().persistent_disk().clone();
     let persistent_config = operator.config.persistent_disk.clone();
@@ -1514,8 +1685,16 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
 }
 
 type Rows = Vec<(Vec<u8>, Vec<u8>)>;
-fn recovery_rows(store: &TenantStore) -> [Rows; 5] {
-    [PHASES, OPERATIONS, GENERATIONS, ACTIVE, INSTALLATION].map(|namespace| {
+fn recovery_rows(store: &TenantStore) -> [Rows; 6] {
+    [
+        PHASES,
+        OPERATIONS,
+        GENERATIONS,
+        ACTIVE,
+        INSTALLATION,
+        PUBLICATION_OWNERS,
+    ]
+    .map(|namespace| {
         let mut rows = Vec::new();
         store
             .visit(namespace, MAX_RECORD, |key, value| {
@@ -1862,4 +2041,230 @@ async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouch
         LocalRecoveryPhase::Stopped
     );
     drain_operations().await.unwrap();
+}
+
+#[test]
+fn local_recovery_inventory_tracks_real_versions_and_independent_sources() {
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(local_recovery_inventory_case()))
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_recovery_inventory_case() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (configuration, request, _, storage) = backup(root.path()).await;
+    let config = RuntimeConfig::load(&configuration).unwrap();
+    let control =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let query = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::LocalRecovery {},
+        cursor: None,
+        limit: 16,
+    };
+    let mut runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let db = runtime.control_database().unwrap();
+    let empty = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        empty.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
+    assert!(!empty.entries.is_empty());
+    assert!(empty.entries.iter().all(|entry| matches!(
+        entry.reference,
+        KeyReference::Catalog {
+            domain: KeyCatalogDomain::SecurityAudit,
+            ..
+        }
+    )));
+    drop(empty);
+    assert!(
+        db.read_key_retention(&context(), query.clone())
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await.unwrap();
+    drop(runtime);
+    start_with_storage(&configuration, request.clone(), storage.clone())
+        .await
+        .unwrap();
+
+    // Leave the permanent initial phase just as it was written under version 1.
+    let mut owner = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let KeyProviderSettings::File { path } = &config.security_audit.keys else {
+        panic!("expected fixture file keys")
+    };
+    let provider = kasumi_store::FileKeyProvider::open(path).unwrap();
+    assert_eq!(provider.rotate().unwrap(), 2);
+    owner.store().rotate_data_key().await.unwrap();
+    crate::startup_owner::finish(&mut owner).await.unwrap();
+    drop(owner);
+    stop_with_storage(&configuration, request.operation_id, storage.clone())
+        .await
+        .unwrap();
+    let crate::administration::DestinationConfig::Filesystem { directory, .. } =
+        &config.backup_destinations[&request.destination]
+    else {
+        panic!("fixture backup is on disk")
+    };
+    let id = request.checkpoint.backup_id;
+    let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+    let settings = config.persistent_disk.clone();
+    let mut runtime = NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage)
+        .await
+        .unwrap();
+    let before = recovery_rows(runtime.security_audit().store());
+    let db = runtime.control_database().unwrap();
+    let page = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    let retained = |page: &KeyRetentionPage| {
+        page.entries.iter().filter_map(|entry|
+        matches!(entry.reference,KeyReference::LocalRecovery { operation_id } if operation_id == request.operation_id)
+        .then_some(entry.key.version)).collect::<BTreeSet<_>>()
+    };
+    assert_eq!(retained(&page), BTreeSet::from([1, 2]));
+    assert!(matches!(
+        &page.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
+    assert!(page.entries.iter().any(|row| matches!(row.reference,
+        KeyReference::CompletedBackup { backup_id, .. } if backup_id == request.checkpoint.backup_id)));
+    drop(page);
+    let one = ReadKeyRetentionRequest {
+        limit: 1,
+        ..query.clone()
+    };
+    let cursor = db
+        .read_key_retention(&control, one.clone())
+        .await
+        .unwrap()
+        .next_cursor
+        .clone()
+        .unwrap();
+    // The journal and backup share one enrolled disk. Withhold the original
+    // inode through its owner so the journal remains readable during the test.
+    // An out-of-band rename fences that entire disk until a new census.
+    let disk = runtime.security_audit().store().persistent_disk();
+    let withheld = manifest.with_file_name("withheld-manifest");
+    let (root_name, original_name) = settings.binding(&manifest).unwrap();
+    let (held_root, held_name) = settings.binding(&withheld).unwrap();
+    let original = disk.open_file(root_name, original_name).unwrap();
+    let identity = original.identity().unwrap();
+    let held = disk.publish_file(original, held_root, held_name).unwrap();
+    let incomplete = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&incomplete.coverage, KeyRetentionCoverage::Incomplete {missing,truncated:false,..}
+        if missing == &[MissingKeyDependency::ArchiveUnavailable {id:id.to_string()}])
+    );
+    assert!(!incomplete.entries.iter().any(|row|
+        matches!(row.reference, KeyReference::CompletedBackup { backup_id, .. } if backup_id == id)));
+    drop(incomplete);
+    let resume = ReadKeyRetentionRequest {
+        cursor: Some(cursor),
+        ..one
+    };
+    assert_eq!(
+        db.read_key_retention(&control, resume.clone())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    let restored = disk.publish_file(held, root_name, original_name).unwrap();
+    assert_eq!(restored.identity().unwrap(), identity);
+    drop(restored);
+    // This operation stopped before dispatching a target and has no archive
+    // ownership rows. Its cleanup receipt alone cannot prove current absence.
+    let store = runtime.security_audit().store();
+    let journal = record(store, request.operation_id).unwrap();
+    let target = generation_directory(store.persistent_disk(), &settings, &journal, true)
+        .unwrap()
+        .unwrap();
+    let reappeared = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(matches!(&reappeared.coverage,
+    KeyRetentionCoverage::Incomplete {missing, truncated: false, ..}
+    if missing == &[MissingKeyDependency::RecordUnreadable {
+        record_kind: KeyReferenceKind::LocalRecovery, id: request.target_incarnation.to_string()
+    }]));
+    assert_eq!(
+        db.read_key_retention(&control, resume.clone())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    target.remove_if_empty().unwrap();
+    db.read_key_retention(&control, resume).await.unwrap();
+    assert_eq!(recovery_rows(runtime.security_audit().store()), before);
+    let first = db
+        .read_key_retention(
+            &control,
+            ReadKeyRetentionRequest {
+                limit: 1,
+                ..query.clone()
+            },
+        )
+        .await
+        .unwrap();
+    let cursor = first.next_cursor.clone().unwrap();
+    drop(first);
+    runtime
+        .security_audit()
+        .store()
+        .rewrap_keys()
+        .await
+        .unwrap();
+    let stale = ReadKeyRetentionRequest {
+        cursor: Some(cursor),
+        limit: 1,
+        ..query.clone()
+    };
+    assert!(db.read_key_retention(&control, stale).await.is_err());
+    let rewrapped = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(retained(&rewrapped), BTreeSet::from([2]));
+    drop(rewrapped);
+    let physical = runtime.security_audit().store();
+    // An orphaned immutable phase cannot become an empty, complete report.
+    let (key, value) = &before[0][0];
+    physical
+        .write_batch(&[
+            WriteOp::delete(PHASES, key.as_slice()),
+            WriteOp::put(PHASES, b"invalid", value.clone()),
+        ])
+        .unwrap();
+    assert!(db.read_key_retention(&control, query).await.is_err());
+    assert!(physical.get(PHASES, b"invalid").unwrap().is_some());
+    runtime.shutdown().await.unwrap();
 }

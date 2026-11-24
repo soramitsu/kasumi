@@ -19,6 +19,18 @@ original = gate_process.drain
 import process_ha_topology as topology
 
 
+def fixture_control_placement(role):
+    """Public identity fields used by the nine-process stand-ins."""
+    incarnation = "00000000-0000-4000-8000-000000000001"
+    root = {"control_incarnation": incarnation, "public_key": "a" * 64}
+    if role == "control":
+        return {"control": {"incarnation": incarnation, "lifecycle": {"installation": {"root": root}},
+                            "remote_data": {"nodes": {str(i): {} for i in (1, 2, 3)}}}}
+    if role == "data":
+        return {"remote_control": {"root": root, "endpoints": {str(i): {} for i in (4, 5, 6)}}}
+    return {}
+
+
 class TopologyTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="kasumi-process-ha-synthetic-")
@@ -55,6 +67,7 @@ class TopologyTests(unittest.TestCase):
                                               "database_path": str(root / "persistent/verifier.kv")},
                           "replication": {"node_id": node_id, "initial_voters": [], "peers": [],
                                           "listener": {"tls": {"certificate": str(cert)}}}}
+                config.update(fixture_control_placement(role))
                 self.configs[name] = config
                 self.plan["nodes"].append({"id": name, "role": role, "group": role,
                                            "config": str(root / "config.json")})
@@ -99,6 +112,17 @@ class TopologyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "must not host"):
                     self.inspect()
                 self.configs["control-1"][field] = old
+
+    def test_data_cannot_host_local_control_or_select_another_root_or_roster(self):
+        original = self.configs["data-1"]
+        for change, message in (({"control": {}}, "use remote Control"),
+                                ({"remote_control": {"root": {}, "endpoints": {}}}, "another Control"),
+                                ({"remote_control": {**original["remote_control"], "endpoints": {"1": {}}}}, "another Control")):
+            with self.subTest(change=change):
+                self.configs["data-1"] = {**original, **change}
+                with self.assertRaisesRegex(ValueError, message):
+                    self.inspect()
+        self.configs["data-1"] = original
 
     def test_independent_group_and_voter_rosters_are_required(self):
         self.configs["control-1"]["replication"]["peers"][0]["endpoint"] = "https://127.0.0.1:1"

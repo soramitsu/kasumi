@@ -223,7 +223,7 @@ impl TenantEngine {
             }
         };
         let owner = match scope {
-            ApplyScope::Committed => previous.receipts.clone(),
+            ApplyScope::Committed { .. } => previous.receipts.clone(),
             #[cfg(any(test, feature = "test-utils"))]
             ApplyScope::Fixture(disk) => previous.receipts.fixture_owner(disk, state)?,
         };
@@ -284,13 +284,12 @@ impl TenantEngine {
                     &previous.indexes,
                     previous.document_resolver(),
                 )?;
-                crate::index_source::validate_changes_with_resolvers(
-                    &previous.indexes,
-                    state,
+                crate::application_structured::unique::validate_ordinary(
+                    previous,
                     &next,
                     &changed,
-                    previous.document_resolver(),
-                    previous.document_resolver(),
+                    self.application_sources.get(),
+                    apply.prior_group_claims(),
                 )?;
                 crate::change_feed_state::append(state, &mut next, &changed)?;
                 Ok(receipt)
@@ -332,6 +331,7 @@ impl TenantEngine {
                             &changed,
                             previous.document_resolver(),
                             previous.document_resolver(),
+                            self.text_residency(),
                         )
                         .map_err(crate::index_source::into_anyhow)?,
                     );

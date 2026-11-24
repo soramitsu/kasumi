@@ -76,6 +76,7 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
             &request,
             &cancellation,
             &mut memory,
+            None,
         )
         .unwrap_err()
         .code,
@@ -110,6 +111,7 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
         &request,
         &cancellation,
         &mut memory,
+        None,
     )
     .unwrap();
     memory.reserve(OUTPUT_CHARGE_BYTES).unwrap();

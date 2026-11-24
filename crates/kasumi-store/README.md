@@ -137,9 +137,7 @@ An opt-in test runs the official MinIO release `RELEASE.2025-09-07T16-13-09Z`,
 pinned to registry manifest
 `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`.
 The tag/digest was pulled from the official `minio/minio` Docker repository.
-The test creates one container with 512 MiB/1 CPU, read-only root, dropped
-capabilities, TLS-only loopback S3, and ephemeral credentials; it removes its
-container on completion or unwinding. It never uses an implicit Docker context.
+The standalone test starts two successive containers with 512 MiB, one CPU, a read-only root, dropped capabilities and TLS on loopback. Both use the same private data directory. The replacement starts with a new root credential.
 
 Set `KASUMI_MINIO_DOCKER_HOST` to an explicitly approved local Unix socket,
 `KASUMI_MINIO_DOCKER_CONFIG` to an isolated Docker client directory, and
@@ -153,9 +151,7 @@ cargo test -p kasumi-store --lib actual_minio -- --ignored
 The test passed against the real MinIO server: signed bucket creation,
 authenticated encrypted upload/download/decryption, exact number and Japanese
 payload preservation, create-only overwrite rejection, unknown-object rejection,
-wrong-credential rejection, untrusted-CA rejection, and bounded download. This
-proves protocol interoperability, not the durability configuration of an external
-S3 deployment; the disposable fixture intentionally stores objects in tmpfs.
+wrong-credential rejection, untrusted-CA rejection, and bounded download. The current fixture also checks that the previous secret fails after a restart and the same destination can reload its new secret and decrypt the original encrypted object. The release record must include that run on the selected Linux host.
 The normal suite also covers a published SigV4 reference vector and TLS fixtures.
 
 Database creation synchronizes the database directory entry after its durable initial

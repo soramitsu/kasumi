@@ -349,7 +349,12 @@ async fn serving_shutdown_closes_management_before_joining_queued_reconciliation
     assert!(!admitted.is_finished());
     assert!(!queued_task.is_finished());
     assert!(!owner.runtime.closed);
-    original.check_serving().unwrap();
+    // The retained generation still has its exact owner. Closing synchronously
+    // seals that owner's serving admission before the queued tasks can drain.
+    assert_eq!(
+        original.check_serving().unwrap_err().code,
+        kasumi_types::ErrorCode::Unavailable
+    );
     assert!(Arc::ptr_eq(
         &original,
         &management.test_generation(&tenant, &incarnation)

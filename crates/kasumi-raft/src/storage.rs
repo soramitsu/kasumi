@@ -44,7 +44,7 @@ const SNAPSHOT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_SNAPSHOT_COVERAGE_BYTES: usize = 2 << 20;
 // The largest purge chunk covers its first index and this many more: three
 // deletes an entry and the purge cursor fit one transaction's operation bound.
-// A direct purge (consensus, open, a closing group) uses it.
+// A direct purge during consensus or reopen uses it.
 const PURGE_CHUNK_SPAN: u64 = 21844;
 // A paced purge (a standalone group's own, after each periodic snapshot) sizes
 // its chunks by time instead. Each delete looks its key up in a directory whose
@@ -138,8 +138,8 @@ pub(crate) enum BackgroundCommits {
     /// commit, while foreground operations are active, the next waits
     /// `kasumi_store::FOREGROUND_SHARE` times as long as that commit took, up
     /// to `kasumi_store::MAX_PACED_DELAY`. Once the group is closing (the
-    /// flag) a pause in progress ends and the rest runs back to back, so a
-    /// shutdown waits no longer than it did.
+    /// flag), a pause ends. Snapshot publication finishes and optional journal
+    /// cleanup stops at the next committed chunk boundary.
     Paced(Arc<AtomicBool>),
 }
 
@@ -161,6 +161,18 @@ impl BackgroundCommits {
                 .node_store()
                 .shared_background_write(closing, || store.write_batch(writes)),
             None => store.write_batch(writes),
+        }
+    }
+
+    fn closing(&self) -> bool {
+        matches!(self, Self::Paced(closing) if closing.load(Ordering::Acquire))
+    }
+
+    fn check_private_capture(&self) -> Result<()> {
+        if self.closing() {
+            Err(PrivateCaptureStopped.into())
+        } else {
+            Ok(())
         }
     }
 
@@ -197,7 +209,7 @@ impl BackgroundCommits {
     /// at the rate of its last chunk (`last`: its entries and database time),
     /// at most doubling and never under `PACED_PURGE_MIN_ENTRIES`.
     fn purge_span(&self, last: Option<(u64, std::time::Duration)>, limit: u64) -> u64 {
-        if self.paced().is_none() {
+        if matches!(self, Self::Direct) {
             return limit;
         }
         let entries = match last {
@@ -1036,17 +1048,19 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         self.purge_original(log_id, BackgroundCommits::Direct, PURGE_CHUNK_SPAN)
             .await
+            .map(|_| ())
             .map_err(err)
     }
 }
 
 impl LogStore {
     /// Purge the standalone journal through a published snapshot. `false`
-    /// means a capacity refusal stopped it after zero or more whole chunks,
+    /// means closure or a capacity refusal stopped it after zero or more whole chunks,
     /// each committed with its purge cursor: every remaining entry stays
     /// retained for a later snapshot to purge. Its chunks are sized by time
     /// and, between two of them, it yields to foreground operations
-    /// (`BackgroundCommits::Paced`) until `closing` is set. It holds this
+    /// (`BackgroundCommits::Paced`). Closure leaves the published snapshot and
+    /// remaining journal in a recoverable state. It holds this
     /// group's journal and control gates for one chunk at a time and pauses
     /// without them, so an append or audited read of this group waits for at
     /// most one chunk, and every other tenant's commit for at most one chunk
@@ -1064,7 +1078,7 @@ impl LogStore {
             )
             .await
         {
-            Ok(()) => Ok(true),
+            Ok(completed) => Ok(completed),
             Err(error) => crate::capacity_refusal::take(error)
                 .map(|()| false)
                 .map_err(err),
@@ -1084,10 +1098,13 @@ impl LogStore {
         log_id: LogId<u64>,
         commits: BackgroundCommits,
         chunk_span: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut pace = kasumi_store::BackgroundPace::default();
         let mut last = None;
         loop {
+            if commits.closing() {
+                return Ok(false);
+            }
             let span = commits.purge_span(last, chunk_span);
             if last.is_some() && commits.paced().is_some() {
                 let (store, paced) = (self.store.clone(), commits.clone());
@@ -1102,6 +1119,11 @@ impl LogStore {
             let chunk_commits = commits.clone();
             let (chunk, returned) = self
                 .mutate_original(move |store| {
+                    // Recheck after acquiring the journal gates. A caller may
+                    // close while a foreground writer or paced delay owns them.
+                    if chunk_commits.closing() {
+                        return Ok((None, pace));
+                    }
                     let mut pace = pace;
                     let mut retained = retained
                         .lock()
@@ -1123,10 +1145,10 @@ impl LogStore {
                         // Nothing retained through the target: only the cursor moves.
                         store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
                         return Ok((
-                            PurgeChunk {
+                            Some(PurgeChunk {
                                 more: false,
                                 entries: 0,
-                            },
+                            }),
                             pace,
                         ));
                     };
@@ -1171,17 +1193,18 @@ impl LogStore {
                         store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
                     }
                     Ok((
-                        PurgeChunk {
+                        Some(PurgeChunk {
                             more,
                             entries: end - start + 1,
-                        },
+                        }),
                         pace,
                     ))
                 })
                 .await?;
+            let Some(chunk) = chunk else { return Ok(false) };
             pace = returned;
             if !chunk.more {
-                return Ok(());
+                return Ok(true);
             }
             // A direct chunk is no unit: its span stays the limit.
             last = Some((chunk.entries, pace.last_unit_time().unwrap_or_default()));
@@ -1913,6 +1936,7 @@ trait CoveringSnapshot: Sized + Send + 'static {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)>;
     /// The outcome of a build refused for capacity, where it can be deferred.
     fn deferred() -> Option<Self>;
@@ -1929,6 +1953,7 @@ impl CoveringSnapshot for Snapshot<TypeConfig> {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        _commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)> {
         let transfer = as_snapshot(snapshot, limit, snapshot_buffers)?;
         let image = transfer.snapshot.image()?;
@@ -1951,16 +1976,70 @@ impl CoveringSnapshot for crate::local::LocalSnapshot {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)> {
         snapshot_buffers.check()?;
         Ok((
             Self::Published(snapshot.meta.last_log_id),
-            snapshot.encode(limit)?,
+            snapshot.encode_while(limit, || commits.check_private_capture())?,
         ))
     }
     fn deferred() -> Option<Self> {
         Some(Self::Deferred)
     }
+}
+
+#[derive(Debug)]
+struct PrivateCaptureStopped;
+
+impl std::fmt::Display for PrivateCaptureStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("standalone group closed during private snapshot capture")
+    }
+}
+impl std::error::Error for PrivateCaptureStopped {}
+
+struct PrivateCaptureWriter<'a> {
+    spool: &'a mut EncryptedSpool,
+    commits: &'a BackgroundCommits,
+}
+
+impl PrivateCaptureWriter<'_> {
+    fn check(&self) -> io::Result<()> {
+        // Both io::Error and serde_json's writer error expose their inner
+        // error's source. Keep a typed cause across either codec.
+        self.commits
+            .check_private_capture()
+            .map_err(|error| io::Error::other(error.context("private snapshot output stopped")))
+    }
+}
+impl Write for PrivateCaptureWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.check()?;
+        self.spool.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.check()?;
+        self.spool.flush()
+    }
+}
+
+fn stopped_private_capture(error: &ScratchOperationFailure) -> bool {
+    use std::error::Error;
+    let ScratchOperationFailure::Operation(error) = error else {
+        return false;
+    };
+    if error.is::<PrivateCaptureStopped>() {
+        return true;
+    }
+    let cause = if let Some(io) = error.downcast_ref::<io::Error>() {
+        io.source()
+    } else if let Some(json) = error.downcast_ref::<serde_json::Error>() {
+        json.source()
+    } else {
+        None
+    };
+    cause.is_some_and(|cause| cause.is::<PrivateCaptureStopped>())
 }
 
 impl SnapshotBuilder {
@@ -2011,6 +2090,7 @@ impl SnapshotBuilder {
                     "state machine requires recovery"
                 );
                 domains.check_access()?;
+                commits.check_private_capture()?;
                 // Only a stored snapshot at or past the capture is served in its
                 // place. Its position comes from its coverage record, so a build
                 // does not read back (decrypt, re-spool and digest) the whole
@@ -2043,14 +2123,22 @@ impl SnapshotBuilder {
                     meta: logical.meta.clone(),
                     backend: {
                         let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
-                        logical.backend.write(&mut spool)?;
+                        let mut output = PrivateCaptureWriter {
+                            spool: &mut spool,
+                            commits: &commits,
+                        };
+                        logical.backend.write(&mut output)?;
+                        commits.check_private_capture()?;
                         SnapshotImage::freeze(spool)?
                     },
                     retirement: logical.retirement.clone(),
                     first_membership: logical.first_membership.clone(),
                     initialization_association: logical.initialization_association.clone(),
                 };
-                let (covering, image) = O::captured(&captured, limit, &snapshot_buffers)?;
+                let (covering, image) = O::captured(&captured, limit, &snapshot_buffers, &commits)?;
+                commits.check_private_capture()?;
+                // Staging transfers ownership to the durable publication
+                // protocol. Finish it even if the standalone group now closes.
                 let mut pending = stage_snapshot(&domains, &image, limit, &captured, &commits)?;
                 pending
                     .application
@@ -2088,6 +2176,7 @@ impl SnapshotBuilder {
             // crash-equivalent: the next build or open removes them.
             let result = match result {
                 Err(error) => match O::deferred() {
+                    Some(deferred) if stopped_private_capture(&error) => Ok(deferred),
                     Some(deferred) => {
                         crate::capacity_refusal::take_scratch(error).map(|()| deferred)
                     }

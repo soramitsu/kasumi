@@ -69,6 +69,26 @@ impl AdmittedDeploymentBinding {
 }
 
 impl TenantStore {
+    /// Read the physical catalog under its installed access lease. Callers
+    /// receive wrapping identifiers and a digest of the whole catalog.
+    pub fn visit_wrapping_identities(
+        &self,
+        mut visit: impl FnMut(Uuid, &str, &str, u64) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.check_access()?;
+        let fingerprint = {
+            let catalog = self.catalog.read();
+            let mut digest = sha2::Sha256::new();
+            serde_json::to_writer(&mut digest, &*catalog)?;
+            for key in catalog.keys.values() {
+                visit(catalog.catalog_id, &key.provider, &key.key_ref, key.version)?;
+            }
+            digest.finalize().into()
+        };
+        self.check_access()?;
+        Ok(fingerprint)
+    }
+
     fn deployment_at_registered(
         &self,
         reader: &RegisteredNodeRead,
@@ -357,6 +377,29 @@ pub struct TenantStorageReadView {
     application: Arc<TenantStore>,
     custody: Arc<TenantStore>,
     transaction: Option<read_view::ViewTransaction>,
+}
+
+impl crate::ordered_pages::PageSource for TenantStorageReadView {
+    fn check_access(&self) -> Result<()> {
+        self.application.check_access()?;
+        self.custody.check_access()
+    }
+    fn read_row(
+        &self,
+        space: &str,
+        key: &[u8],
+        max: usize,
+    ) -> Result<Option<crate::ordered_pages::PageRow>> {
+        Ok(self
+            .application_get(space, key, max)?
+            .map(crate::ordered_pages::PageRow::Stored))
+    }
+    fn memory(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.application.plaintext_memory_owner().clone()
+    }
+    fn domain(&self) -> &str {
+        self.application.tenant()
+    }
 }
 
 impl TenantStorageReadView {
@@ -875,6 +918,45 @@ impl TenantStorageSet {
 
     pub fn application(&self) -> &Arc<TenantStore> {
         &self.application
+    }
+    /// Whether this encrypted application catalog was first created under the
+    /// Control session-claim protocol. Opening or rewrapping an existing
+    /// catalog preserves its origin.
+    pub fn sessions_bound_from_creation(&self) -> Result<bool> {
+        self.check_access()?;
+        Ok(self.application.catalog.read().format == 2)
+    }
+
+    /// Observe both currently installed key catalogs at one local position.
+    /// The callback receives wrapping identities only. Catalog ciphertext and
+    /// unwrapped keys never leave their owners. Rotation may proceed after the
+    /// visit; the digest binds a continuation to this exact observed pair.
+    pub fn visit_key_retention_catalogs(
+        &self,
+        mut visit: impl FnMut(bool, Uuid, &str, &str, u64) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.check_access()?;
+        let fingerprint = {
+            let app = self.application.catalog.read();
+            let custody = self.custody.store().catalog.read();
+            let mut digest = sha2::Sha256::new();
+            digest.update(b"kasumi.retained-catalog-pair.v1");
+            for (is_custody, catalog) in [(false, &*app), (true, &*custody)] {
+                serde_json::to_writer(&mut digest, catalog)?;
+                for wrapped in catalog.keys.values() {
+                    visit(
+                        is_custody,
+                        catalog.catalog_id,
+                        &wrapped.provider,
+                        &wrapped.key_ref,
+                        wrapped.version,
+                    )?;
+                }
+            }
+            digest.finalize().into()
+        };
+        self.check_access()?;
+        Ok(fingerprint)
     }
     pub fn custody(&self) -> &Arc<CustodyStore> {
         &self.custody

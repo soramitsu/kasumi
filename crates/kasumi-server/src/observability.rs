@@ -25,6 +25,10 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "observability_test_evidence.rs"]
+pub(crate) mod test_evidence;
+
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -325,6 +329,7 @@ pub(crate) struct GroupObservation {
     pub figures_age_seconds: Option<f64>,
     pub retention: Option<RetentionObservation>,
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
+    pub text_warmup: Option<kasumi_engine::TextWarmupStatus>,
     pub capacity: Option<CapacityObservation>,
     /// Whether this group's records live in a node database of its own (a
     /// standalone generation's), reported in `storage` under this group.
@@ -362,6 +367,7 @@ fn saturating_i64(value: i128) -> i64 {
     i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
 }
 pub(crate) struct LocalObservation {
+    pub backup_sessions: Option<kasumi_engine::ControlBackupSessions>,
     pub admission: AdmissionSnapshot,
     pub persistent_disk: kasumi_store::NodeDiskSnapshot,
     pub scratch_disk: kasumi_store::ScratchDiskSnapshot,
@@ -382,6 +388,7 @@ pub(crate) struct CachedGroup {
     pub retention: RetentionObservation,
     pub capacity: CapacityObservation,
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
+    pub text_warmup: Option<kasumi_engine::TextWarmupStatus>,
     pub storage_dedicated: bool,
     pub storage: Option<kasumi_store::PublishedStorageStatus>,
 }
@@ -487,6 +494,7 @@ impl ObservationState {
                     retention,
                     capacity,
                     audit_maintenance: observation.audit_maintenance.clone(),
+                    text_warmup: observation.text_warmup,
                     storage_dedicated: observation.storage_dedicated.unwrap_or(false),
                     storage: dedicated_storage,
                 },
@@ -507,6 +515,7 @@ impl ObservationState {
         observation.retention = Some(cached.retention);
         observation.capacity = Some(cached.capacity);
         observation.audit_maintenance = cached.audit_maintenance.clone();
+        observation.text_warmup = cached.text_warmup;
         observation.storage_dedicated = observation
             .storage_dedicated
             .or(Some(cached.storage_dedicated));
@@ -547,7 +556,13 @@ struct Observation {
     service_audit: ServiceAuditObservation,
     standalone_recovery_pending: Option<bool>,
     credential_expires_at_ms: Option<u64>,
+    backup_sessions: Option<kasumi_engine::ControlBackupSessions>,
     backup_requests: std::collections::BTreeMap<&'static str, RequestCounts>,
+    /// A data-only node's dependency on its dedicated Control quorum. Its
+    /// outage is diagnostic: coverage of the locally hosted groups decides
+    /// readiness, as for any other remote dependency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_control: Option<crate::remote_control::RemoteControlStatus>,
     #[serde(skip)]
     standalone: bool,
 }
@@ -560,6 +575,30 @@ struct RecoveryStatusObservation {
     updated_revision: u64,
     phase_pending: bool,
     terminal: bool,
+}
+
+/// The authorization behind one protected request: the hosted Control
+/// group's committed policy, or a data-only node's installed observers.
+enum Authority {
+    Control(Arc<kasumi_engine::Database>),
+    Observer(Arc<crate::remote_control::RemoteControl>),
+}
+impl Authority {
+    /// Recheck at release, after the response was encoded.
+    fn recheck(&self, context: &kasumi_types::RequestContext) -> kasumi_types::Result<()> {
+        match self {
+            Self::Control(database) => database.engine().authorize(context, None, Action::Admin),
+            Self::Observer(remote) => remote.authorize_observer(context),
+        }
+    }
+    /// An observer additionally needs `admin` scope to request maintenance.
+    fn recheck_admin(&self, context: &kasumi_types::RequestContext) -> kasumi_types::Result<()> {
+        self.recheck(context)?;
+        if matches!(self, Self::Observer(_)) && !context.scopes.contains(&Action::Admin) {
+            return Err(error(ErrorCode::Forbidden));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -768,7 +807,8 @@ impl Withheld<'_> {
     }
 }
 struct Fence<'a> {
-    control: kasumi_engine::ResponseFence<'a>,
+    // A data-only node holds no Control state to fence (see `Authority`).
+    control: Option<kasumi_engine::ResponseFence<'a>>,
     audit: Arc<kasumi_engine::SecurityAudit>,
     stores: Vec<Arc<TenantStore>>,
     telemetry: Arc<Telemetry>,
@@ -824,7 +864,9 @@ impl EncodedResponseFence for Fence<'_> {
                 .check_access()
                 .map_err(|_| self.withheld.fail(Reason::StoreClosed))?;
         }
-        self.control.check()?;
+        if let Some(control) = &self.control {
+            control.check()?;
+        }
         if !self.readiness_fenced {
             return Ok(());
         }
@@ -885,6 +927,23 @@ impl Service {
         &self,
         request: axum::extract::Request,
     ) -> Result<(kasumi_types::RequestContext, Arc<kasumi_engine::Database>), Failure> {
+        match self.authorized(request).await? {
+            (context, Authority::Control(database)) => Ok((context, database)),
+            // Exact recovery status is a Control quorum read.
+            (_, Authority::Observer(_)) => Err(Failure::Classified(
+                ErrorCode::Unavailable,
+                Reason::ControlQuorum,
+            )),
+        }
+    }
+    /// The same boundary for aggregate observations and compaction. A
+    /// data-only node has no Control policy to consult: it admits a live
+    /// Control credential of its remote Control incarnation issued to an
+    /// installed observer principal, and audits the decision locally.
+    async fn authorized(
+        &self,
+        request: axum::extract::Request,
+    ) -> Result<(kasumi_types::RequestContext, Authority), Failure> {
         let certificate = request
             .extensions()
             .get::<crate::tls::AuthenticatedTlsPeer>()
@@ -921,15 +980,23 @@ impl Service {
             )
             .await
             .map_err(|error| Failure::after_authentication(error, Reason::Forbidden))?;
-        let database = self
-            .auth
-            .audit_result(
-                &context,
-                self.management.authorized_database(&context).await,
-            )
-            .await
-            .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?;
-        Ok((context, database))
+        let authority = match &self.management.control {
+            crate::administration::ControlAccess::Local(_) => self
+                .auth
+                .audit_result(
+                    &context,
+                    self.management.authorized_database(&context).await,
+                )
+                .await
+                .map(Authority::Control),
+            crate::administration::ControlAccess::Remote(remote) => self
+                .auth
+                .audit_result(&context, remote.authorize_observer(&context))
+                .await
+                .map(|()| Authority::Observer(remote.clone())),
+        }
+        .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?;
+        Ok((context, authority))
     }
     /// Classify a failed release by the check that recorded its reason.
     fn released(withheld: &AtomicU8, error: Error) -> Failure {
@@ -1054,12 +1121,16 @@ impl Service {
         request: axum::extract::Request,
         endpoint: Endpoint,
     ) -> Result<Response, Failure> {
-        let (context, database) = self.authorized_control(request).await?;
-        let control = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?;
+        let (context, authority) = self.authorized(request).await?;
+        let control = match &authority {
+            Authority::Control(database) => Some(
+                self.auth
+                    .audit_result(&context, database.response_fence(&context))
+                    .await
+                    .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?,
+            ),
+            Authority::Observer(_) => None,
+        };
         let workspace = self
             .management
             .observation()
@@ -1121,6 +1192,7 @@ impl Service {
             },
             standalone_recovery_pending: observed.standalone_recovery_pending,
             credential_expires_at_ms: context.authorization.expires_at_ms(),
+            backup_sessions: observed.backup_sessions,
             backup_requests: BACKUP_OPERATIONS
                 .into_iter()
                 .zip(
@@ -1131,6 +1203,11 @@ impl Service {
                         .unwrap_or_else(|p| p.into_inner()),
                 )
                 .collect(),
+            remote_control: self
+                .management
+                .control
+                .remote()
+                .map(|remote| remote.status()),
             standalone,
         };
         let body = match endpoint {
@@ -1173,10 +1250,7 @@ impl Service {
             gate.release.notified().await;
         }
         self.auth
-            .audit_result(
-                &context,
-                database.engine().authorize(&context, None, Action::Admin),
-            )
+            .audit_result(&context, authority.recheck(&context))
             .await
             .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?;
         let withheld = AtomicU8::new(0);
@@ -1209,7 +1283,7 @@ impl Service {
         &self,
         request: axum::extract::Request,
     ) -> Result<Response, Failure> {
-        let (context, database) = self.authorized_control(request).await?;
+        let (context, authority) = self.authorized(request).await?;
         if self.telemetry.lifecycle() != Lifecycle::Serving {
             return Err(Failure::Classified(
                 ErrorCode::Unavailable,
@@ -1217,10 +1291,7 @@ impl Service {
             ));
         }
         self.auth
-            .audit_result(
-                &context,
-                database.engine().authorize(&context, None, Action::Admin),
-            )
+            .audit_result(&context, authority.recheck_admin(&context))
             .await
             .map_err(|error| Failure::after_authentication(error, Reason::ControlQuorum))?;
         let databases = self
@@ -1606,6 +1677,30 @@ impl Observation {
             .unwrap();
         }
         let coverage = &self.readiness_coverage;
+        gauge!(
+            "readiness_epoch_topology_version",
+            coverage.membership_epoch.topology_version
+        );
+        gauge!(
+            "readiness_epoch_installed_routes",
+            coverage.membership_epoch.installed_routes
+        );
+        gauge!(
+            "readiness_epoch_actual_membership",
+            coverage.membership_epoch.actual_membership
+        );
+        gauge!(
+            "readiness_covered_epoch_topology_version",
+            coverage.covered_epoch.map(|epoch| epoch.topology_version)
+        );
+        gauge!(
+            "readiness_covered_epoch_installed_routes",
+            coverage.covered_epoch.map(|epoch| epoch.installed_routes)
+        );
+        gauge!(
+            "readiness_covered_epoch_actual_membership",
+            coverage.covered_epoch.map(|epoch| epoch.actual_membership)
+        );
         gauge!("readiness_coverage_complete", coverage.complete);
         gauge!("readiness_coverage_fresh", coverage.fresh);
         gauge!("readiness_groups_expected", coverage.expected_groups);
@@ -1815,6 +1910,48 @@ impl Observation {
             .collect();
         if !dedicated.is_empty() {
             storage_families(&mut out, "kasumi_local_group_storage_", &dedicated);
+        }
+        writeln!(out, "# TYPE kasumi_control_backup_sessions gauge").unwrap();
+        for (state, count) in [
+            (
+                "claimed_without_terminal",
+                self.backup_sessions.map(|s| s.claimed_without_terminal),
+            ),
+            ("completed", self.backup_sessions.map(|s| s.completed)),
+            ("aborted", self.backup_sessions.map(|s| s.aborted)),
+        ] {
+            match count {
+                Some(value) => writeln!(
+                    out,
+                    "kasumi_control_backup_sessions{{state=\"{state}\"}} {value}"
+                ),
+                None => writeln!(
+                    out,
+                    "kasumi_control_backup_sessions{{state=\"{state}\"}} NaN"
+                ),
+            }
+            .unwrap();
+        }
+        if let Some(remote) = &self.remote_control {
+            let current = remote.state == crate::remote_control::AccessState::Current;
+            for (family, value) in [
+                ("kasumi_remote_control_current", Value::from(current)),
+                (
+                    "kasumi_remote_control_topology_version",
+                    remote.topology_version.into(),
+                ),
+                (
+                    "kasumi_remote_control_verified_age_seconds",
+                    remote.verified_age_seconds.into(),
+                ),
+                (
+                    "kasumi_remote_control_consecutive_failures",
+                    remote.consecutive_failures.into(),
+                ),
+            ] {
+                writeln!(out, "# TYPE {family} gauge").unwrap();
+                writeln!(out, "{family} {value}").unwrap();
+            }
         }
         writeln!(out, "# TYPE kasumi_backup_requests_inflight gauge").unwrap();
         for (operation, counts) in &self.backup_requests {
@@ -2074,6 +2211,7 @@ mod tests {
                 hot_budget_bytes: 1000,
                 archive_budget_bytes: 1000,
             }),
+            text_warmup: figures.then_some(Default::default()),
             audit_maintenance: figures.then_some(kasumi_engine::AuditMaintenanceStatus {
                 failures: 0,
                 committed_segments: 2,
@@ -2135,6 +2273,11 @@ mod tests {
                     installed_routes: 1,
                     actual_membership: 0,
                 },
+                covered_epoch: samples.then_some(crate::readiness::Epoch {
+                    topology_version: 1,
+                    installed_routes: 1,
+                    actual_membership: 0,
+                }),
                 expected_groups: samples.then_some(2),
                 examined_groups: 2,
                 healthy_groups: 2,
@@ -2165,10 +2308,12 @@ mod tests {
             },
             standalone_recovery_pending: samples.then_some(false),
             credential_expires_at_ms: Some(1_000),
+            backup_sessions: None,
             backup_requests: BACKUP_OPERATIONS
                 .into_iter()
                 .map(|operation| (operation, RequestCounts::default()))
                 .collect(),
+            remote_control: None,
             standalone: true,
         }
     }

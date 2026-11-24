@@ -16,4 +16,4 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 url = "=2.5.8"
-imbl = { version = "=7.0.1", features = ["serde"] }
+imbl = { version = "=7.0.2", features = ["serde"] }

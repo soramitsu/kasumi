@@ -32,7 +32,8 @@ impl GroupTransaction {
             FileKind::Directory => (1, self.plan.new_directories),
         }
     }
-    fn growth(&mut self, file: GroupFile, current: u64, end: u64) -> io::Result<()> {
+    fn growth(&mut self, file: GroupFile, current: u64, end: u64) -> io::Result<u64> {
+        let mut reserved_end = end;
         if let Some(existing) = self
             .plan
             .segment
@@ -42,6 +43,9 @@ impl GroupTransaction {
         {
             if current < existing.initial_len || end < current || end > existing.maximum_len {
                 return Err(io::ErrorKind::InvalidData.into());
+            }
+            if file.kind == FileKind::Segment && end > current {
+                reserved_end = existing.maximum_len;
             }
         } else {
             let (index, range) = self.range(file);
@@ -59,9 +63,16 @@ impl GroupTransaction {
                 .checked_add(end - current)
                 .filter(|length| *length <= range.total_len)
                 .ok_or(io::ErrorKind::InvalidData)?;
+            if file.kind == FileKind::Segment && range.count == 1 && end > current {
+                reserved_end = range.total_len;
+            }
         }
         self.entered = true;
-        Ok(())
+        // SegmentWriter plans the encoded append before publication. An existing
+        // tail or a single new segment has its own prepaid ceiling. Let that
+        // spool extend EOF in bounded steps while its logical end tracks writes.
+        // Multiple fresh segments share one aggregate promise until they grow.
+        Ok(reserved_end)
     }
 }
 fn range_bytes(disk: &ScratchDisk, range: FileSpaceRange) -> Result<u64, ReserveFailure> {
@@ -372,8 +383,8 @@ impl State {
             .spool()
             .ok_or(io::ErrorKind::BrokenPipe)?;
         let transaction = self.transaction.as_mut().unwrap();
-        transaction.growth(file, spool.len(), end)?;
-        spool.reserve_claimed_growth(transaction.space.as_mut().unwrap(), end)
+        let reserved_end = transaction.growth(file, spool.len(), end)?;
+        spool.reserve_claimed_growth(transaction.space.as_mut().unwrap(), reserved_end)
     }
     pub(super) fn claim_root_growth(&mut self, end: u64) -> io::Result<()> {
         let Some(transaction) = self.transaction.as_mut() else {

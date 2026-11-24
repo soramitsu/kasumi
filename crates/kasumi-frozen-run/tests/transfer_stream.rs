@@ -2,7 +2,7 @@
 use kasumi_frozen_run::LiveDb;
 use sha2::{Digest, Sha256};
 use std::{
-    io::Write,
+    io::{ErrorKind, Write},
     path::Path,
     process::{Command, Stdio},
 };
@@ -12,21 +12,34 @@ fn import(bytes: &[u8], target: &Path) -> std::process::Output {
 }
 
 fn run_import(bytes: &[u8], target: &Path, rows: Option<&str>) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"));
+    command
         .arg(if rows.is_some() {
             "import-filtered"
         } else {
             "import"
         })
         .arg(target)
-        .args(rows)
+        .args(rows);
+    pipe_input(&mut command, bytes)
+}
+
+fn pipe_input(command: &mut Command, bytes: &[u8]) -> std::process::Output {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(bytes).unwrap();
-    child.wait_with_output().unwrap()
+    let written = child.stdin.take().unwrap().write_all(bytes);
+    let output = child.wait_with_output().unwrap();
+    if let Err(error) = written {
+        // Rejected arguments and existing targets may close stdin before
+        // the parent runs. Require the importer to have returned its error.
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+        assert_eq!(output.status.code(), Some(1));
+    }
+    output
 }
 
 #[test]
@@ -76,7 +89,9 @@ fn complete_trailer_is_required_for_publication_and_verify_rejects_wrong_source(
             .unwrap()
             .contains("\"read_only\":true")
     );
-    assert!(!import(&raw, &target).status.success());
+    let existing = import(&raw, &target);
+    assert_eq!(existing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&existing.stderr).contains("AlreadyExists"));
     assert_eq!(
         LiveDb::open(&target).unwrap().get(b"k").unwrap(),
         Some(Vec::new())
@@ -140,17 +155,8 @@ fn a_trailing_zstd_imports_the_same_rows_into_a_zstandard_database() {
     ]
     .concat();
     let executable = env!("CARGO_BIN_EXE_kasumi-live-transfer");
-    let run = |arguments: &[&std::ffi::OsStr]| {
-        let mut child = Command::new(executable)
-            .args(arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(&raw).unwrap();
-        child.wait_with_output().unwrap()
-    };
+    let run =
+        |arguments: &[&std::ffi::OsStr]| pipe_input(Command::new(executable).args(arguments), &raw);
     let dir = tempfile::tempdir().unwrap();
     let [plain, zstd, filtered, unknown] =
         ["plain", "zstd", "filtered", "unknown"].map(|name| dir.path().join(name));
@@ -172,11 +178,9 @@ fn a_trailing_zstd_imports_the_same_rows_into_a_zstandard_database() {
         .success()
     );
     // Any other trailing word is a usage error, before anything is created.
-    assert!(
-        !run(&[word("import"), unknown.as_os_str(), word("snappy")])
-            .status
-            .success()
-    );
+    let invalid = run(&[word("import"), unknown.as_os_str(), word("snappy")]);
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("usage: kasumi-live-transfer"));
     assert!(!unknown.exists());
     for (path, codec) in [
         (&plain, kasumi_frozen_run::BlockCodec::Lz4),

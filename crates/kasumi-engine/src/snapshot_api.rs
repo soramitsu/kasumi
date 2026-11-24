@@ -3,7 +3,7 @@
 use super::{TenantEngine, snapshot_bundle, validation_baseline::OwnedValidation};
 use crate::{
     admission::{CancelOnDrop, DocumentReadBudget, NodeAdmission, Reservation},
-    backup_verify::{VerificationDeadline, VerificationPhase},
+    backup_verify::{VerificationDeadline, VerificationPhase, WorkerFailure},
 };
 use kasumi_query::QueryCancellation;
 use kasumi_store::{SnapshotImage, TenantStore};
@@ -14,6 +14,30 @@ use std::{
 };
 
 const WORKSPACE: u64 = 64 << 20;
+
+/// The selected generation already knows the framed size of its logical
+/// stream. Reserve that prefix before writing. Bundle metadata and archives
+/// can still grow to the separate output limit.
+pub(super) fn capture_reserved(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    limit: u64,
+    logical: u64,
+    write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<SnapshotImage> {
+    let mut spool = reserved_spool(disk, limit, logical)?;
+    write(&mut spool)?;
+    SnapshotImage::freeze(spool)
+}
+
+pub(super) fn reserved_spool(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    limit: u64,
+    logical: u64,
+) -> std::io::Result<kasumi_store::EncryptedSpool> {
+    let mut spool = kasumi_store::EncryptedSpool::new(disk, limit)?;
+    spool.reserve(logical)?;
+    Ok(spool)
+}
 
 /// A fully verified backend image, staged without changing live state or Raft
 /// applied position. Installation still requires its enclosing Raft snapshot
@@ -45,29 +69,43 @@ struct Work {
     reservation: Arc<Reservation>,
 }
 impl Work {
+    async fn run<T: Send + 'static, E: WorkerFailure>(
+        self,
+        operation: impl FnOnce(&mut Self) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<(T, Self), E> {
+        self.deadline
+            .blocking_with(
+                self.reservation.blocking_owner(),
+                self,
+                |work| work.token.check(),
+                operation,
+            )
+            .await
+    }
+
     fn check(&self) -> anyhow::Result<()> {
         self.deadline.check()?;
         self.token.check()?;
         self.store.check_access()
     }
 }
-struct CheckedIo<'a, T> {
-    io: T,
-    work: &'a Work,
+pub(super) struct CheckedIo<'a, T> {
+    pub(super) io: T,
+    pub(super) check: &'a dyn Fn() -> anyhow::Result<()>,
 }
 impl<T: Read> Read for CheckedIo<'_, T> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.read(bytes)
     }
 }
 impl<T: Write> Write for CheckedIo<'_, T> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.flush()
     }
 }
@@ -105,15 +143,7 @@ impl TenantEngine {
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
         let generation = self.generation()?;
-        let logical = u64::try_from(generation.snapshot_bytes()?)
-            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?
-            .checked_add(generation.state.target_resolution_head.encoded_bytes)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "target snapshot size overflow",
-                )
-            })?;
+        let logical = generation.encoded_snapshot_bytes()?;
         let retention = &generation.state.audit_retention;
         let maximum = logical
             .checked_add(retention.archive_bytes)
@@ -127,22 +157,21 @@ impl TenantEngine {
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
-        let output = deadline
-            .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let output = work
+            .run(move |work| -> anyhow::Result<_> {
                 work.check()?;
-                let image = SnapshotImage::capture(work.store.scratch_disk(), maximum, |writer| {
-                    let mut checked = CheckedIo {
-                        io: writer,
-                        work: &work,
-                    };
-                    snapshot_bundle::write(&generation, &work.store, &mut checked)
-                })?;
+                let image =
+                    capture_reserved(work.store.scratch_disk(), maximum, logical, |writer| {
+                        let mut checked = CheckedIo {
+                            io: writer,
+                            check: &|| work.check(),
+                        };
+                        snapshot_bundle::write(&generation, &work.store, &mut checked)
+                    })?;
                 work.check()?;
-                Ok((image, work))
-            }))
+                Ok(image)
+            })
             .await
-            .map_err(error)?
-            .map_err(|e| error(e.into()))?
             .map_err(error)?;
         output.1.check().map_err(error)?;
         Ok(output.0)
@@ -163,23 +192,23 @@ impl TenantEngine {
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
         let prior = OwnedValidation::capture(self.clone())?;
-        let mut work = Work {
+        let work = Work {
             store,
             token: token.clone(),
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
         let wait_phase = VerificationPhase::start("public_restore.wait", Some(deadline));
-        let output = deadline
-            .run(tokio::task::spawn_blocking(
-                move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+        let output = work
+            .run(
+                move |work| -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
                     let layout = kasumi_store::ScratchOperationFailure::ordinary(|| {
                         work.check()?;
                         let phase =
                             VerificationPhase::start("public_restore.framing", Some(deadline));
                         let layout = snapshot_bundle::inspect(&mut CheckedIo {
                             io: image.reader(),
-                            work: &work,
+                            check: &|| work.check(),
                         })?;
                         phase.complete();
                         let additional = layout
@@ -215,7 +244,7 @@ impl TenantEngine {
                         &prior.baseline(),
                         &mut CheckedIo {
                             io: image.reader(),
-                            work: &work,
+                            check: &|| work.check(),
                         },
                         Some(layout),
                         // A public restore installs a transported bundle.
@@ -239,13 +268,11 @@ impl TenantEngine {
                         drop(prior);
                         drop(document_scope);
                         phase.complete();
-                        Ok((prepared, work))
+                        Ok(prepared)
                     })
                 },
-            ))
+            )
             .await
-            .map_err(error)?
-            .map_err(|e| error(e.into()))?
             .map_err(crate::SnapshotFailure::from)?;
         output.1.check().map_err(error)?;
         wait_phase.complete();
@@ -290,14 +317,14 @@ impl TenantEngine {
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
-        let (_, work) = deadline
-            .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let (_, work) = work
+            .run(move |work| -> anyhow::Result<()> {
                 work.check()?;
                 engine.verify_bootstrap_dependencies_checked(|| work.check())?;
                 work.check()?;
-                Ok(((), work))
-            }))
-            .await???;
+                Ok(())
+            })
+            .await?;
         work.check()
     }
 }

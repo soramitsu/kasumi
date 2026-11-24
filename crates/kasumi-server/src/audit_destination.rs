@@ -219,8 +219,37 @@ impl crate::runtime::RuntimeConfig {
         store: &Arc<kasumi_store::TenantStore>,
         cache: Option<Arc<FilesystemAuditArchive>>,
     ) -> Result<()> {
-        // Resolve before creating even the local cache or reading a credential.
+        self.install_tenant_archives_with(store, cache, Arc::new(crate::runtime::file_secret))
+    }
+
+    pub(crate) fn install_tenant_archives_with(
+        &self,
+        store: &Arc<kasumi_store::TenantStore>,
+        cache: Option<Arc<FilesystemAuditArchive>>,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<()> {
         let placement = self.tenant_audit_placement(store.tenant())?;
+        let resolver = self
+            .tenant_historical_keys
+            .get(store.tenant())
+            .map(|history| -> Result<_> {
+                let primary = if store.tenant() == crate::runtime::CONTROL_TENANT {
+                    &self.hosted_control()?.keys
+                } else {
+                    &self
+                        .tenants
+                        .iter()
+                        .find(|t| t.tenant == store.tenant())
+                        .context("tenant archive primary missing")?
+                        .keys
+                };
+                Ok(crate::local_recovery::keys::RecoveryKeys::open_with(
+                    primary, history, credential,
+                )?
+                .into_resolver())
+            })
+            .transpose()?;
+        store.install_archive_read_keys(resolver)?;
         let cache = match cache {
             Some(cache) => cache,
             None => {
@@ -271,12 +300,16 @@ impl crate::runtime::RuntimeConfig {
     }
 
     pub(crate) fn validate_tenant_audit_placements(&self) -> Result<()> {
-        let expected: std::collections::BTreeSet<_> =
-            std::iter::once(crate::runtime::CONTROL_TENANT)
-                .chain(self.tenants.iter().map(|tenant| tenant.tenant.as_str()))
-                .collect();
+        // A data-only node hosts no Control group and installs no Control archive.
+        let control = usize::from(self.control.is_some());
+        let expected: std::collections::BTreeSet<_> = self
+            .control
+            .iter()
+            .map(|_| crate::runtime::CONTROL_TENANT)
+            .chain(self.tenants.iter().map(|tenant| tenant.tenant.as_str()))
+            .collect();
         ensure!(
-            expected.len() == self.tenants.len() + 1
+            expected.len() == self.tenants.len() + control
                 && self.tenant_audit_placements.len() == expected.len()
                 && expected
                     .iter()

@@ -204,11 +204,43 @@ impl Fixture {
             epoch,
         };
         result.open(true).await;
-        kasumi_engine::control::ControlPlane::new(result.leader().await)
-            .unwrap()
-            .require_initialized(&result.context("owner"))
-            .await
-            .unwrap();
+        // A linearizable read barrier can succeed before the audit append for
+        // the next strict read is acknowledged. Setup is complete only after
+        // a real authorized read confirms its audit and the installed schema.
+        let owner = result.context("owner");
+        let mut failures = Vec::new();
+        let verified = tokio::time::timeout(Duration::from_secs(120), async {
+            for _ in 0..4 {
+                let leader = result.leader().await;
+                let before = leader.raft_group().raft().metrics().borrow().current_term;
+                let plane = kasumi_engine::control::ControlPlane::new(leader.clone()).unwrap();
+                match plane.require_initialized(&owner).await {
+                    Ok(()) => return true,
+                    Err(error) if error.code == ErrorCode::AuditUnavailable => {
+                        let metrics = leader.raft_group().raft().metrics().borrow().clone();
+                        let attempt = (
+                            before,
+                            metrics.current_term,
+                            metrics.current_leader,
+                            metrics.last_log_index,
+                            metrics.last_applied,
+                            error,
+                        );
+                        eprintln!(
+                            "Control initialization strict read was unconfirmed: {attempt:?}"
+                        );
+                        failures.push(attempt);
+                    }
+                    Err(error) => panic!("Control initialization read failed: {error:?}"),
+                }
+            }
+            false
+        })
+        .await;
+        assert!(
+            matches!(verified, Ok(true)),
+            "Control initialization lacks a durable audited read: {failures:?}"
+        );
         result
             .leader()
             .await
@@ -448,7 +480,7 @@ impl Fixture {
                 let control = generation.state.lifecycle_control.as_ref().unwrap();
                 assert!(control.pending_change.is_some());
                 assert!(
-                    !control.intents.contains_key(&request.command_id),
+                    control.intent(request.command_id).unwrap().is_none(),
                     "intent unexpectedly committed while issuance was closed"
                 );
                 match result {
@@ -821,10 +853,10 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(request.command_id)
             .unwrap()
-            .intents[&request.command_id],
+            .unwrap()
+            .clone(),
         signed.observation.intent
     );
     assert_eq!(
@@ -877,10 +909,9 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(request.command_id)
         .unwrap()
-        .intents[&request.command_id]
+        .unwrap()
         .clone();
     assert_eq!(
         materialization.original_credential_expires_at_ms,
@@ -994,10 +1025,10 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(request.command_id)
             .unwrap()
-            .intents[&request.command_id],
+            .unwrap()
+            .clone(),
         origin.materialization
     );
     drop(observed);
@@ -1029,10 +1060,10 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(resume.command_id)
             .unwrap()
-            .intents[&resume.command_id],
+            .unwrap()
+            .clone(),
         signed.observation.intent
     );
     assert_eq!(
@@ -1492,30 +1523,45 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
         )
         .unwrap();
     let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(&original).unwrap();
-    let retained = state
-        .lifecycle_control
-        .as_mut()
-        .map(std::sync::Arc::make_mut)
-        .unwrap()
-        .intents
-        .get_mut(&intent.command_id)
+    state
+        .alter_single_lifecycle_intent(
+            db.raft_group()
+                .storage_domains()
+                .application()
+                .scratch_disk(),
+            intent.command_id,
+            |retained| retained.original_credential_expires_at_ms += 1000,
+        )
         .unwrap();
-    retained.original_credential_expires_at_ms += 1000;
-    assert!(
+    let altered = kasumi_engine::test_utils::encode_snapshot_candidate(
+        db.raft_group()
+            .storage_domains()
+            .application()
+            .scratch_disk(),
+        &state,
+        64 << 20,
+    )
+    .unwrap();
+    // The alternate snapshot is internally valid. Its original commitment has
+    // changed, so restoring it over the selected history is forbidden.
+    let verified = kasumi_engine::test_utils::decode_snapshot_candidate(&altered).unwrap();
+    assert_eq!(
+        verified
+            .lifecycle_intent(intent.command_id)
+            .unwrap()
+            .unwrap()
+            .original_credential_expires_at_ms,
         db.engine()
-            .fixture_restore(
-                &kasumi_engine::test_utils::encode_snapshot_candidate(
-                    db.raft_group()
-                        .storage_domains()
-                        .application()
-                        .scratch_disk(),
-                    &state,
-                    64 << 20
-                )
-                .unwrap()
-            )
-            .is_err()
+            .generation()
+            .unwrap()
+            .state
+            .lifecycle_intent(intent.command_id)
+            .unwrap()
+            .unwrap()
+            .original_credential_expires_at_ms
+            + 1000
     );
+    assert!(db.engine().fixture_restore(&altered).is_err());
     assert_eq!(
         original,
         db.engine()

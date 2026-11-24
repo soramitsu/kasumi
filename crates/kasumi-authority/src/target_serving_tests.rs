@@ -8,7 +8,7 @@ fn journal_path(f: &MaterialFixture, id: u64) -> std::path::PathBuf {
     f.physical[&id].path(format!("serving-journal-{id}.kv"))
 }
 
-async fn journal(
+pub(super) async fn journal(
     f: &MaterialFixture,
     id: u64,
     path: &std::path::Path,
@@ -19,6 +19,7 @@ async fn journal(
     NodeStore,
 ) {
     let installation = kasumi_engine::TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().into_iter().find(|node| node.node_id == id).unwrap(),
         audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -75,7 +76,9 @@ pub(super) async fn record_follower_projection(
     input_digest: &str,
 ) {
     let (journal, store, node) = journal(f, follower.id, &journal_path(f, follower.id), true).await;
-    journal.prepare(&follower.operation, input_digest).unwrap();
+    journal
+        .prepare_observed(&follower.operation, input_digest, &f.writer(&journal))
+        .unwrap();
     let projection = journal
         .record_activation(&follower.operation, proof, &f.signers[&follower.id])
         .await

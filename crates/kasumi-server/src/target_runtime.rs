@@ -20,6 +20,8 @@ use kasumi_store::{
     BackupDestination, NodeDiskDirectory, NodeStore, StorageAccess, TenantStorageSet, TenantStore,
 };
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
+#[path = "target_checkpoint_inventory.rs"]
+mod checkpoint_inventory;
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 #[cfg(test)]
@@ -85,6 +87,10 @@ macro_rules! snapshot_ensure {
 fn missing_target_owner(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::Unavailable, message)
 }
+#[path = "target_cleanup.rs"]
+mod cleanup;
+#[path = "target_deletion_status.rs"]
+mod deletion_status;
 #[path = "target_membership_status.rs"]
 mod initial_membership_status;
 #[path = "target_start_status.rs"]
@@ -133,12 +139,63 @@ impl RestoreDrainObservation {
             .context("no actual committed marker captured at target drain")
     }
 }
+struct StopDrainWitness<'a> {
+    journal: &'a TargetJournal,
+    operation: &'a TargetOperation,
+    proof: &'a VerifiedTargetStop,
+}
+
+// A failed journal observation belongs to this still-owned StopLocal
+// attempt. Keep previous terminal child failures in the generation report,
+// and let a fresh authorized retry persist the missing progress mark.
+fn owner_drain_observation(report: &DrainReport, result: Result<()>) -> DrainResult {
+    match result {
+        Ok(()) => Ok(()),
+        Err(original) => {
+            let issue = DrainReport::default().record("target drain progress", 0, original);
+            report.outcome(Some(DrainFailure::retained(issue)))
+        }
+    }
+}
+
 impl Generation {
     async fn close(
         &mut self,
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
     ) -> DrainResult {
+        self.close_with_witness(cluster, registry, None).await
+    }
+
+    async fn close_with_witness(
+        &mut self,
+        cluster: &ClusterNetwork,
+        registry: &crate::api::DatabaseRegistry,
+        witness: Option<StopDrainWitness<'_>>,
+    ) -> DrainResult {
+        use kasumi_engine::TargetOwnerDrain::*;
+        let observe = |stage, report: &DrainReport| -> DrainResult {
+            if let Some(witness) = &witness {
+                owner_drain_observation(
+                    report,
+                    witness
+                        .journal
+                        .record_owner_drain(witness.operation, witness.proof, stage),
+                )?;
+            }
+            Ok(())
+        };
+        let gate_owner =
+            self.phase.is_some() || self.registered_data.is_some() || self.replica.is_some();
+        let worker_owner = self.phase.is_some()
+            || self.lease.is_some()
+            || self.replica.is_some()
+            || self.serving.is_some()
+            || self.custody.is_some()
+            || self.custody_probe.is_some();
+        if gate_owner {
+            observe(ClosingGates, &self.report)?;
+        }
         let mut retained = None;
         let mut custody_route_closed = true;
         if let Some(phase) = &self.phase {
@@ -149,6 +206,12 @@ impl Generation {
         }
         if let Some(replica) = &self.replica {
             replica.database().seal_admission();
+        }
+        if gate_owner {
+            observe(GatesClosed, &self.report)?;
+        }
+        if worker_owner {
+            observe(DrainingWorkers, &self.report)?;
         }
         // StopLocal's active operation belongs to its fresh request phase;
         // self.phase is the prior generation phase. Join its detached work
@@ -311,6 +374,19 @@ impl Generation {
                 }
             }
         }
+        let workers_joined = retained.is_none() && self.report.issues().is_empty();
+        if worker_owner && workers_joined {
+            observe(WorkersDrained, &self.report)?;
+        }
+        let storage_owner = self.stores.is_some()
+            || self.node.is_some()
+            || self
+                .node_retirement
+                .as_ref()
+                .is_some_and(|owner| !owner.is_retired());
+        if storage_owner && workers_joined {
+            observe(DrainingStorage, &self.report)?;
+        }
         if let Some(stores) = &self.stores {
             match stores.shutdown().await {
                 Ok(()) => {
@@ -356,7 +432,11 @@ impl Generation {
             // Keep the actual positive receipt in this generation. An earlier
             // independent locator cannot recover it from a now-vacant cell.
         }
-        self.report.outcome(retained)
+        let result = self.report.outcome(retained);
+        if result.is_ok() && storage_owner && workers_joined {
+            observe(StorageDrained, &self.report)?;
+        }
+        result
     }
 }
 enum ResponseEvidence {
@@ -549,6 +629,33 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    pub(crate) fn install_data_key_inventory(
+        self: &Arc<Self>,
+        data: &Arc<kasumi_engine::Database>,
+        root: &kasumi_types::ControlSigningRoot,
+    ) -> Result<()> {
+        data.install_data_target_inventory(
+            &self.journal,
+            root,
+            Arc::new(checkpoint_inventory::Installed {
+                runtime: Arc::downgrade(self),
+                control: Arc::downgrade(data),
+            }),
+        )
+    }
+    pub(crate) fn install_key_inventory(
+        self: &Arc<Self>,
+        control: &Arc<kasumi_engine::Database>,
+    ) -> Result<()> {
+        control.install_target_checkpoint_inventory(
+            &self.journal,
+            Arc::new(checkpoint_inventory::Installed {
+                runtime: Arc::downgrade(self),
+                control: Arc::downgrade(control),
+            }),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn test_initial_dispatch_status(
         &self,
@@ -951,6 +1058,89 @@ impl TargetRecoveryRuntime {
         Ok(())
     }
 
+    async fn observe_current_writer(
+        &self,
+        context: &RequestContext,
+        bearer: &Zeroizing<String>,
+        operation: Option<&kasumi_engine::TargetOperation>,
+    ) -> Result<(
+        kasumi_engine::TargetWriterRead,
+        kasumi_types::SignedTargetWriterObservation,
+    )> {
+        context.authorization.check_live()?;
+        context
+            .authorization
+            .require_control(&self.installed.control_root.control_incarnation.to_string())?;
+        ensure!(
+            context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
+            "current installed Control administrator required"
+        );
+        ensure!(
+            !self.closing.load(Ordering::Acquire),
+            "target writer has closed"
+        );
+        let original = match operation {
+            Some(op) => self.journal.begin_generation_writer_read(op)?,
+            None => self.journal.begin_writer_read()?,
+        };
+        let signed_challenge = self.signer.sign_writer_challenge(&original)?;
+        let credential = bearer.clone();
+        let mut control = kasumi_client::KasumiLifecyclePool::new(
+            self.installed.control_connections()?,
+            ControlTrust::install(self.installed.control_root.clone())?,
+            Arc::new(move || Ok(credential.clone())),
+        )?;
+        let observation = control
+            .observe_target_writer(&signed_challenge, std::time::Duration::from_secs(25))
+            .await?;
+        ensure!(
+            !self.closing.load(Ordering::Acquire),
+            "target writer has closed"
+        );
+        context.authorization.check_live()?;
+        Ok((original, observation))
+    }
+    pub(crate) async fn refresh_writer(
+        &self,
+        context: &RequestContext,
+        bearer: Zeroizing<String>,
+        query: &kasumi_types::RefreshTargetWriter,
+    ) -> Result<kasumi_types::TargetWriterReceipt> {
+        query.validate()?;
+        ensure!(
+            query.root == self.installed.control_root
+                && query.verifier == self.installed.node.verifier,
+            "writer refresh differs from installed target"
+        );
+        let _call = self
+            .calls
+            .clone()
+            .try_acquire_owned()
+            .context("target writer concurrency exhausted")?;
+        let (original, observation) = self.observe_current_writer(context, &bearer, None).await?;
+        let catalog = original.challenge().catalog;
+        let digest = observation.observation.retirements.target_writer_digest()?;
+        ensure!(
+            digest == query.state_sha256,
+            "committed writer state changed during synchronization"
+        );
+        context.authorization.check_live()?;
+        original.accept(&observation)?;
+        context.authorization.check_live().map_err(|e| {
+            anyhow::Error::from(
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::UnknownOutcome,
+                    "target writer release lost its original credential after persistence",
+                )
+                .with_physical_source(e.into()),
+            )
+        })?;
+        Ok(kasumi_types::TargetWriterReceipt {
+            request_sha256: kasumi_types::staged_digest(query)?.0,
+            catalog,
+            state_sha256: digest,
+        })
+    }
     pub fn control_root(&self) -> &ControlSigningRoot {
         &self.installed.control_root
     }
@@ -1082,6 +1272,7 @@ impl TargetRecoveryRuntime {
         let phase = RuntimeTargetPhase::acquire(
             &self.installed,
             &self.journal,
+            &self.signer,
             authority,
             self.authority_trusts
                 .get(&template.authority)
@@ -1174,12 +1365,33 @@ impl TargetRecoveryRuntime {
             phase.check_request(&admission, &context, &bearer).await?;
             let operation = phase.scope().begin_admitted(admission)?;
             let proof = phase.target_stop(&operation, reference).await?;
-            self.journal.stop(&operation, &proof)?;
+            match self.journal.stop(&operation, &proof) {
+                Err(error) if error.is::<kasumi_engine::MissingTargetWriter>() => {
+                    let writer = operation
+                        .run(async {
+                            let (original, signed) = self
+                                .observe_current_writer(&context, &bearer, Some(&operation))
+                                .await?;
+                            original.admit(&signed)
+                        })
+                        .await?;
+                    self.journal.stop_observed(&operation, &proof, &writer)?;
+                }
+                result => result?,
+            }
             failure.accepted();
             operation
                 .run::<_, SnapshotFailure>(async {
                     generation
-                        .close(&self.cluster, &self.registry)
+                        .close_with_witness(
+                            &self.cluster,
+                            &self.registry,
+                            Some(StopDrainWitness {
+                                journal: &self.journal,
+                                operation: &operation,
+                                proof: &proof,
+                            }),
+                        )
                         .await
                         .map_err(Into::into)
                 })
@@ -1265,7 +1477,27 @@ impl TargetRecoveryRuntime {
         trace_owned_stage(request.command_id, "check_request", started, &checked);
         checked?;
         let operation = phase.scope().begin_followup(admission)?;
-        self.journal.prepare(&operation, &input_hash)?;
+        self.journal
+            .prepare_runtime(
+                &operation,
+                &request.step,
+                &input_hash,
+                || async {
+                    let (original, signed) = self
+                        .observe_current_writer(&context, &bearer, Some(&operation))
+                        .await?;
+                    original.admit(&signed)
+                },
+                |input| {
+                    self.materialization_source(
+                        &template,
+                        intent.request.source_incarnation,
+                        input,
+                        true,
+                    )
+                },
+            )
+            .await?;
         failure.accepted();
         // From this accepted durable identity onward, any local failure is an
         // unresolved effect. No caller infers abort from absence or an RPC error.
@@ -1619,7 +1851,38 @@ impl TargetRecoveryRuntime {
             }
             op.check()?;
         }
+        // Every acquisition, including one retained after a failed earlier
+        // binding, is bound before any catalog work.
+        self.bind_generation_node(g, op, key)?;
         Ok(())
+    }
+    /// Bind the storage the original materialization created before any
+    /// catalog work; every later opening must find that same directory.
+    /// Storage opened before its binding was recorded is bound by the store
+    /// identity its root carries, which the opening verified.
+    fn bind_generation_node(
+        &self,
+        g: &Generation,
+        op: &TargetOperation,
+        key: &GenerationKey,
+    ) -> Result<()> {
+        let node = g.node.as_ref().context("target node is not retained")?;
+        let binding = kasumi_engine::TargetFileBinding {
+            tenant: key.0.clone(),
+            target_incarnation: key.1,
+            path: self.path(key)?,
+            directory: node.physical_identity()?.directory,
+            directory_stamp: node.target_directory_stamp()?,
+            node_store_id: self.generation_file_id(key)?,
+        };
+        match self.journal.materialization_file_binding(&key.0, key.1)? {
+            Some(bound) => ensure!(
+                bound == binding,
+                "target storage differs from its originally bound directory"
+            ),
+            None => self.journal.bind_materialization_file(op, &binding)?,
+        }
+        op.check()
     }
     async fn prepare_generation_stores(
         &self,
@@ -1675,6 +1938,43 @@ impl TargetRecoveryRuntime {
             .install(stores.application(), None)?;
         Ok(stores)
     }
+    fn materialization_source(
+        &self,
+        template: &TargetTenantTemplate,
+        incarnation: Uuid,
+        input: &TargetMaterializationInput,
+        writer_verification: bool,
+    ) -> Result<kasumi_engine::RestoreSource> {
+        let source = template
+            .source_backups
+            .get(&incarnation)
+            .ok_or_else(|| missing_target_owner("source backup key lineage is not installed"))?;
+        ensure!(
+            source.destination_alias == input.destination_alias,
+            "backup destination differs from installed lineage"
+        );
+        Ok(kasumi_engine::RestoreSource {
+            destination_alias: source.destination_alias.clone(),
+            destination: self
+                .destinations
+                .get(&source.destination_alias)
+                .ok_or_else(|| missing_target_owner("backup destination missing"))?
+                .clone(),
+            keys: match &source.read_key_binding {
+                Some(binding) => crate::local_recovery::keys::RecoveryKeys::open_with(
+                    &source.keys,
+                    &source.historical_keys,
+                    self.credential.clone(),
+                )?
+                .bound_digest(binding)?,
+                None if writer_verification => {
+                    anyhow::bail!("target writer lacks independently bound historical keys")
+                }
+                None => source.keys.provider(self.credential.clone())?,
+            },
+            timeout_ms: self.installed.limits.operation_timeout_ms,
+        })
+    }
     async fn perform_materialization_owned(
         &self,
         g: &mut Generation,
@@ -1698,25 +1998,9 @@ impl TargetRecoveryRuntime {
             _ => unreachable!(),
         };
         self.placement(input)?;
-        let source = template
-            .source_backups
-            .get(&intent.request.source_incarnation)
-            .ok_or_else(|| missing_target_owner("source backup key lineage is not installed"))?;
-        snapshot_ensure!(
-            source.destination_alias == input.destination_alias,
-            "backup destination differs from installed lineage"
-        );
         op.check()?;
-        let source = kasumi_engine::RestoreSource {
-            destination_alias: source.destination_alias.clone(),
-            destination: self
-                .destinations
-                .get(&source.destination_alias)
-                .ok_or_else(|| missing_target_owner("backup destination missing"))?
-                .clone(),
-            keys: source.keys.provider(self.credential.clone())?,
-            timeout_ms: self.installed.limits.operation_timeout_ms,
-        };
+        let source =
+            self.materialization_source(template, intent.request.source_incarnation, input, false)?;
         let configuration = kasumi_engine::TargetMaterializationConfig {
             node_id: self.installed.node.node_id,
             incarnation: key.1,
@@ -1889,12 +2173,11 @@ impl TargetRecoveryRuntime {
                 startup,
             )
             .await?;
-            let group = replica.database().raft_group();
             let name = format!("{}/{}", key.0, key.1);
             let check = stores.clone();
-            self.cluster.register_group_with_bootstrap(
+            self.cluster.register_database_group(
                 name.clone(),
-                group.raft().clone(),
+                replica.database(),
                 first.fact.origin.input.voters.keys().copied().collect(),
                 first.fact.bootstrap_sha256.clone(),
                 Arc::new(move || check.check_access()),
@@ -2191,34 +2474,28 @@ impl TargetRecoveryRuntime {
         op.check()?;
         self.journal.stop(op, proof)?;
         let path = self.path(key)?;
-        if target_file_exists(&path)? {
-            // Permanent journal stop and joined generation owners precede this
-            // exact Prepared/Ready file claim. No KV engine or application keys open.
-            let node = NodeStore::claim_cleanup(
-                &path,
-                self.generation_file_id(key)?,
-                self.audit.store().persistent_disk().clone(),
-                self.audit.store().persistent_disk().native_storage_config(),
-            )?;
-            ensure!(
-                kasumi_store::private_files::directory_identity(&path)?
-                    == node.directory_identity()?,
-                "target cleanup path changed after ownership"
-            );
-            op.check()?;
-            node.delete()?;
-        } else {
-            // A path-based NotFound is only a hint. Verify it against the
-            // installed, enrolled parent before signing an absence claim.
-            target_absence_from_installed_disk(
-                &self.config.persistent_disk,
-                self.audit.store().persistent_disk(),
-                &path,
-            )?;
-        }
-        // Keep the same enrolled parent directory under physical ownership
-        // through both exact unlink and the absent-file cleanup case.
-        self.generation_directory.sync_all()?;
+        // Permanent journal stop and joined generation owners precede this
+        // exact claim of the originally bound storage. No KV engine or
+        // application keys open; the durable terminal outcome follows the
+        // confirmed deletion and parent sync.
+        cleanup::delete_exact(
+            &JournalCleanup {
+                journal: &self.journal,
+                op,
+                key,
+            },
+            &cleanup::TargetStorage {
+                disk: self.audit.store().persistent_disk(),
+                config: &self.config.persistent_disk,
+                parent: &self.generation_directory,
+            },
+            &cleanup::TargetFile {
+                tenant: &key.0,
+                target: key.1,
+                path: &path,
+                node_store_id: self.generation_file_id(key)?,
+            },
+        )?;
         op.check()?;
         self.journal.stop(op, proof)?;
         let intent = op
@@ -2326,6 +2603,28 @@ impl TargetRecoveryRuntime {
         report.outcome(retained)
     }
 }
+/// The target journal's cleanup records under one StopLocal operation.
+struct JournalCleanup<'a> {
+    journal: &'a TargetJournal,
+    op: &'a TargetOperation,
+    key: &'a GenerationKey,
+}
+impl cleanup::CleanupLedger for JournalCleanup<'_> {
+    fn binding(&self) -> Result<Option<kasumi_engine::TargetFileBinding>> {
+        self.journal
+            .materialization_file_binding(&self.key.0, self.key.1)
+    }
+    fn cleanup(&self) -> Result<Option<kasumi_engine::TargetCleanup>> {
+        self.journal.target_cleanup(&self.key.0, self.key.1)
+    }
+    fn record(&self, cleanup: &kasumi_engine::TargetCleanup) -> Result<()> {
+        self.journal.record_target_cleanup(self.op, cleanup)
+    }
+    fn check(&self) -> Result<()> {
+        self.op.check()
+    }
+}
+
 // StopLocal resolves this exact path before it can claim or unlink a target
 // inode. A retained managed-directory failure is a custody fence, not an
 // absent-file observation from which cleanup evidence could be signed.

@@ -69,9 +69,9 @@ pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DirectoryPageFormat {
     /// The original fixed-width, uncompressed 16 KiB page format.
-    #[default]
     Fixed,
     /// Pack variable-length LZ4 or raw representations of the same authenticated pages.
+    #[default]
     Lz4,
 }
 
@@ -119,6 +119,7 @@ pub enum RootSlot {
 }
 
 impl RootSlot {
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn index(self) -> usize {
         match self {
             Self::A => 0,
@@ -1251,6 +1252,33 @@ mod tests {
         assert_eq!(slots(&restarted), before);
         repair_mirror(&restarted, &selected_root, slot).unwrap();
         assert_eq!(selected(&restarted.crash()), (next, RootSlot::A, true));
+    }
+
+    #[test]
+    fn interrupted_mirror_repair_always_preserves_the_selected_generation() {
+        for effect in [GroupOp::RootWrite, GroupOp::RootSync] {
+            for timing in [FaultTiming::BeforeEffect, FaultTiming::AfterEffect] {
+                let (group, root) = published(2);
+                let (next, _) = root.reserve_segment(None).unwrap();
+                group.fail(GroupOp::RootSync, 2, FaultTiming::BeforeEffect);
+                publish_root(&group, &root, &next).unwrap_err();
+                let torn = group.crash_torn_root(RootSlot::A, 64);
+                let (selected_root, slot, mirrored) = selected(&torn);
+                assert_eq!(selected_root, next);
+                assert!(!mirrored);
+                torn.fail(effect, 1, timing);
+                repair_mirror(&torn, &selected_root, slot).unwrap_err();
+                let restarted = torn.crash();
+                let (recovered, recovered_slot, mirrored) = selected(&restarted);
+                assert_eq!(recovered, next);
+                assert_eq!(
+                    mirrored,
+                    effect == GroupOp::RootSync && timing == FaultTiming::AfterEffect
+                );
+                repair_mirror(&restarted, &recovered, recovered_slot).unwrap();
+                assert_eq!(selected(&restarted.crash()), (next, RootSlot::A, true));
+            }
+        }
     }
 
     #[test]

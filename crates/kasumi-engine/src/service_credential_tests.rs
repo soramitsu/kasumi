@@ -166,6 +166,30 @@ fn credential_batch(id: &str) -> MutationBatch {
 }
 
 #[tokio::test]
+async fn public_snapshot_includes_the_selected_permanent_receipt_prefix() {
+    let fixture = CredentialFixture::new().await;
+    let suffix = "r".repeat(160);
+    for group in 0..8 {
+        let mut batch = MutationBatch::with_key(format!("snapshot-receipts-{group}"));
+        for row in 0..64 {
+            batch = batch.insert("docs", format!("row-{group}-{row}-{suffix}"), json!({"value":7}));
+        }
+        fixture.db.mutate(fixture.context.clone(), batch).await.unwrap();
+    }
+    let engine = fixture.db.engine();
+    let generation = engine.generation().unwrap();
+    let receipts = generation.state.mutation_receipt_head.encoded_bytes;
+    assert!(receipts > 80 << 10);
+    let resident = generation.snapshot_bytes().unwrap() as u64;
+    drop(generation);
+    let snapshot = engine.snapshot(fixture.storage.admission.clone(), 120_000).await.unwrap();
+    assert!(snapshot.len() >= resident + receipts);
+    let restored = engine.prepare_snapshot_restore(snapshot, fixture.storage.admission.clone(), 120_000).await.unwrap();
+    drop(restored);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn owned_response_fence_retains_workspace_and_original_credential_after_adapter_return() {
     let fixture = CredentialFixture::new().await;
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
@@ -571,6 +595,11 @@ impl BackupDestination for CredentialPausedDestination {
     fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
         kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
     }
+    async fn verified_namespace_binding(
+        &self,
+    ) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.inner.verified_namespace_binding().await
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,
@@ -864,5 +893,129 @@ async fn oversized_request_ids_are_refused_before_any_proposal() {
         ("mutation", bounded.request_id.as_str())
     );
     drop(generation);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn tenant_audit_export_keeps_its_end_across_new_events_and_rejects_changed_cursors() {
+    let fixture = CredentialFixture::new().await;
+    let db = &fixture.db;
+    let mut auditor = fixture.context.clone();
+    auditor.scopes.insert(Action::Audit);
+    let policy = Policy {
+        grants: vec![Grant {
+            principal: auditor.principal.clone(),
+            collection: None,
+            actions: auditor.scopes.clone(),
+        }],
+        strict_read_audit: false,
+    };
+    db.administer(
+        fixture.context.clone(),
+        Operation::SetPolicy(policy.clone()),
+    )
+    .await
+    .unwrap();
+    let request = TenantAuditExportRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let page = db
+        .export_tenant_audit(&auditor, request.clone())
+        .await
+        .unwrap();
+    page.validate(&request).unwrap();
+    assert_eq!(page.records[0].sequence, 0);
+    let cursor = page.cursor().unwrap();
+    db.mutate(auditor.clone(), credential_batch("after-capture"))
+        .await
+        .unwrap();
+    let request = TenantAuditExportRequest {
+        cursor: Some(cursor.clone()),
+        limit: 10,
+    };
+    let later = db
+        .export_tenant_audit(&auditor, request.clone())
+        .await
+        .unwrap();
+    later.validate(&request).unwrap();
+    assert_eq!(later.records[0].sequence, 1);
+    assert_eq!(later.through_sequence, page.through_sequence);
+    let mut forged = cursor.clone();
+    let tag = forged.ticket.as_mut().unwrap();
+    let replacement = if tag.ends_with('a') { "b" } else { "a" };
+    tag.replace_range(tag.len() - 1.., replacement);
+    assert_eq!(
+        db.export_tenant_audit(
+            &auditor,
+            TenantAuditExportRequest {
+                cursor: Some(forged),
+                limit: 1
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::CursorExpired
+    );
+    let mut changed = policy;
+    changed.strict_read_audit = true;
+    db.administer(auditor.clone(), Operation::SetPolicy(changed))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.export_tenant_audit(&auditor, request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnected_adapter_retains_its_workspace_database_and_original_child_error() {
+    let fixture = CredentialFixture::new().await;
+    let fence = fixture.db.owned_response_fence(&fixture.context).unwrap();
+    let observe = fence.workspace.observe_fixture_charge();
+    let original = observe().unwrap();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (resume, blocked) = std::sync::mpsc::channel();
+
+    let caller = tokio::spawn(async move {
+        let _ = fence.run_blocking(move || {
+            entered.send(()).unwrap();
+            blocked.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            Err::<(), _>(kasumi_serving::ChildFailure::Failed(
+                std::io::Error::from_raw_os_error(libc::EIO).into(),
+            ))
+        }).await;
+    });
+    waiting.await.unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(observe(), Some(original));
+
+    fixture.db.seal_admission();
+    let mut work = Box::pin(fixture.db.work.drain());
+    let mut children = Box::pin(fixture.storage.admission.drain_blocking_children());
+    std::future::poll_fn(|cx| {
+        assert!(work.as_mut().poll(cx).is_pending());
+        assert!(children.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    drop(children);
+    resume.send(()).unwrap();
+    work.await;
+    let failure = fixture.storage.admission.drain_blocking_children().await.unwrap_err();
+    let original_issue = failure.issues().iter().find(|issue| {
+        issue.error().downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(libc::EIO)
+    }).unwrap();
+    let repeated = fixture.storage.admission.drain_blocking_children().await.unwrap_err();
+    assert!(repeated.issues().iter().any(|issue| {
+        kasumi_types::drain::DrainIssueRef::ptr_eq(issue, original_issue)
+    }));
+    assert_eq!(observe(), None);
+    drop(observe);
     fixture.close().await;
 }

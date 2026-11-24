@@ -8,6 +8,8 @@ struct Observation {
     calls: usize,
     receipt_rows: Vec<(String, Vec<u8>, Vec<u8>)>,
     body_writes: usize,
+    primary_manifest: bool,
+    structured_manifest: bool,
     response: Vec<u8>,
     committed: bool,
 }
@@ -90,13 +92,26 @@ impl kasumi_raft::ApplyPublisher for InspectPublication<'_> {
         ));
         let application = self.fixture.fixture.stores.application();
         for write in writes {
-            let WriteOp::Put {
-                namespace,
-                key,
-                value,
-            } = write
-            else {
-                panic!("unexpected deletion in immutable publication")
+            use kasumi_store::{primary_manifest as primary, structured_manifest as structured};
+            let (WriteOp::Put { namespace, key, .. } | WriteOp::Delete { namespace, key }) = write;
+            if let WriteOp::Put { .. } = write {
+                if namespace == primary::MANIFESTS && key == primary::CURRENT {
+                    self.observation.primary_manifest = true;
+                    continue;
+                }
+                if namespace == structured::MANIFESTS && key == structured::CURRENT {
+                    self.observation.structured_manifest = true;
+                    continue;
+                }
+            }
+            if [primary::FAMILY, structured::FAMILY]
+                .iter()
+                .any(|family| directory_write(namespace, key, family))
+            {
+                continue;
+            }
+            let WriteOp::Put { value, .. } = write else {
+                panic!("unexpected deletion in immutable publication: {namespace}");
             };
             if namespace.starts_with("mutation-receipt-") {
                 assert!(
@@ -170,6 +185,27 @@ impl kasumi_raft::ApplyPublisher for InspectPublication<'_> {
             application.seal();
         }
         Ok(receipt)
+    }
+}
+
+/// Each directory may publish and displace its own pages in the joint write.
+fn directory_write(namespace: &str, key: &[u8], family: &str) -> bool {
+    let space = |name: &[u8]| {
+        name == family.as_bytes()
+            || name
+                .strip_prefix(family.as_bytes())
+                .is_some_and(|rest| rest.starts_with(b"@"))
+    };
+    match namespace {
+        "kasumi.app.selection" => key == family.as_bytes(),
+        "kasumi.app.staging" => space(key),
+        "kasumi.app.edit-owners.v2" => {
+            key.split_first_chunk::<2>().is_some_and(|(length, tail)| {
+                let size = usize::from(u16::from_be_bytes(*length));
+                tail.len() == size + 16 && space(&tail[..size])
+            })
+        }
+        _ => space(namespace.as_bytes()),
     }
 }
 
@@ -272,6 +308,8 @@ async fn ordinary_receipts_share_one_native_commit_for_success_rejection_delete_
             "native/receipt overlap exceeded admission"
         );
         assert_eq!(observed.body_writes > 0, has_bodies);
+        // Both ordinary directories advance in this same publication.
+        assert!(observed.primary_manifest && observed.structured_manifest);
         // A separate receipt stage would advance this actual native root twice.
         assert_eq!(
             fixture.fixture.node.fixture_native_generation()?,
@@ -313,45 +351,6 @@ async fn ordinary_receipts_share_one_native_commit_for_success_rejection_delete_
     fixture.close().await
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "Reopen retains the original native drain/startup errors."
-)]
-async fn reopen(
-    mut fixture: OrdinaryFixture,
-) -> crate::test_fixture_failure::FixtureResult<OrdinaryFixture> {
-    fixture.engine.seal();
-    require_positive_drain(fixture.fixture._buffers.drain_startup().await);
-    require_positive_drain(std::future::poll_fn(|cx| fixture.fixture.roots.poll_drain(cx)).await);
-    // Retire these exact startup/source owners. The shared admission registry
-    // must remain open for this fixture's physical reopen; final Fixture::close
-    // seals and drains that registry after the replacement owner is done.
-    fixture.fixture.stores.shutdown().await?;
-    fixture.fixture.node.shutdown().await?;
-    fixture.fixture.node = fixture.fixture.storage.open_existing(
-        fixture.fixture._directory.path().join("persistent/node.kv"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-    )?;
-    fixture.fixture.stores = TenantStorageSet::open_existing_fixture(
-        fixture.fixture.node.clone(),
-        "selected-sources".into(),
-        Arc::new(LocalKeyProvider::new([119; 32])),
-        Arc::new(LocalKeyProvider::new([120; 32])),
-    )
-    .await?;
-    let (roots, binding) = SourceRoots::new(
-        fixture.fixture.stores.clone(),
-        fixture.fixture.storage.admission.clone(),
-        RaftLimits::default(),
-    )?;
-    let buffers = fixture.fixture.storage.admission.snapshot_buffer_owner()?;
-    roots.bind_lifecycle(&buffers, binding)?;
-    fixture.fixture.roots = roots;
-    fixture.fixture._buffers = buffers;
-    drop(fixture.engine);
-    OrdinaryFixture::over(fixture.fixture)
-}
-
 #[tokio::test]
 #[allow(
     clippy::result_large_err,
@@ -390,7 +389,7 @@ async fn ordinary_receipt_and_cursor_recover_together_before_and_after_publicati
         assert_eq!(previous.state.mutation_receipt_head.count, 0);
         drop(previous);
         drop(original);
-        let fixture = reopen(fixture).await?;
+        let fixture = fixture.reopen().await?;
         // Read the real reopened encrypted file before replaying either input.
         for (namespace, key, bytes) in &observed.receipt_rows {
             let stored = fixture.fixture.stores.application().get(namespace, key)?;
@@ -550,7 +549,7 @@ async fn ordinary_receipt_private_publication_reconciles_only_exact_orphan_pairs
         .context("before-commit failure acknowledged")?;
         assert!(!captured.committed);
         drop(original);
-        let fixture = reopen(fixture).await?;
+        let fixture = fixture.reopen().await?;
         fixture.apply(&create, || {})?;
         // These are the exact private bytes from the actual producer, captured
         // before any receipt/cursor commit. Emulate an old writer's orphan pair.
@@ -689,7 +688,7 @@ async fn ordinary_receipt_private_publication_reconciles_only_exact_orphan_pairs
             drop(previous);
             // Retire this owner and physically reopen before independently
             // inspecting the immutable evidence; no apply owner was reset.
-            reopen(fixture).await?
+            fixture.reopen().await?
         };
         for (namespace, key, _) in &captured.receipt_rows {
             let expected = rows

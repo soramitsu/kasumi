@@ -26,7 +26,7 @@ TOOLCHAIN = "1.97.1"
 FORBIDDEN_FIXTURE_FEATURES = frozenset({"test-utils", "embedded-fixture", "loopback-fixture"})
 
 _SERDE_JSON = ("--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml")
-_RMCP = ("--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml")
+_RMCP = ("--manifest-path", "vendor/rmcp-3.11.0/Cargo.toml")
 _OPENRAFT = ("--manifest-path", "vendor/openraft-0.9.25/Cargo.toml")
 _OPENRAFT_FEATURES = "serde,storage-v2,single-term-leader,generic-snapshot-data"
 
@@ -36,7 +36,6 @@ _OPENRAFT_FEATURES = "serde,storage-v2,single-term-leader,generic-snapshot-data"
 # rows repeat the custody commands retained by
 # docs/evidence/openraft-canonical-20260920 attempts 46-49.
 VENDOR_SUITES = (
-    ("bitmaps", "test", ("--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"), ()),
     ("lru", "test", ("--manifest-path", "vendor/lru-0.16.4/Cargo.toml"), ()),
     ("serde-json-default", "test", _SERDE_JSON, ()),
     ("serde-json-number", "test", _SERDE_JSON + ("--features", "arbitrary_precision"), ()),
@@ -194,6 +193,35 @@ def inventory(directory):
     return result
 
 
+def verify_export(repository, commit, directory, files):
+    """Compare every exported file and mode with the committed Git tree."""
+    listing = subprocess.check_output(["git", "-C", str(repository), "ls-tree", "-rz", commit])
+    expected = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, oid = metadata.split()
+        path = os.fsdecode(name)
+        if path.startswith("docs/evidence/"):
+            continue
+        if kind != b"blob" or mode not in (b"100644", b"100755"):
+            raise ValueError("unsupported committed source entry: " + path)
+        expected[path] = (mode == b"100755", oid.decode("ascii"))
+    if expected.keys() != files.keys():
+        raise ValueError("archive paths differ from Git tree: "
+                         + repr(sorted(expected.keys() ^ files.keys())[:20]))
+    for path, (executable, oid) in expected.items():
+        entry = files[path]
+        digest = hashlib.new("sha1" if len(oid) == 40 else "sha256")
+        digest.update(f"blob {entry['bytes']}\0".encode("ascii"))
+        with (Path(directory) / path).open("rb") as source:
+            for block in iter(lambda: source.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != oid or entry["executable"] != executable:
+            raise ValueError("archive bytes or mode differ from Git tree: " + path)
+
+
 def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/cgroup")):
     """Retain raw visible cgroup counters, including child OOM events.
 
@@ -328,9 +356,10 @@ def functional_gates(jobs, python_executable):
         ("clippy", cargo + ["clippy", "--workspace", "--all-features", "--all-targets"]
          + locked + ["--", "-D", "warnings"]),
         ("network-features", cargo + ["tree", "--locked", "-p", "kasumi-bench", "--no-default-features",
-         "--features", "network", "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
+         "--features", "installed-embedded", "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("network-driver", cargo + ["build", "--release", "-p", "kasumi-bench", "--no-default-features",
-         "--features", "network", "--bins"] + locked + encoded),
+         "--features", "installed-embedded", "--bin", "kasumi-bench-network", "--bin", "kasumi-bench-capacity"]
+         + locked + encoded),
         ("production-features", cargo + ["tree", "--locked", "-p", "kasumi-server", "--no-default-features",
          "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("production", cargo + ["build", "--release", "-p", "kasumi-server", "--bins", "--no-default-features"]
@@ -517,6 +546,7 @@ def main():
         record["runner_inputs"] = verify_runner_inputs(source)
         write_json(output / "evidence.json", record)
         original = inventory(source)
+        verify_export(repository, commit, source, original)
         write_json(output / "source-files.json", original)
         record["source_files_sha256"] = sha256(output / "source-files.json")
         record["lockfile_sha256"] = sha256(source / "Cargo.lock")

@@ -353,6 +353,83 @@ pub struct TargetStopReference {
     pub command_id: Uuid,
     pub receipt_digest: String,
 }
+/// Historical observation at the installed issuer. A probe cannot start,
+/// complete or renew the issuing process's monotonic lease drain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssuerStopQuery {
+    pub tenant: String,
+    pub command_id: Uuid,
+    pub target_incarnation: Uuid,
+}
+
+impl IssuerStopQuery {
+    pub fn validate(&self) -> Result<()> {
+        crate::validate_name(&self.tenant)?;
+        ensure!(
+            !self.command_id.is_nil() && !self.target_incarnation.is_nil(),
+            "empty issuer stop identity"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssuerStopStage {
+    Submitting,
+    Committed,
+    Draining,
+    Drained,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssuerStopStatus {
+    pub query: IssuerStopQuery,
+    pub command_sha256: String,
+    pub partition: u16,
+    pub authority_id: Uuid,
+    pub node_id: u64,
+    pub boot_id: Uuid,
+    pub term: u64,
+    pub stage: IssuerStopStage,
+    pub interval_id: Option<Uuid>,
+    pub first_stop_sha256: Option<String>,
+}
+
+impl IssuerStopStatus {
+    pub fn validate_for(&self, query: &IssuerStopQuery) -> Result<()> {
+        query.validate()?;
+        ensure!(
+            self.query == *query
+                && !self.authority_id.is_nil()
+                && !self.boot_id.is_nil()
+                && self.node_id != 0
+                && self.term != 0,
+            "invalid issuer stop owner"
+        );
+        ensure!(
+            self.interval_id.is_some()
+                == matches!(
+                    self.stage,
+                    IssuerStopStage::Draining | IssuerStopStage::Drained
+                )
+                && self.interval_id.is_none_or(|id| !id.is_nil()),
+            "issuer drain interval identity differs"
+        );
+        crate::validate_sha256(&self.command_sha256)?;
+        ensure!(
+            self.first_stop_sha256.is_none() == (self.stage == IssuerStopStage::Submitting),
+            "issuer stop stage lacks its original outcome"
+        );
+        if let Some(original) = &self.first_stop_sha256 {
+            crate::validate_sha256(original)?;
+        }
+        Ok(())
+    }
+}
+
 impl TargetStopReference {
     pub fn validate(&self) -> Result<()> {
         crate::validate_name(&self.tenant)?;

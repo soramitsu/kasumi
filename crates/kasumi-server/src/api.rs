@@ -18,6 +18,8 @@ pub mod response_owner;
 
 #[derive(Clone, Default)]
 pub struct DatabaseRegistry {
+    remote_backup: Arc<std::sync::OnceLock<Arc<dyn kasumi_engine::RemoteBackupTransport>>>,
+    backup_control: Arc<std::sync::OnceLock<(Arc<Database>, RequestContext)>>,
     route_epoch: Arc<AtomicU64>,
     membership_epoch: Arc<crate::readiness::MembershipEpoch>,
     databases: Arc<RwLock<BTreeMap<String, Arc<Database>>>>,
@@ -29,6 +31,62 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    pub(crate) fn install_remote_backup(
+        &self,
+        transport: Arc<dyn kasumi_engine::RemoteBackupTransport>,
+    ) -> Result<()> {
+        let sources = self.retirement_sources.write().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "backup source registry unavailable")
+        })?;
+        if self.backup_control.get().is_some()
+            || !Arc::ptr_eq(
+                self.remote_backup.get_or_init(|| transport.clone()),
+                &transport,
+            )
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "another backup Control is installed",
+            ));
+        }
+        for source in sources.values() {
+            if let kasumi_engine::InstalledRetirementSource::Serving(database) = source {
+                database.install_remote_backup_transport(transport.clone())?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn install_backup_control(
+        &self,
+        control: &Arc<Database>,
+        operator: &RequestContext,
+    ) -> Result<()> {
+        let mut sources = self
+            .retirement_sources
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?;
+        if self.remote_backup.get().is_some() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "remote backup Control is installed",
+            ));
+        }
+        let (existing, context) = self
+            .backup_control
+            .get_or_init(|| (control.clone(), operator.clone()));
+        if !Arc::ptr_eq(existing, control) || context.principal != operator.principal {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "source registry already has another backup Control owner",
+            ));
+        }
+        for source in sources.values_mut() {
+            if let kasumi_engine::InstalledRetirementSource::Serving(database) = source {
+                database.install_backup_control(control, operator)?;
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn membership_epoch(&self) -> Result<u64> {
         self.membership_epoch.current()
     }
@@ -103,10 +161,21 @@ impl DatabaseRegistry {
         if identity.0.starts_with("__kasumi_") {
             return Ok(());
         }
-        self.retirement_sources
+        let mut sources = self
+            .retirement_sources
             .write()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?
-            .insert(identity, source);
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?;
+        if let Some((control, operator)) = self.backup_control.get()
+            && let kasumi_engine::InstalledRetirementSource::Serving(database) = &source
+        {
+            database.install_backup_control(control, operator)?;
+        }
+        if let Some(remote) = self.remote_backup.get()
+            && let kasumi_engine::InstalledRetirementSource::Serving(database) = &source
+        {
+            database.install_remote_backup_transport(remote.clone())?;
+        }
+        sources.insert(identity, source);
         Ok(())
     }
     pub fn retirement_source(
@@ -2114,7 +2183,7 @@ name: "docs".into(),
             kasumi_store::FileAllocationPolicy::fixture(),
         )
         .unwrap();
-        config.control.initial_policy = policy;
+        config.hosted_control_mut().unwrap().initial_policy = policy;
         let original_recoveries =
             crate::administration::original_serving_runtime::OriginalRecoveries::new(
                 fixture.audit.admission(),
@@ -2126,7 +2195,7 @@ name: "docs".into(),
             BTreeMap::new(),
             node.clone(),
             fixture.registry.clone(),
-            control.clone(),
+            crate::administration::ControlAccess::Local(control.clone()),
             fixture.audit.clone(),
             None,
             vec![ManagedTenant {

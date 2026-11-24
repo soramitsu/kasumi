@@ -159,6 +159,14 @@ impl KasumiAuthorityClient {
             serde_json::from_slice(&response.response_json)?;
         let validate = || -> anyhow::Result<()> {
             match &response {
+                kasumi_serving::AuthorityMaintenanceResponse::MemberCatalog { page } => {
+                    let kasumi_serving::AuthorityMaintenanceRequest::MemberCatalog { query } =
+                        request
+                    else {
+                        anyhow::bail!("maintenance response kind differs");
+                    };
+                    page.validate(query)?;
+                }
                 kasumi_serving::AuthorityMaintenanceResponse::Configuration { configuration } => {
                     anyhow::ensure!(
                         matches!(
@@ -324,6 +332,39 @@ impl KasumiAuthorityClient {
             .await?
             .into_inner();
         Ok(attempt.verify(serde_json::from_slice(&response.response_json)?)?)
+    }
+
+    pub async fn read_issuer_stop(
+        &mut self,
+        bearer: &str,
+        query: &kasumi_types::IssuerStopQuery,
+    ) -> Result<Option<kasumi_types::IssuerStopStatus>, ClientError> {
+        query.validate()?;
+        let value = self
+            .inner
+            .read_issuer_stop(self.authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(query)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let observed: Option<kasumi_types::IssuerStopStatus> =
+            serde_json::from_slice(&value.response_json)?;
+        if let Some(found) = &observed {
+            found.validate_for(query)?;
+            let manifest = self.trust.manifest();
+            if found.authority_id != manifest.authority_id
+                || found.partition != manifest.partition(&query.tenant)?
+            {
+                return Err(anyhow::anyhow!(
+                    "issuer observation belongs to another configured domain"
+                )
+                .into());
+            }
+        }
+        Ok(observed)
     }
 
     pub async fn verify_target_stop(

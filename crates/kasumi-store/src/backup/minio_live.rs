@@ -1,8 +1,14 @@
 //! Opt-in real S3 interoperability against the official immutable MinIO image.
 //! Uses only an explicitly supplied local Docker socket, bounded resources, TLS,
 //! ephemeral credentials and one uniquely named test container.
+#[path = "../../tests/support/provider_control.rs"]
+mod provider_control;
 use super::*;
-use std::process::{Command, Output, Stdio};
+use std::{
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    process::{Command, Output, Stdio},
+    sync::RwLock,
+};
 
 const IMAGE: &str =
     "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e";
@@ -41,24 +47,52 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
-    let host =
-        std::env::var("KASUMI_MINIO_DOCKER_HOST").context("set explicit local Docker socket")?;
-    ensure!(
-        host.starts_with("unix:///") && host.ends_with("/docker.sock"),
-        "live fixture requires an explicit local Unix Docker socket"
-    );
-    let config =
-        std::env::var("KASUMI_MINIO_DOCKER_CONFIG").context("set isolated Docker config")?;
+    let container = if provider_control::supervised() {
+        None
+    } else {
+        let host = std::env::var("KASUMI_MINIO_DOCKER_HOST")
+            .context("set explicit local Docker socket")?;
+        ensure!(
+            host.starts_with("unix:///") && host.ends_with("/docker.sock"),
+            "live fixture requires an explicit local Unix Docker socket"
+        );
+        let config =
+            std::env::var("KASUMI_MINIO_DOCKER_CONFIG").context("set isolated Docker config")?;
+        ensure!(
+            Path::new(&config).is_absolute(),
+            "set an absolute isolated Docker config path"
+        );
+        let container = Container {
+            host,
+            config,
+            name: format!("kasumi-minio-test-{}", Uuid::new_v4()),
+        };
+        let image = container.run(&[
+            "image",
+            "inspect",
+            "--format",
+            "{{json .RepoDigests}}",
+            IMAGE,
+        ])?;
+        let digests: Vec<String> = serde_json::from_slice(&image.stdout)?;
+        ensure!(
+            digests.iter().any(|digest| digest == IMAGE),
+            "official immutable MinIO digest is not present"
+        );
+        Some(container)
+    };
     let workdir = std::env::var("KASUMI_MINIO_WORKDIR").context("set shared fixture directory")?;
     ensure!(
-        Path::new(&config).is_absolute()
-            && Path::new(&workdir).is_absolute()
-            && !workdir.contains(','),
+        Path::new(&workdir).is_absolute() && !workdir.contains(','),
         "fixture paths must be explicit absolute paths"
     );
-    let root = tempfile::tempdir_in(&workdir)?;
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&workdir)?;
     let certs = root.path().join("certs");
-    std::fs::create_dir(&certs)?;
+    std::fs::DirBuilder::new().mode(0o700).create(&certs)?;
+    let objects = root.path().join("objects");
+    std::fs::DirBuilder::new().mode(0o700).create(&objects)?;
     let certificate =
         rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])?;
     let ca = certificate.cert.pem().into_bytes();
@@ -67,89 +101,129 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         certs.join("private.key"),
         certificate.signing_key.serialize_pem(),
     )?;
-    let container = Container {
-        host,
-        config,
-        name: format!("kasumi-minio-test-{}", Uuid::new_v4()),
+    let (user, password, replacement) = if container.is_none() {
+        (
+            std::env::var("KASUMI_MINIO_USER")?,
+            Zeroizing::new(std::env::var("KASUMI_MINIO_FIRST")?),
+            Zeroizing::new(std::env::var("KASUMI_MINIO_SECOND")?),
+        )
+    } else {
+        (
+            format!("test{}", Uuid::new_v4().simple()),
+            Zeroizing::new(Uuid::new_v4().simple().to_string()),
+            Zeroizing::new(Uuid::new_v4().simple().to_string()),
+        )
     };
-    let image = container.run(&[
-        "image",
-        "inspect",
-        "--format",
-        "{{json .RepoDigests}}",
-        IMAGE,
-    ])?;
-    let digests: Vec<String> = serde_json::from_slice(&image.stdout)?;
     ensure!(
-        digests.iter().any(|digest| digest == IMAGE),
-        "official immutable MinIO digest is not present"
+        password.as_str() != replacement.as_str(),
+        "MinIO credentials must change across restart"
     );
-    let user = format!("test{}", Uuid::new_v4().simple());
-    let password = Zeroizing::new(Uuid::new_v4().simple().to_string());
     let mount = format!(
         "type=bind,source={},target=/certs,readonly",
         certs.display()
     );
-    let output = container
-        .docker()
-        .args([
-            "run",
-            "--detach",
-            "--name",
+    let data_mount = format!("type=bind,source={},target=/data", objects.display());
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let publish = format!("127.0.0.1:{port}:9000");
+    let owner = std::fs::metadata(&objects)?;
+    let container_user = format!("{}:{}", owner.uid(), owner.gid());
+    let start = |secret: &str, generation: u8| -> Result<()> {
+        let Some(container) = &container else {
+            return provider_control::request(
+                &format!("start-{generation}"),
+                serde_json::json!({"port":port,"objects":objects,"certs":certs}),
+            );
+        };
+        let output = container
+            .docker()
+            .args([
+                "run",
+                "--detach",
+                "--name",
+                &container.name,
+                "--pull",
+                "never",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1",
+                "--pids-limit",
+                "128",
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--read-only",
+                "--user",
+                &container_user,
+                "--env",
+                "HOME=/tmp",
+                "--mount",
+                &data_mount,
+                "--tmpfs",
+                "/tmp:rw,size=16777216",
+                "--publish",
+                &publish,
+                "--mount",
+                &mount,
+                "--env",
+                "MINIO_ROOT_USER",
+                "--env",
+                "MINIO_ROOT_PASSWORD",
+                "--env",
+                "MINIO_BROWSER=off",
+                IMAGE,
+                "server",
+                "/data",
+                "--address",
+                ":9000",
+                "--console-address",
+                "127.0.0.1:9001",
+                "--certs-dir",
+                "/certs",
+                "--quiet",
+            ])
+            .env("MINIO_ROOT_USER", &user)
+            .env("MINIO_ROOT_PASSWORD", secret)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "starting bounded MinIO fixture failed"
+        );
+        let id = std::str::from_utf8(&output.stdout)?.trim().to_owned();
+        ensure!(
+            id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "unexpected MinIO container identity"
+        );
+        Ok(())
+    };
+    let stop = |generation: u8| -> Result<()> {
+        let Some(container) = &container else {
+            return provider_control::request(
+                &format!("stop-{generation}"),
+                serde_json::Value::Null,
+            );
+        };
+        container.run(&["stop", "--time", "30", &container.name])?;
+        let exit = container.run(&[
+            "inspect",
+            "--format",
+            "{{.State.ExitCode}}",
             &container.name,
-            "--pull",
-            "never",
-            "--memory",
-            "512m",
-            "--cpus",
-            "1",
-            "--pids-limit",
-            "128",
-            "--security-opt",
-            "no-new-privileges",
-            "--cap-drop",
-            "ALL",
-            "--read-only",
-            "--tmpfs",
-            "/data:rw,size=268435456,mode=0700",
-            "--tmpfs",
-            "/tmp:rw,size=16777216",
-            "--publish",
-            "127.0.0.1::9000",
-            "--mount",
-            &mount,
-            "--env",
-            "MINIO_ROOT_USER",
-            "--env",
-            "MINIO_ROOT_PASSWORD",
-            "--env",
-            "MINIO_BROWSER=off",
-            IMAGE,
-            "server",
-            "/data",
-            "--address",
-            ":9000",
-            "--console-address",
-            "127.0.0.1:9001",
-            "--certs-dir",
-            "/certs",
-            "--quiet",
-        ])
-        .env("MINIO_ROOT_USER", &user)
-        .env("MINIO_ROOT_PASSWORD", password.as_str())
-        .output()?;
-    ensure!(
-        output.status.success(),
-        "starting bounded MinIO fixture failed"
-    );
-    let port = container.run(&["port", &container.name, "9000/tcp"])?;
-    let address: std::net::SocketAddr = std::str::from_utf8(&port.stdout)?.trim().parse()?;
-    ensure!(
-        address.ip().is_loopback(),
-        "S3 fixture must bind loopback only"
-    );
-    let endpoint = format!("https://127.0.0.1:{}", address.port());
+        ])?;
+        ensure!(
+            std::str::from_utf8(&exit.stdout)?.trim() == "0",
+            "MinIO did not stop cleanly"
+        );
+        container.run(&["rm", &container.name])?;
+        Ok(())
+    };
+    start(&password, 1)?;
+    let endpoint = format!("https://127.0.0.1:{port}");
     let bucket = format!("kasumi-{}", Uuid::new_v4().simple());
+    let credential = Arc::new(RwLock::new(password.clone()));
     let make = || S3BackupConfig {
         endpoint: endpoint.clone(),
         region: "us-east-1".into(),
@@ -157,10 +231,10 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         prefix: "encrypted/backups".into(),
         credential: {
             let user = user.clone();
-            let password = password.clone();
+            let credential = credential.clone();
             Arc::new(move || {
                 Ok(Zeroizing::new(serde_json::json!({
-                "access_key_id": user, "secret_access_key": password.as_str(), "session_token": null
+                "access_key_id": user, "secret_access_key": credential.read().expect("test credential lock").as_str(), "session_token": null
             }).to_string()))
             })
         },
@@ -168,22 +242,25 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         max_bytes: 4 << 20,
     };
     let destination = S3BackupDestination::new(make())?;
-    tokio::time::timeout(std::time::Duration::from_secs(45), async {
-        loop {
-            if destination
-                .client
-                .get(format!("{endpoint}/minio/health/live"))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                return;
+    let wait_ready = || async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
+            loop {
+                if destination
+                    .client
+                    .get(format!("{endpoint}/minio/health/cluster"))
+                    .send()
+                    .await
+                    .is_ok_and(|r| r.status().is_success())
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .context("MinIO TLS readiness failed")?;
+        })
+        .await
+        .context("MinIO did not report write quorum over TLS")
+    };
+    wait_ready().await?;
     let bucket_url = destination.endpoint.join(&bucket)?;
     let headers =
         destination.signed_headers("PUT", &bucket_url, &[], time::OffsetDateTime::now_utc())?;
@@ -200,9 +277,10 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         response.status()
     );
     let provider = Arc::new(crate::test_utils::LocalKeyProvider::new([73; 32]));
+    let persistent_directory = crate::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
         crate::NodeStore::create_new_fixture(
-            root.path().join("source.kv"),
+            persistent_directory.path().join("source.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
@@ -224,6 +302,15 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             .await
             .is_err()
     );
+    stop(1)?;
+    start(&replacement, 2)?;
+    wait_ready().await?;
+    ensure!(
+        destination.get(id, 16 << 20).await.is_err(),
+        "previous MinIO credential was accepted after rotation"
+    );
+    *credential.write().expect("test credential lock") = replacement;
+    assert_eq!(destination.get(id, 16 << 20).await?, bytes.as_bytes());
     let recovered =
         EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20, &store)?
             .decrypt_fixture("customer", provider, &store)
@@ -266,5 +353,9 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             .is_err()
     );
     store.seal();
+    stop(2)?;
+    if provider_control::supervised() {
+        provider_control::request("complete", serde_json::Value::Null)?;
+    }
     Ok(())
 }

@@ -174,6 +174,13 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         let (_, replay, event) = current.apply(prior.clone(), &context, &request, 100, revision)?;
         assert_eq!(replay, original);
         assert!(event.replay);
+        println!(
+            "KASUMI_AUDIT_COMPONENT {}",
+            serde_json::json!({
+                "case":"custody","commands":current.commands,"audit_events":current.audit,
+                "reopened_command":request.command_id,"replayed_command":replay.command_id,
+            })
+        );
         let mut changed = request;
         changed.not_after_ms -= 1;
         assert!(

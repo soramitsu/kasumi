@@ -94,6 +94,7 @@ async fn admitted_cache_activation_refuses_shutdown_without_retaining_native_fai
 }
 
 async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation: bool) {
+    let phase = std::cell::Cell::new("creating journal and late generation");
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
@@ -146,19 +147,19 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
         .await
         .unwrap();
         let admission = physical.admission.clone();
+        let installation = kasumi_engine::TargetJournalInstallation {
+            source_key_bindings_sha256: None,
+            root: root.clone(),
+            node: identity.clone(),
+            audit_placement_bindings: BTreeMap::from([("unused-target".into(), "ab".repeat(32))]),
+        };
+        let limits = TargetJournalLimits {
+            max_metadata_bytes: 4 << 20,
+        };
         let journal = TargetJournal::create_new(
             store.clone(),
-            kasumi_engine::TargetJournalInstallation {
-                root: root.clone(),
-                node: identity.clone(),
-                audit_placement_bindings: std::collections::BTreeMap::from([(
-                    "unused-target".into(),
-                    "ab".repeat(32),
-                )]),
-            },
-            TargetJournalLimits {
-                max_metadata_bytes: 4 << 20,
-            },
+            installation.clone(),
+            limits.clone(),
             admission.clone(),
         )
         .unwrap();
@@ -330,6 +331,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             kasumi_types::SharedBudgetCharge::new(charge),
         )
         .unwrap();
+        phase.set("waiting for the admitted monitor");
         runtime.start_serving_reconciliation(&budget).unwrap();
         pause.entered.notified().await;
         let monitor = runtime.serving_monitor.work();
@@ -365,6 +367,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
         let closing_activation =
             check_closing_activation.then(|| runtime.call_jobs.acquire_failure().unwrap());
         let mut outer = Some(runtime);
+        phase.set("cancelling the first shutdown");
         let mut first = Box::pin(shutdown_target(&mut outer));
         std::future::poll_fn(|cx| {
             assert!(first.as_mut().poll(cx).is_pending());
@@ -406,6 +409,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             drop(original);
             drop(seat);
         }
+        phase.set("joining the paused monitor");
         let mut retry = Box::pin(shutdown_target(&mut outer));
         std::future::poll_fn(|cx| {
             assert!(retry.as_mut().poll(cx).is_pending());
@@ -438,6 +442,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
         })
         .await;
         assert_eq!(calls.available_permits(), MAX_CALLS as usize - 1);
+        phase.set("draining the late generation");
         finish_call.send(()).unwrap();
         retry.await.unwrap();
         let cache_status = node.cache_worker_status();
@@ -482,15 +487,26 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
                 kasumi_store::NodeStoreLookup::Missing
             )
         });
+        phase.set("reopening journal storage");
         let reopened = physical.open_existing(&path, node_id).unwrap();
         let store = TenantStore::open_existing(reopened.clone(), journal_tenant, provider, access)
             .await
             .unwrap();
+        phase.set("verifying the persisted target journal");
+        let journal = TargetJournal::open_existing(
+            store.clone(),
+            installation,
+            limits,
+            physical.admission.clone(),
+        )
+        .unwrap();
+        journal.shutdown().await.unwrap();
+        drop(journal);
         store.shutdown().await.unwrap();
         reopened.shutdown().await.unwrap();
     })
     .await
-    .expect("shutdown ownership fixture timed out");
+    .unwrap_or_else(|_| panic!("shutdown ownership fixture timed out while {}", phase.get()));
 }
 
 #[tokio::test]
@@ -911,4 +927,33 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn retryable_journal_observation_retains_its_cause_without_poisoning_drained_workers() {
+    let mut report = DrainReport::default();
+    let wait = std::io::Error::from(std::io::ErrorKind::Interrupted);
+    let failure = owner_drain_observation(&report, Err(wait.into())).unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Retained);
+    assert_eq!(
+        failure.issues()[0]
+            .error()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    assert!(owner_drain_observation(&report, Ok(())).is_ok());
+    assert!(report.complete().is_ok());
+    let worker = report.record("original worker", 2, anyhow::anyhow!("join failed"));
+    let failed =
+        owner_drain_observation(&report, Err(anyhow::anyhow!("journal sealed"))).unwrap_err();
+    assert!(
+        failed
+            .issues()
+            .iter()
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &worker))
+    );
+    assert_eq!(report.issues().len(), 1);
+    assert!(report.complete().is_err());
 }

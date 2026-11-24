@@ -61,6 +61,7 @@ impl std::error::Error for RpcPayloadTooLarge {}
     deny_unknown_fields
 )]
 pub enum RpcRequest {
+    MemberCatalog(Box<crate::member_catalog::MemberCatalogRequest>),
     Append(AppendEntriesRequest<TypeConfig>),
     Vote(VoteRequest<u64>),
     Snapshot(InstallSnapshotRequest<TypeConfig>),
@@ -88,6 +89,10 @@ pub type ReadIndexError = RaftError<u64, CheckIsLeaderError<u64, BasicNode>>;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "rpc", content = "payload", rename_all = "snake_case")]
 pub enum RpcResponse {
+    MemberJournalCatalog(Box<crate::member_catalog::MemberJournalReport>),
+    MemberAuditCatalog(Box<crate::member_catalog::MemberAuditReport>),
+    MemberSignerCatalog(Box<crate::member_catalog::MemberSignerReport>),
+    MemberCatalog(Option<Box<crate::member_catalog::MemberCatalogReport>>),
     Append(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
     Vote(Result<VoteResponse<u64>, RaftError<u64>>),
     Snapshot(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
@@ -99,6 +104,8 @@ pub enum RpcResponse {
 /// be a current voter or learner of the group.
 pub async fn dispatch_rpc(raft: &Raft, request: RpcRequest) -> RpcResponse {
     match request {
+        // Routes without an installed catalog owner cannot report coverage.
+        RpcRequest::MemberCatalog(_) => RpcResponse::MemberCatalog(None),
         RpcRequest::Append(request) => RpcResponse::Append(raft.append_entries(request).await),
         RpcRequest::Vote(request) => RpcResponse::Vote(raft.vote(request).await),
         RpcRequest::Snapshot(request) => {

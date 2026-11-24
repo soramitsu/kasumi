@@ -3,10 +3,6 @@ use kasumi_types::*;
 #[derive(Clone, Copy)]
 pub(super) enum AuditOperation {
     Status,
-    #[expect(
-        dead_code,
-        reason = "routed once kasumi.proto gains the SecurityAuditCapacity RPC"
-    )]
     Capacity,
     Export,
     Archives,
@@ -78,7 +74,10 @@ impl NativeAdmin {
         let audit = management.security_audit().clone();
         let workspace = self
             .auth
-            .audit_result(&context, management.security_audit_workspace())
+            .audit_result(
+                &context,
+                management.security_audit_workspace(matches!(operation, AuditOperation::Archives)),
+            )
             .await
             .map_err(status)?;
         let fence = AuditResponseFence {
@@ -97,12 +96,12 @@ impl NativeAdmin {
             let encoded = match operation {
                 AuditOperation::Status => {
                     let _: SecurityAuditStatusRequest = decode_json(&payload)?;
-                    let value = tokio::task::spawn_blocking(move || audit.status()).await??;
+                    let value = audit.read_status().await?;
                     encode_json(&value)?
                 }
                 AuditOperation::Capacity => {
                     let _: SecurityAuditCapacityRequest = decode_json(&payload)?;
-                    let value = tokio::task::spawn_blocking(move || audit.capacity()).await??;
+                    let value = audit.read_capacity().await?;
                     encode_json(&value)?
                 }
                 AuditOperation::Export => {
@@ -127,95 +126,7 @@ impl NativeAdmin {
                 }
                 AuditOperation::Archives => {
                     let request: SecurityAuditArchivePageRequest = decode_json(&payload)?;
-                    request.validate()?;
-                    let value = tokio::task::spawn_blocking(
-                        move || -> anyhow::Result<SecurityAuditArchivePage> {
-                            let state = audit.status()?;
-                            let cursor = request.cursor.unwrap_or(SecurityAuditArchiveCursor {
-                                stream_id: state.position.stream_id,
-                                next_index: 0,
-                                through_index: state.archive_segments,
-                                snapshot_head: state
-                                    .position
-                                    .archive_head
-                                    .as_ref()
-                                    .map(|archive| archive.object.clone()),
-                                previous: None,
-                            });
-                            anyhow::ensure!(
-                                cursor.stream_id == state.position.stream_id
-                                    && cursor.through_index <= state.archive_segments,
-                                kasumi_types::Error::new(
-                                    ErrorCode::InvalidArgument,
-                                    "archive cursor belongs to another stream or future range"
-                                )
-                            );
-                            let snapshot_head = if cursor.through_index == 0 {
-                                None
-                            } else {
-                                Some(
-                                    audit
-                                        .archive_page(cursor.through_index - 1, 1)?
-                                        .into_iter()
-                                        .next()
-                                        .ok_or_else(|| {
-                                            anyhow::anyhow!("audit snapshot head missing")
-                                        })?
-                                        .object,
-                                )
-                            };
-                            anyhow::ensure!(
-                                cursor.snapshot_head == snapshot_head,
-                                kasumi_types::Error::new(
-                                    ErrorCode::InvalidArgument,
-                                    "audit archive snapshot head changed"
-                                )
-                            );
-                            let limit = u64::from(request.limit)
-                                .min(cursor.through_index - cursor.next_index)
-                                as u16;
-                            let archives = if limit == 0 {
-                                Vec::new()
-                            } else {
-                                audit.archive_page(cursor.next_index, limit)?
-                            };
-                            anyhow::ensure!(
-                                archives
-                                    .first()
-                                    .is_none_or(|first| first.previous == cursor.previous),
-                                kasumi_types::Error::new(
-                                    ErrorCode::InvalidArgument,
-                                    "audit archive cursor chain changed"
-                                )
-                            );
-                            let next_index =
-                                cursor
-                                    .next_index
-                                    .checked_add(archives.len() as u64)
-                                    .ok_or_else(|| anyhow::anyhow!("archive index overflow"))?;
-                            if next_index == cursor.through_index {
-                                anyhow::ensure!(
-                                    archives
-                                        .last()
-                                        .map(|archive| &archive.object)
-                                        .or(cursor.previous.as_ref())
-                                        == cursor.snapshot_head.as_ref(),
-                                    kasumi_types::Error::new(
-                                        ErrorCode::InvalidArgument,
-                                        "audit archive page differs from its snapshot head"
-                                    )
-                                );
-                            }
-                            Ok(SecurityAuditArchivePage {
-                                stream_id: cursor.stream_id,
-                                next_index,
-                                through_index: cursor.through_index,
-                                snapshot_head: cursor.snapshot_head,
-                                archives,
-                            })
-                        },
-                    )
-                    .await??;
+                    let value = audit.read_archive_page(request).await?;
                     encode_json(&value)?
                 }
                 AuditOperation::Verify => {

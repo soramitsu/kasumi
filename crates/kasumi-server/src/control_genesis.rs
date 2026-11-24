@@ -8,6 +8,52 @@ use kasumi_engine::{
 };
 use std::collections::BTreeMap;
 
+/// The data routes may name only the remote node set. Combining both sets
+/// additionally validates global peer IDs, endpoints and TLS pin ownership.
+pub(crate) fn dedicated_topology(
+    config: &RuntimeConfig,
+    remote: &ControlTopology,
+) -> Result<ControlTopology> {
+    ensure!(
+        config.mode == DeploymentMode::Replicated
+            && config.tenants.is_empty()
+            && config.target_recovery.is_none(),
+        "dedicated Control placement requires replicated mode and no local data or target"
+    );
+    remote.validate()?;
+    ensure!(
+        remote
+            .tenants
+            .values()
+            .all(|route| route.mode == RouteMode::Replicated),
+        "dedicated Control requires replicated data routes"
+    );
+    let mut nodes = config
+        .replication
+        .as_ref()
+        .context("Control replication roster missing")?
+        .control_nodes()?;
+    let mut endpoints = nodes
+        .values()
+        .map(|node| node.endpoint.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for (id, node) in &remote.nodes {
+        let endpoint = url::Url::parse(&node.endpoint)?
+            .origin()
+            .ascii_serialization();
+        ensure!(
+            endpoints.insert(endpoint) && nodes.insert(*id, node.clone()).is_none(),
+            "data placement reuses a Control or data endpoint or node ID"
+        );
+    }
+    let topology = ControlTopology {
+        nodes,
+        tenants: remote.tenants.clone(),
+    };
+    topology.validate()?;
+    Ok(topology)
+}
+
 pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
     ensure!(
         config.mode == DeploymentMode::Replicated,
@@ -36,7 +82,7 @@ pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let lifecycle = match &config.control.lifecycle {
+    let lifecycle = match &config.hosted_control()?.lifecycle {
         Some(installed) => ControlLifecycleGenesis::Installed {
             command_id: installed.command_id,
             installation: installed.installation.clone(),
@@ -45,13 +91,16 @@ pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
     };
     let mut bootstrap = config
         .bootstrap(
-            &config.control.initial_policy,
-            &config.control.initial_limits,
-            config.control.incarnation.as_deref(),
+            &config.hosted_control()?.initial_policy,
+            &config.hosted_control()?.initial_limits,
+            config.hosted_control()?.incarnation.as_deref(),
         )?
         .context("Control genesis is missing")?;
     bootstrap.genesis = ReplicatedGenesis::Control(ControlGenesis {
-        topology: ControlTopology { nodes, tenants },
+        topology: match &config.hosted_control()?.remote_data {
+            Some(remote) => dedicated_topology(config, remote)?,
+            None => ControlTopology { nodes, tenants },
+        },
         lifecycle,
     });
     bootstrap.validate()?;

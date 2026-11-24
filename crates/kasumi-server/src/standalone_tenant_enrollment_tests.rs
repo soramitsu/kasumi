@@ -442,7 +442,7 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
     drop(maintenance);
     let KeyProviderSettings::File {
         path: control_keyring,
-    } = &config.control.keys
+    } = &config.hosted_control().unwrap().keys
     else {
         unreachable!()
     };

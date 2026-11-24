@@ -12,13 +12,14 @@ default = []
 test-utils = ["kasumi-store/test-utils", "kasumi-raft/test-utils"]
 
 [dependencies]
+async-trait.workspace = true
 parking_lot = "0.12"
 kasumi-clock.workspace = true
 kasumi-serving.workspace = true
 ring = "0.17"
 anyhow.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 kasumi-types.workspace = true
 kasumi-query.workspace = true
 kasumi-raft.workspace = true
@@ -32,7 +33,7 @@ hex.workspace = true
 memchr.workspace = true
 base64 = "0.22"
 arc-swap = "=1.9.2"
-imbl = { version = "=7.0.1", features = ["serde"] }
+imbl = { version = "=7.0.2", features = ["serde"] }
 url = "=2.5.8"
 libc = "=0.2.189"
 zeroize = "=1.9.0"
@@ -43,7 +44,6 @@ kasumi-raft = { workspace = true, features = ["test-utils"] }
 kasumi-engine = { path = ".", features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
-async-trait.workspace = true
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
 # `start_paused` tests, whose clock-driven deadlines host load must not decide.

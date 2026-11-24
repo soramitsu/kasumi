@@ -90,8 +90,8 @@ struct SnapshotWork {
     group: Arc<str>,
     metrics: Arc<Mutex<Metrics>>,
     worker: Arc<Worker>,
-    /// The group is shutting down: a running build and purge stop yielding
-    /// to foreground operations and finish back to back.
+    /// The group is shutting down: a running build stops yielding
+    /// to foreground operations. Journal purge stops between durable chunks.
     closing: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
@@ -104,7 +104,7 @@ struct SnapshotWork {
 pub(crate) enum LocalSnapshot {
     /// Durably published, covering every entry through this position.
     Published(Option<LogId<u64>>),
-    /// Refused for capacity before publishing. The published snapshot, the
+    /// Stopped during private capture or refused for capacity. The published snapshot, the
     /// applied state and the journal are unchanged; staged chunks are
     /// crash-equivalent and removed by the next build or open.
     Deferred,
@@ -801,7 +801,7 @@ where
                         Some(position) => log.purge_local(position, &closing).await?,
                         None => true,
                     };
-                    if !purged {
+                    if !purged && !closing.load(Ordering::Acquire) {
                         // The journal keeps its entries until a later snapshot purges them.
                         eprintln!(
                             "Kasumi local journal purge deferred: capacity refused group={group} snapshot_index={}",
@@ -820,7 +820,7 @@ where
                 LocalSnapshot::Deferred => {
                     // The published snapshot and journal are unchanged; the next
                     // snapshot retries.
-                    eprintln!("Kasumi local snapshot deferred: capacity refused group={group}");
+                    eprintln!("Kasumi local snapshot deferred group={group}");
                 }
             }
             fence.complete = true;

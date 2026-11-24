@@ -51,7 +51,7 @@ impl Database {
         // resamples the state or silently advances the selected terminal prefix.
         let terminals = generation.terminals.clone();
         let selected_status = selected.map(StagedTransaction::status);
-        let selected = selected.map(header);
+        let selected = selected.map(crate::snapshot_codec::stage_header);
         let mut state = crate::snapshot_codec::metadata(&generation.state);
         state.restore_lineage = generation.state.restore_lineage.clone();
         // Scope and manifest authorization do not read target lifecycle history.
@@ -66,47 +66,50 @@ impl Database {
         drop(generation);
         let context = context.clone();
         let scope = scope.clone();
-        let worker = tokio::task::spawn_blocking(move || -> Result<StagedRead> {
-            cancellation.check()?;
-            context.authorization.check_live()?;
-            crate::state::staging::authorize_scope(&state, &context, &scope)?;
-            let (stage, status) = if let Some(active) = selected {
-                (Some(active), selected_status)
-            } else {
-                let stage = terminals
-                    .get_charged(&key, |encoded_bytes| {
-                        cancellation.check()?;
-                        context.authorization.check_live()?;
-                        // The raw bounded row belongs to POINT_READ_BYTES. Its
-                        // decoded header, status and release metadata must be
-                        // admitted before deserialization or response cloning.
-                        reservation.reserve_additional(decoded_workspace(encoded_bytes, 2)?)?;
-                        Ok(())
-                    })
-                    .map_err(point_error)?
-                    .map(|row| {
-                        row.validate(&state).map_err(point_error)?;
-                        Ok::<_, Error>(row.stage)
-                    })
-                    .transpose()?;
-                let status = stage.as_ref().map(StagedTransaction::status);
-                (stage, status)
-            };
-            if let Some(mut stage) = stage {
-                stage.chunks.clear();
-                state.staged_transactions.insert(key, stage);
-            }
-            cancellation.check()?;
-            context.authorization.check_live()?;
-            drop(terminals);
-            Ok(StagedRead {
-                state,
-                status,
-                strict_collections,
-                _reservation: reservation,
-                _registration: registration,
-            })
-        });
+        let worker = reservation.retained_read(
+            cancellation,
+            move |mut reservation, cancellation| -> Result<StagedRead> {
+                cancellation.check()?;
+                context.authorization.check_live()?;
+                crate::state::staging::authorize_scope(&state, &context, &scope)?;
+                let (stage, status) = if let Some(active) = selected {
+                    (Some(active), selected_status)
+                } else {
+                    let stage = terminals
+                        .get_charged(&key, |encoded_bytes| {
+                            cancellation.check()?;
+                            context.authorization.check_live()?;
+                            // The raw bounded row belongs to POINT_READ_BYTES. Its
+                            // decoded header, status and release metadata must be
+                            // admitted before deserialization or response cloning.
+                            reservation.reserve_additional(decoded_workspace(encoded_bytes, 2)?)?;
+                            Ok(())
+                        })
+                        .map_err(point_error)?
+                        .map(|row| {
+                            row.validate(&state).map_err(point_error)?;
+                            Ok::<_, Error>(row.stage)
+                        })
+                        .transpose()?;
+                    let status = stage.as_ref().map(StagedTransaction::status);
+                    (stage, status)
+                };
+                if let Some(mut stage) = stage {
+                    stage.chunks.clear();
+                    state.staged_transactions.insert(key, stage);
+                }
+                cancellation.check()?;
+                context.authorization.check_live()?;
+                drop(terminals);
+                Ok(StagedRead {
+                    state,
+                    status,
+                    strict_collections,
+                    _reservation: reservation,
+                    _registration: registration,
+                })
+            },
+        );
         tokio::time::timeout(Duration::from_secs(10), worker)
             .await
             .map_err(|_| {
@@ -115,7 +118,6 @@ impl Database {
                     "staged point read deadline exceeded",
                 )
             })?
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "staged point read worker failed"))?
     }
     pub(super) async fn staged_operation_read(
         &self,
@@ -223,22 +225,6 @@ fn metadata_workspace(
 
 // Never clone the uploaded chunk map just to clear it. Only the admitted header
 // and the separately sized received-index response leave the selected generation.
-fn header(stage: &StagedTransaction) -> StagedTransaction {
-    StagedTransaction {
-        scope: stage.scope.clone(),
-        transaction_id: stage.transaction_id.clone(),
-        manifest_digest: stage.manifest_digest.clone(),
-        manifest: stage.manifest.clone(),
-        chunks: Default::default(),
-        stored_chunk_bytes: stage.stored_chunk_bytes,
-        uploaded_payload_bytes: stage.uploaded_payload_bytes,
-        uploaded_operations: stage.uploaded_operations,
-        uploaded_read_assertions: stage.uploaded_read_assertions,
-        expires_at_ms: stage.expires_at_ms,
-        ttl_ms: stage.ttl_ms,
-        outcome: stage.outcome.clone(),
-    }
-}
 fn point_error(error: anyhow::Error) -> Error {
     error
         .downcast_ref::<Error>()

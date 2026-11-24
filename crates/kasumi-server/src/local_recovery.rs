@@ -18,12 +18,17 @@ use uuid::Uuid;
 
 const PHASES: &str = "standalone-recovery-phases";
 const OPERATIONS: &str = "standalone-recovery-operations";
+const PUBLICATION_OWNERS: &str = "standalone-recovery-publication-owners";
 const GENERATIONS: &str = "standalone-recovery-generations";
 const ACTIVE: &str = "standalone-recovery-active";
 const INSTALLATION: &str = "standalone-recovery-installation";
 const MAX_RECORD: usize = 2 << 20;
 #[path = "local_recovery_archives.rs"]
 mod archives;
+#[path = "local_recovery_inventory.rs"]
+pub(crate) mod inventory;
+#[path = "local_recovery_keys.rs"]
+pub(crate) mod keys;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +40,8 @@ pub struct LocalRecoveryStart {
     pub checkpoint: FullBackupCheckpoint,
     pub source_purpose: StoragePurpose,
     pub source_keys: KeyProviderSettings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_source_keys: Vec<KeyProviderSettings>,
     pub source_principal: String,
     /// Installed alias; neither the backup graph nor a client chooses endpoints.
     pub destination: String,
@@ -66,13 +73,13 @@ impl LocalRecoveryStart {
             matches!(&self.source_purpose, StoragePurpose::Standalone { installation_id, tenant, incarnation } if !installation_id.is_nil() && tenant == &self.tenant && incarnation.to_string() == self.checkpoint.source_incarnation),
             "standalone recovery requires the exact standalone source storage purpose"
         );
-        match &self.source_keys {
-            KeyProviderSettings::File { path } => {
-                ensure!(path.is_absolute(), "source keyring path must be absolute")
-            }
-            KeyProviderSettings::Transit(settings) => {
-                settings.validate()?;
-            }
+        ensure!(
+            self.historical_source_keys.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+            "too many historical recovery providers"
+        );
+        self.source_keys.validate()?;
+        for source in &self.historical_source_keys {
+            source.validate()?;
         }
         Ok(())
     }
@@ -104,7 +111,7 @@ pub struct LocalRecoveryStatus {
     pub cleanup_evidence: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TargetPreparation {
     Uncreated,
@@ -112,6 +119,17 @@ enum TargetPreparation {
     CatalogsReady,
     MaterializationDispatched,
 }
+impl TargetPreparation {
+    const RECORDED: [(Self, &'static str); 3] = [
+        (Self::CreationDispatched, "target-preparation/1"),
+        (Self::CatalogsReady, "target-preparation/2"),
+        (Self::MaterializationDispatched, "target-preparation/3"),
+    ];
+    fn phase_record(self, phase: Uuid, journal: &Journal) -> Result<Vec<u8>> {
+        encoded(&(phase, &journal.status.request, &binding(journal), self))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TargetOpen {
     Materialize,
@@ -205,12 +223,51 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
     );
     Ok(journal)
 }
+/// A published recovery profile retains its original token filename through
+/// subsequent renewals. Resolve that exception from the recovery transaction.
+pub(crate) fn check_rotation_profile(
+    store: &TenantStore,
+    path: &Path,
+    profile: &kasumi_client::ClientProfile,
+) -> Result<()> {
+    let operation = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("recovery-"))
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .context("substituted installed bearer path")?;
+    let journal = record(store, operation)?;
+    let issuance = journal.profile_renewal.unwrap_or(journal.target_family);
+    ensure!(
+        journal.status.client_profile.as_deref() == Some(path)
+            && journal.target_family == profile.family_id
+            && profile.bearer_file == path.with_file_name(format!("recovery-{issuance}.token")),
+        "installed bearer path differs from its recovery transaction"
+    );
+    Ok(())
+}
+
 fn persist(store: &TenantStore, journal: &Journal) -> Result<()> {
     store.write_batch(&[WriteOp::put(
         OPERATIONS,
         journal.status.request.operation_id.as_bytes(),
         encoded(journal)?,
     )])
+}
+
+/// Resolve the selected phase from its durable row before adding a diagnostic.
+/// A failed publication may already have advanced the journal.
+fn record_failure(store: &TenantStore, operation: Uuid, error: &anyhow::Error) -> Result<Journal> {
+    let mut journal = record(store, operation)?;
+    let mut failure = error.to_string();
+    while failure.len() > 1024 {
+        failure.pop();
+    }
+    if journal.status.last_failure.as_ref() != Some(&failure) {
+        journal.status.last_failure = Some(failure);
+        persist(store, &journal)?;
+    }
+    Ok(journal)
 }
 fn phase_entry(journal: &Journal) -> Result<WriteOp> {
     // Every dispatch has immutable exact inputs even after the mutable cursor
@@ -229,8 +286,11 @@ fn phase_binding(journal: &Journal) -> Result<Vec<u8>> {
         LocalRecoveryPhase::Stopped => LocalRecoveryPhase::Stopping,
         phase => phase,
     };
+    binding_for_phase(journal, dispatched_phase)
+}
+fn binding_for_phase(journal: &Journal, phase: LocalRecoveryPhase) -> Result<Vec<u8>> {
     encoded(&(
-        dispatched_phase,
+        phase,
         &journal.status.request,
         journal.installation_id,
         &journal.database_path,
@@ -346,6 +406,11 @@ pub(crate) fn require_runtime_ready(store: &TenantStore) -> Result<()> {
     ensure!(
         !runtime_pending(store)?,
         "standalone recovery is incomplete; resume or stop the recorded local operation before serving"
+    );
+    // Its profiles, pins and Control topology may still name either generation.
+    ensure!(
+        !crate::standalone::certificate_rotation_pending(store)?,
+        "a certificate rotation is incomplete; rerun `kasumid maintenance rotate-certificates` before serving"
     );
     Ok(())
 }
@@ -637,7 +702,11 @@ async fn start_owned(
             database_group: None,
             target_preparation: TargetPreparation::Uncreated,
             archive_directory: None,
-            source_provider: request.source_keys.identity_descriptor()?,
+            source_provider: keys::RecoveryKeys::open(
+                &request.source_keys,
+                &request.historical_source_keys,
+            )?
+            .binding(),
             application_provider: tenant.keys.identity_descriptor()?,
             custody_provider: tenant.custody_keys.identity_descriptor()?,
             target_family: Uuid::new_v4(),
@@ -768,13 +837,7 @@ async fn resume_owned(
             if let Err(error) = operator.step(&mut journal).await {
                 // Resolve a possibly committed atomic transition before writing
                 // diagnostics; never turn an uncertain activation into a stop.
-                journal = record(operator.store(), operation)?;
-                let mut failure = error.to_string();
-                while failure.len() > 1024 {
-                    failure.pop();
-                }
-                journal.status.last_failure = Some(failure);
-                persist(operator.store(), &journal)?;
+                journal = record_failure(operator.store(), operation, &error)?;
                 let _ = operator
                     .event(&journal, kasumi_engine::SecurityOutcome::Failed)
                     .await;
@@ -887,6 +950,16 @@ fn binding(journal: &Journal) -> PhysicalBinding {
         audit_placement_binding: journal.audit_placement_binding.clone(),
     }
 }
+fn cleanup_evidence(journal: &Journal) -> Result<String> {
+    Ok(kasumi_types::staged_digest(&(
+        "kasumi.local-cleanup.v2",
+        &binding(journal),
+        &journal.target_directory,
+        &journal.database_group,
+        &journal.archive_directory,
+    ))?
+    .0)
+}
 fn check_binding(
     config: &RuntimeConfig,
     disk: &Arc<kasumi_store::NodeDisk>,
@@ -929,6 +1002,48 @@ fn check_database_group(journal: &Journal) -> Result<()> {
     );
     Ok(())
 }
+fn directory_child(
+    disk: &kasumi_store::NodeDisk,
+    parent: &NodeDiskDirectory,
+    name: &CStr,
+    create: bool,
+) -> Result<Option<NodeDiskDirectory>> {
+    match parent.open_child(name) {
+        Ok(directory) => Ok(Some(directory)),
+        Err(error) => {
+            let snapshot = disk.snapshot();
+            if error.kind() != ErrorKind::NotFound
+                || snapshot.phase != kasumi_store::NodeDiskPhase::Open
+                || !snapshot.filesystem_admission_ready
+            {
+                return Err(error.into());
+            }
+            if create {
+                Ok(Some(parent.create_child(name, DiskWork::Foreground)?))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+fn generation_directory(
+    disk: &Arc<kasumi_store::NodeDisk>,
+    settings: &kasumi_store::NodeDiskConfig,
+    journal: &Journal,
+    create: bool,
+) -> Result<Option<NodeDiskDirectory>> {
+    let (root, database_relative) = settings.binding(&journal.database_path)?;
+    let data_relative = database_relative
+        .parent()
+        .context("local recovery database has no installed directory")?;
+    let data = disk.open_directory(root, data_relative)?;
+    let Some(generations) = directory_child(disk, &data, c"generations", create)? else {
+        return Ok(None);
+    };
+    let target = CString::new(journal.status.request.target_incarnation.to_string())?;
+    directory_child(disk, &generations, &target, create)
+}
+
 impl Operator {
     fn prepare_stage(&self, journal: &mut Journal, next: TargetPreparation) -> Result<()> {
         ensure!(
@@ -951,13 +1066,11 @@ impl Operator {
             journal.status.phase == LocalRecoveryPhase::Materialize,
             "local preparation requires the materialization phase"
         );
-        let code = match next {
-            TargetPreparation::Uncreated => 0,
-            TargetPreparation::CreationDispatched => 1,
-            TargetPreparation::CatalogsReady => 2,
-            TargetPreparation::MaterializationDispatched => 3,
-        };
-        let key = format!("{}/target-preparation/{code}", journal.status.phase_id);
+        let (_, suffix) = TargetPreparation::RECORDED
+            .iter()
+            .find(|(stage, _)| *stage == next)
+            .context("unrecorded local preparation stage")?;
+        let key = format!("{}/{suffix}", journal.status.phase_id);
         ensure!(
             self.store().get(PHASES, key.as_bytes())?.is_none(),
             "local preparation dispatch already exists"
@@ -972,12 +1085,7 @@ impl Operator {
             WriteOp::put(
                 PHASES,
                 key.into_bytes(),
-                encoded(&(
-                    journal.status.phase_id,
-                    &journal.status.request,
-                    &binding(journal),
-                    next,
-                ))?,
+                next.phase_record(journal.status.phase_id, journal)?,
             ),
         ])
     }
@@ -1040,49 +1148,17 @@ impl Operator {
         check_database_group(journal)?;
         Ok(created)
     }
-    fn directory_child(
-        &self,
-        parent: &NodeDiskDirectory,
-        name: &CStr,
-        create: bool,
-    ) -> Result<Option<NodeDiskDirectory>> {
-        match parent.open_child(name) {
-            Ok(directory) => Ok(Some(directory)),
-            Err(error) => {
-                let snapshot = self.store().persistent_disk().snapshot();
-                if error.kind() != ErrorKind::NotFound
-                    || snapshot.phase != kasumi_store::NodeDiskPhase::Open
-                    || !snapshot.filesystem_admission_ready
-                {
-                    return Err(error.into());
-                }
-                if create {
-                    Ok(Some(parent.create_child(name, DiskWork::Foreground)?))
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-    }
     fn open_target_directory(
         &self,
         journal: &Journal,
         create: bool,
     ) -> Result<Option<NodeDiskDirectory>> {
-        let disk = self.store().persistent_disk();
-        let (root, database_relative) = self
-            .config
-            .persistent_disk
-            .binding(&journal.database_path)?;
-        let data_relative = database_relative
-            .parent()
-            .context("local recovery database has no installed directory")?;
-        let data = disk.open_directory(root, data_relative)?;
-        let Some(generations) = self.directory_child(&data, c"generations", create)? else {
-            return Ok(None);
-        };
-        let target = CString::new(journal.status.request.target_incarnation.to_string())?;
-        self.directory_child(&generations, &target, create)
+        generation_directory(
+            self.store().persistent_disk(),
+            &self.config.persistent_disk,
+            journal,
+            create,
+        )
     }
     fn prepare_directory(&self, journal: &Journal) -> Result<()> {
         let _target = self
@@ -1118,6 +1194,16 @@ impl Operator {
         let request = journal.status.request.clone();
         let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
         ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
+        let source_keys = (mode == TargetOpen::Materialize).then(|| {
+            keys::RecoveryKeys::open(&request.source_keys, &request.historical_source_keys)?
+                .bound(&request.source_keys, &journal.source_provider)
+        }).transpose()?;
+        let destinations = crate::backup_destination_installation::open_destinations(
+            &self.config.backup_destinations,
+            self.store().persistent_disk().clone(),
+            Some(&self.installed_owner),
+            None,
+        )?;
         let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_group(journal).await? } else {
             ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
             None
@@ -1127,9 +1213,6 @@ impl Operator {
         let path = journal.target_directory.join("node.kv");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
         ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
-        if mode == TargetOpen::Materialize {
-            ensure!(journal.source_provider == request.source_keys.identity_descriptor()?, "local source wrapping-key identity differs");
-        }
         let source = Arc::new(crate::runtime::file_secret);
         let application = tenant.keys.provider(source.clone())?;
         let custody = tenant.custody_keys.provider(source)?;
@@ -1196,15 +1279,13 @@ impl Operator {
                 .await?;
             let source = kasumi_engine::RestoreSource {
                 destination_alias: request.destination.clone(),
-                destination: self.config.backup_destinations[&request.destination].open(
-                    self.store().persistent_disk().clone(),
-                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
-                )?,
-                keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
+                destination: destinations.get(&request.destination)
+                    .context("local recovery destination is no longer installed")?.clone(),
+                keys: source_keys.context("local restoration lacks bound source keys")?,
                 timeout_ms: request.phase_timeout_ms,
             };
             self.prepare_stage(journal, TargetPreparation::MaterializationDispatched)?;
-            self.snapshot(&request.tenant, kasumi_engine::restore_local(
+            self.snapshot_at(&request.tenant, crate::administration::original_serving_runtime::RecoverStage::RestoreSnapshot, kasumi_engine::restore_local(
                 &source,
                 stores.clone(),
                 kasumi_engine::LocalRestoreRequest {
@@ -1227,14 +1308,11 @@ impl Operator {
                     && generation.restored_from().as_ref() == Some(&request.checkpoint),
                 "target materialization differs from exact local recovery checkpoint"
             );
-            for (alias, destination) in &self.config.backup_destinations {
-                if !initialized && alias == &request.destination {
+            for (alias, destination) in destinations {
+                if !initialized && alias == request.destination {
                     continue;
                 }
-                database.install_archive_destination(alias.clone(), destination.open(
-                    self.store().persistent_disk().clone(),
-                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
-                )?)?;
+                database.install_archive_destination(alias, destination)?;
             }
             Ok::<_, anyhow::Error>(())
         })();
@@ -1248,6 +1326,17 @@ impl Operator {
                 resources: pending,
             }),
             Err(error) => {
+                // A native child can retain this target beyond the process
+                // deadline. Persist the original cause on the operator store
+                // before waiting. A diagnostic write failure still drains the
+                // same target and its original native resources.
+                let error =
+                    match record_failure(self.store(), journal.status.request.operation_id, &error)
+                    {
+                        Ok(_) => error,
+                        Err(write) => error
+                            .context(format!("recording target failure before drain: {write:#}")),
+                    };
                 let drained = crate::startup_owner::finish(&mut pending).await;
                 Err(match drained {
                     Ok(()) => error,
@@ -1491,16 +1580,7 @@ impl Operator {
             // Resolve that directory's absence at the installed data directory.
             private_files::sync_parent(parent)?;
         }
-        journal.status.cleanup_evidence = Some(
-            kasumi_types::staged_digest(&(
-                "kasumi.local-cleanup.v2",
-                &binding(journal),
-                &journal.target_directory,
-                &journal.database_group,
-                &journal.archive_directory,
-            ))?
-            .0,
-        );
+        journal.status.cleanup_evidence = Some(cleanup_evidence(journal)?);
         journal.status.phase = LocalRecoveryPhase::Stopped;
         journal.status.last_failure = None;
         self.event(journal, kasumi_engine::SecurityOutcome::Succeeded)
@@ -1580,6 +1660,11 @@ impl Operator {
                         encoded(journal)?,
                     ),
                     WriteOp::put(PHASES, publication.id.as_bytes(), encoded(publication)?),
+                    WriteOp::put(
+                        PUBLICATION_OWNERS,
+                        publication.id.as_bytes(),
+                        journal.status.request.operation_id.as_bytes().as_slice(),
+                    ),
                 ])?;
             }
             let publication = journal
@@ -1623,7 +1708,7 @@ impl Operator {
                     .administer(context, kasumi_types::Operation::Suspend(false))
                     .await?;
             }
-            self.publish_profile(journal)?;
+            self.publish_profile(journal, state.policy())?;
             self.event(journal, kasumi_engine::SecurityOutcome::Succeeded)
                 .await?;
             journal.status.phase = LocalRecoveryPhase::Finished;
@@ -1642,9 +1727,13 @@ impl Operator {
         target.shutdown().await?;
         result
     }
-    fn publish_profile(&self, journal: &mut Journal) -> Result<()> {
+    fn publish_profile(&self, journal: &mut Journal, policy: &kasumi_types::Policy) -> Result<()> {
         let request = &journal.status.request;
         let root = crate::standalone::installation_root(&self.config)?;
+        // The application's client identity, wherever the latest certificate
+        // rotation published it.
+        let identity =
+            crate::standalone::ClientProfile::load(&root.join("profiles/default.json"))?.identity;
         let profile_path = root
             .join("profiles")
             .join(format!("recovery-{}.json", request.operation_id));
@@ -1661,18 +1750,24 @@ impl Operator {
                 "recovery profile path is occupied by unrelated credentials"
             );
         }
+        // A replay after family creation must present its original specification.
+        // New families can only request actions held by the restored principal.
+        let scopes = match self.credentials.existing_family(journal.target_family)? {
+            Some(existing) => existing.specification.scopes,
+            None => policy
+                .grants
+                .iter()
+                .filter(|grant| grant.principal == request.source_principal)
+                .flat_map(|grant| grant.actions.iter().copied())
+                .collect(),
+        };
         let mut token = self.credentials.create(
             kasumi_types::CreateCredential {
                 family_id: journal.target_family,
                 principal: request.source_principal.clone(),
                 tenant: request.tenant.clone(),
                 resource: resource.clone(),
-                scopes: std::collections::BTreeSet::from([
-                    kasumi_types::Action::Read,
-                    kasumi_types::Action::Write,
-                    kasumi_types::Action::Admin,
-                    kasumi_types::Action::Audit,
-                ]),
+                scopes,
                 lifetime_seconds: 3600,
                 // A binding installation binds it to the certificate the
                 // published profile presents.
@@ -1681,12 +1776,9 @@ impl Operator {
                     .auth
                     .require_certificate_binding
                     .then(|| {
-                        crate::runtime::TlsFiles {
-                            certificate: root.join("profiles/client.pem"),
-                            private_key: root.join("profiles/client-key.pem"),
-                        }
-                        .load()
-                        .map(|identity| hex::encode(identity.certificate_pin()))
+                        crate::runtime::TlsFiles::from(identity.clone())
+                            .load()
+                            .map(|identity| hex::encode(identity.certificate_pin()))
                     })
                     .transpose()?,
                 audience: Default::default(),
@@ -1747,10 +1839,7 @@ impl Operator {
                 },
             )]),
             mcp_endpoint: self.config.mcp.protocol.public_url.clone(),
-            identity: kasumi_client::ProfileTlsFiles {
-                certificate: root.join("profiles/client.pem"),
-                private_key: root.join("profiles/client-key.pem"),
-            },
+            identity,
             server_ca: root.join("tls/ca.pem"),
             native_certificate_pin: hex::encode(self.config.native.tls.load()?.certificate_pin()),
             bearer_file,

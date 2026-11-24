@@ -150,6 +150,13 @@ async fn runtime_requires_retained_owner_and_rejects_foreign_or_changed_binding_
     let marker = directory.join("kasumi-backup.marker");
     let before = std::fs::read(&marker).unwrap();
     assert!(open_destinations(&config.backup_destinations, disk.clone(), None, None).is_err());
+    let mut duplicate = config.backup_destinations.clone();
+    duplicate.insert("other".into(), duplicate["local"].clone());
+    let error = open_destinations(&duplicate, disk.clone(), Some(&owner), None)
+        .err()
+        .expect("two aliases cannot own the same physical namespace");
+    assert!(format!("{error:#}").contains("namespace already installed"));
+    assert_eq!(std::fs::read(&marker).unwrap(), before);
     for field in 0..5 {
         let mut changed = config.backup_destinations.clone();
         let DestinationConfig::Filesystem {

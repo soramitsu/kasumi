@@ -3,6 +3,7 @@
 //! stop the run without automatic mutation retry or a fabricated success.
 use anyhow::{Context, Result, ensure};
 use base64::Engine as _;
+use flate2::{Compression, GzBuilder};
 use kasumi_client::proto;
 use kasumi_transport::{
     TlsIdentity,
@@ -316,14 +317,7 @@ struct Journal {
     events: File,
 }
 impl Journal {
-    fn create(
-        directory: &Path,
-        config: &Configuration,
-        config_sha256: &str,
-        mode: &str,
-        total: u64,
-        binding: &CredentialBinding,
-    ) -> Result<Self> {
+    fn open(directory: &Path) -> Result<Self> {
         ensure!(
             directory.is_absolute(),
             "evidence directory must be absolute"
@@ -340,21 +334,29 @@ impl Journal {
             .create_new(true)
             .mode(0o600)
             .open(directory.join("events.jsonl"))?;
-        let mut journal = Self {
+        File::open(directory)?.sync_all()?;
+        Ok(Self {
             directory: directory.into(),
             events,
-        };
-        let mut executable = File::open(std::env::current_exe()?)?;
-        let mut hash = Sha256::new();
-        std::io::copy(&mut executable, &mut hash)?;
+        })
+    }
+
+    fn create(
+        directory: &Path,
+        config: &Configuration,
+        config_sha256: &str,
+        mode: &str,
+        total: u64,
+        binding: &CredentialBinding,
+    ) -> Result<Self> {
+        let mut journal = Self::open(directory)?;
         journal.event(json!({"event":"started","format":1,"mode":mode,"configuration_sha256":config_sha256,
             "corpus":config.corpus,"expected_canonical_bytes":total,"endpoint":config.endpoint,
             "credential_binding_claims":binding,
             "credential_binding_scope":"Client enforces continuity of these decoded claims; the native server authenticates the JWT on every invocation.",
-            "executable_sha256":hex::encode(hash.finalize()),"os":std::env::consts::OS,
+            "executable_sha256":executable_digest()?,"os":std::env::consts::OS,
             "architecture":std::env::consts::ARCH,"generator":"SHA256 counter; uniform 92-character printable ASCII payload; exact canonical JSON lengths",
             "scope":"Installed native service load and individual point-read integrity; not a coherent concurrent snapshot, node capacity certificate, latency benchmark or compressibility measurement. No automatic retries."}))?;
-        File::open(directory)?.sync_all()?;
         Ok(journal)
     }
     fn event(&mut self, value: Value) -> Result<()> {
@@ -373,6 +375,37 @@ impl Journal {
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
+}
+
+async fn original_receipt(
+    client: &mut proto::kasumi_data_client::KasumiDataClient<tonic::transport::Channel>,
+    credentials: &FileCredentialSource,
+    binding: &CredentialBinding,
+    timeout: Duration,
+    batch: &MutationBatch,
+) -> Result<Option<kasumi_types::MutationReceipt>> {
+    let response = client
+        .receipt(request(
+            proto::ReceiptRequest {
+                idempotency_key: batch.idempotency_key.clone(),
+            },
+            credentials,
+            binding,
+            timeout,
+        )?)
+        .await?
+        .into_inner();
+    let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource else {
+        anyhow::bail!("original credential must select a database");
+    };
+    let scope = kasumi_types::MutationReceiptScope {
+        tenant: binding.tenant.clone(),
+        incarnation: incarnation.to_string(),
+        principal: binding.sub.clone(),
+    };
+    Ok(kasumi_client::verify_mutation_receipt(
+        &scope, batch, response,
+    )?)
 }
 
 async fn run(
@@ -399,6 +432,7 @@ async fn run(
         .max_encoding_message_size(MAX_BATCH_BYTES + (64 << 10))
         .max_decoding_message_size(MAX_DOCUMENT_BYTES + (64 << 10));
     let timeout = Duration::from_millis(config.timeout_ms);
+    let mut first_to_write = 0;
     if let Some(original) = original {
         let original = Path::new(original);
         ensure!(
@@ -434,28 +468,16 @@ async fn run(
             serde_json::to_vec(&expected)? == bytes,
             "original batch differs from the exact configured corpus"
         );
-        let response = client
-            .receipt(request(
-                proto::ReceiptRequest {
-                    idempotency_key: batch.idempotency_key.clone(),
-                },
-                &credentials,
-                binding,
-                timeout,
-            )?)
-            .await?
-            .into_inner();
-        let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource
-        else {
-            anyhow::bail!("original credential must select a database");
-        };
-        let scope = kasumi_types::MutationReceiptScope {
-            tenant: binding.tenant.clone(),
-            incarnation: incarnation.to_string(),
-            principal: binding.sub.clone(),
-        };
-        let verified = kasumi_client::verify_mutation_receipt(&scope, &batch, response)?;
+        ensure!(
+            first.is_multiple_of(config.corpus.batch_documents as u64),
+            "original batch does not start on a configured boundary"
+        );
+        let verified =
+            original_receipt(&mut client, &credentials, binding, timeout, &batch).await?;
         let original_input_verified = verified.is_some();
+        let committed = verified
+            .as_ref()
+            .is_some_and(|receipt| receipt.outcome.is_ok());
         let outcome = match verified.map(|receipt| receipt.outcome) {
             Some(Ok(receipt)) => {
                 validate_receipt(&config.corpus, first, count, &receipt)?;
@@ -473,10 +495,39 @@ async fn run(
             "batch_sha256":digest(&bytes),"outcome":outcome,"original_input_matches_retained_server_digest":original_input_verified,
             "scope":"A retained outcome must match the exact original canonical input digest returned by the authenticated native server. Absence remains unknown. Resolution never dispatches a mutation."}),
         )?;
-        return Ok(());
+        if mode == "resolve" {
+            return Ok(());
+        }
+        ensure!(
+            committed,
+            "continuation requires a committed original receipt"
+        );
+        // Read every earlier receipt from this installation. The last request
+        // file alone cannot authorize skipping an absent or rejected batch.
+        while first_to_write < first {
+            let (prior, prior_count) = config.corpus.batch(first_to_write)?;
+            let receipt = original_receipt(&mut client, &credentials, binding, timeout, &prior)
+                .await?
+                .context("earlier original mutation has no retained receipt")?
+                .outcome
+                .map_err(|error| anyhow::anyhow!("earlier mutation rejected: {:?}", error.code))?;
+            validate_receipt(&config.corpus, first_to_write, prior_count, &receipt)?;
+            journal.event(
+                json!({"event":"confirmed_prefix_batch", "first":first_to_write,
+                "count":prior_count,"idempotency_key":prior.idempotency_key,
+                "batch_sha256":digest(&serde_json::to_vec(&prior)?),"revision":receipt.revision}),
+            )?;
+            first_to_write += prior_count;
+        }
+        first_to_write = first
+            .checked_add(count)
+            .context("continuation boundary overflow")?;
+        journal.event(
+            json!({"event":"continuing_after_committed_prefix","documents":first_to_write}),
+        )?;
     }
     if mode == "load" {
-        let mut first = 0u64;
+        let mut first = first_to_write;
         while first < config.corpus.documents {
             let (batch, count) = config.corpus.batch(first)?;
             let bytes = serde_json::to_vec(&batch)?;
@@ -507,6 +558,17 @@ async fn run(
     let mut expected = Sha256::new();
     let mut observed = Sha256::new();
     let mut total = 0u64;
+    let mut integrity = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(journal.directory.join("integrity.jsonl"))?;
+    File::open(&journal.directory)?.sync_all()?;
+    let mut integrity_digest = Sha256::new();
+    let mut batch_first = 0u64;
+    let mut batch_start_bytes = 0u64;
+    let mut batch_expected = Sha256::new();
+    let mut batch_observed = Sha256::new();
     for ordinal in 0..config.corpus.documents {
         let id = config.corpus.id(ordinal);
         let response = client
@@ -535,10 +597,13 @@ async fn run(
         );
         let actual = serde_json::to_vec(&actual)?;
         let wanted = serde_json::to_vec(&wanted)?;
-        for (hasher, bytes) in [(&mut expected, &wanted), (&mut observed, &actual)] {
-            hasher.update(ordinal.to_be_bytes());
-            hasher.update((bytes.len() as u64).to_be_bytes());
-            hasher.update(bytes);
+        for (hasher, bytes) in [
+            (&mut expected, &wanted),
+            (&mut observed, &actual),
+            (&mut batch_expected, &wanted),
+            (&mut batch_observed, &actual),
+        ] {
+            hash_document(hasher, ordinal, bytes);
         }
         total = total
             .checked_add(actual.len() as u64)
@@ -546,9 +611,20 @@ async fn run(
         if (ordinal + 1).is_multiple_of(config.corpus.batch_documents as u64)
             || ordinal + 1 == config.corpus.documents
         {
+            let batch = json!({"first":batch_first,"documents":ordinal + 1 - batch_first,
+                "canonical_bytes":total - batch_start_bytes,
+                "expected_sha256":hex::encode(batch_expected.finalize_reset()),
+                "observed_sha256":hex::encode(batch_observed.finalize_reset())});
+            let mut row = serde_json::to_vec(&batch)?;
+            row.push(b'\n');
+            integrity.write_all(&row)?;
+            integrity.sync_all()?;
+            integrity_digest.update(&row);
             journal.event(
                 json!({"event":"verified_prefix","documents":ordinal+1,"canonical_bytes":total}),
             )?;
+            batch_first = ordinal + 1;
+            batch_start_bytes = total;
         }
     }
     let expected = hex::encode(expected.finalize());
@@ -559,9 +635,78 @@ async fn run(
     );
     journal.event(
         json!({"event":"passed","documents":config.corpus.documents,"canonical_bytes":total,
-        "expected_sha256":expected,"observed_sha256":observed}),
+        "expected_sha256":expected,"observed_sha256":observed,
+        "integrity_sha256":hex::encode(integrity_digest.finalize())}),
     )?;
     Ok(())
+}
+
+fn executable_digest() -> Result<String> {
+    let mut executable = File::open(std::env::current_exe()?)?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut executable, &mut hash)?;
+    Ok(hex::encode(hash.finalize()))
+}
+
+#[derive(Default)]
+struct CountedDigest {
+    bytes: u64,
+    hash: Sha256,
+}
+
+impl Write for CountedDigest {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| std::io::Error::other("compressed corpus length overflow"))?;
+        self.hash.update(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn hash_document(hasher: &mut Sha256, ordinal: u64, bytes: &[u8]) {
+    hasher.update(ordinal.to_be_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn measure_corpus(directory: &Path, corpus: &Corpus, config_sha256: &str) -> Result<()> {
+    let total = corpus.validate()?;
+    let mut journal = Journal::open(directory)?;
+    journal.event(json!({"event":"started","format":1,"mode":"measure",
+        "configuration_sha256":config_sha256,"executable_sha256":executable_digest()?,
+        "architecture":std::env::consts::ARCH,"os":std::env::consts::OS,
+        "corpus":corpus,"expected_canonical_bytes":total,"algorithm":"gzip-9"}))?;
+    let started = Instant::now();
+    let mut gzip = GzBuilder::new()
+        .mtime(0)
+        .write(CountedDigest::default(), Compression::best());
+    let mut framed = Sha256::new();
+    let mut canonical = Sha256::new();
+    let mut bytes = 0u64;
+    for ordinal in 0..corpus.documents {
+        let document = serde_json::to_vec(&corpus.document(ordinal)?)?;
+        gzip.write_all(&document)?;
+        bytes = bytes
+            .checked_add(document.len() as u64)
+            .context("measured corpus length overflow")?;
+        canonical.update(&document);
+        hash_document(&mut framed, ordinal, &document);
+    }
+    let compressed = gzip.finish()?;
+    ensure!(
+        bytes == total,
+        "measured canonical length differs from configuration"
+    );
+    journal.event(json!({"event":"measured","documents":corpus.documents,"algorithm":"gzip-9",
+        "input_bytes":bytes,"output_bytes":compressed.bytes,"gzip_sha256":hex::encode(compressed.hash.finalize()),
+        "canonical_sha256":hex::encode(canonical.finalize()),"expected_sha256":hex::encode(framed.finalize()),
+        "seconds":started.elapsed().as_secs_f64()}))
 }
 
 #[tokio::main]
@@ -569,18 +714,23 @@ async fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [configuration, mode, output, flags @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: kasumi-bench-capacity <config.json> load|verify|resolve <new-absolute-evidence-directory> [--allow-writes | original-evidence-directory]"
+            "usage: kasumi-bench-capacity <config.json> load|verify|resolve|measure <new-absolute-evidence-directory> [--allow-writes [--after-committed original-evidence-directory] | original-evidence-directory]"
         );
     };
     ensure!(
-        (mode == "load" && flags == ["--allow-writes"])
-            || (mode == "verify" && flags.is_empty())
+        (mode == "load"
+            && (flags == ["--allow-writes"]
+                || (flags.len() == 3 && flags[..2] == ["--allow-writes", "--after-committed"])))
+            || (matches!(mode.as_str(), "verify" | "measure") && flags.is_empty())
             || (mode == "resolve" && flags.len() == 1),
-        "load requires --allow-writes; verify accepts no flags; resolve requires the original evidence directory"
+        "load requires --allow-writes; verify and measure accept no flags; resolve requires the original evidence directory"
     );
     let path = Path::new(configuration).canonicalize()?;
     let bytes = bounded(&path, 128 << 10)?;
     let config: Configuration = serde_json::from_slice(&bytes)?;
+    if mode == "measure" {
+        return measure_corpus(Path::new(output), &config.corpus, &digest(&bytes));
+    }
     let total = config.corpus.validate()?;
     ensure!(
         (1..=30_000).contains(&config.timeout_ms),
@@ -599,7 +749,11 @@ async fn main() -> Result<()> {
         total,
         &binding,
     )?;
-    let original = (mode == "resolve").then(|| flags[0].as_str());
+    let original = match mode.as_str() {
+        "resolve" => Some(flags[0].as_str()),
+        "load" if flags.len() == 3 => Some(flags[2].as_str()),
+        _ => None,
+    };
     let result = run(
         &config,
         root,
@@ -658,6 +812,34 @@ mod tests {
             "0f2ce61facf68acfb2587f4d7ce740598149abeea7491f1ee373f5e092ad2a7b"
         );
     }
+    #[test]
+    fn measurement_streams_one_complete_gzip_member_for_all_canonical_bodies() {
+        let mut corpus = corpus();
+        corpus.documents = 5;
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("measurement");
+        measure_corpus(&output, &corpus, "config-test").unwrap();
+        let events: Vec<Value> = BufReader::new(File::open(output.join("events.jsonl")).unwrap())
+            .lines()
+            .map(|s| serde_json::from_str(&s.unwrap()).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["mode"], "measure");
+        let raw: Vec<u8> = (0..corpus.documents)
+            .flat_map(|ordinal| serde_json::to_vec(&corpus.document(ordinal).unwrap()).unwrap())
+            .collect();
+        let mut gzip = GzBuilder::new()
+            .mtime(0)
+            .write(Vec::new(), Compression::best());
+        gzip.write_all(&raw).unwrap();
+        let compressed = gzip.finish().unwrap();
+        assert_eq!(events[1]["input_bytes"], raw.len());
+        assert_eq!(events[1]["canonical_sha256"], digest(&raw));
+        assert_eq!(events[1]["output_bytes"], compressed.len());
+        assert_eq!(events[1]["gzip_sha256"], digest(&compressed));
+        assert!(measure_corpus(&output, &corpus, "config-test").is_err());
+    }
+
     #[test]
     fn batch_identity_is_exact_and_limits_fail_before_allocating() {
         let mut corpus = corpus();

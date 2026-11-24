@@ -620,6 +620,9 @@ mod tests {
             reservation
         });
         let before = engine.generation().unwrap();
+        let starting_position = before.state.audit_retention.clone();
+        let budget = before.state.limits.audit_retention.clone();
+        let mut unavailable = None;
         let paused_preparation = change_term.then(|| {
             let (entered, entry) = tokio::sync::oneshot::channel();
             let (release, released) = std::sync::mpsc::channel();
@@ -636,7 +639,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let raft = group.raft();
-            let admitted = group.metrics();
+            // A write can return before the Raft metrics watcher publishes its
+            // application. Observe the final fixture revision before changing term.
+            let admitted = raft
+                .wait(Some(Duration::from_secs(5)))
+                .applied_index(Some(before.state.revision), "final audit write applied")
+                .await
+                .unwrap();
             raft.append_entries(openraft::raft::AppendEntriesRequest {
                 vote: openraft::Vote::new_committed(admitted.current_term + 1, 2),
                 prev_log_id: admitted.last_applied,
@@ -694,6 +703,11 @@ mod tests {
                 group.linearizable_barrier().await.unwrap().unwrap().index,
                 before.state.revision
             );
+            unavailable = Some(serde_json::json!({
+                "position":current.state.audit_retention,"revision":current.state.revision,
+                "failures":database.audit_maintenance_status().unwrap().failures,
+                "committed_index":group.linearizable_barrier().await.unwrap().unwrap().index,
+            }));
             archive.fail.store(false, Ordering::Release);
             database.audit_worker_wake.notify_one();
         }
@@ -734,6 +748,14 @@ mod tests {
         let status = database.audit_maintenance_status().unwrap();
         assert_eq!(status.failures > 0, outage);
         assert!(status.committed_segments > 0);
+        println!(
+            "KASUMI_AUDIT_COMPONENT {}",
+            serde_json::json!({
+                "case":"maintenance","budget":budget,"starts_at":budget.starts_at(),"drains_to":budget.drains_to(),
+                "before":starting_position,"after":current.state.audit_retention,"outage":unavailable,
+                "committed_segments":status.committed_segments,"failures":status.failures,
+            })
+        );
         drop(current);
         drop(ordinary);
         drop(pool);

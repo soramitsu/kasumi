@@ -3,12 +3,13 @@
 use super::*;
 use kasumi_store::{BackupSessionSlot, VerifiedBackupSession};
 
-fn storage_error(error: anyhow::Error) -> Error {
+pub(super) fn storage_error(error: anyhow::Error) -> Error {
     error.downcast_ref::<Error>().cloned().unwrap_or_else(|| {
         Error::new(
             ErrorCode::Unavailable,
             "backup session storage unavailable or invalid",
         )
+        .with_physical_source(error)
     })
 }
 fn status(session: &VerifiedBackupSession) -> Result<BackupSessionStatus> {
@@ -77,9 +78,23 @@ impl Database {
         destination: &dyn BackupDestination,
         id: uuid::Uuid,
     ) -> Result<Option<VerifiedBackupSession>> {
+        Ok(self
+            .read_bound_session(context, destination, id, true)
+            .await?
+            .0)
+    }
+
+    async fn read_bound_session(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        id: uuid::Uuid,
+        repair_terminal: bool,
+    ) -> Result<(Option<VerifiedBackupSession>, Option<BackupSessionStatus>)> {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
-        let result = self
+        let binding = self.backup_owner(context, destination, id).await?;
+        let mut result = self
             .store
             .verify_backup_session(destination, id)
             .await
@@ -95,15 +110,116 @@ impl Database {
                 matches!(session.outcome(), Some(BackupSessionOutcome::Complete { checkpoint, .. })
                     if state.restore_lineage.iter().any(|link| &link.checkpoint == checkpoint))
             };
-            if !permitted {
+            let purpose = staged_digest(session.source_purpose())?.0;
+            if !permitted
+                || binding.as_ref().is_some_and(|row| {
+                    row.claim.source_purpose_sha256 != purpose
+                        || row.claim.intent_ciphertext_sha256 != session.intent_ciphertext_sha256()
+                        || row.claim.source_incarnation != session.intent().source_incarnation
+                        || row.claim.revision != session.intent().revision
+                })
+            {
                 return Err(Error::new(
                     ErrorCode::Forbidden,
                     "backup session lacks current installation or exact restore lineage binding",
                 ));
             }
         }
+        if result.is_none()
+            && binding.is_some()
+            && destination
+                .session_get(
+                    id,
+                    BackupSessionSlot::Outcome,
+                    kasumi_store::MAX_ENCRYPTED_SESSION_RECORD_BYTES,
+                )
+                .await
+                .map_err(storage_error)?
+                .is_some()
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "backup outcome exists without its claimed intent",
+            ));
+        }
+        // Read the selected outcome after the physical record. A new writer
+        // always commits Control before it can expose its ciphertext remotely.
+        let mut durable_status = None;
+        if let Some(original) = binding {
+            let selected = self
+                .selected_backup(context, destination, id)
+                .await?
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::Corruption, "backup Control claim disappeared")
+                })?;
+            if selected.record != original {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "backup Control claim changed",
+                ));
+            }
+            let physical = result.as_ref().and_then(VerifiedBackupSession::outcome);
+            if let Some(decision) = &selected.terminal {
+                let session = result.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "decided backup session lost its intent",
+                    )
+                })?;
+                if physical.is_none() && repair_terminal {
+                    self.require_backup_effect(context, destination, session)
+                        .await?;
+                    let bytes = self
+                        .store
+                        .bound_backup_terminal(&selected.record, decision)
+                        .map_err(storage_error)?;
+                    self.response_fence(context)?.check()?;
+                    let _uncertain = destination
+                        .session_put(id, BackupSessionSlot::Outcome, bytes.into())
+                        .await;
+                    result = self
+                        .store
+                        .verify_backup_session(destination, id)
+                        .await
+                        .map_err(storage_error)?;
+                    if result
+                        .as_ref()
+                        .and_then(VerifiedBackupSession::outcome)
+                        .is_none()
+                    {
+                        return Err(Error::new(
+                            ErrorCode::UnknownOutcome,
+                            "committed backup outcome awaits destination readback",
+                        ));
+                    }
+                }
+                if let Some(session) = &result
+                    && session.outcome().is_some()
+                    && (session.outcome() != Some(&decision.outcome)
+                        || session.outcome_ciphertext_sha256()
+                            != Some(decision.ciphertext_sha256.as_str())
+                        || session.intent_ciphertext_sha256()
+                            != original.claim.intent_ciphertext_sha256)
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "destination terminal differs from committed backup outcome",
+                    ));
+                }
+            } else if physical.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "destination terminal has no committed Control outcome",
+                ));
+            }
+            durable_status = Some(BackupSessionStatus {
+                intent: original.claim.intent(),
+                outcome: selected.terminal.map(|decision| decision.outcome),
+                source_purpose_sha256: original.claim.source_purpose_sha256,
+            });
+        }
         self.response_fence(context)?.check()?;
-        Ok(result)
+        Ok((result, durable_status))
     }
     pub(super) async fn finish_backup_session(
         &self,
@@ -112,6 +228,8 @@ impl Database {
         session: &VerifiedBackupSession,
         checkpoint: &FullBackupCheckpoint,
     ) -> Result<VerifiedBackupSession> {
+        self.require_backup_effect(context, destination, session)
+            .await?;
         let outcome = BackupSessionOutcome::Complete {
             intent_ciphertext_sha256: session.intent_ciphertext_sha256().into(),
             checkpoint: checkpoint.clone(),
@@ -119,10 +237,8 @@ impl Database {
         outcome.validate(session.intent(), session.intent_ciphertext_sha256())?;
         self.response_fence(context)?.check()?;
         let bytes = self
-            .store
-            .encrypt_backup_session_outcome(session, &outcome)
-            .await
-            .map_err(storage_error)?;
+            .select_backup_terminal(context, destination, session, &outcome)
+            .await?;
         self.response_fence(context)?.check()?;
         // A failed create may already have committed. Always resolve the same
         // permanent outcome; never classify uncertainty as cleanup permission.
@@ -158,11 +274,16 @@ impl Database {
         let result = self
             .session_work(|| async {
                 let destination = self.archive_destination(&request.destination)?;
-                let session = self
-                    .backup_session(&context, destination.as_ref(), request.session_id)
-                    .await?
-                    .ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
-                let result = status(&session)?;
+                let (session, control) = self
+                    .read_bound_session(&context, destination.as_ref(), request.session_id, false)
+                    .await?;
+                let result = match (control, session) {
+                    (Some(status), _) => status,
+                    (None, Some(session)) => status(&session)?,
+                    (None, None) => {
+                        return Err(Error::new(ErrorCode::NotFound, "backup session not found"));
+                    }
+                };
                 self.response_fence(&context)?.check()?;
                 Ok(result)
             })
@@ -185,13 +306,51 @@ impl Database {
                     .into());
                 }
                 let destination = self.archive_destination(&request.destination)?;
-                let session = self
+                let session = match self
                     .backup_session(&context, destination.as_ref(), request.session_id)
                     .await?
-                    .ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
+                {
+                    Some(session) => session,
+                    None => {
+                        let row = self
+                            .backup_owner(&context, destination.as_ref(), request.session_id)
+                            .await?
+                            .ok_or_else(|| {
+                                Error::new(ErrorCode::NotFound, "backup session not found")
+                            })?;
+                        if row.claim.source_incarnation != self.engine.generation()?.incarnation() {
+                            return Err(Error::new(
+                                ErrorCode::Forbidden,
+                                "backup abort requires the original source",
+                            )
+                            .into());
+                        }
+                        let bytes = self
+                            .original_backup_intent_for_effect(&context, &row)
+                            .await?;
+                        self.response_fence(&context)?.check()?;
+                        let _publication = destination
+                            .session_put(
+                                request.session_id,
+                                BackupSessionSlot::Intent,
+                                bytes.into(),
+                            )
+                            .await;
+                        self.backup_session(&context, destination.as_ref(), request.session_id)
+                            .await?
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorCode::UnknownOutcome,
+                                    "claimed backup intent readback unavailable",
+                                )
+                            })?
+                    }
+                };
                 if session.outcome().is_some() {
                     return status(&session).map_err(Into::into);
                 }
+                self.require_backup_effect(&context, destination.as_ref(), &session)
+                    .await?;
                 let root = destination
                     .session_get(
                         request.session_id,
@@ -228,11 +387,6 @@ impl Database {
                     principal: context.principal.clone(),
                     reason: request.reason,
                 };
-                let bytes = self
-                    .store
-                    .encrypt_backup_session_outcome(&session, &outcome)
-                    .await
-                    .map_err(storage_error)?;
                 self.maintenance_audit(
                     context.clone(),
                     "backup_abort",
@@ -240,6 +394,10 @@ impl Database {
                     session.intent().revision,
                 )
                 .await?;
+                let bytes = self
+                    .select_backup_terminal(&context, destination.as_ref(), &session, &outcome)
+                    .await?;
+                self.response_fence(&context)?.check()?;
                 let _publication = destination
                     .session_put(request.session_id, BackupSessionSlot::Outcome, bytes.into())
                     .await;
@@ -291,6 +449,8 @@ impl Database {
                     .backup_session(&context, destination.as_ref(), request.session_id)
                     .await?
                     .ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
+                self.require_backup_effect(&context, destination.as_ref(), &session)
+                    .await?;
                 let proof = session.aborted().map_err(|_| {
                     Error::new(
                         ErrorCode::Conflict,

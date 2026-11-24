@@ -137,6 +137,148 @@ impl AdmittedBackupBundle {
     }
 }
 
+impl TenantStore {
+    /// Lend the authenticated catalog identities while returning the same
+    /// decrypted object to its enclosing graph verifier.
+    pub async fn decrypt_backup_object_and_visit_keys(
+        &self,
+        bytes: &[u8],
+        expected_id: Uuid,
+        max_plaintext_bytes: usize,
+        mut visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        let (encrypted, contents) = self
+            .authenticate_object(bytes, expected_id, max_plaintext_bytes)
+            .await?;
+        encrypted.visit_catalog_keys(&mut visit)?;
+        self.check_access()?;
+        Ok(contents)
+    }
+
+    /// Inspect only the wrapping keys of the selected encrypted session records.
+    /// Both records must authenticate the exact Control claim and share a catalog.
+    pub async fn with_verified_binding_keys<T>(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+        terminal: Option<&kasumi_types::BackupBindingTerminal>,
+        visit: impl FnOnce(&mut dyn Iterator<Item = (&str, &str, u64)>) -> Result<T>,
+    ) -> Result<T> {
+        let _access = AccessGuard(self);
+        self.check_access()?;
+        record.validate()?;
+        let claim = &record.claim;
+        ensure!(
+            self.tenant() == claim.tenant,
+            "backup binding belongs to another tenant"
+        );
+        let provider = self.archive_read_provider()?;
+        let encrypted = EncryptedBackup::from_bytes(
+            &claim.intent_ciphertext,
+            crate::MAX_SESSION_RECORD_BYTES,
+            self,
+        )?;
+        let contents = encrypted
+            .decrypt(self.tenant(), provider.clone(), self)
+            .await?;
+        let intent: kasumi_types::BackupSessionIntent = serde_json::from_slice(&contents.snapshot)?;
+        ensure!(
+            intent == claim.intent()
+                && contents.revision == claim.revision
+                && kasumi_types::staged_digest(&contents.source_purpose)?.0
+                    == claim.source_purpose_sha256,
+            "encrypted intent differs from Control claim"
+        );
+        contents
+            .source_purpose
+            .validate_application_identity(&claim.tenant, &claim.source_incarnation)?;
+        if let Some(terminal) = terminal {
+            terminal.validate(claim)?;
+            let outcome = EncryptedBackup::from_bytes(
+                &terminal.ciphertext,
+                crate::MAX_SESSION_RECORD_BYTES,
+                self,
+            )?
+            .decrypt(self.tenant(), provider, self)
+            .await?;
+            let value: kasumi_types::BackupSessionOutcome =
+                serde_json::from_slice(&outcome.snapshot)?;
+            value.validate(&intent, &claim.intent_ciphertext_sha256)?;
+            ensure!(
+                value == terminal.outcome
+                    && outcome.revision == contents.revision
+                    && outcome.source_purpose == contents.source_purpose
+                    && outcome.key_catalog_sha256 == contents.key_catalog_sha256,
+                "encrypted decision differs from Control binding"
+            );
+        }
+        let result = visit(
+            &mut encrypted
+                .manifest
+                .catalog
+                .keys
+                .values()
+                .map(|key| (key.provider.as_str(), key.key_ref.as_str(), key.version)),
+        )?;
+        self.check_access()?;
+        Ok(result)
+    }
+
+    /// Lend wrapping identities only after the original object, its entire
+    /// historical catalog and its authenticated plaintext have been verified.
+    pub async fn with_verified_object_keys<T>(
+        &self,
+        bytes: &[u8],
+        expected_id: Uuid,
+        max_plaintext_bytes: usize,
+        visit: impl FnOnce(&BackupContents, &mut dyn Iterator<Item = (&str, &str, u64)>) -> Result<T>,
+    ) -> Result<T> {
+        let (encrypted, contents) = self
+            .authenticate_object(bytes, expected_id, max_plaintext_bytes)
+            .await?;
+        let mut versions = encrypted
+            .manifest
+            .catalog
+            .keys
+            .values()
+            .map(|key| (key.provider.as_str(), key.key_ref.as_str(), key.version));
+        let result = visit(&contents, &mut versions)?;
+        self.check_access()?;
+        Ok(result)
+    }
+
+    pub fn bound_backup_terminal(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+        terminal: &kasumi_types::BackupBindingTerminal,
+    ) -> Result<AdmittedBackupBundle> {
+        self.check_access()?;
+        record.validate()?;
+        terminal.validate(&record.claim)?;
+        ensure!(
+            record.claim.tenant == self.tenant(),
+            "backup Control decision belongs to another tenant"
+        );
+        AdmittedBackupBundle::copy_from(&terminal.ciphertext, self.plaintext_memory_owner())
+    }
+
+    /// Retain the original committed ciphertext under this installation's memory owner.
+    pub fn bound_backup_intent(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+    ) -> Result<AdmittedBackupBundle> {
+        self.check_access()?;
+        record.validate()?;
+        ensure!(
+            record.claim.tenant == self.tenant(),
+            "backup Control row belongs to another tenant"
+        );
+        AdmittedBackupBundle::copy_from(
+            &record.claim.intent_ciphertext,
+            self.plaintext_memory_owner(),
+        )
+    }
+}
+
 impl AsRef<[u8]> for AdmittedBackupBundle {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
@@ -277,6 +419,16 @@ impl TenantStore {
 }
 
 impl EncryptedBackup {
+    pub(crate) fn visit_catalog_keys(
+        &self,
+        mut visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<()> {
+        for key in self.manifest.catalog.keys.values() {
+            visit(&key.provider, &key.key_ref, key.version)?;
+        }
+        Ok(())
+    }
+
     /// Reuse authenticated historical wrapping dependencies and source purpose
     /// for a session outcome written by another currently authorized replica.
     pub(crate) async fn encrypt_related(
@@ -389,7 +541,24 @@ impl EncryptedBackup {
         max_snapshot_bytes: usize,
         owner: &TenantStore,
     ) -> Result<Self> {
+        Self::from_source_bytes(bytes, max_snapshot_bytes, owner.tenant(), owner)
+    }
+    pub(crate) fn from_source_bytes(
+        bytes: &[u8],
+        max_snapshot_bytes: usize,
+        source_tenant: &str,
+        owner: &TenantStore,
+    ) -> Result<Self> {
         owner.check_access()?;
+        ensure!(
+            source_tenant == owner.tenant()
+                || matches!(
+                    owner.storage_access().purpose(),
+                    crate::StoragePurpose::TargetJournal { .. }
+                ),
+            "backup source tenant differs from installed owner"
+        );
+
         ensure!(
             bytes.len() >= 12 && &bytes[..8] == MAGIC,
             "invalid backup magic"
@@ -408,8 +577,8 @@ impl EncryptedBackup {
             serde_json::from_slice(header).context("invalid backup manifest")?;
         ensure!(manifest.format == FORMAT, "unsupported backup format");
         ensure!(
-            manifest.tenant == owner.tenant(),
-            "backup tenant differs from installed owner"
+            manifest.tenant == source_tenant,
+            "backup tenant differs from selected source"
         );
         manifest.catalog.validate(&manifest.tenant)?;
         ensure!(
@@ -441,12 +610,56 @@ impl EncryptedBackup {
         })
     }
 
+    /// Authenticate an immutable object with the recovery operation's original
+    /// provider roster before lending its complete wrapping catalog.
+    pub async fn decrypt_and_visit_keys(
+        &self,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        self.decrypt_and_visit_source_keys(owner.tenant(), provider, owner, visit)
+            .await
+    }
+
+    /// The expected tenant belongs to the authenticated source. A journal can
+    /// independently own memory and the access lifetime for its verification.
+    pub async fn decrypt_and_visit_source_keys(
+        &self,
+        source_tenant: &str,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        let contents = self.decrypt(source_tenant, provider, owner).await?;
+        self.visit_catalog_keys(visit)?;
+        owner.check_access()?;
+        Ok(contents)
+    }
+
     pub async fn decrypt(
         &self,
         source_tenant: &str,
         provider: Arc<dyn KeyProvider>,
         owner: &TenantStore,
     ) -> Result<BackupContents> {
+        owner.storage_access().validate_tenant(source_tenant)?;
+        self.decrypt_session_source(source_tenant, provider, owner)
+            .await
+    }
+    pub(crate) async fn decrypt_session_source(
+        &self,
+        source_tenant: &str,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+    ) -> Result<BackupContents> {
+        owner.check_access()?;
+        if !matches!(
+            owner.storage_access().purpose(),
+            crate::StoragePurpose::TargetJournal { .. }
+        ) {
+            owner.storage_access().validate_tenant(source_tenant)?;
+        }
         self.check_memory_owner(owner)?;
         self.decrypt_with_clock(
             source_tenant,
@@ -473,7 +686,7 @@ impl EncryptedBackup {
         clock: &dyn LeaseClock,
         access: &crate::StorageAccess,
     ) -> Result<BackupContents> {
-        access.validate_tenant(source_tenant)?;
+        access.check()?;
         ensure!(
             self.manifest.tenant == source_tenant,
             "backup source tenant mismatch"
@@ -686,6 +899,11 @@ pub trait BackupDestination: Send + Sync {
     /// state lock. Async callers invoke this from a blocking context such as
     /// `tokio::task::spawn_blocking`, never directly on a runtime worker.
     fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding>;
+    /// Recheck the installed identity before asynchronous session operations.
+    /// Implementations that touch disk transfer this work to their disk owner.
+    async fn verified_namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        self.namespace_binding()
+    }
     /// Publishing is create-only: an existing backup must never be overwritten.
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()>;
     /// Enforce the caller's expected object bound before allocation and while
@@ -839,6 +1057,13 @@ impl FilesystemBackupDestination {
 impl BackupDestination for FilesystemBackupDestination {
     fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
         self.root.binding()
+    }
+    async fn verified_namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        let root = self.root.clone();
+        self.root
+            .disk()
+            .filesystem_child(crate::FilesystemEffect::Read, move || root.binding())
+            .await
     }
     async fn session_put(
         &self,

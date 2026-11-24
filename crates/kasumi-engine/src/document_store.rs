@@ -45,8 +45,8 @@ pub(crate) fn limits(bytes: usize) -> Result<BodyLimits> {
 }
 
 /// Measurements borrow the admitted input through encoding. One canonical
-/// body pass supplies its size, work and independent hash; one document pass
-/// supplies its complete size and work. Neither retains another payload copy.
+/// body pass supplies its size, work and independent hash. The authenticated
+/// document's framing contributes its own size and work.
 pub(crate) struct DocumentMeasurement<'a> {
     document: &'a Document,
     limits: BodyLimits,
@@ -59,13 +59,9 @@ pub(crate) struct DocumentMeasurement<'a> {
 impl<'a> DocumentMeasurement<'a> {
     pub(crate) fn new(document: &'a Document) -> Result<Self> {
         let mut digest = Sha256::new();
-        let (body_bytes, body_work) = crate::snapshot_codec::measure_typed_json(
-            &kasumi_types::CanonicalJsonValue(&document.body),
-            |bytes| digest.update(bytes),
-        )?;
+        let ((body_bytes, body_work), (document_bytes, document_work)) =
+            crate::snapshot_codec::measure_document_json(document, |bytes| digest.update(bytes))?;
         let limits = limits(usize::try_from(body_bytes)?)?;
-        let (document_bytes, document_work) =
-            crate::snapshot_codec::measure_typed_json(document, |_| {})?;
         Ok(Self {
             document,
             limits,
@@ -95,7 +91,7 @@ impl<'a> DocumentMeasurement<'a> {
     pub(crate) fn descriptor(
         &self,
         manifest: &BodyManifest,
-        wire: &[u8],
+        object: document_encoding::EncodedObject<'_>,
     ) -> Result<StoredDocument> {
         // encode_body independently hashes its emitted canonical spelling.
         // Never substitute a manifest's declared identity for input validation.
@@ -104,13 +100,14 @@ impl<'a> DocumentMeasurement<'a> {
                 && self.body_sha256 == manifest.canonical_sha256,
             "document encoding differs from canonical body"
         );
+        let wire = object.bytes();
         let descriptor = StoredDocument {
             id: self.document.id.clone(),
             version: self.document.version,
             body_bytes: self.body_bytes,
             document_bytes: self.document_bytes,
             body_sha256: self.body_sha256,
-            body_object: Sha256::digest(wire).into(),
+            body_object: object.digest(),
             body_object_bytes: wire.len() as u64,
             body_decode_work: self.body_work,
             body_manifest_work: crate::snapshot_codec::inspect_external_json_work(
@@ -196,6 +193,8 @@ pub(crate) struct PreparedDocuments {
     scope: Scope,
     retained: u64,
     reservation: DocumentWorkspace,
+    // Fences presence checks and learns each staged manifest and its chunks.
+    collector: Option<Arc<crate::document_gc::ObjectGc>>,
 }
 impl PreparedDocuments {
     pub(crate) fn new(
@@ -214,7 +213,15 @@ impl PreparedDocuments {
             scope,
             retained: FLOOR,
             reservation,
+            collector: None,
         })
+    }
+    /// The engine's object collector. An object it deleted after the selection
+    /// this owner reads is written again, and every after-image staged here
+    /// is reported to it as live.
+    pub(crate) fn collecting(mut self, collector: Arc<crate::document_gc::ObjectGc>) -> Self {
+        self.collector = Some(collector);
+        self
     }
     pub(crate) fn stage(&mut self, document: &Document) -> Result<StoredDocument> {
         let measured = DocumentMeasurement::new(document)?;
@@ -225,23 +232,37 @@ impl PreparedDocuments {
                 .checked_add(work)
                 .context("document preparation overflow")?,
         )?;
-        let manifest =
-            document_encoding::encode_body(&document.body, limits, |reference, bytes| {
-                self.put(false, reference.sha256, bytes, work)
-            })?;
-        let wire = manifest.to_bytes(limits)?;
-        let descriptor = measured.descriptor(&manifest, &wire)?;
-        self.put(true, descriptor.body_object, &wire, work)?;
+        let collecting = self.collector.is_some();
+        // At most `limits.blobs` digests, within this document's workspace.
+        let mut blobs = Vec::new();
+        let (manifest, wire) = document_encoding::encode_body(&document.body, limits, |object| {
+            if collecting {
+                blobs.try_reserve(1)?;
+                blobs.push(object.digest());
+            }
+            self.put(false, object, work)
+        })?;
+        let object = document_encoding::EncodedObject::new(&wire);
+        let descriptor = measured.descriptor(&manifest, object)?;
+        self.put(true, object, work)?;
         drop(wire);
         drop(manifest);
         self.reservation.retain(self.retained);
+        if let Some(collector) = &self.collector {
+            blobs.sort_unstable();
+            blobs.dedup();
+            collector.staged(descriptor.body_object, blobs);
+        }
         Ok(descriptor)
     }
-    fn put(&mut self, body: bool, digest: [u8; 32], bytes: &[u8], work: u64) -> Result<()> {
-        ensure!(
-            Sha256::digest(bytes).as_slice() == digest,
-            "document object digest differs"
-        );
+    fn put(
+        &mut self,
+        body: bool,
+        object: document_encoding::EncodedObject<'_>,
+        work: u64,
+    ) -> Result<()> {
+        let digest = object.digest();
+        let bytes = object.bytes();
         if let Some(index) = self.seen.get(&(body, digest)) {
             let WriteOp::Put { value, .. } = &self.writes[*index] else {
                 unreachable!()
@@ -257,24 +278,31 @@ impl PreparedDocuments {
         let baseline = work
             .checked_add(self.retained)
             .context("document preparation overflow")?;
-        let exists = self.reader.with_record(
-            &mut self.reservation,
-            baseline,
-            namespace,
-            &key,
-            bytes.len(),
-            |previous| {
-                if let Some(previous) = previous {
-                    ensure!(
-                        previous == bytes,
-                        "existing document content-address differs"
-                    );
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            },
-        )?;
+        // The selection read here predates a deletion the collector committed
+        // after it: that row is absent from the root this write publishes to.
+        let fenced = self
+            .collector
+            .as_ref()
+            .is_some_and(|collector| collector.fenced(body, &digest));
+        let exists = !fenced
+            && self.reader.with_record(
+                &mut self.reservation,
+                baseline,
+                namespace,
+                &key,
+                bytes.len(),
+                |previous| {
+                    if let Some(previous) = previous {
+                        ensure!(
+                            previous == bytes,
+                            "existing document content-address differs"
+                        );
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                },
+            )?;
         if exists {
             return Ok(());
         }
@@ -321,6 +349,7 @@ pub(crate) trait GenerationDocuments: DocumentResolver {
 /// and rechecks key access before lending its document. `finish` retires the
 /// view and fails if the view failed or key access ended.
 pub(crate) trait SharedRead: DocumentResolver {
+    fn selected(&self) -> &SelectedRead;
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
@@ -587,6 +616,18 @@ impl SelectedRead {
         result
     }
 
+    pub(crate) fn with_directory_reader<T>(
+        &self,
+        selection: &SelectedApplication,
+        read: impl FnOnce(&DocumentReader) -> Result<T>,
+    ) -> Result<T> {
+        ensure!(
+            self.documents.selected.same_selection(selection),
+            "directory and body selected different native roots"
+        );
+        self.with_reader(|reader| read(reader))
+    }
+
     /// `SelectedDocuments::with_source` through the shared view.
     pub(crate) fn with_source<T>(&self, read: impl FnOnce() -> Result<T>) -> Result<T> {
         self.with_reader(|reader| reader.check_access())?;
@@ -608,6 +649,9 @@ impl DocumentResolver for SelectedRead {
     }
 }
 impl SharedRead for SelectedRead {
+    fn selected(&self) -> &SelectedRead {
+        self
+    }
     fn finish(self: Box<Self>) -> Result<()> {
         match self.reader.into_inner().unwrap_or_else(|p| p.into_inner()) {
             Some(reader) => reader.close(),

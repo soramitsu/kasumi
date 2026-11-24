@@ -87,6 +87,8 @@ const NS: &str = "kasumi.independent-authority";
 /// Generation selector key for the Authority state namespace.
 const FAMILY: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
+#[path = "issuer_stop_storage.rs"]
+mod issuer_stop_storage;
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
 use crate::installation::{AuthorityBootstrap, AuthorityInstallation};
@@ -467,13 +469,27 @@ impl Backend {
         let _lock = self.mutation.lock().map_err(unavailable)?;
         self.authorize(&self.meta().map_err(unavailable)?, context)
     }
+    pub fn authorize_catalog(&self, context: &RequestContext) -> kasumi_types::Result<u64> {
+        let _lock = self.mutation.lock().map_err(unavailable)?;
+        let meta = self.meta().map_err(unavailable)?;
+        self.authorize_scope(&meta, context, true)
+    }
     fn authorize(&self, meta: &Meta, context: &RequestContext) -> kasumi_types::Result<u64> {
+        self.authorize_scope(meta, context, false)
+    }
+    fn authorize_scope(
+        &self,
+        meta: &Meta,
+        context: &RequestContext,
+        catalog: bool,
+    ) -> kasumi_types::Result<u64> {
         context.authorization.require_authority(
             self.installation.manifest.authority_id,
             self.installation.partition,
         )?;
         if context.tenant != self.installation.tenant()
-            || !context.scopes.contains(&kasumi_types::Action::Admin)
+            || !(context.scopes.contains(&kasumi_types::Action::Admin)
+                || catalog && context.scopes.contains(&kasumi_types::Action::Read))
             || !meta.administrators.contains(&context.principal)
         {
             return Err(Error::new(

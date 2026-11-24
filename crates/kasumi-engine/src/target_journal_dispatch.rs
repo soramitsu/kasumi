@@ -36,7 +36,7 @@ macro_rules! snapshot_ensure {
 pub(super) struct AcceptedInitialDispatch {
     control_root: ControlSigningRoot,
     node: NodeIdentity,
-    lifecycle: LifecycleIntent,
+    pub(super) lifecycle: LifecycleIntent,
     phase: RecoveryPhaseRecord,
     terminal_reserve_bytes: u64,
 }
@@ -564,7 +564,7 @@ impl TargetJournal {
         &self,
         key: &[u8],
         bytes: &[u8],
-    ) -> Result<InitialMembershipTerminal> {
+    ) -> Result<(InitialMembershipTerminal, Uuid)> {
         ensure!(
             bytes.len() <= DISPATCH_OBSERVATION_LIMIT,
             "first-membership terminal exceeds its original reservation"
@@ -586,8 +586,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, accepted_key.as_bytes(), MAX_RECORD)?
             .context("first-membership terminal lacks its accepted dispatch")?;
-        self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
-        let row: AcceptedInitialDispatch = decode_current(&accepted)?;
+        let row = self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
         let expected = row.expected_raft_prebind(&accepted)?;
         let local_prebind = match &row.phase.input {
             RecoveryDispatch::Target { request, .. }
@@ -604,10 +603,14 @@ impl TargetJournal {
                     == hex::encode(Sha256::digest(serde_json::to_vec(&local_prebind)?)),
             "first-membership terminal differs from its accepted dispatch"
         );
-        Ok(terminal)
+        Ok((terminal, row.lifecycle.request.target_incarnation))
     }
 
-    pub(super) fn validate_dispatch_record(&self, key: &[u8], bytes: &[u8]) -> Result<()> {
+    pub(super) fn validate_dispatch_record(
+        &self,
+        key: &[u8],
+        bytes: &[u8],
+    ) -> Result<AcceptedInitialDispatch> {
         ensure!(
             bytes.len() <= MAX_RECORD,
             "target dispatch record exceeds bound"
@@ -618,7 +621,7 @@ impl TargetJournal {
             key == row.key()? && serde_json::to_vec(&row)? == bytes,
             "target dispatch key or canonical bytes differ"
         );
-        Ok(())
+        Ok(row)
     }
 
     /// Read only the exact accepted identity. This does not open a generation
@@ -641,8 +644,7 @@ impl TargetJournal {
         let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? else {
             return Ok(InitialDispatchStatus::NoLocalRecord);
         };
-        self.validate_dispatch_record(&key, &bytes)?;
-        let row: AcceptedInitialDispatch = serde_json::from_slice(&bytes)?;
+        let row = self.validate_dispatch_record(&key, &bytes)?;
         let RecoveryDispatch::Target {
             node_id,
             request: stored,
@@ -730,6 +732,7 @@ impl TargetJournal {
         let key = InitialMembershipTerminal::from_history(&history)?.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
             self.validate_dispatch_terminal(&key, &bytes)?
+                .0
                 .require_current_history(&history)?;
         }
         Ok(history)
@@ -815,6 +818,7 @@ impl TargetJournal {
         let key = terminal.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
             self.validate_dispatch_terminal(&key, &bytes)?
+                .0
                 .require_current_history(&history)?;
             return Ok(history);
         }
@@ -840,6 +844,7 @@ impl TargetJournal {
             .get_bounded(NS, &key, MAX_RECORD)?
             .context("first-membership terminal absent after write")?;
         self.validate_dispatch_terminal(&key, &readback)?
+            .0
             .require_current_history(&history)?;
         snapshot_ensure!(
             readback == encoded,
@@ -859,6 +864,28 @@ impl TargetJournal {
         phase: &RecoveryPhaseRecord,
         lifecycle: &LifecycleIntent,
         request: &TargetRuntimeRequest,
+    ) -> Result<InitialDispatchReservation> {
+        self.reserve_dispatch(claimed_root, phase, lifecycle, request, None)
+    }
+
+    pub fn reserve_observed_initial_dispatch(
+        &self,
+        claimed_root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        lifecycle: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+        writer: &CurrentTargetJournalWriter,
+    ) -> Result<InitialDispatchReservation> {
+        self.reserve_dispatch(claimed_root, phase, lifecycle, request, Some(writer))
+    }
+
+    fn reserve_dispatch(
+        &self,
+        claimed_root: &ControlSigningRoot,
+        phase: &RecoveryPhaseRecord,
+        lifecycle: &LifecycleIntent,
+        request: &TargetRuntimeRequest,
+        writer: Option<&CurrentTargetJournalWriter>,
     ) -> Result<InitialDispatchReservation> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
@@ -906,6 +933,29 @@ impl TargetJournal {
                 .is_none(),
             "target incarnation permanently stopped locally"
         );
+        let original = &lifecycle.request;
+        if let Some(bytes) = self.store.get_bounded(
+            NS,
+            &generation_key(&original.tenant, original.target_incarnation),
+            MAX_RECORD,
+        )? {
+            let generation: GenerationBinding = decode_current(&bytes)?;
+            ensure!(
+                generation.checkpoint == original.checkpoint
+                    && generation.source_incarnation == original.source_incarnation
+                    && generation.source_epoch == original.source_authority_epoch
+                    && generation.nodes == original.target_nodes,
+                "dispatch differs from enrolled physical generation"
+            );
+        } else {
+            writer
+                .ok_or(MissingTargetWriter)?
+                .require(self, &metadata.retirements)?;
+            ensure!(
+                !metadata.retirements.requires_graph(),
+                "first dispatch under a wrapping-key fence requires its original locally admitted materialization"
+            );
+        }
         metadata.dispatches = metadata
             .dispatches
             .checked_add(1)

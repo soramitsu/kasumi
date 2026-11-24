@@ -1123,6 +1123,8 @@ impl Default for FaultBackend {
 #[derive(Debug, Default)]
 struct FaultState {
     remaining: Option<usize>,
+    #[cfg(test)]
+    rejected_mutation: bool,
     operations: usize,
     syncs: usize,
     advance_on_sync: Option<(std::sync::Arc<ManualClock>, Duration)>,
@@ -1145,7 +1147,16 @@ impl FaultBackend {
         Self::default()
     }
     pub fn fail_after(&self, mutations: usize) {
-        self.state.lock().remaining = Some(mutations);
+        let mut state = self.state.lock();
+        state.remaining = Some(mutations);
+        #[cfg(test)]
+        {
+            state.rejected_mutation = false;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn rejected_mutation(&self) -> bool {
+        self.state.lock().rejected_mutation
     }
     pub fn disarm(&self) {
         self.state.lock().remaining = None;
@@ -1186,6 +1197,10 @@ impl FaultBackend {
         let mut state = self.state.lock();
         if let Some(remaining) = &mut state.remaining {
             if *remaining == 0 {
+                #[cfg(test)]
+                {
+                    state.rejected_mutation = true;
+                }
                 return Err(std::io::Error::other("injected storage failure"));
             }
             *remaining -= 1;
@@ -1296,7 +1311,7 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
 // Select that owner using the destination as a prospective leaf; for an existing
 // directory, retain the original fixture root selection via a child anchor.
 // Consumer constructors then perform exact managed open_or_create acquisition.
-fn fixture_directory_owner(
+pub(crate) fn fixture_directory_owner(
     root: &std::path::Path,
     memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
 ) -> anyhow::Result<std::sync::Arc<crate::NodeDisk>> {

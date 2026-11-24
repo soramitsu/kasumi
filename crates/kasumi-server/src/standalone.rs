@@ -1,10 +1,8 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
-#[path = "standalone_credential_binding.rs"]
-mod credential_binding;
+#[path = "standalone_certificate_rotation.rs"]
+mod certificate_rotation;
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
-#[path = "standalone_credential_split.rs"]
-mod credential_split;
 #[path = "standalone_tenant_staging.rs"]
 mod tenant_staging;
 use crate::{
@@ -15,9 +13,8 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
-pub use credential_binding::{CredentialBindingReport, bind_credentials};
+pub(crate) use certificate_rotation::pending as certificate_rotation_pending;
 pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
-pub use credential_split::{CredentialSplitReport, split_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
@@ -246,7 +243,7 @@ pub(crate) fn claim(
             && installed.database_path == config.database_path
             && !installed.installation_id.is_nil()
             && !installed.control_incarnation.is_nil()
-            && config.control.incarnation.as_deref()
+            && config.hosted_control()?.incarnation.as_deref()
                 == Some(installed.control_incarnation.to_string().as_str()),
         "standalone installation binding differs"
     );
@@ -567,20 +564,20 @@ async fn recover_administrator_owned(
         ) in std::iter::once((
             "control",
             crate::runtime::CONTROL_TENANT,
-            &config.control.initial_policy,
-            &config.control.initial_limits,
+            &config.hosted_control()?.initial_policy,
+            &config.hosted_control()?.initial_limits,
             config
-                .control
+                .hosted_control()?
                 .incarnation
                 .as_deref()
                 .context("control incarnation missing")?,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
             StorageAccess::node_control(),
             CredentialResource::Control {
                 incarnation: Uuid::parse_str(
                     config
-                        .control
+                        .hosted_control()?
                         .incarnation
                         .as_deref()
                         .context("control incarnation missing")?,
@@ -696,7 +693,7 @@ async fn recover_administrator_owned(
             drop(generation);
             database.shutdown().await?;
         }
-        config.control.startup_principal = recovered_control_principal;
+        config.hosted_control_mut()?.startup_principal = recovered_control_principal;
         private_files::replace(configuration, &serde_json::to_vec_pretty(&config)?)?;
         audit
             .record(operator_event(
@@ -746,8 +743,8 @@ async fn rotate_wrapping_keys_owned(
             .await?;
         for settings in [
             &config.security_audit.keys,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
         ]
         .into_iter()
         .chain(
@@ -763,8 +760,8 @@ async fn rotate_wrapping_keys_owned(
         audit.store().rewrap_keys().await?;
         for (tenant, application, custody, access) in std::iter::once((
             crate::runtime::CONTROL_TENANT,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
             StorageAccess::node_control(),
         ))
         .chain(effective_tenants.iter().map(|tenant| {
@@ -865,8 +862,9 @@ async fn rotate_signing_key_owned(
     owner.finish(result).await
 }
 
-/// Offline certificate/key replacement keeps the installed CA identity. Local
-/// generated profiles are updated to the exact new native/admin leaf pins.
+/// Offline replacement of the listener and generated client certificates under
+/// the installed CA, published as one recoverable generation
+/// (`standalone_certificate_rotation.rs`). Rerun it after an interruption.
 pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Value> {
     let config = RuntimeConfig::load(configuration)?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
@@ -889,7 +887,12 @@ async fn rotate_certificates_owned(
     let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let audit = owner.audit.clone();
-        crate::local_recovery::require_runtime_ready(audit.store())?;
+        // A pending rotation is what this command resumes; only an unfinished
+        // local recovery stops it.
+        ensure!(
+            !crate::local_recovery::runtime_pending(audit.store())?,
+            "standalone recovery is incomplete; resume or stop the recorded local operation first"
+        );
         let operation = Uuid::new_v4().to_string();
         audit
             .record(operator_event(
@@ -897,113 +900,7 @@ async fn rotate_certificates_owned(
                 kasumi_engine::SecurityOutcome::Started,
             ))
             .await?;
-        let result = async {
-            let root = installation_root(&config)?;
-            let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
-            let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
-            // Rustls checks the certificate's public key against the private key before
-            // any leaf is generated or replaced. Parsing two PEM files is insufficient.
-            let ca_identity = kasumi_transport::TlsIdentity::from_pem(&ca_pem, &ca_key_pem)?;
-            kasumi_transport::server_config(
-                &ca_identity,
-                kasumi_transport::ClientAuthentication::OAuth,
-            )?;
-            let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
-            let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
-            let clients = installed_client_identities(root)?;
-            let mut replacements = Vec::with_capacity(3 + clients.len());
-            for (name, files, client_auth) in [
-                ("mcp".to_owned(), config.mcp.tls.clone(), false),
-                ("native".to_owned(), config.native.tls.clone(), false),
-                ("admin".to_owned(), config.admin.tls.clone(), false),
-            ]
-            .into_iter()
-            .chain(clients.into_iter().map(|(name, files)| (name, files, true)))
-            {
-                let (certificate_pem, key_pem) = leaf(&name, &issuer, client_auth)?;
-                let identity = kasumi_transport::TlsIdentity::from_pem(
-                    certificate_pem.as_bytes(),
-                    key_pem.as_bytes(),
-                )?;
-                kasumi_transport::server_config(
-                    &identity,
-                    kasumi_transport::ClientAuthentication::OAuth,
-                )?;
-                replacements.push((name, client_auth, files, key_pem, certificate_pem));
-            }
-            // Admit every replacement client certificate before any is
-            // installed; the ones they replace are retired at the end.
-            let mut admitted = Vec::new();
-            for (name, client_auth, _, _, certificate_pem) in &replacements {
-                if *client_auth {
-                    let pin = kasumi_transport::certificate_pin(certificate_pem.as_bytes())?;
-                    crate::client_pins::enroll_configured(&config, pin, name)?;
-                    admitted.push((name.clone(), pin));
-                }
-            }
-            for (_, _, files, key_pem, certificate_pem) in replacements {
-                private_files::replace(&files.private_key, key_pem.as_bytes())?;
-                private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
-            }
-            let native_pin = hex::encode(config.native.tls.load()?.certificate_pin());
-            let admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
-            let control = owner.control().await?;
-            let control_result = async {
-                let context = offline_context(&control)?;
-                let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
-                plane.require_initialized(&context).await?;
-                {
-                    let mut topology = plane
-                        .topology(&context)
-                        .await?
-                        .context("installed Control topology is missing")?;
-                    let node = topology
-                        .topology
-                        .nodes
-                        .get_mut(&1)
-                        .context("standalone control node is missing")?;
-                    node.certificate_pins =
-                        BTreeSet::from([hex::encode(config.mcp.tls.load()?.certificate_pin())]);
-                    plane
-                        .replace_topology(
-                            context,
-                            topology.topology,
-                            kasumi_types::Precondition::Version(topology.version),
-                            format!("certificate-rotation-{operation}"),
-                        )
-                        .await?;
-                }
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
-            control.shutdown().await?;
-            control_result?;
-            for entry in std::fs::read_dir(root.join("profiles"))? {
-                let path = entry?.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                    && let Ok(mut profile) = ClientProfile::load(&path)
-                {
-                    profile.native_certificate_pin = native_pin.clone();
-                    // Generated profiles name only this installation's admin
-                    // listener. Pin its current leaf even after an interrupted
-                    // rotation replaced the leaf these profiles still pin.
-                    for member in profile.administrative_members.values_mut() {
-                        member.certificate_pins = BTreeSet::from([admin_pin.clone()]);
-                    }
-                    private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
-                }
-            }
-            for (name, pin) in admitted {
-                crate::client_pins::retire_configured(&config, &name, pin)?;
-            }
-            Ok::<_, anyhow::Error>(serde_json::json!({
-                "native_certificate_pin": native_pin,
-                "admin_certificate_pin": admin_pin,
-            }))
-        }
-        .await;
+        let result = certificate_rotation::rotate(configuration, &owner, &operation).await;
         let recorded = audit
             .record(operator_event(
                 &operation,
@@ -1014,66 +911,11 @@ async fn rotate_certificates_owned(
                 },
             ))
             .await;
-
         recorded?;
         result
     }
     .await;
     owner.finish(result).await
-}
-
-/// Create `specification`'s family, or replay its original issuance, and
-/// renew it when that issuance has expired or soon will: a rerun of an
-/// interrupted migration publishes a live token for the same family.
-fn live_credential(
-    credentials: &LocalCredentials,
-    specification: CreateCredential,
-    actor: &str,
-) -> Result<kasumi_types::IssuedCredential> {
-    let family_id = specification.family_id;
-    let issued = credentials.create(specification, actor)?;
-    let now = kasumi_clock::EpochClock::system()?.now_ms()?;
-    if issued.expires_at_ms > now.saturating_add(300_000) {
-        return Ok(issued);
-    }
-    credentials.renew(
-        &kasumi_types::RenewCredential {
-            family_id,
-            renewal_id: Uuid::new_v4(),
-        },
-        actor,
-    )
-}
-
-/// The generated client identities this installation's profiles use, by name:
-/// `profiles/client.pem` always, and each other identity in `profiles/` that a
-/// profile there names with the generated file names. An identity elsewhere
-/// is not the installation's to replace.
-fn installed_client_identities(root: &Path) -> Result<BTreeMap<String, TlsFiles>> {
-    let profiles = root.join("profiles");
-    let mut identities =
-        BTreeMap::from([("client".to_owned(), identity_files(&profiles, "client"))]);
-    for entry in std::fs::read_dir(&profiles)? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-            && let Ok(profile) = ClientProfile::load(&path)
-            && let Some(name) = profile
-                .identity
-                .certificate
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-        {
-            let generated = identity_files(&profiles, name);
-            if profile.identity.certificate == generated.certificate
-                && profile.identity.private_key == generated.private_key
-            {
-                identities.insert(name.to_owned(), generated);
-            }
-        }
-    }
-    Ok(identities)
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {
@@ -1586,10 +1428,10 @@ async fn initialize_owned(
         config.admin.tls = identities["admin"].clone();
         config.admin.client_ca = tls.join("ca.pem");
         config.admin.client_certificate_pins = Some(client_pins);
-        config.control.keys = provider("control");
-        config.control.custody_keys = provider("control-custody");
-        config.control.initial_policy = control_policy;
-        config.control.incarnation = Some(control_incarnation.to_string());
+        config.hosted_control_mut()?.keys = provider("control");
+        config.hosted_control_mut()?.custody_keys = provider("control-custody");
+        config.hosted_control_mut()?.initial_policy = control_policy;
+        config.hosted_control_mut()?.incarnation = Some(control_incarnation.to_string());
         config.security_audit.keys = provider("security");
         config.tenants[0].tenant = tenant.into();
         config.tenants[0].serving = TenantServingConfig::Standalone { installation_id };
@@ -1820,7 +1662,8 @@ pub(crate) async fn configure_test_topology(
     let mut owner = OperatorState::open(config, storage).await.unwrap();
     let database = owner.control().await.unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
-    let context = crate::runtime::configured_control_context(&config.control).unwrap();
+    let context =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
     let current = plane.topology(&context).await.unwrap().unwrap();
     let mut topology = current.topology;
     topology.nodes = initial_topology(config).unwrap().nodes;
@@ -1891,15 +1734,15 @@ async fn provision_databases(
     )?;
     for (tenant, policy, limits, incarnation, application, custody, access) in std::iter::once((
         crate::runtime::CONTROL_TENANT,
-        &config.control.initial_policy,
-        &config.control.initial_limits,
+        &config.hosted_control()?.initial_policy,
+        &config.hosted_control()?.initial_limits,
         config
-            .control
+            .hosted_control()?
             .incarnation
             .as_deref()
             .context("Control incarnation missing")?,
-        &config.control.keys,
-        &config.control.custody_keys,
+        &config.hosted_control()?.keys,
+        &config.hosted_control()?.custody_keys,
         StorageAccess::node_control(),
     ))
     .chain(config.tenants.iter().map(|tenant| {
@@ -1962,7 +1805,7 @@ async fn provision_databases(
             pending.databases.push(database.clone());
             if tenant == crate::runtime::CONTROL_TENANT {
                 let plane = kasumi_engine::control::ControlPlane::new(database)?;
-                let context = crate::runtime::configured_control_context(&config.control)?;
+                let context = crate::runtime::configured_control_context(config.hosted_control()?)?;
                 plane.initialize(context.clone()).await?;
                 plane
                     .replace_topology(
@@ -2094,3 +1937,7 @@ mod online_recovery_tests;
 #[cfg(test)]
 #[path = "standalone_client_pins_tests.rs"]
 mod client_pins_tests;
+
+#[cfg(test)]
+#[path = "standalone_credential_tests.rs"]
+mod credential_tests;

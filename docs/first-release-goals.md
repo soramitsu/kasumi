@@ -31,6 +31,27 @@ and fallback paths; explicitly reject unsupported inputs. Preserve the document
 model and supported Rust, gRPC and MCP interfaces without preserving obsolete
 prototype shapes.
 
+### Deployed formats and release scope, November 2026
+
+Both deployed revisions `12140939` and `cf9959f1` are supported persistence
+inputs. Kasumi must open them, accept writes and reopen the result. The
+exception covers KV roots and Store envelopes, Fixed directories, serialized
+limits and tenant state (including backup binding heads), snapshot record
+kinds, embedded KASUMIL1 images, bootstrap and recovery records. Keep the
+persistence decoding at the storage boundary. New groups default to LZ4.
+Existing groups continue using their persisted directory encoding.
+
+BOI's fresh installation decision applies to BOI's own release window. A
+broader retirement of either deployed format requires an explicit decision
+from the format owner. The BOI environment owner controls live installation.
+
+The adopted November plan defers the optional anti-rollback witness in
+September decision 6 beyond this release. Installed storage remains a trusted
+boundary. The capacity, nine-process HA, full-duration soak, 19 acceptance
+domains and three native targets remain release requirements. The working
+checkout for this integration is `/Users/takemiyamakoto/dev/kasumi` on
+`master`. All takeover commits are local.
+
 The earlier compatibility audit found nested administrative DTO leniency,
 noncanonical ordinary Raft command replay and omission of the local JWT
 access-use claim (`target/first-release-compatibility-audit/README.md`). Current
@@ -115,7 +136,7 @@ wording.
    and the node's own services are healthy. Protected observability reports
    unhealthy groups, but they do not by themselves make the node unready.
    Bounded background probes replace the 128-group ceiling.
-6. **Offline rollback.** Installation storage is trusted by default, and
+6. **Offline rollback (September decision, witness deferred in November).** Installation storage is trusted by default, and
    `SECURITY.md` and the installation documents must say so. An optional
    anti-rollback witness writes state hashes (node ID, incarnation, durable
    generation and state digest) to SORA Nexus, starting with the Taira testnet
@@ -683,7 +704,7 @@ The user decided this question on 2026-09-26
 trusted by default, and an optional Taira anti-rollback witness fails reopen
 closed on a detected rollback. When this decision was recorded, neither the
 trust statement in `SECURITY.md` and the installation documents nor the
-witness and its tests existed. G01 remains open.
+witness and its tests existed. The November amendment defers the witness. The trust boundary is documented in SECURITY.md and the operations guide.
 
 The related Control-genesis fixture is corrected on `master`: it verifies the
 new atomic Raft identity and checks that a rejected reopen changes none of
@@ -1760,7 +1781,30 @@ replicated readiness remain open.
 
 ### G11 — Acceptance manifest, infrastructure and dependencies
 
-**Current dependency roster (2026-09-26).** redb is removed, as the
+**Permanent backup sessions (2026-11-19).** Exercise at least **100,001
+distinct sessions**, including at least 257 permanently failed or aborted
+sessions. This prospective workload follows the owner's consultation with
+Fable 5.2 at extra-high effort. Review of 27 historical revisions identified
+a 65,536-byte limit per authenticated session record and a 256-object limit
+per cleanup page within one aborted session. Neither bounds the number of
+session identities.
+
+Retain the original binding and terminal outcome for every ID. Compare
+independently generated ordered ledgers across a cold process kill and physical
+reopen. Replay the original outcomes without executing their operations again.
+Interrupt an in-flight write and resolve it against its original identity.
+Observe complete, duplicate-free enumeration in pages of at most 256 sessions.
+Exercise exactly 65,536 and 65,537 bytes at the record boundary, and exercise
+the separate 256-object cleanup boundary. The historical count crossings for
+commands, mutation receipts, Authority incarnations and lifecycle intents
+remain part of G11 and G13.
+
+**Dependency roster update (2026-11-18).** imbl 7.0.2 selects imbl-sized-chunks
+0.2.0 and removes bitmaps from the workspace. The four retained vendor roots
+supply lru, serde_json, rmcp, openraft and openraft-macros. The earlier roster
+and its evidence below describe the September checkpoint.
+
+**Historical dependency roster (2026-09-26).** redb is removed, as the
 [native KV engine goal](native-kv-goal.md) requires, and `Cargo.lock` has no
 redb package. The `[patch.crates-io]` table and the workspace exclude list
 name five vendor roots with six packages. `vendor/patch-manifest.json`
@@ -1772,7 +1816,7 @@ name five vendor roots with six packages. `vendor/patch-manifest.json`
 | `vendor/bitmaps-3.2.1` | `bitmaps` (patched) | `published_crate_sha256` |
 | `vendor/lru-0.16.4` | `lru` (patched) | `published_crate_sha256` |
 | `vendor/serde_json-1.0.151` | `serde_json` (patched) | `published_crate_sha256` |
-| `vendor/rmcp-3.2.0` | `rmcp` (patched) | `published_crate_sha256` |
+| `vendor/rmcp-3.11.0` | `rmcp` (patched) | `published_crate_sha256` |
 
 Any G11 statement below that mentions redb or "seven" vendored packages
 describes the redb-era roster and is historical.

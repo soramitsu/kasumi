@@ -121,6 +121,7 @@ pub struct EncryptedTableBatch {
     transaction: kasumi_kv::WriteTransaction,
     bytes: usize,
     entries: usize,
+    entry_limit: usize,
     failed: bool,
     // Failed native staging may release its writer gate early. Every still-live
     // batch therefore owns its own charge through the last field retirement.
@@ -165,8 +166,65 @@ impl Drop for BatchMemory {
 impl EncryptedTableBatch {
     pub const MAX_BYTES: usize = 4 << 20;
     pub const MAX_ENTRIES: usize = 16;
+    /// Compact keys and offsets in an unpublished snapshot index. The native
+    /// transaction charges each staged row and keeps the same byte ceiling.
+    pub const MAX_INDEX_ENTRIES: usize = 512;
+
+    pub fn entry_limit(&self) -> usize {
+        self.entry_limit
+    }
+
+    /// Bounds the transaction-local rows independently of any caller's cache.
+    pub fn has_capacity_for(&self, bytes: usize) -> bool {
+        self.entries < self.entry_limit
+            && self
+                .bytes
+                .checked_add(bytes)
+                .is_some_and(|n| n <= Self::MAX_BYTES)
+    }
+
+    /// Compare both committed and pending rows through the same writer's view.
+    pub fn contains_exact(&self, key: &[u8], bytes: &[u8]) -> Result<bool> {
+        ensure!(!self.failed, "staging batch previously failed");
+        let Some(previous) = self
+            .table
+            .as_ref()
+            .expect("live staging batch table")
+            .get(key)?
+        else {
+            return Ok(false);
+        };
+        ensure!(
+            previous.value() == bytes,
+            "staged content-address collision"
+        );
+        Ok(true)
+    }
 
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.stage(key, value, |table| {
+            ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
+            Ok(())
+        })
+    }
+
+    /// Store a content-addressed row once. The private writer's point read
+    /// covers pending and committed rows, and stays valid through the put.
+    /// An exact duplicate consumes no additional transaction capacity.
+    pub fn insert_content(&mut self, key: &[u8], value: &[u8]) -> Result<bool> {
+        if self.contains_exact(key, value)? {
+            return Ok(false);
+        }
+        self.stage(key, value, |table| Ok(table.put(key, value)?))?;
+        Ok(true)
+    }
+
+    fn stage(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+        write: impl FnOnce(&mut kasumi_kv::Table<&'static [u8], &'static [u8]>) -> Result<()>,
+    ) -> Result<()> {
         ensure!(!self.failed, "staging batch previously failed");
         self.failed = true;
         ensure!(
@@ -179,17 +237,10 @@ impl EncryptedTableBatch {
             .and_then(|n| n.checked_add(value.len()))
             .ok_or_else(|| anyhow::anyhow!("staging batch byte overflow"))?;
         ensure!(
-            bytes <= Self::MAX_BYTES && self.entries < Self::MAX_ENTRIES,
+            bytes <= Self::MAX_BYTES && self.entries < self.entry_limit,
             "staging batch capacity exceeded"
         );
-        ensure!(
-            self.table
-                .as_mut()
-                .expect("live staging batch table")
-                .insert(key, value)?
-                .is_none(),
-            "duplicate staged key"
-        );
+        write(self.table.as_mut().expect("live staging batch table"))?;
         self.bytes = bytes;
         self.entries += 1;
         self.failed = false;
@@ -328,6 +379,21 @@ impl EncryptedTable {
         };
         self.open_batch(transaction, memory)
     }
+    pub fn begin_index_batch(&self) -> Result<EncryptedTableBatch> {
+        let mut batch = self.begin_batch()?;
+        batch.entry_limit = self.index_batch_entry_limit()?;
+        Ok(batch)
+    }
+    /// Schedule a bounded prefix against the space left in this physical
+    /// group. The transaction still preflights its exact segment/directory
+    /// layout before any append, including for a single large record.
+    pub fn index_batch_entry_limit(&self) -> Result<usize> {
+        let remaining = self.owner.admission.remaining_logical_bytes()?;
+        let payload_and_headers = 2 * EncryptedTableBatch::MAX_BYTES as u64;
+        let rows = remaining.saturating_sub(payload_and_headers)
+            / kasumi_kv::MAX_DIRECTORY_EDIT_APPEND_BYTES;
+        Ok(rows.clamp(1, EncryptedTableBatch::MAX_INDEX_ENTRIES as u64) as usize)
+    }
     fn open_batch(
         &self,
         transaction: kasumi_kv::WriteTransaction,
@@ -347,6 +413,7 @@ impl EncryptedTable {
             transaction,
             bytes: 0,
             entries: 0,
+            entry_limit: EncryptedTableBatch::MAX_ENTRIES,
             failed: false,
             _memory: memory,
         })
@@ -370,6 +437,26 @@ impl EncryptedTable {
         Ok(table
             .get(key)?
             .map(|value| ScratchTableValue::new(value, self.owner.clone())))
+    }
+    /// Read the first row at or above the bound in one point-index namespace.
+    pub fn first_at_or_after(
+        &self,
+        prefix: &[u8],
+        key: &[u8],
+    ) -> Result<Option<ScratchTableValue>> {
+        ensure!(
+            !prefix.is_empty() && key.starts_with(prefix),
+            "scratch index bound differs from its prefix"
+        );
+        let reader = self.owner.database().begin_read()?;
+        let table = reader.open_table(TABLE)?;
+        let Some((found, value)) = table.range(key..)?.next().transpose()? else {
+            return Ok(None);
+        };
+        Ok(found
+            .value()
+            .starts_with(prefix)
+            .then(|| ScratchTableValue::new(value, self.owner.clone())))
     }
     /// Replace a scratch accumulator. Permanent identities use `insert`, which
     /// rejects duplicates; this operation is only for unpublished working tables.

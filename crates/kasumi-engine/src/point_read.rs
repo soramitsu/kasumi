@@ -2,6 +2,7 @@
 //! native/archive sources admit their decoding separately, and owned outputs
 //! admit their exact cloned representation before allocation.
 use super::*;
+use crate::application_records::PrimaryPoint;
 use std::mem::size_of;
 
 pub(super) fn point_arc_bytes<T>() -> Result<u64> {
@@ -22,6 +23,7 @@ pub(super) struct PointRead {
     pub(super) registration: Option<Arc<WorkRegistration>>,
     memory: Option<QueryMemory<Reservation>>,
     charge: Option<Arc<Reservation>>,
+    primary_bytes: u64,
 }
 impl PointRead {
     pub(super) fn new(reservation: Reservation) -> Self {
@@ -32,6 +34,7 @@ impl PointRead {
             registration: None,
             memory: Some(QueryMemory::empty(reservation)),
             charge: None,
+            primary_bytes: 0,
         }
     }
     fn claim(&mut self, bytes: u64) -> Result<()> {
@@ -41,12 +44,12 @@ impl PointRead {
             .reserve(bytes)
     }
     fn retain_charge(&mut self) -> Arc<Reservation> {
-        let mut reservation = self
-            .memory
-            .take()
-            .expect("point workspace present")
-            .into_workspace();
-        reservation.retain_workspace();
+        let memory = self.memory.take().expect("point workspace present");
+        // The lookup strings and typed primary descriptor have been dropped.
+        // Only the registration and the selected output survive this handoff.
+        let retained = memory.live_bytes() - self.primary_bytes;
+        let mut reservation = memory.into_workspace();
+        reservation.retain(retained);
         let charge = Arc::new(reservation);
         self.charge = Some(charge.clone());
         charge
@@ -125,27 +128,138 @@ fn point_deadline_error() -> Error {
 }
 
 impl PointRead {
+    async fn primary(
+        mut self,
+        collection: &str,
+        id: &str,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        cancellation: &QueryCancellation,
+        deadline: tokio::time::Instant,
+    ) -> Result<(Self, tokio::sync::OwnedSemaphorePermit, PrimaryPoint)> {
+        let generation = self
+            .generation
+            .as_ref()
+            .expect("selected point generation")
+            .clone();
+        let state = &generation.state;
+        let resident = |state: &TenantState, collection: &str, id: &str| {
+            let selected = state
+                .collections
+                .get(collection)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
+            PrimaryPoint::resident(selected, id, state.revision)
+        };
+        if generation.application_selection.get().is_none() {
+            let point = resident(state, collection, id)?;
+            return Ok((self, permit, point));
+        }
+        if validate_name(id).is_err() {
+            return Ok((self, permit, PrimaryPoint::Missing));
+        }
+        // Query input and typed descriptor allocations outlive the forked
+        // native reader. Charge them to the operation before taking ownership.
+        let before_primary = self
+            .memory
+            .as_ref()
+            .expect("point workspace present")
+            .live_bytes();
+        self.claim((collection.len() + id.len()) as u64 + 4096)?;
+        let collection = collection.to_owned();
+        let id = id.to_owned();
+        let owner = self
+            .memory
+            .as_ref()
+            .expect("point workspace present")
+            .workspace()
+            .blocking_owner();
+        let worker = owner.read_child(cancellation.clone(), None, move |token| {
+            let state = &generation.state;
+            let selection = generation
+                .application_selection
+                .get()
+                .expect("application selection checked above");
+            let point = with_document_reads(&generation, deadline.into_std(), |reads| {
+                token.check()?;
+                let point = selection
+                    .primary_point(
+                        reads
+                            .shared()
+                            .map(crate::document_store::SharedRead::selected),
+                        state,
+                        &collection,
+                        &id,
+                        |bytes| {
+                            let work = crate::snapshot_codec::inspect_external_json_work(
+                                bytes,
+                                &mut || {
+                                    token.check()?;
+                                    Ok(())
+                                },
+                            )?;
+                            self.claim(
+                                work.checked_add((bytes.len() as u64).saturating_mul(2))
+                                    .and_then(|n| n.checked_add(256))
+                                    .ok_or_else(query_workspace_overflow)?,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .map_err(document_load_error)?;
+                // Snapshots written by deployed revisions precede the directory.
+                let point = match point {
+                    Some(point) => point,
+                    None => resident(state, &collection, &id)?,
+                };
+                if let (Some(source), PrimaryPoint::Live(slot)) = (reads.shared(), &point) {
+                    token.check()?;
+                    reads.check_deadline()?;
+                    self.document =
+                        Some(slot.load_owned(Some(source)).map_err(document_load_error)?);
+                }
+                Ok(point)
+            })?;
+            token.check()?;
+            self.primary_bytes = self
+                .memory
+                .as_ref()
+                .expect("point workspace present")
+                .live_bytes()
+                - before_primary;
+            Ok((self, permit, point))
+        });
+        tokio::select! {
+            result = tokio::time::timeout_at(deadline, worker) => result.map_err(|_| point_deadline_error())?,
+            _ = cancelled(cancellation) => Err(cancelled_error()),
+        }
+    }
+
     /// The original registered owner moves into the blocking child. A cancelled
     /// waiter cannot release its source, input credit or worker permit early.
     pub(super) async fn read_native<T: Send + 'static>(
         mut self,
         slot: Arc<DocumentSlot>,
+        deadline: tokio::time::Instant,
         permit: tokio::sync::OwnedSemaphorePermit,
         cancellation: &QueryCancellation,
         select: impl FnOnce(&mut Self) -> Result<T> + Send + 'static,
     ) -> Result<PendingPoint<Option<T>>> {
-        // This bounds native work only. Queueing and the existing read barrier
-        // do not consume the selected source's native operation allowance.
-        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
-        let worker_cancellation = cancellation.clone();
-        let worker = tokio::task::spawn_blocking(move || {
+        let owner = self
+            .memory
+            .as_ref()
+            .expect("point workspace present")
+            .workspace()
+            .blocking_owner();
+        let worker = owner.read_child(cancellation.clone(), None, move |worker_cancellation| {
             let _permit = permit;
             worker_cancellation.check()?;
             let generation = self.generation.as_ref().expect("selected point generation");
-            self.document = Some(
-                slot.load_owned(generation.document_resolver())
-                    .map_err(document_load_error)?,
-            );
+            if self.document.is_none() {
+                self.document = Some(
+                    slot.load_owned(generation.document_resolver())
+                        .map_err(document_load_error)?,
+                );
+            }
+            drop(slot);
             worker_cancellation.check()?;
             let response = Some(select(&mut self)?);
             drop(self.document.take());
@@ -157,8 +271,7 @@ impl PointRead {
         });
         tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| point_deadline_error())?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "point read worker failed"))?,
+                .map_err(|_| point_deadline_error())?,
             _ = cancelled(cancellation) => Err(cancelled_error()),
         }
     }
@@ -245,43 +358,44 @@ impl Database {
             .collections
             .get(collection)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
-        // Reuse the captured source's identity/version checks for hot and cold
-        // records before the history resolver may clone an internal Arc.
-        let _header = crate::index_source::header(selected, id, generation.state.revision)?;
         let revision = generation.state.revision;
         let policy_epoch = generation.state.policy_epoch;
         let strict =
             generation.state.policy.strict_read_audit || selected.definition.strict_read_audit;
-        let mut pending = if let Some(slot) = selected.documents.get(id).cloned() {
-            read.read_native(slot, permit, &cancellation, select)
-                .await?
-        } else {
-            // The archive fetch holds one of the four query permits, so it
-            // gets the same bound as a native read of the selected source.
-            let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
-            let document = tokio::select! {
-                result = tokio::time::timeout_at(deadline, self.history_document(
-                    generation, collection, id, &cancellation, &mut read.history,
-                )) => result.map_err(|_| point_deadline_error())??,
-                _ = cancelled(&cancellation) => return Err(cancelled_error()),
-            };
-            let Some(document) = document else {
-                // Absence releases no body and preserves the existing audit
-                // boundary, before the read-release audit and output fences.
+        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
+        let (mut read, permit, point) = read
+            .primary(collection, id, permit, &cancellation, deadline)
+            .await?;
+        let mut pending = match point {
+            PrimaryPoint::Live(slot) => {
+                read.read_native(slot, deadline, permit, &cancellation, select)
+                    .await?
+            }
+            PrimaryPoint::Missing => {
                 read.retain_charge();
-                return Ok(RegisteredPoint {
+                drop(permit);
+                PendingPoint {
                     response: None,
-                    _registration: read.registration.clone().expect("point registration"),
-                    _charge: read.charge.clone().expect("retained point charge"),
-                });
-            };
-            read.document = Some(document);
-            cancellation.check()?;
-            let response = Some(select(&mut read)?);
-            drop(read.document.take());
-            read.history = history_reads::HistoryReadCache::new();
-            drop(permit);
-            PendingPoint { response, read }
+                    read,
+                }
+            }
+            PrimaryPoint::Archived(reference) => {
+                let generation = read.generation.as_ref().expect("selected point generation");
+                let document = tokio::select! {
+                    result = tokio::time::timeout_at(deadline, self.archived_document(
+                        generation, collection, id, &reference, &cancellation, &mut read.history,
+                    )) => result.map_err(|_| point_deadline_error())??,
+                    _ = cancelled(&cancellation) => return Err(cancelled_error()),
+                };
+                drop(reference);
+                read.document = Some(document);
+                cancellation.check()?;
+                let response = Some(select(&mut read)?);
+                drop(read.document.take());
+                read.history = history_reads::HistoryReadCache::new();
+                drop(permit);
+                PendingPoint { response, read }
+            }
         };
         // A hot returned handle retains only its exact Document, never the
         // complete Generation and unrelated indexes/history/state roots.

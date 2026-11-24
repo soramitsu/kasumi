@@ -1,7 +1,7 @@
 """Domain runners against stand-in executables; never release evidence.
 
 The stand-ins are small scripts that speak the product's command surface
-(serve, session, ready, credential renew, ...). They prove custody, timing and
+(serve, session, ready, credential observe, ...). They prove custody, timing and
 adapter behaviour. They do not prove anything about Kasumi itself.
 """
 import base64
@@ -13,11 +13,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 import attempt_index
 import domain_run
 import process_ha_topology as topology
+from test_process_ha import fixture_control_placement
 import release_gate
 import repeatable_assembly as owned
 import run_ha_soak as soak
@@ -55,6 +57,47 @@ if args[-1:] == ["ready"]:
     seen = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(seen + 1))
     sys.exit(0 if seen >= behavior.get("ready_failures", 0) else 1)
+if args[:2] == ["credential", "observe"]:
+    import hashlib
+    counter = Path(__file__).with_name("credential-observations")
+    n = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(n))
+    print(json.dumps({"profile_sha256": hashlib.sha256(Path(args[2]).read_bytes()).hexdigest(),
+                      "bearer_sha256": f"{n:064x}", "expires_at_ms": 1800000000000 + n}))
+    sys.exit(0)
+if args[:2] == ["audit", "status"]:
+    counter = Path(__file__).with_name("archive-observations")
+    n = int(counter.read_text()) + 1 if counter.exists() else 0
+    counter.write_text(str(n))
+    stream = "12345678-1234-4234-8234-123456789abc"
+    head = ({"stream_id": stream, "object": {"first_sequence": n - 1, "next_sequence": n,
+                                            "ciphertext_sha256": "1" * 64}} if n else None)
+    print(json.dumps({"persistence_failed": False, "position": {"stream_id": stream,
+                      "pruned_before": n, "archive_head": head}}))
+    sys.exit(0)
+if args[:1] == ["backup"]:
+    source = json.loads(Path(args[2]).read_bytes())
+    session = "dd8ced8e-7ef4-4f2c-b5a6-f83395c17534"
+    ck = {"tenant": source["tenant"], "source_incarnation": source["resource"]["incarnation"],
+          "revision": 12, "backup_id": session, "resident_sha256": "1" * 64,
+          "manifest_ciphertext_sha256": "2" * 64, "key_lineage_digest": "3" * 64}
+    if args[1] == "create":
+        Path(args[4]).write_text(json.dumps(ck))
+        result = {"checkpoint": args[4], "session_id": session}
+    elif args[1] == "verify":
+        result = ck
+    else:
+        result = {"intent": {"session_id": session, "revision": ck["revision"], "tenant": ck["tenant"],
+                             "source_incarnation": ck["source_incarnation"]},
+                  "outcome": {"outcome": "complete", "checkpoint": ck, "intent_ciphertext_sha256": "4" * 64},
+                  "source_purpose_sha256": "5" * 64}
+    print(json.dumps(result))
+    sys.exit(0)
+if args[2:3] == ["manage"]:
+    request = json.loads(Path(args[3]).read_bytes())
+    if request.get("operation") == "add_learner":
+        print(json.dumps({"caught_up": request["node_id"]}))
+        sys.exit(0)
 print(json.dumps({"ok": True, "argv": args}))
 sys.exit(behavior.get("fail", {}).get(args[0], 0))
 '''
@@ -134,6 +177,7 @@ class DomainFixture(unittest.TestCase):
                 plan["nodes"].append({"id": name, "role": role, "group": role,
                                       "config": str(home / "config.json")})
             for home, config in configs:
+                config.update(fixture_control_placement(role))
                 config["replication"].update(peers=peers,
                                              initial_voters=[peer["node_id"] for peer in peers])
                 (home / "config.json").write_text(json.dumps(config))
@@ -143,7 +187,10 @@ class DomainFixture(unittest.TestCase):
         for name in ("default-profile.json", "operator.json", "admin.json", "manage.json",
                      "checkpoint.json"):
             files[name] = installed / name
-            files[name].write_text(json.dumps({"synthetic": name}))
+            if name != "checkpoint.json":
+                files[name].write_text(json.dumps({"synthetic": name, "tenant": "soak",
+                    "resource": {"kind": "database", "incarnation": "3ad0e88d-9fa6-409c-8f3b-9466d09ab023"}}))
+        files["manage.json"].write_text(json.dumps({"operation": "add_learner", "node_id": 10}))
         self.soak_plan = installed / "soak-plan.json"
         self.soak_plan.write_text(json.dumps({
             "schema": soak.PLAN_SCHEMA, "profile": str(files["default-profile.json"]),
@@ -219,14 +266,14 @@ class DomainFixture(unittest.TestCase):
 
 class SoakTests(DomainFixture):
     # Short enough to test, long enough for owned children on a loaded host.
-    SHORT = {"duration_seconds": 12, "heartbeat_seconds": 4, "session_seconds": 4,
+    SHORT = {"duration_seconds": 30, "heartbeat_seconds": 10, "session_seconds": 10,
              "startup_seconds": 120, "drain_seconds": 120}
 
     def qualifying(self):
         """Shrink the qualifying contract itself, in the runner and the verifier alike."""
         for target, name, value in ((soak, "QUALIFYING", self.SHORT),
-                                    (acceptance, "SOAK_SECONDS", 12),
-                                    (acceptance, "HEARTBEAT_SECONDS", 4)):
+                                    (acceptance, "SOAK_SECONDS", self.SHORT["duration_seconds"]),
+                                    (acceptance, "HEARTBEAT_SECONDS", self.SHORT["heartbeat_seconds"])):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -243,8 +290,9 @@ class SoakTests(DomainFixture):
 
     def test_rehearsal_runs_every_phase_and_is_rejected_as_evidence(self):
         self.behave(ready_failures=2)
-        custody = self.soak("rehearsal-1", "--rehearsal-seconds", "12",
-                            "--rehearsal-heartbeat-seconds", "4")
+        duration, interval = self.SHORT["duration_seconds"], self.SHORT["heartbeat_seconds"]
+        custody = self.soak("rehearsal-1", "--rehearsal-seconds", str(duration),
+                            "--rehearsal-heartbeat-seconds", str(interval))
         report = json.loads((custody / "report.json").read_text())
         outcome = json.loads((custody / "outcome.json").read_text())
         self.assertEqual(report["status"], "passed")
@@ -254,9 +302,9 @@ class SoakTests(DomainFixture):
         # Startup (three readiness polls) and drain sit outside the measured interval.
         self.assertEqual(len(details["startup_polls"]), 2)
         self.assertGreater(details["phases"]["measured"], 0)
-        self.assertGreaterEqual(details["phases"]["drain"] - details["phases"]["measured"], 12)
+        self.assertGreaterEqual(details["phases"]["drain"] - details["phases"]["measured"], duration)
         beats = [json.loads(line) for line in (custody / "heartbeats.jsonl").read_text().splitlines()]
-        self.assertEqual([beat["elapsed_seconds"] for beat in beats], [0, 4, 8, 12])
+        self.assertEqual([beat["elapsed_seconds"] for beat in beats], list(range(0, duration + 1, interval)))
         self.assertEqual(beats[0]["successful_operations"], 0)
         self.assertTrue(all(later["successful_operations"] > earlier["successful_operations"]
                             for earlier, later in zip(beats, beats[1:])))
@@ -272,7 +320,7 @@ class SoakTests(DomainFixture):
                               record["cleanup"]["signals"]), ("SIGTERM", 0, []))
             self.assertLessEqual(record["started_elapsed_seconds"], details["phases"]["measured"])
             self.assertGreaterEqual(record["stop"]["elapsed_seconds"], details["phases"]["drain"])
-            self.assertGreaterEqual(record["duration_seconds"], 12)
+            self.assertGreaterEqual(record["duration_seconds"], duration)
         entries = attempt_index.replay(self.root)
         self.assertEqual(entries["rehearsal-1"]["begin"]["kind"], "ha-soak")
         # The same code, honestly labelled: the adapter refuses it.
@@ -364,7 +412,7 @@ class SoakTests(DomainFixture):
 
         def early_drain(report):
             phases = report["details"]["phases"]
-            phases["drain"] = phases["measured"] + 11.5
+            phases["drain"] = phases["measured"] + self.SHORT["duration_seconds"] - 0.5
 
         def unlisted_maintenance(report):
             report["details"]["maintenance"] = report["details"]["maintenance"][:-1]
@@ -417,11 +465,18 @@ class SoakTests(DomainFixture):
     def test_daemon_that_exits_nonzero_on_stop_fails_the_gate(self):
         self.qualifying()
         self.behave(stop_exit=3)
-        custody = self.run_short()
-        record, identity, configs = self.gate(
-            custody, soak.gate_details(self.root, custody / "report.json"))
         with self.assertRaisesRegex(ValueError, "did not exit cleanly on its requested stop"):
-            self.accept(record, identity, configs)
+            self.run_short()
+        custody = self.root / "runs/soak-1"
+        report = json.loads((custody / "report.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        receipts = [owned.read(owned.check_ref(custody, row["receipt"]))
+                    for row in report["processes"]]
+        failed_stops = [r for r in receipts if (r.get("stop") or {}).get("signal") == "SIGTERM"]
+        self.assertEqual(len(failed_stops), 9)
+        self.assertTrue(all(r["cleanup"]["drained"] and r["process_exit_code"] == 3
+                            for r in failed_stops))
+        self.assertEqual(owned.read(custody / "outcome.json")["status"], "failed")
 
     def test_preflight_failure_is_journaled_without_child_custody(self):
         self.soak_plan.write_text(json.dumps({"schema": "other"}))
@@ -450,6 +505,57 @@ class SoakTests(DomainFixture):
         del changed["maintenance"]["backup"]
         with self.assertRaisesRegex(ValueError, "fields differ"):
             soak.check_plan(changed, binaries)
+
+    def test_renewal_requires_the_same_profile_and_a_new_later_expiring_bearer(self):
+        original = {"profile_sha256": "1" * 64, "bearer_sha256": "2" * 64, "expires_at_ms": 1000}
+        renewed = dict(original, bearer_sha256="3" * 64, expires_at_ms=2000)
+        self.assertEqual(soak.credential_observation(renewed, original["profile_sha256"], original),
+                         renewed)
+        for change in ({"profile_sha256": "4" * 64}, {"expires_at_ms": 1000},
+                       {"bearer_sha256": original["bearer_sha256"]}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                soak.credential_observation({**renewed, **change}, original["profile_sha256"], original)
+
+    def test_soak_archival_requires_forward_progress_on_the_original_stream(self):
+        stream = "12345678-1234-4234-8234-123456789abc"
+        baseline = {"persistence_failed": False, "position": {
+            "stream_id": stream, "pruned_before": 0, "archive_head": None}}
+        head = {"stream_id": stream, "object": {"first_sequence": 0, "next_sequence": 2,
+                                               "ciphertext_sha256": "1" * 64}}
+        advanced = {"persistence_failed": False, "position": {
+            "stream_id": stream, "pruned_before": 2, "archive_head": head}}
+        soak.archive_progress(baseline, advanced)
+        with self.assertRaisesRegex(ValueError, "no new records"):
+            soak.archive_progress(advanced, advanced)
+        changed = copy.deepcopy(advanced)
+        changed["position"]["stream_id"] = changed["position"]["archive_head"]["stream_id"] = str(uuid.uuid4())
+        with self.assertRaisesRegex(ValueError, "original soak stream"):
+            soak.archive_progress(baseline, changed)
+
+    def test_a_backup_status_query_cannot_supply_the_soak_checkpoint(self):
+        commands = {"backup": [["/candidate/kasumid", "backup", "status", "/admin", "object", "session"]]}
+        with self.assertRaisesRegex(ValueError, "original checkpoint creation"):
+            soak.backup_creation(commands)
+
+    def test_soak_membership_matches_the_typed_request_with_its_original_outcome(self):
+        data = [["/kasumictl", "--profile", "/admin", "manage", "/request"]]
+        action = {"operation": "add_learner", "node_id": 10}
+        soak.membership_completed(data, [action], [{"caught_up": 10}])
+        for request, reply in ((action, {"caught_up": 9}), ({"operation": "status"}, {"caught_up": 10})):
+            with self.assertRaisesRegex(ValueError, "did not complete"):
+                soak.membership_completed(data, [request], [reply])
+        authority = [["/kasumictl", "--config", "/admin", "authority-maintenance", "/request"]]
+        op = str(uuid.uuid4())
+        command = {"operation_id": op, "action": {"kind": "replace_voters", "voters": [1, 2, 4]}}
+        def result(phase):
+            return {"kind": "operation", "status": {"command": command, "phase": {"kind": phase}}}
+        status = {"kind": "status", "operation_id": op}
+        resume = {"kind": "resume", "operation_id": op}
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            soak.membership_completed(authority, [status], [result("completed")])
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            soak.membership_completed(authority, [resume], [result("completed")])
+        soak.membership_completed(authority * 2, [status, resume], [result("dispatched"), result("completed")])
 
     def test_heartbeats_count_only_replies_received_before_each_second(self):
         rows = [{"received_elapsed_seconds": second, "verdict": verdict}

@@ -10,7 +10,7 @@
     "run_id": "REPLACE_WITH_NEW_UUID_FOR_THIS_CORPUS",
     "seed_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     "collection": "capacity",
-    "documents": 98304,
+    "documents": 98400,
     "document_bytes": 32768,
     "batch_documents": 96
   }

@@ -1,4 +1,6 @@
-use crate::scalar::{Scalar, exhausted, indexed_values, invalid, scalar, validate_pointer};
+use crate::scalar::{
+    IndexString, Scalar, exhausted, indexed_values, invalid, scalar, validate_pointer,
+};
 use crate::{
     CollectionRecords, DocumentChanges, DocumentSource, QueryCancellation, ReadResult, Record,
     document_source,
@@ -11,11 +13,116 @@ use std::ops::{Bound, RangeBounds};
 
 pub(crate) type IdSet = OrdSet<String>;
 
+/// Sharing lasts only for the current document. Correlated fields can grow
+/// or shrink the same immutable ID root even when their scalar keys differ.
+struct DocumentPostings<'a> {
+    id: &'a str,
+    singleton: Option<IdSet>,
+    insertions: Vec<(IdSet, IdSet)>,
+    removals: Vec<(IdSet, IdSet)>,
+    limit: usize,
+}
+
+impl<'a> DocumentPostings<'a> {
+    fn new(id: &'a str, fields: usize) -> Self {
+        Self {
+            id,
+            singleton: None,
+            insertions: Vec::new(),
+            removals: Vec::new(),
+            // A wide array may visit many values. Bound the old/new roots
+            // kept beyond the immediate edit, independently of array length.
+            limit: if fields > 1 { fields.min(16) } else { 0 },
+        }
+    }
+
+    fn singleton(&mut self) -> IdSet {
+        self.singleton
+            .get_or_insert_with(|| IdSet::unit(self.id.to_owned()))
+            .clone()
+    }
+
+    fn change(&mut self, ids: &mut IdSet, insert: bool) {
+        let changes = if insert {
+            &mut self.insertions
+        } else {
+            &mut self.removals
+        };
+        if let Some((_, next)) = changes.iter().find(|(old, _)| old.ptr_eq(ids)) {
+            *ids = next.clone();
+            return;
+        }
+        let old = (changes.len() < self.limit).then(|| ids.clone());
+        if insert {
+            ids.insert(self.id.to_owned());
+        } else {
+            ids.remove(self.id);
+        }
+        if let Some(old) = old {
+            changes.push((old, ids.clone()));
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FieldIndex {
     pub kind: ScalarType,
+    pub(crate) share_strings: bool,
     pub entries: OrdMap<Scalar, IdSet>,
     pub present: IdSet,
+}
+
+impl FieldIndex {
+    fn share_complete_posting(&mut self, ids: &IdSet) {
+        if self.entries.len() != 1 {
+            return;
+        }
+        let (_, posting) = self.entries.get_min().expect("single field posting");
+        if posting.len() != ids.len() || posting.ptr_eq(ids) {
+            return;
+        }
+        self.set_only_posting(ids);
+    }
+
+    fn set_only_posting(&mut self, ids: &IdSet) {
+        debug_assert_eq!(self.entries.len(), 1);
+        // All postings are subsets of the collection IDs. Move the sole
+        // scalar out of this private root, including an oversized string.
+        let (key, _) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .next()
+            .expect("single field posting");
+        self.entries = OrdMap::unit(key, ids.clone());
+    }
+
+    fn insert(&mut self, key: Scalar, row: &mut DocumentPostings<'_>) {
+        if !self.share_strings {
+            match self.entries.entry(key) {
+                imbl::ordmap::Entry::Occupied(mut entry) => row.change(entry.get_mut(), true),
+                imbl::ordmap::Entry::Vacant(entry) => {
+                    entry.insert(row.singleton());
+                }
+            }
+            return;
+        }
+        // Preserve the stored field key when other indexes share its string.
+        if let Some(ids) = self.entries.get_mut(&key) {
+            row.change(ids, true);
+            return;
+        }
+        let key = match key {
+            Scalar::String(IndexString::Owned(text)) => {
+                Scalar::String(IndexString::Shared(text.into()))
+            }
+            key => key,
+        };
+        self.entries.insert(key, row.singleton());
+    }
+}
+
+struct BuildingField {
+    complete_presence: bool,
+    uniform_posting: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +135,13 @@ pub(crate) struct Structured {
 #[derive(Debug, Clone)]
 pub(crate) struct UniqueIndex {
     pub(crate) fields: Vec<IndexField>,
-    pub(crate) entries: OrdMap<Vec<Scalar>, String>,
+    // A one-field generation uses its already selected scalar posting tree
+    // for both uniqueness and ordered seek. A standalone validation pass
+    // has no field tree and therefore builds its temporary tuple map.
+    pub(crate) entries: Option<OrdMap<Vec<Scalar>, String>>,
+    // Only keys longer than a native page key live here. A mixed index can
+    // walk the published directory and merge these exceptions in tuple order.
+    pub(crate) overflow: OrdMap<Vec<Scalar>, String>,
 }
 
 pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
@@ -46,17 +159,105 @@ impl UniqueIndex {
             .collect::<Result<Vec<_>>>()?;
         Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
-    fn insert(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
-        if let Some(key) = self.key(record)?
-            && self.entries.insert(key, id.to_owned()).is_some()
-        {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                format!("unique index {name} conflicts"),
-            ));
+    fn owned_entries(&mut self, key: &[Scalar]) -> &mut OrdMap<Vec<Scalar>, String> {
+        if self.fields.len() > 1 && crate::ordered_tuple::encode(key).is_none() {
+            &mut self.overflow
+        } else {
+            self.entries.as_mut().expect("private unique tuple tree")
+        }
+    }
+
+    fn share_components(&self, key: &mut [Scalar], fields: &BTreeMap<String, FieldIndex>) {
+        for (part, field) in key.iter_mut().zip(&self.fields) {
+            if let Scalar::String(_) = part
+                && let Some((stored @ Scalar::String(IndexString::Shared(_)), _)) =
+                    fields[&field.path].entries.get_key_value(part)
+            {
+                *part = stored.clone();
+            }
+        }
+    }
+
+    fn insert_tuple(
+        &mut self,
+        name: &str,
+        id: &str,
+        record: Record<'_>,
+        fields: Option<&BTreeMap<String, FieldIndex>>,
+    ) -> Result<()> {
+        if let Some(mut key) = self.key(record)? {
+            if let Some(fields) = fields
+                && self.fields.len() > 1
+            {
+                self.share_components(&mut key, fields);
+            }
+            if self
+                .owned_entries(&key)
+                .insert(key, id.to_owned())
+                .is_some()
+            {
+                return Err(unique_conflict(name));
+            }
         }
         Ok(())
     }
+
+    /// The earlier unique pass sees the predecessor's field roots. Bind newly
+    /// introduced strings to the candidate's final postings before publication.
+    fn bind_new_components(
+        &mut self,
+        id: &str,
+        record: Record<'_>,
+        fields: &BTreeMap<String, FieldIndex>,
+    ) -> Result<()> {
+        if self.fields.len() < 2 {
+            return Ok(());
+        }
+        let Some(mut key) = self.key(record)? else {
+            return Ok(());
+        };
+        self.share_components(&mut key, fields);
+        let entries = self.owned_entries(&key);
+        let (previous, owner) = entries.get_key_value(&key).ok_or_else(old_owner_mismatch)?;
+        if owner != id {
+            return Err(old_owner_mismatch());
+        }
+        let needs_binding =
+            previous
+                .iter()
+                .zip(&key)
+                .any(|(prior, selected)| match (prior, selected) {
+                    (
+                        Scalar::String(IndexString::Shared(a)),
+                        Scalar::String(IndexString::Shared(b)),
+                    ) => !std::sync::Arc::ptr_eq(a, b),
+                    (
+                        Scalar::String(IndexString::Owned(_)),
+                        Scalar::String(IndexString::Shared(_)),
+                    ) => true,
+                    _ => false,
+                });
+        if needs_binding {
+            let owner = entries.remove(&key).expect("validated unique owner");
+            entries.insert(key, owner);
+        }
+        Ok(())
+    }
+}
+
+/// The deterministic rejection shared by resident and durable uniqueness owners.
+pub fn unique_conflict(name: &str) -> Error {
+    Error::new(
+        ErrorCode::Conflict,
+        format!("unique index {name} conflicts"),
+    )
+}
+
+fn old_owner_mismatch() -> Error {
+    Error::new(
+        ErrorCode::Corruption,
+        "old unique mapping differs from delta",
+    )
 }
 
 impl Structured {
@@ -75,34 +276,61 @@ impl Structured {
             } else if previous.is_none() {
                 next.ids.insert(id.to_owned());
             }
+            let mut changed_shared_text = false;
+            // An ID can be the sole owner of many distinct indexed values.
+            // Reuse its singleton across this loan and later mutations.
+            let mut postings = DocumentPostings::new(id, next.fields.len());
             for (path, index) in &mut next.fields {
                 let old_value = previous.and_then(|record| record_value(record, path));
                 let new_value = current.and_then(|record| record_value(record, path));
                 if previous.is_some() && current.is_some() && old_value == new_value {
                     continue;
                 }
+                match (old_value.is_some(), new_value.is_some()) {
+                    (false, true) => {
+                        postings.change(&mut index.present, true);
+                    }
+                    (true, false) => {
+                        postings.change(&mut index.present, false);
+                    }
+                    _ => {}
+                }
                 if previous.is_some() {
-                    index.present.remove(id);
                     for key in indexed_values(old_value, index.kind)? {
-                        if let Some(ids) = index.entries.get_mut(&key) {
-                            ids.remove(id);
-                            if ids.is_empty() {
-                                index.entries.remove(&key);
+                        if let imbl::ordmap::Entry::Occupied(mut entry) = index.entries.entry(key) {
+                            if entry.get().len() == 1 && entry.get().contains(id) {
+                                postings.singleton.get_or_insert(entry.remove());
+                            } else {
+                                postings.change(entry.get_mut(), false);
                             }
                         }
                     }
                 }
                 if current.is_some() {
-                    if new_value.is_some() {
-                        index.present.insert(id.to_owned());
-                    }
                     for key in indexed_values(new_value, index.kind)? {
-                        index.entries.entry(key).or_default().insert(id.to_owned());
+                        changed_shared_text |=
+                            index.share_strings && matches!(key, Scalar::String(_));
+                        index.insert(key, &mut postings);
                     }
+                }
+            }
+            if changed_shared_text && let Some(record) = current {
+                for index in next.unique.values_mut() {
+                    index.bind_new_components(id, record, &next.fields)?;
                 }
             }
             Ok(())
         })?;
+        // Presence is a subset of this collection's IDs. A sparse field
+        // can become complete when its last missing document is deleted.
+        for (field, previous) in next.fields.values_mut().zip(self.fields.values()) {
+            if field.present.len() == next.ids.len() {
+                field.present = next.ids.clone();
+            }
+            if !field.entries.ptr_eq(&previous.entries) {
+                field.share_complete_posting(&next.ids);
+            }
+        }
         Ok(next)
     }
     fn unique_delta<D: DocumentChanges + ?Sized>(
@@ -115,23 +343,39 @@ impl Structured {
             // retain their checked passes; avoid two otherwise empty replays.
             return Ok(unique);
         }
-        // Remove every old mapping across the batch before adding any new one.
-        // Private COW roots are discarded on rejection; published roots stay intact.
+        // One-field constraints borrow the field tree's COW root. Only
+        // changed paths enter this validation pass, and no duplicate
+        // dictionary survives in the resulting generation.
+        let mut singles: BTreeMap<_, _> = unique
+            .iter()
+            .filter(|(_, index)| index.entries.is_none())
+            .map(|(name, index)| {
+                (
+                    name.clone(),
+                    self.fields[&index.fields[0].path].entries.clone(),
+                )
+            })
+            .collect();
+        // Remove every old mapping across the batch before inserting any new one.
         changes.visit_changes(|delta| {
             if let Some(old) = delta.old {
-                for index in unique.values_mut() {
-                    if let Some(key) = index.key(old)? {
-                        if index
-                            .entries
-                            .get(&key)
-                            .is_none_or(|owner| owner != delta.id)
-                        {
-                            return Err(Error::new(
-                                ErrorCode::Corruption,
-                                "old unique mapping differs from delta",
-                            ));
+                for (name, index) in &mut unique {
+                    if let Some(mut key) = index.key(old)? {
+                        if index.entries.is_some() {
+                            let entries = index.owned_entries(&key);
+                            if entries.get(&key).is_none_or(|owner| owner != delta.id) {
+                                return Err(old_owner_mismatch());
+                            }
+                            entries.remove(&key);
+                        } else {
+                            let scalar = key.pop().expect("one-field unique key");
+                            let entries = singles.get_mut(name).expect("shared unique posting");
+                            let ids = entries.get(&scalar).ok_or_else(old_owner_mismatch)?;
+                            if ids.len() != 1 || !ids.contains(delta.id) {
+                                return Err(old_owner_mismatch());
+                            }
+                            entries.remove(&scalar);
                         }
-                        index.entries.remove(&key);
                     }
                 }
             }
@@ -140,7 +384,17 @@ impl Structured {
         changes.visit_changes(|delta| {
             if let Some(new) = delta.new {
                 for (name, index) in &mut unique {
-                    index.insert(name, delta.id, new)?;
+                    if index.entries.is_some() {
+                        index.insert_tuple(name, delta.id, new, Some(&self.fields))?;
+                    } else if let Some(mut key) = index.key(new)? {
+                        let entries = singles.get_mut(name).expect("shared unique posting");
+                        let scalar = key.pop().expect("one-field unique key");
+                        if entries.contains_key(&scalar) {
+                            return Err(unique_conflict(name));
+                        }
+                        // Only occupied/vacant is consulted after all removals.
+                        entries.insert(scalar, IdSet::new());
+                    }
                 }
             }
             Ok(())
@@ -154,7 +408,10 @@ impl Structured {
         self.unique_delta(changes).map(|_| ())
     }
 
-    fn empty_unique(definition: &CollectionDefinition) -> BTreeMap<String, UniqueIndex> {
+    fn empty_unique(
+        definition: &CollectionDefinition,
+        share_fields: bool,
+    ) -> BTreeMap<String, UniqueIndex> {
         definition
             .indexes
             .iter()
@@ -164,7 +421,8 @@ impl Structured {
                     index.name.clone(),
                     UniqueIndex {
                         fields: index.fields.clone(),
-                        entries: OrdMap::new(),
+                        overflow: OrdMap::new(),
+                        entries: (!share_fields || index.fields.len() != 1).then(OrdMap::new),
                     },
                 )
             })
@@ -173,54 +431,143 @@ impl Structured {
     pub(crate) fn build_unique<R: CollectionRecords + ?Sized>(
         source: &R,
     ) -> ReadResult<BTreeMap<String, UniqueIndex>, R::Failure> {
-        let mut unique = Self::empty_unique(source.definition());
+        let mut unique = Self::empty_unique(source.definition(), false);
         if unique.is_empty() {
             return Ok(unique);
         }
         source.visit_records(|id, record| {
             for (name, index) in &mut unique {
-                index.insert(name, id, record)?;
+                index.insert_tuple(name, id, record, None)?;
             }
             Ok(())
         })?;
         Ok(unique)
     }
-    pub fn build<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<Self, R::Failure> {
+    pub(crate) fn empty(definition: &CollectionDefinition) -> Self {
         let mut fields = BTreeMap::new();
-        for index in &source.definition().indexes {
+        for index in &definition.indexes {
             for field in &index.fields {
-                fields
+                let entry = fields
                     .entry(field.path.clone())
                     .or_insert_with(|| FieldIndex {
                         kind: field.kind,
+                        share_strings: false,
                         entries: OrdMap::new(),
                         present: IdSet::new(),
                     });
+                entry.share_strings |=
+                    index.unique && index.fields.len() > 1 && field.kind == ScalarType::String;
             }
         }
-        let mut ids = IdSet::new();
-        let mut unique = Self::empty_unique(source.definition());
+        Self {
+            ids: IdSet::new(),
+            unique: Self::empty_unique(definition, true),
+            fields,
+        }
+    }
+
+    pub fn build<R: CollectionRecords + ?Sized>(
+        &mut self,
+        source: &R,
+        validator: &jsonschema::Validator,
+    ) -> ReadResult<(), R::Failure> {
+        let definition = source.definition();
+        let mut index_failure = None;
+        // A one-field unique validator reads posting counts during insertion.
+        // Other fields can defer their first posting until a second value or
+        // an empty array appears. Field order stays fixed throughout the build.
+        let mut building = {
+            let singles: BTreeSet<_> = self
+                .unique
+                .values()
+                .filter(|index| index.entries.is_none())
+                .map(|index| &index.fields[0].path)
+                .collect();
+            self.fields
+                .keys()
+                .map(|path| BuildingField {
+                    complete_presence: true,
+                    uniform_posting: !singles.contains(path),
+                })
+                .collect::<Vec<_>>()
+        };
         source.visit_records(|id, record| {
-            ids.insert(id.to_owned());
-            for (path, index) in &mut fields {
-                let value = record_value(record, path);
-                if value.is_some() {
-                    index.present.insert(id.to_owned());
-                }
-                for key in indexed_values(value, index.kind)? {
-                    index.entries.entry(key).or_default().insert(id.to_owned());
-                }
+            if let Record::Live(document) = record {
+                crate::validation::validate_document_with_validator(
+                    definition,
+                    &document.body,
+                    validator,
+                )?;
             }
-            for (name, index) in &mut unique {
-                index.insert(name, id, record)?;
+            // A later schema or source failure has always taken precedence
+            // over a conflict in these unpublished roots. Keep checking rows
+            // under their original loan even after the first index failure.
+            if index_failure.is_none() {
+                index_failure = self.insert_record(id, record, &mut building).err();
             }
             Ok(())
         })?;
-        Ok(Self {
-            fields,
-            ids,
-            unique,
-        })
+        if let Some(error) = index_failure {
+            return Err(error.into());
+        }
+        for (field, state) in self.fields.values_mut().zip(building) {
+            if state.complete_presence {
+                field.present = self.ids.clone();
+            }
+            if state.uniform_posting && !field.entries.is_empty() {
+                field.set_only_posting(&self.ids);
+            } else {
+                field.share_complete_posting(&self.ids);
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_record(
+        &mut self,
+        id: &str,
+        record: Record<'_>,
+        building: &mut [BuildingField],
+    ) -> Result<()> {
+        let mut postings = DocumentPostings::new(id, self.fields.len());
+        for ((path, index), state) in self.fields.iter_mut().zip(building) {
+            let value = record_value(record, path);
+            if state.complete_presence && value.is_none() {
+                index.present = self.ids.clone();
+                state.complete_presence = false;
+            } else if !state.complete_presence && value.is_some() {
+                postings.change(&mut index.present, true);
+            }
+            let keys = indexed_values(value, index.kind)?;
+            if state.uniform_posting {
+                if let [key] = keys.as_slice()
+                    && index.entries.contains_key(key)
+                {
+                    continue;
+                }
+                if keys.len() != 1 || !index.entries.is_empty() {
+                    state.uniform_posting = false;
+                    if !index.entries.is_empty() {
+                        index.set_only_posting(&self.ids);
+                    }
+                }
+            }
+            for key in keys {
+                index.insert(key, &mut postings);
+            }
+        }
+        self.ids.insert(id.to_owned());
+        for (name, index) in &mut self.unique {
+            if index.entries.is_some() {
+                index.insert_tuple(name, id, record, Some(&self.fields))?;
+            } else if let Some(mut key) = index.key(record)? {
+                let scalar = key.pop().expect("one-field unique key");
+                if self.fields[&index.fields[0].path].entries[&scalar].len() != 1 {
+                    return Err(unique_conflict(name));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn field_kind(&self, path: &str, allow_scan: bool) -> Result<Option<ScalarType>> {
@@ -823,6 +1170,182 @@ impl Structured {
             .collect())
     }
 
+    /// Evaluate supported boolean filters from the same selected generation.
+    /// Each conjunction streams its later postings through the surviving IDs.
+    /// A source without the complete layout returns control to the normal planner.
+    pub(crate) fn stored_posting<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        self.stored_candidates(source, node, None, cap, cancellation, memory)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stored_candidates<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        restrict: Option<&IdSet>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        cancellation.check()?;
+        memory.scope(|memory| {
+            let baseline = memory.live_bytes();
+            let result = match node {
+                Node::And(children) if !children.is_empty() => {
+                    let mut survivors = None;
+                    let mut survivor_bytes = 0;
+                    for i in self.conjunct_order(children, restrict.unwrap_or(&self.ids).len())? {
+                        let before = memory.live_bytes();
+                        let input = survivors.as_ref().or(restrict);
+                        let Some(next) = self.stored_candidates(
+                            source,
+                            &children[i],
+                            input,
+                            cap,
+                            cancellation,
+                            memory,
+                        )?
+                        else {
+                            return Ok((None, 0));
+                        };
+                        let next_bytes = memory.live_bytes() - before;
+                        survivors = Some(next);
+                        memory.release(survivor_bytes)?;
+                        survivor_bytes = next_bytes;
+                        if survivors.as_ref().is_some_and(IdSet::is_empty) {
+                            break;
+                        }
+                    }
+                    survivors
+                }
+                Node::Or(children) if !children.is_empty() => {
+                    let mut union = IdSet::new();
+                    for child in children {
+                        let before = memory.live_bytes();
+                        let Some(posting) = self.stored_candidates(
+                            source,
+                            child,
+                            restrict,
+                            cap,
+                            cancellation,
+                            memory,
+                        )?
+                        else {
+                            return Ok((None, 0));
+                        };
+                        let posting_bytes = memory.live_bytes() - before;
+                        if union.is_empty() {
+                            union = posting;
+                            continue;
+                        }
+                        for id in &posting {
+                            cancellation.check()?;
+                            if !union.contains(id) {
+                                check_size(union.len() + 1, cap)?;
+                                reserve_posting_id(memory, id)?;
+                                union.insert(id.clone());
+                            }
+                        }
+                        drop(posting);
+                        memory.release(posting_bytes)?;
+                    }
+                    Some(union)
+                }
+                Node::Leaf { .. } => {
+                    self.stored_leaf(source, node, restrict, cap, cancellation, memory)?
+                }
+                _ => None,
+            };
+            let retained = if result.is_some() {
+                memory.live_bytes() - baseline
+            } else {
+                0
+            };
+            Ok((result, retained))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stored_leaf<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        restrict: Option<&IdSet>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        let Node::Leaf { path, test } = node else {
+            return Ok(None);
+        };
+        let Some((field, (_, index))) = self
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, (key, _))| key.as_str() == *path)
+        else {
+            return Ok(None);
+        };
+        let predicate = match test {
+            Test::Exists(present) => crate::FieldPredicate::Exists(*present),
+            Test::Eq(value) | Test::Contains(value) => crate::FieldPredicate::Equals {
+                value,
+                kind: index.kind,
+            },
+            Test::Range { lower, upper } => crate::FieldPredicate::Range {
+                lower: *lower,
+                upper: *upper,
+                kind: index.kind,
+            },
+            Test::In(values) => crate::FieldPredicate::In {
+                values,
+                kind: index.kind,
+            },
+        };
+        let ordered_by_value = matches!(
+            predicate,
+            crate::FieldPredicate::Range { .. } | crate::FieldPredicate::In { .. }
+        );
+        let mut ids = IdSet::new();
+        let mut visited = false;
+        let available = source.visit_field_posting(field, predicate, cancellation, |id| {
+            cancellation.check()?;
+            visited = true;
+            if restrict.is_some_and(|ids| !ids.contains(id)) {
+                return Ok(());
+            }
+            check_size(ids.len() + 1, cap)?;
+            reserve_posting_id(memory, id)?;
+            // Range and membership visit one ID-ordered posting per distinct scalar. A
+            // non-array field can contribute an ID to only one such posting.
+            let invalid_order = if ordered_by_value {
+                ids.contains(id)
+            } else {
+                ids.get_max()
+                    .is_some_and(|previous: &String| previous.as_str() >= id)
+            };
+            if invalid_order {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "unordered field postings",
+                ));
+            }
+            ids.insert(id.to_owned());
+            Ok(())
+        })?;
+        if !available && visited {
+            return Err(Error::new(ErrorCode::Corruption, "partial field postings").into());
+        }
+        Ok(available.then_some(ids))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn candidates<S: DocumentSource + ?Sized>(
         &self,
@@ -994,6 +1517,18 @@ impl Structured {
             }
         }
     }
+}
+
+// Each inserted ID may allocate a 16-slot persistent tree node and its edges,
+// as well as the string backing. Admit these before mutating the private set.
+fn reserve_posting_id<W: crate::QueryWorkspace>(
+    memory: &mut crate::QueryMemory<W>,
+    id: &str,
+) -> Result<()> {
+    memory.reserve(crate::allocation::add(
+        2048,
+        crate::allocation::string_clone_bytes(id)?,
+    )?)
 }
 
 /// `universe` without `excluded` (a subset of it). A small exclusion shares

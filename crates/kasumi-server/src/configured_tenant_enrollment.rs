@@ -138,7 +138,7 @@ impl Administration {
                 && !generation.retired(),
             "enrollment requires its exact fresh resident generation"
         );
-        if !ControlPlane::local_topology(&self.control)?
+        if !ControlPlane::local_topology(self.control.local()?)?
             .topology
             .tenants
             .contains_key(&proposal.tenant)
@@ -158,7 +158,7 @@ impl Administration {
         Ok(())
     }
     pub(super) fn approved_enrollment(&self, tenant: &str) -> Result<ApprovedEnrollment> {
-        let selection = ControlPlane::select_local(&self.control)?;
+        let selection = ControlPlane::select_local(self.control.local()?)?;
         selection.check_admission(&self.admission)?;
         let document = selection
             .enrollment_document(tenant)?
@@ -174,7 +174,7 @@ impl Administration {
     }
     #[cfg(test)]
     pub(crate) fn exact_enrollment_approved_for_test(&self, tenant: &str) -> Result<Option<bool>> {
-        let selection = ControlPlane::select_local(&self.control)?;
+        let selection = ControlPlane::select_local(self.control.local()?)?;
         let present = selection.enrollment_document(tenant)?.is_some();
         if !present {
             return Ok(None);
@@ -190,7 +190,7 @@ impl Administration {
         tenant: &str,
         proposal: &Proposal,
     ) -> Result<serde_json::Value> {
-        self.authorized(&self.current(&self.control_context)?, context, true)
+        self.authorized(&self.current(self.control_context()?)?, context, true)
             .await?;
         ensure!(
             proposal.tenant == tenant
@@ -198,7 +198,7 @@ impl Administration {
             "selected enrollment proposal changed"
         );
         ensure!(
-            !ControlPlane::local_topology(&self.control)?
+            !ControlPlane::local_topology(self.control.local()?)?
                 .topology
                 .tenants
                 .contains_key(tenant),
@@ -206,7 +206,7 @@ impl Administration {
         );
         let definition = ControlPlane::enrollment_definition();
         let create_schema = {
-            let selection = ControlPlane::select_local(&self.control)?;
+            let selection = ControlPlane::select_local(self.control.local()?)?;
             let create = match selection.enrollment_schema() {
                 Some(existing) => {
                     ensure!(
@@ -231,11 +231,12 @@ impl Administration {
         };
         if create_schema {
             self.control
+                .local()?
                 .administer(context.clone(), Operation::CreateCollection(definition))
                 .await?;
         }
         let approved = {
-            let selection = ControlPlane::select_local(&self.control)?;
+            let selection = ControlPlane::select_local(self.control.local()?)?;
             selection.check_admission(&self.admission)?;
             match selection.enrollment_document(tenant)? {
                 Some(existing) => {
@@ -256,6 +257,7 @@ impl Administration {
             );
         } else {
             self.control
+                .local()?
                 .mutate(
                     context.clone(),
                     kasumi_types::MutationBatch {
@@ -302,8 +304,9 @@ impl Administration {
             .engine()
             .authorize(&invocation.context, None, Action::Admin)?;
         self.control
+            .local()?
             .engine()
-            .authorize(&self.control_context, None, Action::Admin)?;
+            .authorize(self.control_context()?, None, Action::Admin)?;
         Ok(())
     }
     pub(super) async fn prepare_configured_tenant(
@@ -534,8 +537,11 @@ impl Administration {
                     .resources
                     .stores
                     .push(stores.custody().store().clone());
-                self.config
-                    .install_tenant_audit_archive(stores.application(), None)?;
+                self.config.install_tenant_archives_with(
+                    stores.application(),
+                    None,
+                    self.credential.clone(),
+                )?;
                 self.check_enrollment(&prepared.invocation)?;
                 grant.check()?;
                 let bootstrap = self
@@ -615,8 +621,11 @@ impl Administration {
                 .resources
                 .stores
                 .push(stores.custody().store().clone());
-            self.config
-                .install_tenant_audit_archive(stores.application(), None)?;
+            self.config.install_tenant_archives_with(
+                stores.application(),
+                None,
+                self.credential.clone(),
+            )?;
             let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
             let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
             let opened = constructor_seat.run_snapshot(kasumi_engine::open_existing_replicated(
@@ -659,9 +668,9 @@ impl Administration {
                 .map_err(|failure| failure.observation())?;
             let group = format!("{name}/{incarnation}");
             let store = stores.application().clone();
-            network.register_group_with_bootstrap(
+            network.register_database_group(
                 group.clone(),
-                resident.database.raft_group().raft().clone(),
+                &resident.database,
                 replication.peers.iter().map(|peer| peer.node_id).collect(),
                 fingerprint,
                 Arc::new(move || store.check_access()),

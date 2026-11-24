@@ -4,6 +4,63 @@ use kasumi_types::{Error, ErrorCode, Result, ScalarType};
 use serde_json::Value;
 use std::str::FromStr;
 
+/// A query owns its temporary string. Persistent compound tuples can instead
+/// share the immutable scalar already held by the field posting root.
+#[derive(Clone)]
+pub(crate) enum IndexString {
+    Owned(String),
+    Shared(std::sync::Arc<str>),
+}
+
+impl IndexString {
+    pub(crate) fn into_string(self) -> String {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared(text) => text.to_string(),
+        }
+    }
+}
+impl From<String> for IndexString {
+    fn from(text: String) -> Self {
+        Self::Owned(text)
+    }
+}
+impl From<&str> for IndexString {
+    fn from(text: &str) -> Self {
+        Self::Owned(text.to_owned())
+    }
+}
+impl std::ops::Deref for IndexString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+}
+impl std::fmt::Debug for IndexString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+impl PartialEq for IndexString {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+impl Eq for IndexString {}
+impl Ord for IndexString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(other)
+    }
+}
+impl PartialOrd for IndexString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Order is explicit: absent < null < boolean < number < string.
 /// Declared fields never mix non-null types. Decimal fields use numeric order.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -12,7 +69,7 @@ pub(crate) enum Scalar {
     Null,
     Boolean(bool),
     Number(BigDecimal),
-    String(String),
+    String(IndexString),
     /// Internal ordered-prefix upper bound; never parsed from or stored as JSON.
     UpperBound,
 }
@@ -52,7 +109,7 @@ pub(crate) fn scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Result<
     match (kind, value) {
         (Some(ScalarType::Decimal), Value::String(text)) => Ok(Scalar::Number(decimal(text)?)),
         (Some(ScalarType::String | ScalarType::StringArray) | None, Value::String(text)) => {
-            Ok(Scalar::String(text.clone()))
+            Ok(Scalar::String(text.clone().into()))
         }
         (Some(ScalarType::Number | ScalarType::NumberArray) | None, Value::Number(n)) => {
             Ok(Scalar::Number(decimal(n.as_str())?))
@@ -103,29 +160,59 @@ pub(crate) fn query_scalar<W: QueryWorkspace>(
     Ok((scalar(value, kind)?, bytes))
 }
 
-pub(crate) fn indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<Vec<Scalar>> {
-    match kind {
-        ScalarType::StringArray | ScalarType::NumberArray => match value {
-            None => Ok(vec![Scalar::Missing]),
-            Some(Value::Null) => Ok(vec![Scalar::Null]),
-            Some(Value::Array(values)) => {
-                if values.len() > 4096 {
-                    return Err(invalid("indexed arrays are limited to 4096 values"));
-                }
-                values
-                    .iter()
-                    .map(|v| {
-                        if v.is_null() {
-                            return Err(invalid("indexed array elements cannot be null"));
-                        }
-                        scalar(Some(v), Some(kind))
-                    })
-                    .collect()
+/// Lend a declared array's elements individually. Missing and explicit null
+/// still represent one index key; an empty array has no keys.
+fn indexed_inputs(
+    value: Option<&Value>,
+    kind: ScalarType,
+) -> Result<impl Iterator<Item = Result<Option<&Value>>>> {
+    let array = match (kind, value) {
+        (ScalarType::StringArray | ScalarType::NumberArray, Some(Value::Array(values))) => {
+            if values.len() > 4096 {
+                return Err(invalid("indexed arrays are limited to 4096 values"));
             }
-            _ => Err(invalid("array index requires an array")),
-        },
-        _ => Ok(vec![scalar(value, Some(kind))?]),
+            Some(values.as_slice())
+        }
+        (ScalarType::StringArray | ScalarType::NumberArray, Some(value)) if !value.is_null() => {
+            return Err(invalid("array index requires an array"));
+        }
+        _ => None,
+    };
+    let single = array.is_none().then_some(value);
+    Ok(single
+        .into_iter()
+        .map(Ok)
+        .chain(array.unwrap_or_default().iter().map(|element| {
+            if element.is_null() {
+                Err(invalid("indexed array elements cannot be null"))
+            } else {
+                Ok(Some(element))
+            }
+        })))
+}
+
+pub(crate) fn indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<Vec<Scalar>> {
+    indexed_inputs(value, kind)?
+        .map(|part| scalar(part?, Some(kind)))
+        .collect()
+}
+
+pub(crate) fn validate_indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<()> {
+    for part in indexed_inputs(value, kind)? {
+        let part = part?;
+        // Arbitrary UTF-8 strings are valid for both string index kinds.
+        // Validation needs their type, while the writer constructs the key.
+        if !matches!(
+            (kind, part),
+            (
+                ScalarType::String | ScalarType::StringArray,
+                Some(Value::String(_))
+            )
+        ) {
+            scalar(part, Some(kind))?;
+        }
     }
+    Ok(())
 }
 
 pub(crate) fn validate_pointer(path: &str) -> Result<()> {

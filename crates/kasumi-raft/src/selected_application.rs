@@ -509,15 +509,10 @@ fn entry_matches(position: &AppliedPosition, expected: &AppliedEntryContext) -> 
         && position.command_sha256 == expected.command_sha256
 }
 
-fn validate<W: SelectionWorkspace>(
+fn validate_snapshot_pair<W: SelectionWorkspace>(
     owner: &SelectedApplicationPosition<W>,
-    expected: ApplicationBoundaryRef<'_>,
-    mode: ApplicationSelectionMode,
     limits: &RaftLimits,
 ) -> Result<()> {
-    if let Some(AppliedCursor::Entry(position)) = &owner.applied {
-        kasumi_types::validate_sha256(&position.command_sha256)?;
-    }
     if let Some(coverage) = &owner.coverage {
         let manifest = owner
             .manifest
@@ -537,6 +532,81 @@ fn validate<W: SelectionWorkspace>(
             "snapshot lacks independently readable control coverage"
         );
     }
+    Ok(())
+}
+
+/// Inspect the native snapshot selected by an ordinary entry's paired read
+/// view. Ordinary publication does not need the predecessor for its own proof.
+/// A reader using the predecessor verifies both domains on the same immutable
+/// root and funds the decoded metadata for the lifetime of the callback.
+pub fn with_published_snapshot_at<W: SelectionWorkspace, T>(
+    view: &TenantStorageReadView,
+    limits: &RaftLimits,
+    workspace: W,
+    visit: impl FnOnce(SelectedSnapshotRef<'_>) -> Result<T>,
+) -> Result<Option<T>> {
+    let mut reads = SelectedReads { view, points: None };
+    workspace.require_memory(&reads.identity())?;
+    let mut points =
+        view.fork()?
+            .prepare_point_reads("raft.snapshot".len(), b"snapshot_coverage".len(), 0)?;
+    let bounds = (|| -> Result<_> {
+        Ok((
+            points
+                .custody_value_bound(META, b"snapshot_coverage", CONTROL_BYTES)?
+                .unwrap_or(0),
+            points
+                .application_value_bound("raft.snapshot", b"current", CONTROL_BYTES)?
+                .unwrap_or(0),
+        ))
+    })();
+    let (coverage_limit, manifest_limit) = points.finish(bounds)?;
+    let mut owner = SelectedApplicationPosition {
+        bootstrap: None,
+        applied: None,
+        coverage: None,
+        manifest: None,
+        reconstructed: false,
+        plan: None,
+        live: 0,
+        workspace,
+    };
+    let result = (|| -> Result<()> {
+        owner.coverage = owner.read(
+            &mut reads,
+            false,
+            META,
+            b"snapshot_coverage",
+            coverage_limit,
+            decode_snapshot,
+        )?;
+        owner.manifest = owner.read(
+            &mut reads,
+            true,
+            "raft.snapshot",
+            b"current",
+            manifest_limit,
+            decode_snapshot,
+        )?;
+        owner.reserve(VALIDATION_WORKSPACE)?;
+        validate_snapshot_pair(&owner, limits)
+    })();
+    if let Err(error) = result {
+        return Err(owner.into_failure(error).into());
+    }
+    owner.snapshot().map(visit).transpose()
+}
+
+fn validate<W: SelectionWorkspace>(
+    owner: &SelectedApplicationPosition<W>,
+    expected: ApplicationBoundaryRef<'_>,
+    mode: ApplicationSelectionMode,
+    limits: &RaftLimits,
+) -> Result<()> {
+    if let Some(AppliedCursor::Entry(position)) = &owner.applied {
+        kasumi_types::validate_sha256(&position.command_sha256)?;
+    }
+    validate_snapshot_pair(owner, limits)?;
     if let Some(AppliedCursor::Snapshot {
         meta,
         backend_sha256,

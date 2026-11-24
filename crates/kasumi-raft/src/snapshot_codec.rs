@@ -41,9 +41,22 @@ fn frame(writer: &mut dyn Write, tag: u8, bytes: &[u8], digest: &mut Sha256) -> 
 }
 impl SnapshotEnvelope {
     pub(crate) fn encode(&self, limit: u64) -> Result<SnapshotImage> {
-        self.encode_records(limit, true)
+        self.encode_while(limit, || Ok(()))
     }
-    fn encode_records(&self, limit: u64, check_metadata: bool) -> Result<SnapshotImage> {
+    pub(crate) fn encode_while(
+        &self,
+        limit: u64,
+        check: impl Fn() -> Result<()>,
+    ) -> Result<SnapshotImage> {
+        self.encode_records(limit, true, check)
+    }
+    fn encode_records(
+        &self,
+        limit: u64,
+        check_metadata: bool,
+        check: impl Fn() -> Result<()>,
+    ) -> Result<SnapshotImage> {
+        check()?;
         if check_metadata {
             crate::initialization_association::validate_snapshot(
                 &self.meta,
@@ -78,6 +91,7 @@ impl SnapshotEnvelope {
                     retirement.validate(&self.meta)?;
                 }
                 retirement.verified_records()?.visit(|tag, bytes| {
+                    check()?;
                     let (tag, count) = if tag == 1 {
                         (COMMAND, &mut commands)
                     } else {
@@ -94,6 +108,7 @@ impl SnapshotEnvelope {
             let mut buffer = vec![0; CHUNK];
             let (mut total, mut records) = (0u64, 0u64);
             while total < self.backend.len() {
+                check()?;
                 let count = (self.backend.len() - total).min(CHUNK as u64) as usize;
                 reader.read_exact(&mut buffer[..count])?;
                 frame(writer, DATA, &buffer[..count], &mut digest)?;
@@ -300,7 +315,7 @@ pub(crate) fn unvalidated_snapshot(
     Ok(openraft::Snapshot {
         meta: changed.meta.clone(),
         snapshot: Box::new(crate::SnapshotBuffer::from_image(
-            changed.encode_records(limit, false)?,
+            changed.encode_records(limit, false, || Ok(()))?,
             &crate::SnapshotBufferOwner::fixture(),
         )?),
     })

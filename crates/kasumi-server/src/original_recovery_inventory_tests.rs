@@ -267,12 +267,14 @@ async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_
     let capture_watch = watching.snapshot().count;
     {
         let marker = seat
-            .run_snapshot_operation(async { Err::<(), _>(original.into()) })
+            .run_snapshot_operation_at(Some(RecoverStage::RestoreSnapshot), async {
+                Err::<(), _>(original.into())
+            })
             .await
             .unwrap_err();
         let calls = Cell::new(0);
         let refused = seat
-            .run_snapshot_operation(async {
+            .run_snapshot_operation_at(Some(RecoverStage::EngineOpen), async {
                 calls.set(calls.get() + 1);
                 Ok(())
             })
@@ -287,6 +289,7 @@ async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_
             "paid handoff allocated"
         );
         assert_eq!(marker.index, 0);
+        assert_eq!(marker.stage, "restore_snapshot");
     }
     assert_eq!(
         seat.with_failure(|failure| failure

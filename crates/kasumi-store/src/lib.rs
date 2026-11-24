@@ -12,6 +12,7 @@ pub use application_bootstrap::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
     ApplicationBootstrapManifest,
 };
+mod archive_keys;
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
@@ -33,9 +34,10 @@ pub use capacity_refusal::{CapacityCheck, CapacityRefusal, CapacityRefusalCount}
 mod catalog_read_budget;
 mod key_access_denied;
 pub use backup_sessions::{
-    BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
-    MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
-    verify_backup_session,
+    BackupSessionKeyRead, BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects,
+    BackupSessionSlot, MAX_ENCRYPTED_SESSION_RECORD_BYTES, MAX_SESSION_GC_OBJECTS,
+    MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
+    verify_target_journal_backup_session,
 };
 mod background_pace;
 pub use background_pace::{
@@ -49,7 +51,7 @@ mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 mod deferred_batch;
 use catalog_read_budget::AdmittedKeyCatalog;
-pub use deferred_batch::{CarriedBatch, DeferredBatch, DeferredState};
+pub use deferred_batch::{CarriedBatch, DeferredBatch, DeferredState, deferred_batch_waiting};
 pub use kasumi_kv::{
     MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
     MaintenanceStep, StorageCompactionPhase, StorageError, StorageMaintenanceStatus,
@@ -93,11 +95,15 @@ pub use fixture_node::{NodeFixtureInputs, NodeFixtureStartFailure};
 mod node_disk;
 mod node_file;
 pub use node_file::segment_group::NodeSegmentGroupCleanup;
+pub mod application_manifest;
 mod generation_stage;
 pub mod node_store_ids;
+pub mod ordered_pages;
 mod plaintext_scan;
 mod point_read_backing;
+pub mod primary_manifest;
 mod read_view;
+pub mod text_manifest;
 pub use generation_stage::{NamespaceStage, SelectedGeneration};
 pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
 mod registered_read_scope;
@@ -119,7 +125,7 @@ mod serving_access;
 mod spool;
 pub use read_view::{
     PointRetirementFailure, PreparedTenantReadPoints, PreparedTenantReadWorkspace, TenantReadView,
-    plaintext_get_workspace_bytes,
+    ViewWrappingInventory, plaintext_get_workspace_bytes,
 };
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{
@@ -128,6 +134,7 @@ pub use scratch_table::{
     ScratchOperationFailure, ScratchTableValue,
 };
 mod storage_domains;
+pub mod structured_manifest;
 mod sync_trace;
 pub use serving_access::{StorageAccess, StoragePurpose};
 mod file_keys;
@@ -1332,6 +1339,29 @@ impl NodeStore {
         )
     }
 
+    /// Create the directory for a single durable original materialization intent.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn create_materialization_target(
+        path: impl AsRef<Path>,
+        node_store_id: Uuid,
+        directory_stamp: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+        config: impl Into<NodeStorageCreateOptions>,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        Self::start_registered(
+            path.as_ref(),
+            node_store_id,
+            persistent_disk,
+            scratch_disk,
+            NodeOpeningMode::CreateTarget(directory_stamp),
+            config,
+        )
+    }
+
     /// Initialize the exact directory and empty root already durably owned by an
     /// installation journal. A populated or partial group is never reset.
     #[allow(
@@ -1604,12 +1634,20 @@ impl NodeStore {
         self.body().db.physical_identity()
     }
 
+    /// Read the original materialization stamp from the verified group directory.
+    pub fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        self.body().db.target_directory_stamp()
+    }
+
     /// Observe the actual native publication generation for physical fixtures.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_native_generation(&self) -> Result<u64> {
         Ok(self.body().db.begin_read()?.generation())
     }
 
+    // Cache controls and observations for fixtures. Production nodes take the
+    // cache from their native storage configuration and the background warmer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -1625,10 +1663,12 @@ impl NodeStore {
         self.body().db.configure_cache(config)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
         self.body().db.cache_stats()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache(
         &self,
         work_limit: usize,
@@ -1636,6 +1676,7 @@ impl NodeStore {
         self.body().db.warm_cache(work_limit)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache_if_needed(
         &self,
         work_limit: usize,
@@ -1643,12 +1684,14 @@ impl NodeStore {
         self.body().db.warm_cache_if_needed(work_limit)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_warmup_status(
         &self,
     ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
         self.body().db.cache_warmup_status()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
         self.body().db.request_cache_warm_retry()
     }
@@ -2019,7 +2062,7 @@ impl KeyCatalog {
             "invalid catalog tenant"
         );
         ensure!(
-            self.format == 1 && !self.catalog_id.is_nil() && self.tenant == tenant,
+            matches!(self.format, 1 | 2) && !self.catalog_id.is_nil() && self.tenant == tenant,
             "key catalog tenant/format mismatch"
         );
         ensure!(
@@ -2093,6 +2136,7 @@ pub struct TenantStore {
     lease_failure: AtomicU8,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
+    archive_keys: Mutex<Option<archive_keys::ArchiveKeys>>,
     live_trust: Mutex<
         BTreeMap<
             String,
@@ -2201,6 +2245,7 @@ impl TenantStore {
             lease_failure: AtomicU8::new(0),
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
+            archive_keys: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
             cached_rows: Default::default(),
         })
@@ -2954,6 +2999,11 @@ impl TenantStore {
         self.require_access(&state)?;
         let mut catalog = self.clone_catalog_for_mutation()?;
         ensure!(catalog.keys.len() < 1024, "too many retained data keys");
+        catalog
+            .keys
+            .get(&catalog.active)
+            .context("active data key missing")?
+            .check_successor(&generated.wrapped)?;
         let id = Uuid::new_v4().to_string();
         catalog.keys.insert(id.clone(), generated.wrapped);
         catalog.active = id.clone();
@@ -2973,11 +3023,13 @@ impl TenantStore {
         self.check_access()?;
         let mut catalog = self.clone_catalog_for_mutation()?;
         for (id, wrapped) in &mut catalog.keys {
-            *wrapped = tokio::time::timeout(
+            let next = tokio::time::timeout(
                 PROVIDER_TIMEOUT,
                 self.provider.rewrap_key(&self.tenant, wrapped),
             )
             .await??;
+            wrapped.check_successor(&next)?;
+            *wrapped = next;
             let probe = tokio::time::timeout(
                 PROVIDER_TIMEOUT,
                 self.provider.unwrap_key(&self.tenant, wrapped),
@@ -3131,6 +3183,7 @@ fn write_domain(
     operations: &[WriteOp],
 ) -> Result<()> {
     generation_stage::validate_transitions(tx, store, state, operations)?;
+    generation_stage::validate_structured_manifest(tx, store, state, operations)?;
     let index = state.keys.get(INDEX_KEY).context("index key missing")?;
     let data = state
         .keys

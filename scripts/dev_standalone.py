@@ -243,6 +243,13 @@ def alive(pid):
     with contextlib.suppress(ChildProcessError):
         if os.waitpid(pid, os.WNOHANG)[0] == pid:
             return False
+    if sys.platform.startswith("linux"):
+        # A detached supervisor can be a zombie owned by another parent.
+        try:
+            state = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return state not in (b"Z", b"X")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -264,7 +271,14 @@ def stop_process(entry, kind, wait):
         if not alive(pid):
             return "stopped"
         time.sleep(0.1)
-    os.kill(pid, signal.SIGKILL)
+    if not alive(pid):
+        return "stopped"
+    if not recorded(entry, kind, pid):
+        return "not_owned"
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "stopped"
     return "killed"
 
 

@@ -104,8 +104,18 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                     .transpose()?;
                 Ok((command, applied, apply, reference))
             })?;
-        let prepared =
-            engine.prepare_command_ordered(&apply, &command, &applied, &ApplyScope::Committed)?;
+        let prepared = engine.prepare_command_ordered(
+            &apply,
+            &command,
+            &applied,
+            &ApplyScope::Committed {
+                membership_epoch: position
+                    .membership
+                    .log_id()
+                    .as_ref()
+                    .map_or(0, |id| id.index),
+            },
+        )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let previous = apply.current();
             let retirement = if prepared.outcome.is_ok() {
@@ -173,7 +183,9 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                         .context("ordinary application sources absent")?;
                     // Immutable body writes share the exact completion/custody
                     // publication, and their grant lives through selection.
-                    let writes = accepted.prepare_publication_writes(sources, position)?;
+                    let mut writes = accepted.prepare_publication_writes(sources, position)?;
+                    let _structured =
+                        accepted.join_structured_writes(sources, position, &mut writes)?;
                     let candidate = accepted.candidate();
                     let Some(selection) = completion.publish_source(
                         position,
@@ -337,7 +349,6 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
         })?;
         let mut positions = Vec::with_capacity(inputs.len());
         let mut responses = Vec::with_capacity(inputs.len());
-        let mut changed = ChangedIds::new();
         let mut receipts = Vec::new();
         let mut frozen = 0usize;
         for (input, retention) in inputs.into_iter().zip(retained) {
@@ -367,7 +378,13 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                 &apply,
                 &command,
                 &applied,
-                &ApplyScope::Committed,
+                &ApplyScope::Committed {
+                    membership_epoch: position
+                        .membership
+                        .log_id()
+                        .as_ref()
+                        .map_or(0, |id| id.index),
+                },
             )?;
             kasumi_store::ScratchOperationFailure::ordinary(|| {
                 responses.push(serde_json::to_vec(&prepared.outcome)?);
@@ -381,9 +398,7 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                         frozen += 1;
                     }
                     Some(mut candidate) => {
-                        for (name, ids) in prepared.changed {
-                            changed.entry(name).or_default().extend(ids);
-                        }
+                        apply.extend_group_changes(prepared.changed);
                         if let Some(mut publication) = prepared.receipt_publication {
                             // Later members read this pair before it is durable.
                             let view = publication.chained_view()?;
@@ -406,6 +421,7 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                     frozen == 0,
                     "a standalone group mixes frozen and applied members"
                 );
+                let changed = apply.take_group_changes();
                 let mut candidate = apply.take_chained()?;
                 let last = Arc::get_mut(&mut candidate)
                     .ok_or_else(|| anyhow::anyhow!("group candidate escaped"))?;
@@ -450,12 +466,13 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                     .application_sources
                     .get()
                     .context("ordinary application sources absent")?;
-                let writes = accepted.prepare_group_publication_writes(
+                let mut writes = accepted.prepare_group_publication_writes(
                     sources,
                     last,
                     positions.len(),
                     first_revision,
                 )?;
+                let _structured = accepted.join_structured_writes(sources, last, &mut writes)?;
                 let candidate = accepted.candidate();
                 let Some(selection) = completion.publish_source(
                     last,

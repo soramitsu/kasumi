@@ -173,7 +173,7 @@ impl RecoveryRuntimeConfig {
             "recovery requires bounded installed routes"
         );
         let lifecycle = runtime
-            .control
+            .hosted_control()?
             .lifecycle
             .as_ref()
             .context("recovery requires closed lifecycle Control")?;
@@ -388,6 +388,89 @@ pub(crate) struct ControlRecoveryCoordinator {
     trusts: BTreeMap<String, AuthorityTrust>,
     installed_digests: BTreeMap<String, String>,
 }
+#[async_trait::async_trait]
+impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
+    fn verify_participant(&self, input: &SignedTargetWriterChallenge) -> Result<()> {
+        let mut original = None;
+        for route in self.configured.routes.values() {
+            if let Some(member) = route.targets.get(&input.challenge.verifier.node_id)
+                && member.node.verifier == input.challenge.verifier
+            {
+                ensure!(
+                    original
+                        .replace(&member.node)
+                        .is_none_or(|old| old == &member.node),
+                    "conflicting target enrollment"
+                );
+            }
+        }
+        kasumi_engine::TargetSigner::verify_writer_challenge(
+            input,
+            original.context("physical writer is outside original recovery routes")?,
+        )
+    }
+    async fn synchronize(
+        &self,
+        context: &RequestContext,
+        state_sha256: &str,
+    ) -> Result<std::collections::BTreeSet<TargetWriterParticipant>> {
+        let mut observed = std::collections::BTreeSet::new();
+        let mut verified = std::collections::BTreeSet::new();
+        for (name, route) in &self.configured.routes {
+            context.authorization.check_live()?;
+            let authority = &self.authorities[&route.authority];
+            let trust = RouteTrust::load(route, authority)?;
+            ensure!(
+                self.installed_digests.get(name)
+                    == Some(&route.digest_with_trust(authority, &trust)?),
+                "target writer route changed from its installed trust"
+            );
+            for (&id, member) in &route.targets {
+                if !verified.insert(member.node.verifier.clone()) {
+                    continue;
+                }
+                context.authorization.check_live()?;
+                let query = RefreshTargetWriter {
+                    protocol: kasumi_types::TARGET_WRITER_PROTOCOL,
+                    root: self.signer.root().clone(),
+                    verifier: member.node.verifier.clone(),
+                    state_sha256: state_sha256.into(),
+                    nonce: Uuid::new_v4(),
+                };
+                let config = connection(
+                    &member.client,
+                    trust
+                        .target_cas
+                        .get(&id)
+                        .context("missing original target CA")?,
+                )?;
+                let token = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+                let receipt = tokio::time::timeout(Duration::from_secs(30), async {
+                    let mut client = KasumiTargetClient::connect(
+                        &config,
+                        ControlTrust::install(self.signer.root().clone())?,
+                        self.trusts[&route.authority].clone(),
+                        id,
+                    )
+                    .await?;
+                    Ok::<_, anyhow::Error>(client.refresh_writer(&token, &query).await?)
+                })
+                .await??;
+                context.authorization.check_live()?;
+                receipt.validate_for(&query)?;
+                observed.insert(TargetWriterParticipant {
+                    verifier: member.node.verifier.clone(),
+                    catalog: receipt.catalog,
+                });
+            }
+        }
+        ensure!(
+            !observed.is_empty(),
+            "original writer route roster is empty"
+        );
+        Ok(observed)
+    }
+}
 impl ControlRecoveryCoordinator {
     pub(crate) fn new(
         runtime: &RuntimeConfig,
@@ -396,7 +479,7 @@ impl ControlRecoveryCoordinator {
         trusts: BTreeMap<String, AuthorityTrust>,
     ) -> Result<Arc<Self>> {
         let configured = runtime
-            .control
+            .hosted_control()?
             .lifecycle
             .as_ref()
             .and_then(|c| c.recovery.clone())
@@ -474,6 +557,111 @@ impl ControlRecoveryCoordinator {
             .recovery_control(context, RecoveryControlCommand::Start(Box::new(request)))
             .await?)
     }
+    pub(crate) async fn issuer_stop_status(
+        &self,
+        context: &RequestContext,
+        input: &RecoveryPhaseRequest,
+    ) -> Result<RecoveryIssuerStop> {
+        let status = self
+            .database
+            .recovery_status(context.clone(), input.operation_id)
+            .await?;
+        let head = status.record();
+        ensure!(
+            head.pending_phase == Some(input.phase_id),
+            "issuer observation requires the original pending phase"
+        );
+        let phase = self
+            .database
+            .recovery_phase(context.clone(), input.operation_id, input.phase_id)
+            .await?;
+        let original = phase.record();
+        ensure!(original.outcome.is_none(), "issuer phase already resolved");
+        let (route, authority, trust, cas) = self.route(&head.request)?;
+        let (effect, command_id, reference, expected_command) = match &original.input {
+            RecoveryDispatch::Authority(command) => {
+                let AuthorityAction::StopTarget { target, .. } = &command.action else {
+                    anyhow::bail!("issuer command is not a permanent target stop");
+                };
+                ensure!(
+                    command.tenant == head.request.tenant
+                        && target.incarnation == head.request.target_incarnation,
+                    "issuer stop command target differs"
+                );
+                (
+                    RecoveryEffect::AuthorityCommand,
+                    command.command_id,
+                    None,
+                    Some(command.digest()?),
+                )
+            }
+            RecoveryDispatch::Target { request, .. } => {
+                let TargetRuntimeStep::Stop(reference) = &request.step else {
+                    anyhow::bail!("target is not waiting for a permanent issuer stop");
+                };
+                ensure!(
+                    reference.tenant == head.request.tenant
+                        && request.tenant == head.request.tenant,
+                    "issuer reference tenant differs"
+                );
+                (
+                    RecoveryEffect::TargetCommand,
+                    reference.command_id,
+                    Some(reference),
+                    None,
+                )
+            }
+            _ => anyhow::bail!("phase has no issuer stop"),
+        };
+        let query = IssuerStopQuery {
+            tenant: head.request.tenant.clone(),
+            command_id,
+            target_incarnation: head.request.target_incarnation,
+        };
+        let duration = Duration::from_millis(head.request.phase_timeout_ms);
+        let mut issuer = authority_pool(
+            authority,
+            trust.clone(),
+            &query.tenant,
+            &route.issuer_admin_bearer_file,
+            &cas.issuer_ca,
+        )?;
+        let expected = if let Some(reference) = reference {
+            let signed = issuer
+                .receipt(&query.tenant, command_id, duration)
+                .await?
+                .context("original issuer command not committed")?;
+            ensure!(
+                signed.receipt.digest()? == reference.receipt_digest
+                    && matches!(&signed.receipt.outcome,AuthorityOutcome::TargetStopped{target,..} if target.incarnation==query.target_incarnation),
+                "issuer stop reference differs from original signed outcome"
+            );
+            Some(signed.receipt.command.digest()?)
+        } else {
+            expected_command
+        };
+        let observed = issuer.read_issuer_stop(&query, duration).await?;
+        if let Some(found) = &observed {
+            ensure!(
+                Some(&found.command_sha256) == expected.as_ref(),
+                "issuer's stop command differs from Control"
+            );
+        }
+        let result = RecoveryIssuerStop {
+            phase: input.clone(),
+            attempt_id: original
+                .effect_attempts
+                .get(&effect)
+                .map(|attempt| attempt.attempt_id),
+            query,
+            observed,
+        };
+        result.validate_for(input)?;
+        phase.release().await?;
+        status.release().await?;
+        Ok(result)
+    }
+
     pub(crate) async fn resume(
         &self,
         context: RequestContext,
@@ -871,6 +1059,14 @@ impl ControlRecoveryCoordinator {
                     } else {
                         None
                     };
+                    // StopLocal can resume its exact journaled deletion after an
+                    // interrupted RPC. Commit its single Control effect identity
+                    // before the first send; later calls keep that original row.
+                    if matches!(request.step, TargetRuntimeStep::Stop(_)) && prior_attempt.is_none()
+                    {
+                        let ticket = prepared.begin_effect(RecoveryEffect::TargetCommand).await?;
+                        ticket.consume(&prepared.record().input).await?;
+                    }
                     let envelope = TargetExecuteRequest {
                         request: request.as_ref().clone(),
                         initial_dispatch,

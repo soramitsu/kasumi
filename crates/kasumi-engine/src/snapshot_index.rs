@@ -7,6 +7,8 @@ use kasumi_store::{EncryptedTable, EncryptedTableBatch, SnapshotImage};
 use std::io::{Read, Seek, SeekFrom};
 
 type Key = (u8, String, String);
+#[path = "snapshot_index_locations.rs"]
+mod locations;
 const KINDS: usize = crate::snapshot_codec::RECORD_KINDS as usize;
 
 pub(crate) struct StagedSnapshot {
@@ -30,7 +32,8 @@ impl StagedSnapshot {
         }
         impl<F: FnMut() -> Result<()>> Read for Checked<'_, F> {
             fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-                (self.check)().map_err(std::io::Error::other)?;
+                (self.check)()
+                    .map_err(crate::state::snapshot_encoding_failure::checked_io_failure)?;
                 self.reader.read(bytes)
             }
         }
@@ -60,6 +63,7 @@ impl StagedSnapshot {
             let mut previous_change_item = None;
             let mut group: Option<(u8, String, u64, u64, u64)> = None;
             let mut pending = PendingIndex::new(&index);
+            let mut locations: Option<locations::LocationPage> = None;
             let summary = crate::snapshot_codec::visit::<anyhow::Error>(
                 &mut image.reader(),
                 |position, record| {
@@ -72,6 +76,9 @@ impl StagedSnapshot {
                         .as_ref()
                         .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
                     {
+                        if let Some(page) = &mut locations {
+                            page.flush(&mut pending, &mut check)?;
+                        }
                         write_group(
                             &mut pending,
                             group.take().expect("present group"),
@@ -86,14 +93,22 @@ impl StagedSnapshot {
                         pending.flush(&mut check)?;
                     }
                     match &record {
-                        Record::Document(collection, _) | Record::Archived(collection, _, _) => {
+                        // Records in a canonical (kind, primary) group share this
+                        // parent in an earlier, already committed immutable kind.
+                        Record::Document(collection, _) | Record::Archived(collection, _, _)
+                            if group.is_none() =>
+                        {
                             require(&index, &(2, collection.clone(), String::new()))?;
                         }
-                        Record::StageChunk(stage, _, _) | Record::ActiveStage(stage) => {
+                        Record::StageChunk(stage, _, _) | Record::ActiveStage(stage)
+                            if group.is_none() =>
+                        {
                             require(&index, &(6, stage.clone(), String::new()))?;
                         }
                         Record::ChangeItem(sequence, item, _) => {
-                            require(&index, &(9, format!("{sequence:020}"), String::new()))?;
+                            if group.is_none() {
+                                require(&index, &(9, format!("{sequence:020}"), String::new()))?;
+                            }
                             let expected = match previous_change_item {
                                 Some((old, next)) if old == *sequence => next,
                                 _ => 0,
@@ -129,13 +144,12 @@ impl StagedSnapshot {
                         Record::RecoveryTarget(_, operation) => {
                             require(&index, &(18, operation.to_string(), String::new()))?;
                         }
-                        Record::BackupBinding(_) => {
+                        Record::BackupBinding(_) | Record::LifecycleIntentHistory(_) => {
                             let header =
                                 get_record(&image, &index, &(0, String::new(), String::new()))?;
                             ensure!(
                                 matches!(header, Some(Record::Header(head))
-                        if head.tenant == crate::control::CONTROL_TENANT
-                        && head.lifecycle_control.is_some()),
+                        if head.tenant == crate::control::CONTROL_TENANT),
                                 "backup binding point row requires installed Control"
                             );
                         }
@@ -186,10 +200,25 @@ impl StagedSnapshot {
                     let mut location = [0u8; 16];
                     location[..8].copy_from_slice(&position.offset.to_be_bytes());
                     location[8..].copy_from_slice(&position.bytes.to_be_bytes());
-                    pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
+                    if locations::packed(key.0) {
+                        if locations.is_none() {
+                            locations = Some(locations::LocationPage::new(&image)?);
+                        }
+                        locations.as_mut().expect("installed location page").push(
+                            &key,
+                            &location,
+                            &mut pending,
+                            &mut check,
+                        )?;
+                    } else {
+                        pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
+                    }
                     check()
                 },
             )?;
+            if let Some(page) = &mut locations {
+                page.flush(&mut pending, &mut check)?;
+            }
             if let Some(group) = group {
                 write_group(&mut pending, group, &mut check)?;
             }
@@ -339,14 +368,14 @@ impl Iterator for RecordCursor {
 /// At most one existing bounded native staging transaction is retained. Its
 /// destructor aborts the pending rows on framing, reference or caller failure;
 /// already committed batches are still confined to this unpublished index.
-struct PendingIndex<'a> {
+pub(crate) struct PendingIndex<'a> {
     index: &'a EncryptedTable,
     batch: Option<EncryptedTableBatch>,
     bytes: usize,
     entries: usize,
 }
 impl<'a> PendingIndex<'a> {
-    fn new(index: &'a EncryptedTable) -> Self {
+    pub(crate) fn new(index: &'a EncryptedTable) -> Self {
         Self {
             index,
             batch: None,
@@ -354,7 +383,7 @@ impl<'a> PendingIndex<'a> {
             entries: 0,
         }
     }
-    fn insert(
+    pub(crate) fn insert(
         &mut self,
         key: &[u8],
         value: &[u8],
@@ -369,7 +398,10 @@ impl<'a> PendingIndex<'a> {
             bytes <= EncryptedTableBatch::MAX_BYTES,
             "snapshot index entry exceeds batch bound"
         );
-        if self.entries == EncryptedTableBatch::MAX_ENTRIES
+        if self
+            .batch
+            .as_ref()
+            .is_some_and(|batch| self.entries == batch.entry_limit())
             || self
                 .bytes
                 .checked_add(bytes)
@@ -378,7 +410,7 @@ impl<'a> PendingIndex<'a> {
             self.flush(check)?;
         }
         if self.batch.is_none() {
-            self.batch = Some(self.index.begin_batch()?);
+            self.batch = Some(self.index.begin_index_batch()?);
         }
         self.batch
             .as_mut()
@@ -388,7 +420,7 @@ impl<'a> PendingIndex<'a> {
         self.bytes += bytes;
         Ok(())
     }
-    fn flush(&mut self, check: &mut impl FnMut() -> Result<()>) -> Result<()> {
+    pub(crate) fn flush(&mut self, check: &mut impl FnMut() -> Result<()>) -> Result<()> {
         if self.batch.is_some() {
             check()?;
             let phase =
@@ -431,10 +463,20 @@ fn require(index: &EncryptedTable, key: &Key) -> Result<()> {
 }
 
 fn get_record(image: &SnapshotImage, index: &EncryptedTable, key: &Key) -> Result<Option<Record>> {
-    let Some(bytes) = index.get(&serde_json::to_vec(key)?)? else {
+    let location = if locations::packed(key.0) {
+        locations::get(index, key)?
+    } else {
+        index
+            .get(&serde_json::to_vec(key)?)?
+            .map(|row| {
+                <[u8; 16]>::try_from(row.as_bytes())
+                    .map_err(|_| anyhow::anyhow!("snapshot index location differs"))
+            })
+            .transpose()?
+    };
+    let Some(bytes) = location else {
         return Ok(None);
     };
-    ensure!(bytes.len() == 16, "snapshot index location differs");
     let position = RecordPosition {
         offset: u64::from_be_bytes(bytes[..8].try_into()?),
         bytes: u64::from_be_bytes(bytes[8..].try_into()?),

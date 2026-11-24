@@ -145,6 +145,14 @@ pub(crate) fn require_complete(
     database_id: Uuid,
     kind: Kind,
 ) -> Result<()> {
+    complete_input(store, database_id, kind).map(|_| ())
+}
+
+fn complete_input(
+    store: &Arc<TenantStore>,
+    database_id: Uuid,
+    kind: Kind,
+) -> Result<(kasumi_store::PlaintextValue, [u8; 32])> {
     let view = store.read_view()?;
     let head =
         decode_head(&view.get(NS, b"head", MAX_HEAD)?.context(
@@ -161,8 +169,9 @@ pub(crate) fn require_complete(
     let bytes = view
         .get(NS, b"input", MAX_INPUT)?
         .context("node enrollment input absent")?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
     ensure!(
-        hex::encode(Sha256::digest(&bytes)) == head.input_sha256,
+        hex::encode(digest) == head.input_sha256,
         "node enrollment input digest differs"
     );
     let input = retained::RetainedInput::decode(&bytes)?;
@@ -171,16 +180,61 @@ pub(crate) fn require_complete(
         "node enrollment input identity differs"
     );
     input.require_genesis(store, &head.input_sha256)?;
-    Ok(())
+    Ok((bytes, digest))
+}
+
+/// Reread the original encrypted input, completed head and Control genesis
+/// every time a voter attests that its dedicated installation excludes targets.
+pub(crate) fn target_journal_exclusion(
+    database_id: Uuid,
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Arc<kasumi_engine::TargetJournalExclusion> {
+    let admission = Arc::downgrade(admission);
+    Arc::new(move |store, verifier, root, token| {
+        token.check()?;
+        let admission = admission
+            .upgrade()
+            .context("dedicated Control admission closed")?;
+        let _workspace = admission.reserve((MAX_INPUT * 8) as u64, Some(token.clone()))?;
+        let (input, digest) = complete_input(store, database_id, Kind::Data)?;
+        retained::require_dedicated_journal_exclusion(&input, verifier, root)?;
+        token.check()?;
+        Ok(digest)
+    })
+}
+
+/// A completed data enrollment fixes whether this node hosts Control or
+/// reaches one remote Control incarnation. Configuration cannot later move a
+/// data-only node to another Control, or turn either placement into the other.
+pub(crate) fn require_control_placement(
+    store: &Arc<TenantStore>,
+    config: &crate::runtime::RuntimeConfig,
+) -> Result<()> {
+    let view = store.read_view()?;
+    let bytes = view
+        .get(NS, b"input", MAX_INPUT)?
+        .context("node enrollment input absent")?;
+    let input = retained::RetainedInput::decode(&bytes)?;
+    let configured = match (&config.control, &config.remote_control) {
+        (Some(_), None) => retained::ControlPlacement::Hosted,
+        (None, Some(remote)) => retained::ControlPlacement::Remote(remote.root.control_incarnation),
+        _ => anyhow::bail!("configure exactly one Control placement"),
+    };
+    ensure!(
+        input.control_placement()? == configured,
+        "configured Control placement differs from node enrollment"
+    );
+    input.require_backup_placement(config)
 }
 
 fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> Result<()> {
     if let Input::Data { configuration } = input {
-        let control =
-            (configuration.mode == crate::runtime::DeploymentMode::Replicated).then_some((
-                crate::runtime::CONTROL_TENANT,
-                configuration.control.incarnation.as_ref(),
-            ));
+        // A data-only node enrolled no Control replica.
+        let control = configuration
+            .control
+            .as_ref()
+            .filter(|_| configuration.mode == crate::runtime::DeploymentMode::Replicated)
+            .map(|control| (crate::runtime::CONTROL_TENANT, control.incarnation.as_ref()));
         for (tenant, incarnation) in control.into_iter().chain(
             configuration
                 .tenants

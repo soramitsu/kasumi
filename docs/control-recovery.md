@@ -59,6 +59,12 @@ also requires this ordered resolution; expiry alone never proves failure.
 When cleanup is authorized, the coordinator obtains the issuer's permanent target
 stop, commits a separate local cleanup intent, and requests cleanup from each target. `stopped` requires exact signed evidence from all three
 voters, including the complete installed issuer drain and physical verifier set.
+Each target deletes only the storage its original materialization created: the
+target journal binds that directory's path, device/inode and store identity
+before any catalog is initialized. Cleanup refuses any other directory at that
+path, journals `deleting` before the first unlink and `deleted` only after the
+deletion and the parent directory sync, and a repeated request resumes from the
+recorded stage; a recorded deletion is final and never deletes a later directory.
 Target incarnation identities remain bound after cleanup and cannot be reused by
 another operation or configuration alias. A committed activation must proceed
 forward.

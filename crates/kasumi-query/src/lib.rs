@@ -23,15 +23,29 @@ pub use allocation::{
     change_event_clone_bytes, change_feed_page_workspace_bytes, document_clone_bytes,
     document_parts_clone_bytes, query_response_clone_bytes, vec_bytes,
 };
+mod ordered_tuple;
+pub use ordered_tuple::{
+    MAX_ORDERED_TUPLE_BYTES, ORDERED_TUPLE_WINDOW, OrderedTupleWindow, RankedCompound, RankedOwner,
+    ordered_record_tuple, ranked_record_digest,
+};
 mod page;
 use page::PageWriter;
 pub use page::{PageBound, copy_page, copy_page_from_source};
+mod field_postings;
 mod scalar;
+pub use field_postings::{FieldPostingRow, FieldPredicate, FieldValue};
 mod search;
+pub use search::{
+    BuiltTextShard, MAX_SHARD_BYTES, MAX_SHARD_DOCUMENTS, TextShard, TextShardLayout, TextShardSet,
+    TextShardWriter, merge_text_shards, search_shards as search_text_shards,
+};
 mod seek;
 mod select;
 mod structured;
+pub use structured::unique_conflict;
+mod structured_rows;
 pub use seek::SeekPage;
+pub use structured_rows::{StructuredField, StructuredPostings, StructuredRow};
 mod validation;
 
 pub use validation::{check_unique, unique_index_key, validate_collection, validate_document};
@@ -49,7 +63,7 @@ use search::TextSnapshot;
 use select::Selection;
 use structured::{IdSet, Structured};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CollectionIndexes {
     validator: std::sync::Arc<jsonschema::Validator>,
     schema_sha256: [u8; 32],
@@ -58,10 +72,50 @@ struct CollectionIndexes {
     text: Option<Arc<TextSnapshot>>,
 }
 
+impl CollectionIndexes {
+    fn empty(definition: &CollectionDefinition) -> Result<Self> {
+        let (validator, schema_sha256) = validation::validate_definition_and_compile(definition)?;
+        Ok(Self {
+            validator,
+            schema_sha256,
+            definition_sha256: index_input::definition_sha256(definition)?,
+            structured: Structured::empty(definition),
+            text: None,
+        })
+    }
+
+    fn prepare<R: CollectionRecords>(
+        source: &index_input::CheckedRecords<'_, R>,
+    ) -> ReadResult<Self, R::Failure> {
+        let mut indexes = Self::empty(source.definition())?;
+        indexes.structured.build(source, &indexes.validator)?;
+        Ok(indexes)
+    }
+}
+
+mod snapshot_indexes;
+pub use snapshot_indexes::SnapshotIndexBuilder;
+
+/// Where a generation's text indexes live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextResidency {
+    /// A private RAM Tantivy index per text collection, rebuilt or advanced
+    /// with every index update.
+    #[default]
+    Resident,
+    /// Bounded persisted shards owned by the storage engine. No resident text
+    /// index is built or maintained; a search borrows the exact generation's
+    /// shards through [`DocumentSource::with_text_shards`].
+    Directory,
+}
+
 /// Publish only after all structured and text indexes have finished construction.
 #[derive(Debug, Default)]
 pub struct QueryIndexes {
     collections: BTreeMap<String, Arc<CollectionIndexes>>,
+    text_residency: TextResidency,
+    seek_projection: Option<seek::Projection>,
+    structured_layout: std::sync::OnceLock<[u8; 32]>,
 }
 
 /// Persistent primary-ID roots for coherent point/scan leases. This intentionally
@@ -123,10 +177,10 @@ impl QueryIndexes {
     /// A missing collection or changed schema takes the fully checked compiler
     /// path. Index and text constraints always use the supplied definition.
     pub fn schema_validator(&self, definition: &CollectionDefinition) -> Result<SchemaValidator> {
-        let schema_sha256 = validation::schema_sha256(&definition.schema)?;
+        let schema = validation::DigestedSchema::new(&definition.schema)?;
         let validator = match self.collections.get(&definition.name) {
-            Some(indexes) if indexes.schema_sha256 == schema_sha256 => indexes.validator.clone(),
-            _ => validation::compile(&definition.schema)?,
+            Some(indexes) if indexes.schema_sha256 == schema.sha256 => indexes.validator.clone(),
+            _ => validation::compile_digested(&schema)?,
         };
         Ok(SchemaValidator {
             collection: definition.name.clone(),
@@ -148,6 +202,29 @@ impl QueryIndexes {
                 .collect(),
         )
     }
+    /// Stream the two disjoint ID sets for every indexed field. The field
+    /// ordinal follows the same sorted path map used by the planner. An empty
+    /// array or explicit null has a present posting; a missing path has one
+    /// absent posting. No document body is opened during publication.
+    pub fn visit_field_presence<E>(
+        &self,
+        mut emit: impl FnMut(&str, usize, bool, &str) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        for (name, indexes) in &self.collections {
+            for (field, index) in indexes.structured.fields.values().enumerate() {
+                if let Some(absent) = index.entries.get(&Scalar::Missing) {
+                    for id in absent {
+                        emit(name, field, false, id)?;
+                    }
+                }
+                for id in &index.present {
+                    emit(name, field, true, id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Plan bounded candidates using maintained structured indexes without
     /// reading document bodies. Explicit scans are resolved by the service.
     pub fn indexed_candidate_ids<S: DocumentSource + ?Sized, W: QueryWorkspace>(
@@ -195,15 +272,59 @@ impl QueryIndexes {
             128,
         )?)?;
         indexes.structured.validate(&filter, false)?;
-        let candidates = indexes.structured.candidates(
+        if matches!(filter, structured::Node::All) {
+            let baseline = memory.live_bytes();
+            let mut ids = Vec::<String>::new();
+            let mut slots = 0usize;
+            let available = source.visit_primary_ids(cancellation, |id| {
+                cancellation.check()?;
+                if ids.last().is_some_and(|previous| previous.as_str() >= id) {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "unordered primary directory",
+                    ));
+                }
+                structured::check_size(ids.len() + 1, limits.max_query_candidates)?;
+                if ids.len() == slots {
+                    let next = slots
+                        .saturating_mul(2)
+                        .max(32)
+                        .min(limits.max_query_candidates);
+                    // A reallocating result may briefly own both buffers.
+                    memory.reserve(allocation::vec_bytes::<String>(next)?)?;
+                    ids.reserve_exact(next - slots);
+                    memory.release(allocation::vec_bytes::<String>(slots)?)?;
+                    slots = next;
+                }
+                memory.reserve(allocation::string_clone_bytes(id)?)?;
+                ids.push(id.to_owned());
+                Ok(())
+            })?;
+            if available {
+                return Ok((ids, memory.live_bytes() - baseline));
+            }
+            if !ids.is_empty() {
+                return Err(Error::new(ErrorCode::Corruption, "partial primary directory").into());
+            }
+        }
+        let candidates = match indexes.structured.stored_posting(
             source,
             &filter,
-            &indexes.structured.ids,
-            false,
-            false,
             limits.max_query_candidates,
             cancellation,
-        )?;
+            memory,
+        )? {
+            Some(ids) => ids,
+            None => indexes.structured.candidates(
+                source,
+                &filter,
+                &indexes.structured.ids,
+                false,
+                false,
+                limits.max_query_candidates,
+                cancellation,
+            )?,
+        };
         let mut retained = allocation::vec_bytes::<String>(candidates.len())?;
         memory.reserve(retained)?;
         let mut ids = Vec::with_capacity(candidates.len());
@@ -247,6 +368,21 @@ impl QueryIndexes {
     pub fn build<R: CollectionRecords>(
         sources: impl IntoIterator<Item = R>,
     ) -> ReadResult<Self, R::Failure> {
+        Self::build_with_residency(sources, TextResidency::Resident)
+    }
+
+    /// Where this generation's text indexes live.
+    pub fn text_residency(&self) -> TextResidency {
+        self.text_residency
+    }
+
+    /// [`Self::build`] whose text indexes live as `residency` says. A
+    /// directory build validates every definition and body but builds no
+    /// resident text index.
+    pub fn build_with_residency<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure> {
         let sources: Vec<_> = sources.into_iter().collect();
         let mut prepared = Vec::with_capacity(sources.len());
         let mut names = BTreeSet::new();
@@ -258,22 +394,22 @@ impl QueryIndexes {
             if !names.insert(name.clone()) {
                 return Err(invalid("duplicate index collection source").into());
             }
-            let validator = validation::validate_collection_and_compile(&source)?;
-            let indexes = CollectionIndexes {
-                validator,
-                schema_sha256: validation::schema_sha256(&source.definition().schema)?,
-                definition_sha256: index_input::definition_sha256(source.definition())?,
-                structured: Structured::build(&source)?,
-                text: None,
-            };
+            let indexes = CollectionIndexes::prepare(&source)?;
             prepared.push((name, source, indexes));
         }
         let mut collections = BTreeMap::new();
         for (name, source, mut indexes) in prepared {
-            indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+            if residency == TextResidency::Resident {
+                indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+            }
             collections.insert(name, Arc::new(indexes));
         }
-        Ok(Self { collections })
+        Ok(Self {
+            collections,
+            text_residency: residency,
+            seek_projection: None,
+            structured_layout: Default::default(),
+        })
     }
 
     /// Explicit catalog actions. Omitted collections retain their captured
@@ -287,8 +423,43 @@ impl QueryIndexes {
         R: CollectionRecords,
         D: DocumentChanges<Failure = R::Failure>,
     {
+        self.update_with_residency(actions, self.text_residency)
+    }
+
+    /// [`Self::update`] producing indexes whose text lives as `residency`
+    /// says. Resident text can move to a directory, which drops every resident
+    /// text index; a directory generation cannot return to resident text.
+    pub fn update_with_residency<'a, R, D>(
+        &self,
+        actions: impl IntoIterator<Item = IndexUpdate<'a, R, D>>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure>
+    where
+        R: CollectionRecords,
+        D: DocumentChanges<Failure = R::Failure>,
+    {
+        if self.seek_projection.is_some() {
+            return Err(invalid("read-only seek projection cannot be updated").into());
+        }
+        if self.text_residency == TextResidency::Directory && residency == TextResidency::Resident {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "directory text indexes cannot return to resident text",
+            )
+            .into());
+        }
+        let resident = residency == TextResidency::Resident;
         let actions: Vec<_> = actions.into_iter().collect();
         let mut collections = self.collections.clone();
+        if !resident {
+            for indexes in collections.values_mut() {
+                if indexes.text.is_some() {
+                    let mut moved = CollectionIndexes::clone(indexes);
+                    moved.text = None;
+                    *indexes = Arc::new(moved);
+                }
+            }
+        }
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
         let mut claim_name = |name: &str| -> Result<String> {
@@ -316,13 +487,7 @@ impl QueryIndexes {
                 IndexUpdate::Rebuild(source) => {
                     let source = index_input::CheckedRecords::new(source)?;
                     let name = claim_name(&source.definition().name)?;
-                    let indexes = CollectionIndexes {
-                        validator: validation::validate_collection_and_compile(&source)?,
-                        schema_sha256: validation::schema_sha256(&source.definition().schema)?,
-                        definition_sha256: index_input::definition_sha256(source.definition())?,
-                        structured: Structured::build(&source)?,
-                        text: None,
-                    };
+                    let indexes = CollectionIndexes::prepare(&source)?;
                     prepared.push(PreparedIndexCollection {
                         name,
                         indexes,
@@ -345,15 +510,19 @@ impl QueryIndexes {
                     })?;
                     let structured = previous.structured.update(&source)?;
                     let text_changed = match &previous.text {
-                        Some(text) => text.fields_changed(&source)?,
-                        None => false,
+                        Some(text) if resident => text.fields_changed(&source)?,
+                        _ => false,
                     };
                     let indexes = CollectionIndexes {
                         validator: previous.validator.clone(),
                         schema_sha256: previous.schema_sha256,
                         definition_sha256: previous.definition_sha256,
                         structured,
-                        text: previous.text.clone(),
+                        text: if resident {
+                            previous.text.clone()
+                        } else {
+                            None
+                        },
                     };
                     prepared.push(PreparedIndexCollection {
                         name,
@@ -376,7 +545,9 @@ impl QueryIndexes {
         {
             match input {
                 PreparedIndexInput::Rebuild(source) => {
-                    indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+                    if resident {
+                        indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+                    }
                 }
                 PreparedIndexInput::Delta {
                     source,
@@ -395,7 +566,12 @@ impl QueryIndexes {
             }
             collections.insert(name, Arc::new(indexes));
         }
-        Ok(Self { collections })
+        Ok(Self {
+            collections,
+            text_residency: residency,
+            seek_projection: None,
+            structured_layout: Default::default(),
+        })
     }
 
     fn delta_indexes<D: DocumentChanges + ?Sized>(
@@ -427,6 +603,9 @@ impl QueryIndexes {
         &self,
         sources: impl IntoIterator<Item = D>,
     ) -> ReadResult<(), D::Failure> {
+        if self.seek_projection.is_some() {
+            return Err(invalid("read-only seek projection cannot validate writes").into());
+        }
         for source in sources {
             let source = index_input::CheckedChanges::new(&source)?;
             self.delta_indexes(&source)?
@@ -618,19 +797,42 @@ impl QueryIndexes {
             aggregate_kinds.push(kind);
         }
 
-        let scores = request
-            .search
-            .as_ref()
-            .map(|search| {
-                indexes
-                    .text
-                    .as_ref()
-                    .ok_or_else(|| {
-                        Error::new(ErrorCode::IndexRequired, "collection has no text index")
-                    })?
-                    .search(search, limits.max_query_candidates, cancellation)
-            })
-            .transpose()?;
+        let scores = match &request.search {
+            None => None,
+            Some(search) => Some(match &indexes.text {
+                Some(text) => text.search(search, limits.max_query_candidates, cancellation)?,
+                None if self.text_residency == TextResidency::Directory
+                    && source
+                        .definition()
+                        .indexes
+                        .iter()
+                        .any(|index| index.text.is_some()) =>
+                {
+                    source
+                        .with_text_shards(|shards| {
+                            search::search_shards(
+                                shards,
+                                search,
+                                limits.max_query_candidates,
+                                cancellation,
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorCode::Unavailable,
+                                "persisted text directory is not current at this generation",
+                            )
+                        })?
+                }
+                None => {
+                    return Err(Error::new(
+                        ErrorCode::IndexRequired,
+                        "collection has no text index",
+                    )
+                    .into());
+                }
+            }),
+        };
         let text_ids = scores
             .as_ref()
             .map(|scores| -> Result<IdSet> {
@@ -643,15 +845,29 @@ impl QueryIndexes {
             })
             .transpose()?;
         let universe = text_ids.as_ref().unwrap_or(&structured.ids);
-        let candidates = structured.candidates(
-            source,
-            &filter,
-            universe,
-            request.allow_scan,
-            true,
-            limits.max_query_candidates,
-            cancellation,
-        )?;
+        let disk_ids = if text_ids.is_none() {
+            structured.stored_posting(
+                source,
+                &filter,
+                limits.max_query_candidates,
+                cancellation,
+                memory,
+            )?
+        } else {
+            None
+        };
+        let candidates = match disk_ids {
+            Some(ids) => ids,
+            None => structured.candidates(
+                source,
+                &filter,
+                universe,
+                request.allow_scan,
+                true,
+                limits.max_query_candidates,
+                cancellation,
+            )?,
+        };
         if request.is_aggregate() {
             let (response, retained) = aggregate(
                 source,
@@ -1316,7 +1532,7 @@ fn group_value(key: Scalar, kind: Option<ScalarType>) -> Result<Option<Value>> {
         Scalar::Missing => None,
         Scalar::Null => Some(Value::Null),
         Scalar::Boolean(value) => Some(Value::Bool(value)),
-        Scalar::String(value) => Some(Value::String(value)),
+        Scalar::String(value) => Some(Value::String(value.into_string())),
         Scalar::UpperBound => return Err(invalid("internal bound cannot be a stored value")),
         Scalar::Number(value) => Some(numeric_value(&value, kind)?),
     })

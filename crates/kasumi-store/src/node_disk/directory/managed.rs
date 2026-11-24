@@ -748,7 +748,16 @@ impl NodeDiskDirectory {
     /// before the first descriptor acquisition. This does not admit a multipart
     /// caller operation.
     pub fn create_child(&self, name: &CStr, work: DiskWork) -> io::Result<Self> {
-        self.create_child_with_admission(name, work, None)
+        self.create_child_with_admission(name, work, None, None)
+    }
+
+    /// Stamp the exclusive materialization directory before its extent is
+    /// observed and before the admitted child and parent syncs.
+    pub(crate) fn create_target_child(&self, name: &CStr, stamp: uuid::Uuid) -> io::Result<Self> {
+        if stamp.is_nil() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.create_child_with_admission(name, DiskWork::Foreground, None, Some(stamp))
     }
 
     pub(crate) fn create_admitted_child(
@@ -760,7 +769,7 @@ impl NodeDiskDirectory {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let work = admission.work(&self.owner().disk.lock_state())?;
-        let result = self.create_child_with_admission(name, work, Some(admission));
+        let result = self.create_child_with_admission(name, work, Some(admission), None);
         if result.is_err() {
             self.owner().disk.fail();
         }
@@ -772,6 +781,7 @@ impl NodeDiskDirectory {
         name: &CStr,
         work: DiskWork,
         admission: Option<&mut super::super::batch::NamespaceAdmission>,
+        stamp: Option<uuid::Uuid>,
     ) -> io::Result<Self> {
         let owner = self.owner();
         let disk = &owner.disk;
@@ -801,7 +811,7 @@ impl NodeDiskDirectory {
                 .plan
                 .expect("create plan")
                 .activate(effect);
-            create_effect(disk, effect)
+            create_effect(disk, effect, stamp)
         });
         finish_result(disk, &mut effect, result)
     }
@@ -1265,7 +1275,11 @@ fn operation_absent(state: &mut State) -> io::Result<()> {
     Ok(())
 }
 
-fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDiskDirectory> {
+fn create_effect(
+    disk: &Arc<NodeDisk>,
+    state: &mut State,
+    stamp: Option<uuid::Uuid>,
+) -> io::Result<NodeDiskDirectory> {
     use NodeDiskDirectoryOperationStep as Step;
     step(state, Step::Mkdir)?;
     let operation = state
@@ -1293,6 +1307,9 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
         operation.name(),
         libc::O_RDONLY | libc::O_DIRECTORY,
     )?);
+    if let Some(stamp) = stamp {
+        super::target_stamp::create(operation.child.as_ref().expect("opened child"), stamp)?;
+    }
     step(state, Step::ObserveChild)?;
     record_child(disk, state)?;
     step(state, Step::SyncChild)?;
@@ -1331,27 +1348,8 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
         .as_ref()
         .expect("retained child")
         .metadata()?;
-    let entry = state.accounted[&operation.identity.expect("recorded child")]
-        .directory()
-        .expect("recorded child");
-    if metadata.len() != entry.len
-        || census::directory_extent(&metadata)? != entry.bytes - entry.pending
-    {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    settle_parent(disk, state)?;
-    let identity = state
-        .pending_directory
-        .as_ref()
-        .expect("retained operation")
-        .identity
-        .expect("observed child");
-    state
-        .accounted
-        .get_mut(&identity)
-        .and_then(AccountedInode::directory_mut)
-        .expect("observed child")
-        .settled = true;
+    let identity = operation.identity.expect("recorded child");
+    settle_parent(disk, state, Some((identity, metadata)))?;
     Ok(publish_child(disk, state))
 }
 fn publish_child(disk: &Arc<NodeDisk>, state: &mut State) -> NodeDiskDirectory {
@@ -1457,7 +1455,11 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     }
     Ok(())
 }
-fn settle_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
+fn settle_parent(
+    disk: &NodeDisk,
+    state: &mut State,
+    created: Option<(Identity, std::fs::Metadata)>,
+) -> io::Result<()> {
     step(state, NodeDiskDirectoryOperationStep::Settle)?;
     let operation = state
         .pending_directory
@@ -1467,10 +1469,11 @@ fn settle_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         operation.parent.identity(),
         operation.parent.file().metadata()?,
     );
-    operation
-        .plan
-        .expect("mutation plan")
-        .settle_observed(disk, state, [Some(observation), None])
+    let plan = operation.plan.expect("mutation plan");
+    match created {
+        Some(child) => plan.settle_created_child(disk, state, observation, child),
+        None => plan.settle_observed(disk, state, [Some(observation), None]),
+    }
 }
 fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) -> io::Result<()> {
     use NodeDiskDirectoryOperationStep as Step;
@@ -1533,7 +1536,7 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
     if absence.kind() != io::ErrorKind::NotFound {
         return Err(absence);
     }
-    settle_parent(disk, state)?;
+    settle_parent(disk, state, None)?;
     let bytes = state
         .bytes
         .checked_sub(entry.bytes)

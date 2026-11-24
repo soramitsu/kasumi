@@ -39,7 +39,7 @@ impl Observation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ActivationProjection {
-    intent: TargetJournalIntent,
+    pub(super) intent: TargetJournalIntent,
     authority: AuthorityManifest,
     original_lease: SignedLifecycleLease,
     observation: Observation,
@@ -48,7 +48,7 @@ pub(super) struct ActivationProjection {
 #[serde(deny_unknown_fields)]
 pub(super) struct ServingCandidate {
     tenant: String,
-    incarnation: Uuid,
+    pub(super) incarnation: Uuid,
     source_epoch: u64,
     projection_sha256: String,
 }

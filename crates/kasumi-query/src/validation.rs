@@ -1,4 +1,6 @@
-use crate::scalar::{Scalar, decimal, indexed_values, invalid, validate_pointer};
+use crate::scalar::{
+    Scalar, decimal, indexed_values, invalid, validate_indexed_values, validate_pointer,
+};
 use crate::{
     CollectionRecords, ReadResult, Record, index_input::CheckedRecords, structured::Structured,
 };
@@ -7,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
@@ -40,12 +43,46 @@ pub(crate) fn schema_digest_count() -> usize {
     SCHEMA_DIGESTS.with(std::cell::Cell::get)
 }
 
-pub(crate) fn schema_sha256(schema: &Value) -> Result<[u8; 32]> {
-    #[cfg(test)]
-    SCHEMA_DIGESTS.with(|count| count.set(count.get() + 1));
-    serde_json::to_vec(schema)
-        .map(|encoded| Sha256::digest(encoded).into())
-        .map_err(|e| invalid(e.to_string()))
+#[derive(Default)]
+struct SchemaWriter {
+    hash: Sha256,
+    bytes: usize,
+}
+
+impl io::Write for SchemaWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > MAX_SCHEMA_BYTES - self.bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "schema exceeds 256 KiB",
+            ));
+        }
+        self.hash.update(bytes);
+        self.bytes += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) struct DigestedSchema<'a> {
+    value: &'a Value,
+    pub(crate) sha256: [u8; 32],
+}
+
+impl<'a> DigestedSchema<'a> {
+    pub(crate) fn new(value: &'a Value) -> Result<Self> {
+        #[cfg(test)]
+        SCHEMA_DIGESTS.with(|count| count.set(count.get() + 1));
+        let mut digest = SchemaWriter::default();
+        serde_json::to_writer(&mut digest, value).map_err(|e| invalid(e.to_string()))?;
+        Ok(Self {
+            value,
+            sha256: digest.hash.finalize().into(),
+        })
+    }
 }
 
 fn inspect(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
@@ -220,13 +257,16 @@ impl jsonschema::Retrieve for NoExternalResources {
 }
 
 pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
-    let encoded = serde_json::to_vec(schema).map_err(|e| invalid(e.to_string()))?;
-    if encoded.len() > MAX_SCHEMA_BYTES {
-        return Err(invalid("schema exceeds 256 KiB"));
-    }
+    compile_digested(&DigestedSchema::new(schema)?)
+}
+
+pub(crate) fn compile_digested(
+    digested: &DigestedSchema<'_>,
+) -> Result<Arc<jsonschema::Validator>> {
+    let schema = digested.value;
+    let key = digested.sha256;
     inspect(schema, 0, &mut 0)?;
     inspect_schema(schema)?;
-    let key: [u8; 32] = Sha256::digest(encoded).into();
     // The cache never owns tenant schema plaintext. Published generations hold
     // validators strongly; sealing/dropping them releases enum/const literals too.
     static CACHE: OnceLock<Mutex<BTreeMap<[u8; 32], Weak<jsonschema::Validator>>>> =
@@ -304,7 +344,7 @@ fn validate_document_fields(
     })?;
     for index in &definition.indexes {
         for field in &index.fields {
-            indexed_values(body.pointer(&field.path), field.kind).map_err(|e| {
+            validate_indexed_values(body.pointer(&field.path), field.kind).map_err(|e| {
                 Error::new(
                     ErrorCode::SchemaViolation,
                     format!("{}: {}", field.path, e.message),
@@ -328,7 +368,7 @@ pub fn validate_collection<R: CollectionRecords + ?Sized>(
 pub(crate) fn validate_collection_and_compile<R: CollectionRecords + ?Sized>(
     source: &R,
 ) -> ReadResult<Arc<jsonschema::Validator>, R::Failure> {
-    let validator = validate_definition_and_compile(source.definition())?;
+    let (validator, _) = validate_definition_and_compile(source.definition())?;
     source.visit_records(|_, record| {
         if let Record::Live(document) = record {
             validate_document_with_validator(source.definition(), &document.body, &validator)?;
@@ -340,14 +380,15 @@ pub(crate) fn validate_collection_and_compile<R: CollectionRecords + ?Sized>(
 
 pub(crate) fn validate_definition_and_compile(
     definition: &CollectionDefinition,
-) -> Result<Arc<jsonschema::Validator>> {
+) -> Result<(Arc<jsonschema::Validator>, [u8; 32])> {
     validate_name(&definition.name)?;
     if definition.retention_class == CollectionRetentionClass::ArchivableHistory
         && definition.write_mode != CollectionWriteMode::AppendOnly
     {
         return Err(invalid("archivable history must be append-only"));
     }
-    let validator = compile(&definition.schema)?;
+    let schema = DigestedSchema::new(&definition.schema)?;
+    let validator = compile_digested(&schema)?;
     if definition.indexes.len() > 64 {
         return Err(invalid("a collection supports at most 64 indexes"));
     }
@@ -392,7 +433,7 @@ pub(crate) fn validate_definition_and_compile(
             return Err(invalid("text indexes cannot be unique"));
         }
     }
-    Ok(validator)
+    Ok((validator, schema.sha256))
 }
 
 pub fn check_unique<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<(), R::Failure> {
@@ -422,7 +463,7 @@ pub fn unique_index_key(index: &IndexDefinition, body: &Value) -> Result<Option<
             Scalar::Null => serde_json::json!(["null"]),
             Scalar::Boolean(value) => serde_json::json!(["boolean", value]),
             Scalar::Number(value) => serde_json::json!(["number", value.normalized().to_string()]),
-            Scalar::String(value) => serde_json::json!(["string", value]),
+            Scalar::String(value) => serde_json::json!(["string", &*value]),
             Scalar::UpperBound => return Err(invalid("internal bound cannot be an indexed value")),
         };
         key.push(encoded);

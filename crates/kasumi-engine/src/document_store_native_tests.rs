@@ -663,7 +663,6 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     let files = fixture.image.disk().snapshot().live_files;
     let empty = crate::document_restore::StagedDocuments::empty(
         fixture.image.disk(),
-        128 << 20,
         TENANT,
         &incarnation(),
     )?;
@@ -702,6 +701,7 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
 fn reopening(
     fixture: &Fixture,
     documents: &[&Document],
+    resident_names: usize,
 ) -> crate::test_fixture_failure::FixtureResult<crate::document_restore::StagedDocuments> {
     let mut builder = crate::document_restore::Builder::new(
         fixture.image.disk(),
@@ -710,6 +710,7 @@ fn reopening(
         &incarnation(),
     )?;
     builder.compare_published(fixture.stores.application(), TENANT, &incarnation())?;
+    builder.limit_resident_names_for_test(resident_names);
     for document in documents {
         builder.push(document)?;
     }
@@ -744,7 +745,7 @@ async fn document_store_native_reopen_compares_published_objects_instead_of_stag
 
     // Its own snapshot names only published objects: nothing is staged, and
     // both documents load from the rows the decode compared.
-    let reopened = reopening(&fixture, &[&first, &second])?;
+    let reopened = reopening(&fixture, &[&first, &second], 1)?;
     assert!(reopened.reads_published());
     assert_eq!(reopened.object_counts()?, (0, 0));
     assert_eq!(first_descriptor.load(&reopened)?.as_ref(), &first);
@@ -771,11 +772,14 @@ async fn document_store_native_reopen_compares_published_objects_instead_of_stag
         WriteOp::put(damaged_namespace, damaged.clone(), b"damaged".to_vec()),
         WriteOp::delete(missing_namespace, missing.clone()),
     ])?;
-    let repaired = reopening(&fixture, &[&first, &second])?;
+    // An entirely disk-backed name set must repair both original objects.
+    let repaired = reopening(&fixture, &[&first, &second], 0)?;
     let (bodies, blobs) = repaired.object_counts()?;
     assert_eq!(bodies + blobs, 2);
     assert_eq!(first_descriptor.load(&repaired)?.as_ref(), &first);
     assert_eq!(second_descriptor.load(&repaired)?.as_ref(), &second);
+    repaired.write_missing(store)?;
+    assert_eq!(published_objects(store)?, expected);
     repaired.reconcile(store)?;
     assert_eq!(published_objects(store)?, expected);
 
@@ -785,7 +789,7 @@ async fn document_store_native_reopen_compares_published_objects_instead_of_stag
         WriteOp::put(damaged_namespace, damaged.clone(), b"changed".to_vec()),
         WriteOp::delete(missing_namespace, missing.clone()),
     ] {
-        let decoded = reopening(&fixture, &[&first, &second])?;
+        let decoded = reopening(&fixture, &[&first, &second], 0)?;
         assert_eq!(decoded.object_counts()?, (0, 0));
         store.write_batch(&[change])?;
         let error = decoded
@@ -811,11 +815,16 @@ async fn document_store_native_reopen_compares_published_objects_instead_of_stag
     other.write_missing(store)?;
     assert!(third_descriptor.load(&reopened).is_err());
     assert!(!reopened.contains(&third_descriptor)?);
-    // A reopened decode keeps its own scope and store.
+    // The selected owner rejects another incarnation even on the same store.
     assert!(
-        reopened
-            .rebind_scope(TENANT, "another-incarnation")
-            .is_err()
+        crate::document_restore::BootstrapDocuments::new(
+            reopened.clone(),
+            fixture.roots.clone(),
+            fixture.select()?,
+            TENANT,
+            "another-incarnation",
+        )
+        .is_err()
     );
     let mut foreign = crate::document_restore::Builder::new(
         fixture.image.disk(),
@@ -1302,11 +1311,26 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     assert!(staged.contains(&old_descriptor)?);
     assert_eq!(old_descriptor.load(&old_owner)?.as_ref(), &old);
     let target_incarnation = uuid::Uuid::from_u128(74).to_string();
-    let rebound = staged.rebind_scope(TENANT, &target_incarnation)?;
-    assert_eq!(rebound.object_value_bytes()?, staged.object_value_bytes()?);
-    assert_eq!(old_descriptor.load(&rebound)?.as_ref(), &old);
-    assert_eq!(old_descriptor.load(&staged)?.as_ref(), &old);
-    drop(rebound);
+    let mut target = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &target_incarnation,
+    )?;
+    assert_eq!(target.push(&old)?, old_descriptor);
+    let target = target.finish()?;
+    assert_eq!(target.object_value_bytes()?, staged.object_value_bytes()?);
+    assert_eq!(old_descriptor.load(&target)?.as_ref(), &old);
+    assert!(
+        crate::document_restore::BootstrapDocuments::new(
+            target,
+            fixture.roots.clone(),
+            bootstrap.clone(),
+            TENANT,
+            &incarnation(),
+        )
+        .is_err()
+    );
 
     let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
     let new_descriptor = prepared.stage(&new)?;
@@ -1347,7 +1371,7 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     assert_eq!(new_descriptor.load(&empty_owner)?.as_ref(), &new);
     drop(empty_owner);
     staged.corrupt_first_blob_for_test()?;
-    assert!(staged.rebind_scope(TENANT, &target_incarnation).is_err());
+    assert!(old_descriptor.load(&staged).is_err());
     assert!(staged.contains(&old_descriptor)?);
     assert!(old_descriptor.load(&current_owner).is_err());
     assert_eq!(old_descriptor.load(&native)?.as_ref(), &old);
@@ -1641,3 +1665,6 @@ async fn document_store_native_bootstrap_shared_read_uses_one_selected_reader()
     drop(bootstrap);
     fixture.close().await
 }
+
+#[path = "document_gc_native_tests.rs"]
+mod collection;

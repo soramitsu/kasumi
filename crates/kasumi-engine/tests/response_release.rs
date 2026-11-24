@@ -128,6 +128,9 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
             .code,
         ErrorCode::Forbidden
     );
+    // The denial's durable audit already replied. Its retained join metadata
+    // must leave the only execution slot available for the next request.
+    assert_eq!(admission.snapshot().inflight_operations, 0);
 
     database
         .administer(context.clone(), Operation::SetPolicy(policy))

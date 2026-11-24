@@ -1,5 +1,49 @@
 use super::*;
 
+#[test]
+fn document_measurement_preserves_exact_work_hash_and_enclosing_depth() {
+    let mut nested = serde_json::Value::Null;
+    for _ in 0..127 {
+        nested = serde_json::Value::Array(vec![nested]);
+    }
+    for body in [
+        serde_json::Value::Null,
+        serde_json::json!(false),
+        serde_json::json!(-12345.125),
+        serde_json::json!("x".repeat(62)),
+        serde_json::json!("x".repeat(63)),
+        serde_json::json!({"escaped\"\\":"安全\r\n", "values":vec![0u8; 500]}),
+        serde_json::json!("a".repeat(65536)),
+        nested.clone(),
+    ] {
+        let doc = Document {
+            id: "quoted\"\\名".into(),
+            version: u64::MAX,
+            body,
+        };
+        let wire = serde_json::to_vec(&CanonicalJsonValue(&doc.body)).unwrap();
+        let frame = serde_json::to_vec(&doc).unwrap();
+        let mut digest = Sha256::new();
+        let (body, document) = measure_document_json(&doc, |bytes| digest.update(bytes)).unwrap();
+        assert_eq!(
+            body,
+            (wire.len() as u64, record_work::measure(&wire).unwrap())
+        );
+        assert_eq!(
+            document,
+            (frame.len() as u64, record_work::measure(&frame).unwrap())
+        );
+        assert_eq!(digest.finalize(), Sha256::digest(&wire));
+    }
+    let too_deep = Document {
+        id: "boundary".into(),
+        version: 0,
+        body: serde_json::Value::Array(vec![nested]),
+    };
+    assert!(measure_typed_json(&too_deep, |_| {}).is_err());
+    assert!(measure_document_json(&too_deep, |_| {}).is_err());
+}
+
 fn raw(records: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     for (kind, record) in records {
@@ -18,6 +62,40 @@ fn raw(records: &[(u8, Vec<u8>)]) -> Vec<u8> {
 
 fn header() -> Vec<u8> {
     serde_json::to_vec(&Record::Header(Box::new(super::tests::state()))).unwrap()
+}
+
+#[test]
+fn chunked_inspection_authenticates_split_frames_and_rejects_incomplete_or_trailing_bytes() {
+    let document = Record::Document(
+        "rows".into(),
+        kasumi_types::OwnedDocument::Pending(Arc::new(Document {
+            id: "one".into(),
+            version: 1,
+            body: serde_json::json!({"proof": "a\"\\b".repeat(8192)}),
+        })),
+    );
+    let bytes = raw(&[(0, header()), (3, serde_json::to_vec(&document).unwrap())]);
+    let expected = visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| Ok(())).unwrap();
+    for width in [1, 7, 8, 9, 47, 48, 4096, 64 << 10] {
+        let mut inspector = StreamInspector::new();
+        for chunk in bytes.chunks(width) {
+            inspector.push(chunk).unwrap();
+        }
+        assert_eq!(inspector.finish().unwrap(), expected);
+    }
+    for end in [0, 7, 8, 16, 17, bytes.len() - 48, bytes.len() - 1] {
+        let mut inspector = StreamInspector::new();
+        inspector.push(&bytes[..end]).unwrap();
+        assert!(inspector.finish().is_err());
+    }
+    let mut inspector = StreamInspector::new();
+    inspector.push(&bytes).unwrap();
+    assert!(inspector.push(b"x").is_err());
+    assert!(inspector.finish().is_err());
+    let mut inspector = StreamInspector::new();
+    inspector.push(&bytes[..bytes.len() - 1]).unwrap();
+    assert!(inspector.push(&[bytes[bytes.len() - 1] ^ 1]).is_err());
+    assert!(inspector.finish().is_err());
 }
 
 #[test]

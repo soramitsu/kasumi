@@ -21,11 +21,46 @@ struct Fixture {
     control_key: ring::signature::Ed25519KeyPair,
 }
 impl Fixture {
+    fn dispatch(
+        &self,
+        journal: &Arc<TargetJournal>,
+        root: &ControlSigningRoot,
+        phase: &kasumi_types::RecoveryPhaseRecord,
+        intent: &LifecycleIntent,
+        request: &kasumi_types::TargetRuntimeRequest,
+    ) -> Result<InitialDispatchReservation> {
+        match journal.reserve_initial_dispatch(root, phase, intent, request) {
+            Err(error) if error.is::<MissingTargetWriter>() => {
+                let read = journal.begin_writer_read()?;
+                let observation = kasumi_types::TargetWriterObservation {
+                    challenge: read.challenge().clone(),
+                    observed_term: 1,
+                    observed_revision: 1,
+                    membership_epoch: 1,
+                    observed_policy_epoch: 1,
+                    retirements: Default::default(),
+                };
+                let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation))?;
+                let signature = hex::encode(self.control_key.sign(&bytes).as_ref());
+                let writer = read.admit(&kasumi_types::SignedTargetWriterObservation {
+                    observation,
+                    signature,
+                })?;
+                journal.reserve_observed_initial_dispatch(root, phase, intent, request, &writer)
+            }
+            result => result,
+        }
+    }
     async fn new() -> Result<Self> {
+        Self::with_provider(Arc::new(LocalKeyProvider::new([39; 32]))).await
+    }
+
+    async fn with_provider(provider: Arc<LocalKeyProvider>) -> Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let control_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[71; 32])
             .map_err(|_| anyhow::anyhow!("fixture Control signing key failed"))?;
         let installed = TargetJournalInstallation {
+            source_key_bindings_sha256: None,
             root: ControlSigningRoot {
                 control_incarnation: Uuid::new_v4(),
                 public_key: hex::encode(control_key.public_key().as_ref()),
@@ -76,7 +111,7 @@ impl Fixture {
         let store = TenantStore::initialize_catalog(
             node.clone(),
             format!("kasumi.target.{}.1", installed.root.control_incarnation),
-            Arc::new(LocalKeyProvider::new([39; 32])),
+            provider,
             StorageAccess::target_journal(&installed.root, &installed.node)?,
         )
         .await?;
@@ -138,6 +173,13 @@ impl Fixture {
             observed_revision: lifecycle.revision,
             observed_term: 1,
         };
+        self.sign_control_observation(observation)
+    }
+
+    fn sign_control_observation(
+        &self,
+        observation: kasumi_types::ControlIntentCommitment,
+    ) -> Result<kasumi_serving::VerifiedControlIntent> {
         let signed = kasumi_types::SignedControlIntent {
             signature: hex::encode(
                 self.control_key
@@ -378,8 +420,7 @@ async fn first_dispatch_rejects_a_tenant_outside_the_installed_placement_roster(
     let original = f.store.scan(NS)?;
     let (lifecycle, phase, request) = initial_dispatch(&f, true)?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     assert_eq!(f.store.scan(NS)?, original);
@@ -438,7 +479,8 @@ async fn current_head_requires_exact_current_json_bytes() -> Result<()> {
 
 #[tokio::test]
 async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain() -> Result<()> {
-    let f = Fixture::new().await?;
+    let mut f = Fixture::new().await?;
+    f.installed.source_key_bindings_sha256 = Some("ab".repeat(32));
     let journal = f.create()?;
     let original = f.store.get(NS, b"metadata")?.unwrap();
     journal.shutdown().await.unwrap();
@@ -478,6 +520,25 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
         StorageAccess::target_journal(&installed.root, &installed.node)?,
     )
     .await?;
+    for binding in [None, Some("cd".repeat(32))] {
+        let mut altered = installed.clone();
+        altered.source_key_bindings_sha256 = binding;
+        assert!(
+            TargetJournal::open_existing(
+                store.clone(),
+                altered,
+                TargetJournalLimits {
+                    max_metadata_bytes: 4 << 20
+                },
+                admission.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.get(NS, b"metadata")?.as_deref(),
+            Some(original.as_bytes())
+        );
+    }
     let journal = TargetJournal::open_existing(
         store.clone(),
         installed,
@@ -832,11 +893,30 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         let f = Fixture::new().await?;
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, initialize)?;
+        assert!(
+            matches!(journal.reserve_initial_dispatch(&f.installed.root,&phase,&lifecycle,&request),Err(error) if error.is::<MissingTargetWriter>())
+        );
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no candidate")
         };
+        let mut checkpoints = Vec::new();
+        journal.visit_key_dependencies(
+            &kasumi_query::QueryCancellation::default(),
+            |_| Ok(()),
+            |id, checkpoint| {
+                checkpoints.push((id, checkpoint.clone()));
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            checkpoints,
+            [(
+                lifecycle.request.target_incarnation,
+                lifecycle.request.checkpoint.clone()
+            )]
+        );
         let membership = candidate
             .verify_initial_membership(f.installed.node.node_id, LifecyclePhase::Initialize)?;
         let expected: std::collections::BTreeMap<u64, String> = (1..=3)
@@ -847,7 +927,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         assert_eq!(membership.bootstrap_sha256(), bootstrap_sha256.as_str());
         assert_eq!(membership.prebind().identity().phase_id, phase.phase_id);
         assert!(matches!(
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
             Decision::ExistingStatusOnly
         ));
     }
@@ -857,7 +937,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no candidate")
         };
@@ -900,7 +980,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         .input_sha256 = phase.input_sha256.clone();
     phase.validate()?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("changed signed dispatch returned no candidate")
     };
@@ -923,7 +1003,7 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     let journal = f.create()?;
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("signed first dispatch returned no one-use candidate")
     };
@@ -982,7 +1062,7 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
         expected
     );
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
 
@@ -1004,7 +1084,8 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     // A second valid signed dispatch can reserve a different phase, but its
     // candidate cannot survive substitution of its accepted canonical row.
     let (later_lifecycle, later_phase, later_request) = signed_initial_dispatch(&f, true)?;
-    let Decision::NewlyAccepted(later) = journal.reserve_initial_dispatch(
+    let Decision::NewlyAccepted(later) = f.dispatch(
+        &journal,
         &f.installed.root,
         &later_phase,
         &later_lifecycle,
@@ -1079,7 +1160,7 @@ async fn first_prebind_rejects_partial_or_competing_raft_identity_without_repair
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
         let Decision::NewlyAccepted(candidate) =
-            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+            f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
         else {
             anyhow::bail!("signed first dispatch returned no one-use candidate")
         };
@@ -1132,7 +1213,7 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1235,7 +1316,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1296,7 +1377,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
         after
     );
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     drop(journal);
@@ -1324,7 +1405,7 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let control = f.verified_control(&lifecycle)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
@@ -1539,7 +1620,8 @@ async fn marked_initial_dispatch_requires_exact_phase_attempt_and_lifecycle() ->
 
 #[tokio::test]
 async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() -> Result<()> {
-    let f = Fixture::new().await?;
+    let provider = Arc::new(LocalKeyProvider::new([39; 32]));
+    let f = Fixture::with_provider(provider.clone()).await?;
     let journal = f.create()?;
     let (mut lifecycle, _, _) = initial_dispatch(&f, true)?;
     let partition = ControlAuthorityPartition {
@@ -1560,6 +1642,28 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
     };
     journal.validate_intent(&intent)?;
     let binding = GenerationBinding::from_intent(&intent);
+    let token = kasumi_query::QueryCancellation::default();
+    let mut catalogs = Vec::new();
+    journal.visit_key_dependencies(
+        &token,
+        |row| {
+            ensure!(
+                matches!(
+                    row.reference,
+                    kasumi_types::KeyReference::Catalog {
+                        node_id: 1,
+                        domain: kasumi_types::KeyCatalogDomain::TargetJournal,
+                        ..
+                    }
+                ),
+                "empty journal returned an unowned reference"
+            );
+            catalogs.push(row.key);
+            Ok(())
+        },
+        |_, _| anyhow::bail!("empty journal returned a checkpoint"),
+    )?;
+    assert!(!catalogs.is_empty());
     let intent_key = intent_key(intent.intent.request.command_id);
     let generation_key = generation_key(&binding.tenant, binding.target_incarnation);
     let intent_bytes = serde_json::to_vec(&intent)?;
@@ -1572,17 +1676,76 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
         + generation_bytes.len() as u64
         + GENERATION_RESERVE;
     let head_bytes = serde_json::to_vec(&head)?;
+    write_plaintext_copy_for_fixture(&f.store, NS, &intent_key, &intent_bytes)?;
+    assert_eq!(provider.rotate(), 2);
+    f.store.rotate_data_key().await?;
     FixtureWriteBatch::prepare(
         &f.store,
         &[
-            FixtureWrite::Put(NS, &intent_key, &intent_bytes),
             FixtureWrite::Put(NS, &generation_key, &generation_bytes),
             FixtureWrite::Put(NS, b"metadata", &head_bytes),
         ],
     )?
     .write(&f.store)?;
     drop(journal);
-    drop(f.reopen()?);
+    let reopened = f.reopen()?;
+    let mut dependencies = Vec::new();
+    let mut record_keys = Vec::new();
+    let authenticated = reopened.visit_key_dependencies(
+        &token,
+        |row| {
+            if let kasumi_types::KeyReference::TargetJournal {
+                node_id,
+                incarnation,
+            } = row.reference
+            {
+                ensure!(
+                    node_id == 1 && incarnation == binding.target_incarnation,
+                    "unrelated journal reference"
+                );
+                record_keys.push(row.key);
+            }
+            Ok(())
+        },
+        |id, checkpoint| {
+            dependencies.push((id, checkpoint.clone()));
+            Ok(())
+        },
+    )?;
+    assert_eq!(
+        dependencies,
+        [(binding.target_incarnation, binding.checkpoint)]
+    );
+    assert_eq!(record_keys.len(), 2);
+    assert_eq!(
+        record_keys
+            .iter()
+            .map(|key| key.version)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [1, 2].into()
+    );
+    assert!(record_keys.iter().any(|key| catalogs.contains(key)));
+    let original = f.store.get(NS, b"metadata")?.unwrap();
+    let mut false_head = head.clone();
+    false_head.generations = 0;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &serde_json::to_vec(&false_head)?)?;
+    assert!(
+        reopened
+            .visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))
+            .is_err()
+    );
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original.as_bytes())?;
+    assert_eq!(
+        reopened.visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))?,
+        authenticated
+    );
+    token.cancel();
+    assert!(
+        reopened
+            .visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))
+            .is_err()
+    );
+    drop(reopened);
 
     for (key, original) in [
         (intent_key, intent_bytes),
@@ -1698,8 +1861,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
             .read_initial_dispatch_status(&f.installed.root, &wrong_digest, &request)
             .is_err()
     );
-    let first =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?;
+    let first = f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?;
     let Decision::NewlyAccepted(prebind) = first else {
         anyhow::bail!("first exact dispatch did not return a one-use prebind")
     };
@@ -1747,13 +1909,12 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
             .is_err()
     );
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", metadata_before.as_bytes())?;
     assert!(matches!(
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     assert_eq!(
@@ -1768,15 +1929,13 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
         .attempt_id = Uuid::new_v4();
     changed.validate()?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &changed, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &changed, &lifecycle, &request)
             .is_err()
     );
     let mut wrong_root = f.installed.root.clone();
     wrong_root.public_key = "ff".repeat(32);
     assert!(
-        journal
-            .reserve_initial_dispatch(&wrong_root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &wrong_root, &phase, &lifecycle, &request)
             .is_err()
     );
     let (initialize_lifecycle, initialize_phase, initialize_request) = initial_dispatch(&f, true)?;
@@ -1786,18 +1945,19 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
     );
     write_plaintext_copy_for_fixture(&f.store, NS, &stopped_key, b"{}")?;
     assert!(
-        journal
-            .reserve_initial_dispatch(
-                &f.installed.root,
-                &initialize_phase,
-                &initialize_lifecycle,
-                &initialize_request
-            )
-            .is_err()
+        f.dispatch(
+            &journal,
+            &f.installed.root,
+            &initialize_phase,
+            &initialize_lifecycle,
+            &initialize_request
+        )
+        .is_err()
     );
     f.store.write_batch(&[WriteOp::delete(NS, stopped_key)])?;
     assert!(matches!(
-        journal.reserve_initial_dispatch(
+        f.dispatch(
+            &journal,
             &f.installed.root,
             &initialize_phase,
             &initialize_lifecycle,
@@ -1815,7 +1975,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
     drop(journal);
     let reopened = f.reopen()?;
     assert!(matches!(
-        reopened.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
+        f.dispatch(&reopened, &f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
     reopened.shutdown().await?;
@@ -1827,7 +1987,7 @@ async fn previous_formats_and_corrupt_dispatch_or_accounting_fail_closed_on_reop
     let f = Fixture::new().await?;
     let journal = f.create()?;
     let (lifecycle, phase, request) = initial_dispatch(&f, false)?;
-    journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?;
+    f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?;
     drop(journal);
     let original_head = f.store.get(NS, b"metadata")?.unwrap();
     let key = format!("dispatch/{}/{}", phase.operation_id, phase.phase_id).into_bytes();
@@ -1915,8 +2075,7 @@ async fn terminal_reserve_failure_never_writes_an_accepted_dispatch() -> Result<
     )?;
     let (lifecycle, phase, request) = initial_dispatch(&f, false)?;
     assert!(
-        journal
-            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
     let metadata: Metadata = serde_json::from_slice(&f.store.get(NS, b"metadata")?.unwrap())?;
@@ -1942,7 +2101,7 @@ async fn target_first_entry_rejects_missing_invalid_and_substituted_original_cau
     let journal = f.create()?;
     let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
     let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
     else {
         anyhow::bail!("candidate absent")
     };
@@ -1987,5 +2146,775 @@ async fn target_first_entry_rejects_missing_invalid_and_substituted_original_cau
     assert_eq!(first.index, retained.position.index);
     assert_eq!(first.index, 0);
     stores.shutdown().await?;
+    Ok(())
+}
+
+// A cleanup record exists only after its permanent stop, and a file binding
+// only for a target file the journal's original materialization created.
+#[tokio::test]
+async fn cleanup_and_binding_records_require_their_stop_and_original_creation() -> Result<()> {
+    let f = Fixture::new().await?;
+    drop(f.create()?);
+    let target = Uuid::new_v4();
+    let cleanup = TargetCleanup {
+        tenant: "documents".into(),
+        target_incarnation: target,
+        stage: TargetCleanupStage::Deleted,
+        binding: None,
+    };
+    let key = cleanup_key("documents", target);
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, serde_json::to_vec(&cleanup)?.as_slice())?;
+    let error = f
+        .reopen()
+        .err()
+        .expect("cleanup without a stop must reject");
+    assert!(
+        format!("{error:#}").contains("target cleanup precedes its permanent stop"),
+        "{error:#}"
+    );
+    f.store.write_batch(&[WriteOp::delete(NS, key)])?;
+    let binding = TargetFileBinding {
+        tenant: "documents".into(),
+        target_incarnation: target,
+        path: f.directory.path().join("persistent/targets/target.kv"),
+        directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        directory_stamp: None,
+        node_store_id: kasumi_store::node_store_ids::target_generation(
+            f.installed.root.control_incarnation,
+            "documents",
+            target,
+            &f.installed.node.verifier,
+        )?,
+    };
+    let key = binding_key("documents", target);
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, serde_json::to_vec(&binding)?.as_slice())?;
+    let error = f
+        .reopen()
+        .err()
+        .expect("binding without its creation must reject");
+    assert!(
+        format!("{error:#}").contains("no original creation"),
+        "{error:#}"
+    );
+    f.store.write_batch(&[WriteOp::delete(NS, key)])?;
+    f.reopen()?.shutdown().await?;
+    Ok(())
+}
+
+/// The durable cut contains the original materialization, its exact physical
+/// binding, an issuer-signed permanent stop, and the last published cleanup
+/// stage. Reopen from the encrypted native files after dropping every handle.
+#[tokio::test]
+async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> Result<()> {
+    use kasumi_serving::{
+        AuthorityAction, AuthorityCommand, AuthorityManifest, AuthorityOutcome, AuthorityPartition,
+        AuthorityReceipt, RecoveryTarget, TargetStopObservation, TargetStopReference,
+    };
+    let f = Fixture::new().await?;
+    let journal = f.create()?;
+    let (mut lifecycle, mut marked, mut packet) = initial_dispatch(&f, true)?;
+    let signing_key =
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+            .map_err(|_| anyhow::anyhow!("fixture signing key generation failed"))?;
+    let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(signing_key.as_ref())?;
+    let authority = AuthorityManifest {
+        lifecycle_controls: [(
+            f.installed.root.control_incarnation,
+            f.installed.root.public_key.clone(),
+        )]
+        .into(),
+        authority_id: Uuid::new_v4(),
+        max_lease_ms: 60_000,
+        clock_rate_error_ppm: 0,
+        partitions: [(
+            0,
+            AuthorityPartition {
+                group: "cleanup".into(),
+                public_key: root.public_key(),
+            },
+        )]
+        .into(),
+    };
+    let issuer = root
+        .install(authority.clone(), 0)?
+        .for_verifier(f.installed.node.verifier.clone())?;
+    let partition = authority.control_partition(0)?;
+    lifecycle.request.authority_partition = partition.key();
+    lifecycle.request.phase = LifecyclePhase::Materialize;
+    lifecycle.request_sha256 = kasumi_serving::digest(&lifecycle.request)?;
+    let intent = TargetJournalIntent {
+        intent: lifecycle.clone(),
+        authority_partition: partition,
+        partition_set_sha256: "cc".repeat(32),
+        node: f.installed.node.clone(),
+    };
+    let request = &lifecycle.request;
+    let tenant = request.tenant.clone();
+    let incarnation = request.target_incarnation;
+    let source_incarnation = request.source_incarnation;
+    let source_epoch = request.source_authority_epoch;
+    let target = RecoveryTarget {
+        incarnation,
+        checkpoint: request.checkpoint.clone(),
+        nodes: request
+            .target_nodes
+            .values()
+            .map(|node| NodeIdentity {
+                node_id: node.node_id,
+                verifier: node.verifier.clone(),
+                principal: node.principal.clone(),
+                certificate_sha256: node.certificate_sha256.clone(),
+            })
+            .collect(),
+    };
+    let command = AuthorityCommand {
+        tenant: tenant.clone(),
+        command_id: Uuid::new_v4(),
+        expected_policy_epoch: 1,
+        not_after_ms: 1000,
+        action: AuthorityAction::StopTarget {
+            source_incarnation,
+            source_epoch,
+            target: target.clone(),
+        },
+    };
+    let command_id = command.command_id;
+    let receipt = AuthorityReceipt {
+        authority_id: authority.authority_id,
+        manifest_digest: authority.digest()?,
+        partition: 0,
+        command_digest: command.digest()?,
+        command,
+        principal: "owner".into(),
+        term: 1,
+        revision: 5,
+        admitted_at_ms: 200,
+        outcome: AuthorityOutcome::TargetStopped {
+            source_incarnation,
+            source_epoch,
+            target,
+        },
+    };
+    let reference = TargetStopReference {
+        tenant: tenant.clone(),
+        command_id,
+        receipt_digest: receipt.digest()?,
+    };
+    let mut stop_intent = intent.clone();
+    stop_intent.intent.request.command_id = Uuid::new_v4();
+    stop_intent.intent.request.phase = LifecyclePhase::StopLocal;
+    stop_intent.intent.request.phase_input_sha256 =
+        kasumi_serving::digest(&("kasumi.stop-local-target-input.v1", &reference))?;
+    stop_intent.intent.request_sha256 = kasumi_serving::digest(&stop_intent.intent.request)?;
+    let stopped = issuer.signer.sign_target_stop(TargetStopObservation {
+        reference,
+        stop: receipt,
+        observed_term: 1,
+        observed_revision: 5,
+        drain_ms: authority.drain_ms()?,
+    })?;
+    let stop = TargetJournalStop {
+        intent: stop_intent,
+        owner_drain: None,
+        stopped,
+        authority,
+    };
+    journal.validate_stop(&stop)?;
+
+    {
+        let before = journal.metadata()?;
+        let mut head = before.clone();
+        let mut terminal = GenerationBinding::from_intent(&stop.intent);
+        terminal.stop_before_prepare = true;
+        let bytes = serde_json::to_vec(&terminal)?;
+        head.generations = 1;
+        head.charged_bytes += bytes.len() as u64 + GENERATION_RESERVE + CLEANUP_RESERVE as u64;
+        let cleanup = TargetCleanup {
+            tenant: tenant.clone(),
+            target_incarnation: incarnation,
+            stage: TargetCleanupStage::Deleted,
+            binding: None,
+        };
+        f.store.write_batch(&[
+            WriteOp::put(NS, generation_key(&tenant, incarnation), bytes),
+            WriteOp::put(
+                NS,
+                stop_key(&tenant, incarnation),
+                serde_json::to_vec(&stop)?,
+            ),
+            WriteOp::put(
+                NS,
+                cleanup_key(&tenant, incarnation),
+                serde_json::to_vec(&cleanup)?,
+            ),
+            WriteOp::put(NS, b"metadata", serde_json::to_vec(&head)?),
+        ])?;
+        for physically_absent in [false, true] {
+            let mut unresolved = Vec::new();
+            journal.visit_scoped_key_dependencies(
+                &kasumi_query::QueryCancellation::default(),
+                |_| Ok(()),
+                |id, _, negative| {
+                    unresolved.push((id, negative));
+                    Ok(())
+                },
+                |name, id| {
+                    assert_eq!((name, id), (tenant.as_str(), incarnation));
+                    Ok(physically_absent)
+                },
+            )?;
+            assert_eq!(
+                unresolved,
+                if physically_absent {
+                    vec![]
+                } else {
+                    vec![(incarnation, true)]
+                }
+            );
+        }
+        f.store.write_batch(&[
+            WriteOp::delete(NS, generation_key(&tenant, incarnation)),
+            WriteOp::delete(NS, stop_key(&tenant, incarnation)),
+            WriteOp::delete(NS, cleanup_key(&tenant, incarnation)),
+            WriteOp::put(NS, b"metadata", serde_json::to_vec(&before)?),
+        ])?;
+    }
+    let committed = &stop.intent.intent;
+    let observation = kasumi_types::ControlIntentCommitment {
+        intent: committed.clone(),
+        root: f.installed.root.clone(),
+        authority_partition: stop.intent.authority_partition.clone(),
+        partition_set_sha256: stop.intent.partition_set_sha256.clone(),
+        observed_policy_epoch: committed.request.expected_policy_epoch,
+        observed_revision: committed.revision,
+        observed_term: 1,
+    };
+    let verified = f.sign_control_observation(observation)?;
+    packet.command_id = committed.request.command_id;
+    packet.tenant = committed.request.tenant.clone();
+    packet.step = kasumi_types::TargetRuntimeStep::Stop(stop.stopped.observation.reference.clone());
+    marked.phase = kasumi_types::RecoveryPhase::Cleanup;
+    marked.input = kasumi_types::RecoveryDispatch::Target {
+        node_id: f.installed.node.node_id,
+        request: Box::new(packet),
+    };
+    marked.input_sha256 = kasumi_types::staged_digest(&marked.input)?.0;
+    marked
+        .effect_attempts
+        .get_mut(&kasumi_types::RecoveryEffect::TargetCommand)
+        .unwrap()
+        .input_sha256 = marked.input_sha256.clone();
+    let query = kasumi_types::TargetDeletionQuery {
+        node_id: f.installed.node.node_id,
+        operation_id: marked.operation_id,
+        phase_id: marked.phase_id,
+        target_incarnation: incarnation,
+    };
+
+    let original = TargetFileBinding {
+        tenant: tenant.clone(),
+        target_incarnation: incarnation,
+        path: f.directory.path().join("persistent/targets/target.kv"),
+        directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        directory_stamp: Some(Uuid::new_v4()),
+        node_store_id: kasumi_store::node_store_ids::target_generation(
+            f.installed.root.control_incarnation,
+            &tenant,
+            incarnation,
+            &f.installed.node.verifier,
+        )?,
+    };
+    let cleanup = TargetCleanup {
+        tenant: tenant.clone(),
+        target_incarnation: incarnation,
+        stage: TargetCleanupStage::Deleting,
+        binding: Some(original.clone()),
+    };
+    let mut head = journal.metadata()?;
+    let creation = serde_json::to_vec(&FileCreation {
+        directory_stamp: original.directory_stamp,
+        materialization_command_id: request.command_id,
+    })?;
+    let accepted = serde_json::to_vec(&intent)?;
+    let generation = serde_json::to_vec(&GenerationBinding::from_intent(&intent))?;
+    head.intents = 1;
+    head.generations = 1;
+    head.charged_bytes += (accepted.len() + generation.len() + creation.len()) as u64
+        + COMPLETION_RESERVE
+        + GENERATION_RESERVE;
+    let key = cleanup_key(&tenant, incarnation);
+    f.store.write_batch(&[
+        WriteOp::put(NS, intent_key(request.command_id), accepted),
+        WriteOp::put(NS, generation_key(&tenant, incarnation), generation),
+        WriteOp::put(NS, file_key(&tenant, incarnation), creation),
+        WriteOp::put(
+            NS,
+            stop_key(&tenant, incarnation),
+            serde_json::to_vec(&stop)?,
+        ),
+        WriteOp::put(NS, b"metadata", serde_json::to_vec(&head)?),
+    ])?;
+    let mut substituted = original.clone();
+    substituted.directory_stamp = Some(Uuid::new_v4());
+    assert!(
+        journal
+            .cleanup_writes(&TargetCleanup {
+                binding: Some(substituted),
+                ..cleanup.clone()
+            })
+            .is_err()
+    );
+    assert!(
+        journal
+            .materialization_file_binding(&tenant, incarnation)?
+            .is_none()
+    );
+    assert!(journal.target_cleanup(&tenant, incarnation)?.is_none());
+    let writes = journal.cleanup_writes(&cleanup)?;
+    f.store.write_batch(&writes)?;
+    assert!(journal.cleanup_writes(&cleanup)?.is_empty());
+    assert_eq!(
+        journal.metadata()?.charged_bytes,
+        head.charged_bytes + serde_json::to_vec(&original)?.len() as u64 + CLEANUP_RESERVE as u64
+    );
+    journal.shutdown().await?;
+    f.store.shutdown().await?;
+    f.node.shutdown().await?;
+    drop((journal, f.store, f.node));
+    let path = f.directory.path().join("persistent/journal.kv");
+    let node = f
+        .storage
+        .open_existing(&path, f.id)
+        .unwrap_or_else(|original| std::panic::panic_any(original));
+    let store = TenantStore::open_existing(
+        node.clone(),
+        format!("kasumi.target.{}.1", f.installed.root.control_incarnation),
+        Arc::new(LocalKeyProvider::new([39; 32])),
+        StorageAccess::target_journal(&f.installed.root, &f.installed.node)?,
+    )
+    .await?;
+    let reopen = || {
+        TargetJournal::open_existing(
+            store.clone(),
+            f.installed.clone(),
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20,
+            },
+            f.admission.clone(),
+        )
+    };
+    let journal = reopen()?;
+    assert_eq!(
+        journal.target_cleanup(&tenant, incarnation)?,
+        Some(cleanup.clone())
+    );
+    let observed = journal.deletion_status(&query, &verified, &marked)?;
+    assert_eq!(
+        observed.progress,
+        kasumi_types::TargetDeletionProgress::Deleting
+    );
+    assert_eq!(
+        observed.binding_sha256,
+        Some(kasumi_serving::digest(&original)?)
+    );
+    let mut other = query.clone();
+    other.phase_id = Uuid::new_v4();
+    assert!(journal.deletion_status(&other, &verified, &marked).is_err());
+    let mut no_attempt = marked.clone();
+    no_attempt.effect_attempts.clear();
+    assert!(
+        journal
+            .deletion_status(&query, &verified, &no_attempt)
+            .is_err()
+    );
+    drop(journal);
+    let mut terminal = cleanup;
+    for (stage, expected) in [
+        (
+            TargetCleanupStage::Unlinked,
+            kasumi_types::TargetDeletionProgress::Unlinked,
+        ),
+        (
+            TargetCleanupStage::ParentSynced,
+            kasumi_types::TargetDeletionProgress::ParentSynced,
+        ),
+        (
+            TargetCleanupStage::Deleted,
+            kasumi_types::TargetDeletionProgress::Deleted,
+        ),
+    ] {
+        terminal.stage = stage;
+        store.write_batch(&[WriteOp::put(
+            NS,
+            key.clone(),
+            serde_json::to_vec(&terminal)?,
+        )])?;
+        let next = reopen()?.deletion_status(&query, &verified, &marked)?;
+        assert_eq!(next.progress, expected);
+        assert_eq!(next.binding_sha256, observed.binding_sha256);
+        assert_eq!(next.attempt_id, observed.attempt_id);
+    }
+    assert_eq!(
+        reopen()?.target_cleanup(&tenant, incarnation)?,
+        Some(terminal.clone())
+    );
+    for replacement in [
+        None,
+        Some(TargetFileBinding {
+            path: path.clone(),
+            ..original
+        }),
+    ] {
+        let mut wrong = terminal.clone();
+        wrong.binding = replacement;
+        store.write_batch(&[WriteOp::put(NS, key.clone(), serde_json::to_vec(&wrong)?)])?;
+        let error = reopen().err().context("substituted cleanup reopened")?;
+        assert!(
+            format!("{error:#}").contains("enrolled storage binding"),
+            "{error:#}"
+        );
+    }
+    store.write_batch(&[WriteOp::put(NS, key, serde_json::to_vec(&terminal)?)])?;
+    reopen()?.shutdown().await?;
+    store.shutdown().await?;
+    node.shutdown().await?;
+    Ok(())
+}
+
+/// Acquire the real Control commitment and issuer lease for a fresh, exact
+/// materialization. The journal owns no application store or restore state.
+fn writer_operation(
+    f: &Fixture,
+) -> Result<(
+    crate::TargetOperation,
+    kasumi_types::TargetRuntimeStep,
+    String,
+)> {
+    use kasumi_serving::{
+        AuthorityManifest, AuthorityPartition, LeasePurpose, LifecycleBoot, LifecycleGate,
+        LifecycleLeaseClaims,
+    };
+    use kasumi_types::{
+        Action, CredentialResource, RequestAuthorization, RequestContext, TargetRuntimeStep,
+    };
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("fixture authority root generation failed"))?;
+    let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(pkcs8.as_ref())?;
+    let manifest = AuthorityManifest {
+        authority_id: Uuid::new_v4(),
+        max_lease_ms: 60_000,
+        clock_rate_error_ppm: 0,
+        lifecycle_controls: std::collections::BTreeMap::from([(
+            f.installed.root.control_incarnation,
+            f.installed.root.public_key.clone(),
+        )]),
+        partitions: std::collections::BTreeMap::from([(
+            0,
+            AuthorityPartition {
+                group: "writer-test".into(),
+                public_key: root.public_key(),
+            },
+        )]),
+    };
+    let signer = root
+        .install(manifest.clone(), 0)?
+        .for_verifier(f.installed.node.verifier.clone())?;
+    let partition = manifest.control_partition(0)?;
+    let origin = crate::target_completion_machine::tests::origin();
+    let mut intent = origin.materialization;
+    let mut input = origin.input;
+    let target = Uuid::new_v4();
+    input.target_incarnation = target;
+    let digest = input.digest()?;
+    let observed = kasumi_clock::EpochClock::system()?.observe()?;
+    let expires = observed.utc_ms() + 600_000;
+    intent.control_incarnation = f.installed.root.control_incarnation;
+    intent.accepted_at_ms = observed.utc_ms();
+    intent.original_credential_expires_at_ms = expires;
+    intent.request.command_id = Uuid::new_v4();
+    intent.request.target_incarnation = target;
+    intent.request.phase_input_sha256 = digest.clone();
+    intent.request.authority_partition = partition.key();
+    let node = intent
+        .request
+        .target_nodes
+        .get_mut(&f.installed.node.node_id)
+        .unwrap();
+    node.principal = f.installed.node.principal.clone();
+    node.verifier = f.installed.node.verifier.clone();
+    node.certificate_sha256 = f.installed.node.certificate_sha256.clone();
+    intent.request_sha256 = kasumi_types::staged_digest(&intent.request)?.0;
+    input.validate(&intent)?;
+    let context = RequestContext {
+        tenant: "__kasumi_control".into(),
+        principal: intent.original_principal.clone(),
+        request_id: "journal-writer-original".into(),
+        scopes: std::collections::BTreeSet::from([Action::Admin]),
+        authorization: RequestAuthorization::from_verified_credential(
+            expires,
+            &observed,
+            CredentialResource::Control {
+                incarnation: intent.control_incarnation,
+            },
+        )?,
+    };
+    let proof = f.sign_control_observation(kasumi_types::ControlIntentCommitment {
+        root: f.installed.root.clone(),
+        authority_partition: partition,
+        partition_set_sha256: "bc".repeat(32),
+        observed_policy_epoch: intent.request.expected_policy_epoch,
+        observed_revision: intent.revision,
+        observed_term: 1,
+        intent,
+    })?;
+    let boot = LifecycleBoot::new(signer.trust, f.installed.node.clone())?;
+    let attempt = boot.begin(&proof)?;
+    let lease = attempt.verify(signer.signer.sign_lifecycle_lease(LifecycleLeaseClaims {
+        request: attempt.request().clone(),
+        commitment: proof.observation().clone(),
+        authority_id: manifest.authority_id,
+        partition: 0,
+        authority_term: 1,
+        authority_revision: 1,
+        application_purpose: Some(LeasePurpose::RestorePreparation),
+        lifetime_ms: manifest.max_lease_ms,
+        credential_lifetime_ms: manifest.max_lease_ms,
+    })?)?;
+    let scope = crate::TargetOperationScope::new(crate::TargetLifecycleInvocation::from_verified(
+        LifecycleGate::new(context, lease)?,
+    )?)?;
+    Ok((
+        scope.begin_operation(60_000)?,
+        TargetRuntimeStep::Materialize(input),
+        digest,
+    ))
+}
+
+#[tokio::test]
+async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reopen() -> Result<()>
+{
+    use kasumi_types::{
+        BeginKeyRetirement, CompleteKeyRetirement, KeyIdentityRef, KeyRetentionScope,
+        KeyRetirementState, RetireKeyVersionsRequest, SignedTargetWriterObservation,
+        TargetWriterChallenge, TargetWriterObservation,
+    };
+    let f = Fixture::new().await?;
+    let journal = f.create()?;
+    let before = f
+        .store
+        .get(NS, b"metadata")?
+        .context("journal head missing")?;
+    assert!(
+        !serde_json::from_slice::<serde_json::Value>(&before)?
+            .as_object()
+            .unwrap()
+            .contains_key("retirements")
+    );
+    let identity = KeyIdentityRef {
+        provider: "historical".into(),
+        key_ref: "source".into(),
+    };
+    let request = RetireKeyVersionsRequest {
+        retirement_id: "1".into(),
+        scope: KeyRetentionScope::TargetJournal {},
+        identity: identity.clone(),
+        retire_below_version: 3,
+        expected_coverage_sha256: "aa".repeat(32),
+    };
+    let mut state = KeyRetirementState::default();
+    state.begin(
+        &BeginKeyRetirement {
+            request: request.clone(),
+            membership_epoch: 3,
+            expected_dependency_sha256: "bb".repeat(32),
+        },
+        5,
+    )?;
+    let sign = |challenge: &TargetWriterChallenge,
+                observed_revision,
+                state: &KeyRetirementState|
+     -> Result<SignedTargetWriterObservation> {
+        let observation = TargetWriterObservation {
+            challenge: challenge.clone(),
+            observed_term: 1,
+            observed_revision,
+            membership_epoch: if state.is_empty() { 0 } else { 3 },
+            observed_policy_epoch: if state.is_empty() { 0 } else { 2 },
+            retirements: state.clone(),
+        };
+        let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation))?;
+        Ok(SignedTargetWriterObservation {
+            observation,
+            signature: hex::encode(f.control_key.sign(&bytes).as_ref()),
+        })
+    };
+    let apply =
+        |journal: &Arc<TargetJournal>, revision, state: &KeyRetirementState| -> Result<String> {
+            let read = journal.begin_writer_read()?;
+            let signed = sign(read.challenge(), revision, state)?;
+            read.accept(&signed)
+        };
+    let check = |journal: &TargetJournal, version| {
+        journal.metadata()?.retirements.admit_version(
+            &identity.provider,
+            &identity.key_ref,
+            version,
+        )
+    };
+    check(&journal, 1)?;
+    let (existing, _, existing_digest) = writer_operation(&f)?;
+    assert!(journal.prepare(&existing, &existing_digest).is_err());
+    let read = journal.begin_writer_read()?;
+    let initial = sign(read.challenge(), 2, &KeyRetirementState::default())?;
+    let prior_writer = read.admit(&initial)?;
+    let existing_intent = journal.prepare_observed(&existing, &existing_digest, &prior_writer)?;
+    let original = journal.begin_writer_read()?;
+    let physical = original.challenge().catalog_minimums.versions()[0].clone();
+    let incompatible = RetireKeyVersionsRequest {
+        identity: physical.identity(),
+        retire_below_version: physical.version + 1,
+        ..request.clone()
+    };
+    let mut retired = KeyRetirementState::default();
+    retired.begin(
+        &BeginKeyRetirement {
+            request: incompatible.clone(),
+            membership_epoch: 3,
+            expected_dependency_sha256: "aa".repeat(32),
+        },
+        5,
+    )?;
+    retired.complete(
+        &CompleteKeyRetirement {
+            retirement_id: incompatible.retirement_id.clone(),
+            request_sha256: incompatible.request_sha256()?,
+            completed_coverage_sha256: "bb".repeat(32),
+            expected_dependency_sha256: "cc".repeat(32),
+        },
+        6,
+    )?;
+    let enrollment = kasumi_types::TargetWriterRegistration::WithCatalog {
+        participant: original.challenge().participant(),
+        catalog_minimums: original.challenge().catalog_minimums.clone(),
+    };
+    assert!(enrollment.checked_participant(&retired).is_err());
+    let blocked = sign(original.challenge(), 6, &retired)?;
+    assert!(original.admit(&blocked).is_err());
+    let before_signed = f
+        .store
+        .get(NS, b"metadata")?
+        .context("original target was not admitted")?;
+    let original = journal.begin_writer_read()?;
+    let signed = sign(original.challenge(), 5, &state)?;
+    assert!(journal.begin_writer_read()?.accept(&signed).is_err());
+    let mut wrong = signed.clone();
+    wrong.signature = "00".repeat(64);
+    assert!(original.accept(&wrong).is_err());
+    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_signed);
+    let accepted = apply(&journal, 5, &state)?;
+    assert_eq!(accepted, apply(&journal, 5, &state)?);
+    assert!(check(&journal, 2).is_err());
+    check(&journal, 3)?;
+    assert_eq!(
+        journal.prepare(&existing, &existing_digest)?,
+        existing_intent
+    );
+    let (new, step, new_digest) = writer_operation(&f)?;
+    let before_new = f
+        .store
+        .get(NS, b"metadata")?
+        .context("fenced head missing")?;
+    assert!(journal.prepare(&new, &new_digest).is_err());
+    assert!(
+        journal
+            .prepare_observed(&new, &new_digest, &prior_writer)
+            .is_err()
+    );
+    let read = journal.begin_writer_read()?;
+    let signed = sign(read.challenge(), 5, &state)?;
+    let fenced = read.admit(&signed)?;
+    let (lifecycle, phase, packet) = signed_initial_dispatch(&f, true)?;
+    let error = journal
+        .reserve_observed_initial_dispatch(&f.installed.root, &phase, &lifecycle, &packet, &fenced)
+        .err()
+        .context("first dispatch bypassed the durable checkpoint fence")?;
+    assert!(
+        error
+            .to_string()
+            .contains("original locally admitted materialization")
+    );
+
+    let result = journal
+        .prepare_runtime(
+            &new,
+            &step,
+            &new_digest,
+            || async {
+                let read = journal.begin_writer_read()?;
+                let signed = sign(read.challenge(), 5, &state)?;
+                read.admit(&signed)
+            },
+            |_| anyhow::bail!("original backup unavailable"),
+        )
+        .await;
+    assert!(matches!(result,Err(ref e) if e.to_string().contains("original backup unavailable")));
+    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_new);
+    drop((prior_writer, fenced));
+    drop(journal);
+    let reopened = f.reopen()?;
+    assert!(check(&reopened, 1).is_err());
+    let active = state.clone();
+    state.complete(
+        &CompleteKeyRetirement {
+            retirement_id: request.retirement_id.clone(),
+            request_sha256: request.request_sha256()?,
+            completed_coverage_sha256: "cc".repeat(32),
+            expected_dependency_sha256: "dd".repeat(32),
+        },
+        6,
+    )?;
+    apply(&reopened, 6, &state)?;
+    assert!(apply(&reopened, 5, &active).is_err());
+    assert!(apply(&reopened, 7, &KeyRetirementState::default()).is_err());
+    drop(reopened);
+    let final_journal = f.reopen()?;
+    assert!(check(&final_journal, 2).is_err());
+    check(&final_journal, 3)?;
+    let mut revision = 6;
+    for number in 2..=(2 + kasumi_types::MAX_KEY_RETIREMENT_ABORTS) {
+        let next_request = RetireKeyVersionsRequest {
+            retirement_id: number.to_string(),
+            retire_below_version: 4,
+            ..request.clone()
+        };
+        revision += 1;
+        state.begin(
+            &BeginKeyRetirement {
+                request: next_request.clone(),
+                membership_epoch: 3,
+                expected_dependency_sha256: "bb".repeat(32),
+            },
+            revision,
+        )?;
+        if number == 2 {
+            apply(&final_journal, revision, &state)?;
+        }
+        revision += 1;
+        state.abort(
+            &kasumi_types::AbortKeyRetirement {
+                retirement_id: next_request.retirement_id.clone(),
+                request_sha256: next_request.request_sha256()?,
+            },
+            revision,
+        )?;
+    }
+    assert!(state.status("2").is_none());
+    assert!(check(&final_journal, 3).is_err());
+    drop(final_journal);
+    let returned = f.reopen()?;
+    apply(&returned, revision, &state)?;
+    check(&returned, 3)?;
+    assert!(check(&returned, 2).is_err());
+
     Ok(())
 }

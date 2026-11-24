@@ -22,6 +22,26 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         source_epoch: 1,
         target: replacement.clone(),
     });
+    use kasumi_types::{IssuerStopQuery, IssuerStopStage};
+    let query = IssuerStopQuery {
+        tenant: command.tenant.clone(),
+        command_id: command.command_id,
+        target_incarnation: replacement.incarnation,
+    };
+    assert!(
+        service
+            .issuer_stop_status(fixture.context("operator"), query.clone())
+            .await
+            .unwrap()
+            .0
+            .is_none()
+    );
+    assert!(
+        service
+            .issuer_stop_status(fixture.context("node-1"), query.clone())
+            .await
+            .is_err()
+    );
     let receipt = service
         .execute(fixture.context("operator"), command.clone())
         .await
@@ -36,6 +56,33 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         command_id: command.command_id,
         receipt_digest: receipt.receipt.digest().unwrap(),
     };
+    let committed = service
+        .issuer_stop_status(fixture.context("operator"), query.clone())
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(committed.stage, IssuerStopStage::Committed);
+    assert_eq!(committed.command_sha256, command.digest().unwrap());
+    assert_eq!(
+        committed.first_stop_sha256.as_ref(),
+        Some(&reference.receipt_digest)
+    );
+    assert!(committed.interval_id.is_none());
+    assert!(
+        service.drains.lock().unwrap().is_empty(),
+        "status must not start an issuer interval"
+    );
+    let mut foreign = query.clone();
+    foreign.target_incarnation = Uuid::new_v4();
+    assert!(
+        service
+            .issuer_stop_status(fixture.context("operator"), foreign)
+            .await
+            .unwrap()
+            .0
+            .is_none()
+    );
     let attempt = prepared_boot.begin_acquisition().unwrap();
     let caller = AuthenticatedNode::from_verified_transport(
         fixture.context("node-1"),
@@ -55,6 +102,15 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
             .await
             .is_err()
     );
+    let awaiting = service
+        .issuer_stop_status(fixture.context("operator"), query.clone())
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(awaiting.stage, IssuerStopStage::Draining);
+    assert!(awaiting.interval_id.is_some());
+    assert_eq!(awaiting.first_stop_sha256, committed.first_stop_sha256);
     fixture.clock.0.store(1000, Ordering::SeqCst);
     assert!(held.check().is_err());
     let (signed, fence) = service
@@ -62,6 +118,14 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         .await
         .unwrap();
     fence.release().await.unwrap();
+    let completed = service
+        .issuer_stop_status(fixture.context("operator"), query.clone())
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(completed.stage, IssuerStopStage::Drained);
+    assert_eq!(completed.interval_id, awaiting.interval_id);
     let proof = trust
         .verify_target_stop(signed.clone(), &reference)
         .unwrap();
@@ -111,6 +175,18 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
     drop(fence);
     drop(service);
     fixture.reopen().await;
+    // Inspect the original physical member even if it is now a follower.
+    // Only that member can retain this process's old interval.
+    let original_owner = fixture
+        .services
+        .iter()
+        .find(|node| node.local_node_id == completed.node_id)
+        .unwrap();
+    assert_ne!(original_owner.process_boot_id, completed.boot_id);
+    assert_eq!(
+        original_owner.backend.observed_stop(&query).unwrap(),
+        Some(completed.clone())
+    );
     let service = fixture.leader().await;
     assert!(
         service
@@ -119,6 +195,16 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
             .is_err(),
         "a restarted process cannot reuse an old elapsed witness"
     );
+    let restarted = service
+        .issuer_stop_status(fixture.context("operator"), query.clone())
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(restarted.stage, IssuerStopStage::Draining);
+    assert_ne!(restarted.interval_id, completed.interval_id);
+    assert_ne!(restarted.boot_id, completed.boot_id);
+    assert_eq!(restarted.first_stop_sha256, completed.first_stop_sha256);
     fixture.clock.0.store(1999, Ordering::SeqCst);
     assert!(
         service

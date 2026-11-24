@@ -147,6 +147,8 @@ pub(crate) struct SourceRoots {
     // grant by an unscoped proposer and spent by the applying thread.
     escrow: Mutex<Option<Arc<crate::admission::ApplyEscrow>>>,
     completion: OnceLock<completion::CompletionRef>,
+    /// Edit journal custody of the ordinary structured directory.
+    pub(crate) structured: crate::application_structured::StructuredOwner,
     _reservation: SourceCredit,
 }
 struct CellState {
@@ -156,12 +158,54 @@ struct CellState {
     inflight: usize,
     view: Option<ViewRef>,
 }
+/// The producer's exact application boundary during covered startup replay.
+/// It can validate the previous directory for the next write. Only an exact
+/// selected physical position can authorize a reader.
+struct ReplayPredecessor {
+    log: Option<kasumi_raft::LogId<u64>>,
+    command: Option<[u8; 32]>,
+}
+
+impl ReplayPredecessor {
+    fn capture(boundary: ApplicationBoundaryRef<'_>) -> Option<Self> {
+        match boundary {
+            ApplicationBoundaryRef::Bootstrap(_) => Some(Self {
+                log: None,
+                command: None,
+            }),
+            ApplicationBoundaryRef::Snapshot(snapshot) => Some(Self {
+                log: snapshot.meta.last_log_id,
+                command: None,
+            }),
+            ApplicationBoundaryRef::Entry(entry) => {
+                let mut command = [0; 32];
+                hex::decode_to_slice(&entry.command_sha256, &mut command).ok()?;
+                Some(Self {
+                    log: Some(entry.log_id),
+                    command: Some(command),
+                })
+            }
+        }
+    }
+
+    fn applied<T>(
+        &self,
+        build: impl FnOnce(&kasumi_raft::LogId<u64>, Option<[u8; 32]>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.log
+            .as_ref()
+            .map(|log| build(log, self.command))
+            .transpose()
+    }
+}
+
 struct Cell {
     id: u64,
     roots: SourceRootsWeak,
     handles: AtomicUsize,
     state: Mutex<CellState>,
     position: OnceLock<Position>,
+    replay_predecessor: OnceLock<ReplayPredecessor>,
     // Node evacuations finished before this cell's view selected its root.
     evacuations: OnceLock<u64>,
     _metadata_parent: OnceLock<CellRef>,
@@ -232,6 +276,155 @@ impl SelectedApplication {
             .get()
             .is_some_and(|position| position.applied().is_none())
     }
+    pub(crate) fn matches_structured_boundary(
+        &self,
+        manifest: &kasumi_store::structured_manifest::StructuredManifest,
+    ) -> Result<bool> {
+        Ok(self
+            .structured_applied()?
+            .is_some_and(|applied| manifest.matches_applied(applied.as_ref())))
+    }
+    fn replay_predecessor(&self) -> Option<&ReplayPredecessor> {
+        (self.cell.frozen.get() == Some(&false))
+            .then(|| self.cell.replay_predecessor.get())
+            .flatten()
+    }
+
+    pub(crate) fn text_predecessor(
+        &self,
+    ) -> Result<Option<kasumi_store::text_manifest::TextBoundary>> {
+        if let Some(replayed) = self.replay_predecessor() {
+            return Ok(Some(
+                replayed
+                    .applied(crate::application_text::applied_boundary)?
+                    .unwrap_or(kasumi_store::text_manifest::TextBoundary::Bootstrap),
+            ));
+        }
+        self.text_boundary()
+    }
+
+    pub(crate) fn matches_primary_predecessor(
+        &self,
+        manifest: &kasumi_store::primary_manifest::PrimaryManifest,
+    ) -> Result<bool> {
+        if let Some(replayed) = self.replay_predecessor() {
+            let applied = replayed.applied(crate::application_primary::log_applied)?;
+            return Ok(manifest.matches_applied(applied.as_ref()));
+        }
+        self.matches_primary_boundary(manifest)
+    }
+
+    pub(crate) fn matches_structured_predecessor(
+        &self,
+        manifest: &kasumi_store::structured_manifest::StructuredManifest,
+    ) -> Result<bool> {
+        if let Some(replayed) = self.replay_predecessor() {
+            let applied = replayed.applied(crate::application_structured::log_applied)?;
+            return Ok(manifest.matches_applied(applied.as_ref()));
+        }
+        self.matches_structured_boundary(manifest)
+    }
+
+    pub(crate) fn text_boundary(
+        &self,
+    ) -> Result<Option<kasumi_store::text_manifest::TextBoundary>> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let boundary = match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => crate::application_text::entry_boundary(&log_id, command_sha256)?,
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
+                crate::application_text::snapshot_boundary(meta)?
+            }
+            None => kasumi_store::text_manifest::TextBoundary::Bootstrap,
+        };
+        Ok(Some(boundary))
+    }
+
+    pub(crate) fn matches_primary_boundary(
+        &self,
+        manifest: &kasumi_store::primary_manifest::PrimaryManifest,
+    ) -> Result<bool> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(false);
+        };
+        let applied = match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => Some(crate::application_primary::entry_identity(
+                &log_id,
+                command_sha256,
+            )?),
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
+                crate::application_primary::snapshot_applied(meta)?
+            }
+            None => None,
+        };
+        Ok(manifest.matches_applied(applied.as_ref()))
+    }
+
+    /// A serving bootstrap has no applied entry. A frozen or covered source
+    /// has no valid maintenance position at all.
+    pub(crate) fn structured_applied(
+        &self,
+    ) -> Result<Option<Option<kasumi_store::structured_manifest::StructuredApplied>>> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let applied = match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => Some(crate::application_structured::entry_identity(
+                &log_id,
+                command_sha256,
+            )?),
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
+                crate::application_structured::snapshot_applied(meta)?
+            }
+            None => None,
+        };
+        Ok(Some(applied))
+    }
+    pub(crate) fn primary_entry(
+        &self,
+    ) -> Result<Option<kasumi_store::primary_manifest::PrimaryApplied>> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => crate::application_primary::entry_identity(&log_id, command_sha256).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// This exact (not covered) selection was captured at `entry`.
     #[cfg(test)]
     pub(crate) fn selected_at_entry(&self, entry: &kasumi_raft::AppliedEntryContext) -> bool {
@@ -598,6 +791,7 @@ impl SourceRoots {
                 publication: Mutex::new(None),
                 escrow: Mutex::new(None),
                 completion: OnceLock::new(),
+                structured: Default::default(),
                 _reservation: credit.clone(),
             },
             credit,
@@ -997,6 +1191,7 @@ impl SourceRootsRef {
                     view: None,
                 }),
                 position: OnceLock::new(),
+                replay_predecessor: OnceLock::new(),
                 evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),
                 frozen: OnceLock::new(),
@@ -1240,6 +1435,11 @@ impl RootPreparation {
                     };
                     match result {
                         Ok(position) => {
+                            if position.is_covered_reconstruction()
+                                && let Some(predecessor) = ReplayPredecessor::capture(boundary)
+                            {
+                                let _ = self.cell.replay_predecessor.set(predecessor);
+                            }
                             let _ = self.cell.position.set(position);
                         }
                         Err(error) => {

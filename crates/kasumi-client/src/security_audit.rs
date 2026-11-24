@@ -157,7 +157,156 @@ fn validate_archives(
     }
     Ok(())
 }
+fn tenant_request(
+    bearer: &str,
+    value: &impl Serialize,
+) -> Result<tonic::Request<proto::PrivateReadJsonRequest>, ClientError> {
+    let mut request = authorized(
+        bearer,
+        proto::PrivateReadJsonRequest {
+            request_json: encode(value)?,
+        },
+    )?;
+    request.set_timeout(std::time::Duration::from_secs(30));
+    Ok(request)
+}
+
+fn tenant_response<T: DeserializeOwned>(
+    response: proto::PrivateReadJsonResponse,
+) -> Result<T, ClientError> {
+    if response.response_json.len() > kasumi_types::MAX_TENANT_AUDIT_PAGE_BYTES {
+        return Err(invalid("tenant audit response exceeds its bound"));
+    }
+    Ok(serde_json::from_slice(&response.response_json)?)
+}
+
+fn decode_retirement<T: DeserializeOwned>(
+    message: proto::PrivateReadJsonResponse,
+) -> Result<T, ClientError> {
+    if message.response_json.len() > kasumi_types::MAX_KEY_RETIREMENT_STATE_BYTES {
+        return Err(invalid("key retirement reply exceeds its bound"));
+    }
+    Ok(serde_json::from_slice(&message.response_json)?)
+}
+
 impl KasumiAdminClient {
+    pub async fn read_key_retention(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadKeyRetentionRequest,
+    ) -> Result<kasumi_types::KeyRetentionPage, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let message = self.inner.read_key_retention(input).await?.into_inner();
+        if message.response_json.len() > kasumi_types::MAX_KEY_RETENTION_PAGE_BYTES {
+            return Err(invalid("key retention page exceeds its bound"));
+        }
+        let page: kasumi_types::KeyRetentionPage = serde_json::from_slice(&message.response_json)?;
+        page.validate(request).map_err(invalid)?;
+        Ok(page)
+    }
+
+    /// Commit a retirement after the server verifies complete, current coverage.
+    pub async fn retire_key_versions(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::RetireKeyVersionsRequest,
+    ) -> Result<kasumi_types::KeyRetirementStatus, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let result: kasumi_types::KeyRetirementStatus =
+            decode_retirement(self.inner.retire_key_versions(input).await?.into_inner())?;
+        result.validate().map_err(invalid)?;
+        if result.request() != request
+            || !matches!(result, kasumi_types::KeyRetirementStatus::Completed { .. })
+        {
+            return Err(invalid(
+                "retirement reply lacks the requested completed record",
+            ));
+        }
+        Ok(result)
+    }
+
+    pub async fn abort_key_retirement(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::RetireKeyVersionsRequest,
+    ) -> Result<kasumi_types::KeyRetirementStatus, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let result: kasumi_types::KeyRetirementStatus =
+            decode_retirement(self.inner.abort_key_retirement(input).await?.into_inner())?;
+        result.validate().map_err(invalid)?;
+        if result.request() != request
+            || !matches!(result, kasumi_types::KeyRetirementStatus::Aborted { .. })
+        {
+            return Err(invalid("retirement reply lacks the requested abort record"));
+        }
+        Ok(result)
+    }
+
+    pub async fn key_retirement_status(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::KeyRetirementStatusRequest,
+    ) -> Result<kasumi_types::KeyRetirementStatusResponse, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let result: kasumi_types::KeyRetirementStatusResponse =
+            decode_retirement(self.inner.key_retirement_status(input).await?.into_inner())?;
+        result.validate(request).map_err(invalid)?;
+        Ok(result)
+    }
+
+    /// Inspect the application or Control audit stream of the bearer.
+    pub async fn tenant_audit_status(
+        &mut self,
+        bearer: &str,
+    ) -> Result<kasumi_types::TenantAuditStatus, ClientError> {
+        let input = tenant_request(bearer, &kasumi_types::TenantAuditStatusRequest {})?;
+        let result: kasumi_types::TenantAuditStatus =
+            tenant_response(self.inner.tenant_audit_status(input).await?.into_inner())?;
+        result.validate().map_err(invalid)?;
+        Ok(result)
+    }
+
+    pub async fn tenant_audit_capacity(
+        &mut self,
+        bearer: &str,
+    ) -> Result<kasumi_types::TenantAuditCapacity, ClientError> {
+        let input = tenant_request(bearer, &kasumi_types::TenantAuditCapacityRequest {})?;
+        let result: kasumi_types::TenantAuditCapacity =
+            tenant_response(self.inner.tenant_audit_capacity(input).await?.into_inner())?;
+        result.validate().map_err(invalid)?;
+        Ok(result)
+    }
+
+    pub async fn verify_tenant_audit(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::TenantAuditVerifyRequest,
+    ) -> Result<kasumi_types::TenantAuditVerificationPage, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let page: kasumi_types::TenantAuditVerificationPage =
+            tenant_response(self.inner.verify_tenant_audit(input).await?.into_inner())?;
+        page.validate(request).map_err(invalid)?;
+        Ok(page)
+    }
+
+    pub async fn export_tenant_audit(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::TenantAuditExportRequest,
+    ) -> Result<kasumi_types::TenantAuditPage, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let page: kasumi_types::TenantAuditPage =
+            tenant_response(self.inner.export_tenant_audit(input).await?.into_inner())?;
+        page.validate(request).map_err(invalid)?;
+        Ok(page)
+    }
+
     pub async fn security_audit_status(
         &mut self,
         bearer: &str,
@@ -178,6 +327,23 @@ impl KasumiAdminClient {
         ))?;
         Ok(status)
     }
+    pub async fn security_audit_capacity(
+        &mut self,
+        bearer: &str,
+    ) -> Result<AuditCapacity, ClientError> {
+        let response = self
+            .inner
+            .security_audit_capacity(request(
+                bearer,
+                &kasumi_types::SecurityAuditCapacityRequest {},
+            )?)
+            .await?
+            .into_inner();
+        let capacity = decode(response)?;
+        validate_capacity(&capacity)?;
+        Ok(capacity)
+    }
+
     pub async fn security_audit_archives(
         &mut self,
         bearer: &str,

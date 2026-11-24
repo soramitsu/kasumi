@@ -24,6 +24,7 @@ struct Fixture {
     stores: Arc<TenantStorageSet>,
     node: NodeStore,
     context: RequestContext,
+    bootstrap: AuthorityBootstrap,
     signing_root: InstallationSigningRoot,
     _storage: kasumi_engine::test_utils::FixtureStorage,
     _directory: tempfile::TempDir,
@@ -31,6 +32,15 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_capacity(AuthorityCapacity {
+            max_tenants: 100,
+            max_state_bytes: 5 << 20,
+            maintenance_reserve_bytes: 1 << 20,
+        })
+        .await
+    }
+    async fn with_capacity(capacity: AuthorityCapacity) -> Self {
+        let resource_budget_bytes = capacity.max_state_bytes.max(64 << 20);
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let persistent =
@@ -83,11 +93,7 @@ impl Fixture {
         let bootstrap = AuthorityBootstrap {
             initial_signer_certificate: signing.signer.certificate().clone(),
             administrators: BTreeSet::from(["operator".into()]),
-            capacity: AuthorityCapacity {
-                max_tenants: 100,
-                max_state_bytes: 5 << 20,
-                maintenance_reserve_bytes: 1 << 20,
-            },
+            capacity,
             membership: AuthorityMembership {
                 voters: BTreeSet::from([1, 2, 3]),
                 members: (1..=3)
@@ -129,7 +135,7 @@ impl Fixture {
             stores.application().clone(),
             installation.clone(),
             &bootstrap,
-            64 << 20,
+            resource_budget_bytes,
         )
         .unwrap();
         let epoch = EpochClock::new(Arc::new(Clock), Arc::new(Clock)).unwrap();
@@ -153,11 +159,51 @@ impl Fixture {
             stores,
             node,
             context,
+            bootstrap,
             signing_root,
             _storage: storage,
             _directory: directory,
             _scratch_directory: scratch_directory,
         }
+    }
+    async fn reopen(mut self) -> Self {
+        let installation = self.backend.installation.clone();
+        let budget = self.backend.resource_budget_bytes;
+        self.stores.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
+        drop(self.backend);
+        drop(self.stores);
+        drop(self.node);
+        let node = self
+            ._storage
+            .open_existing(
+                self._directory.path().join("authority.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let stores = TenantStorageSet::open_existing(
+            node.clone(),
+            installation.tenant(),
+            Arc::new(LocalKeyProvider::new([1; 32])),
+            Arc::new(LocalKeyProvider::new([2; 32])),
+            kasumi_store::StorageAccess::independent_authority(
+                &installation.manifest,
+                installation.partition,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        self.backend = Backend::open_existing(
+            stores.application().clone(),
+            installation,
+            &self.bootstrap,
+            budget,
+        )
+        .unwrap();
+        self.stores = stores;
+        self.node = node;
+        self
     }
     fn command(&self) -> PreparedCommand {
         PreparedCommand {
@@ -378,6 +424,9 @@ impl ApplyPublisher for LocalPublisher<'_> {
         Ok(())
     }
 }
+
+#[path = "permanent_incarnation_tests.rs"]
+mod permanent_incarnation_tests;
 
 #[tokio::test]
 async fn command_response_and_writes_are_prepared_before_single_guarded_publication() {

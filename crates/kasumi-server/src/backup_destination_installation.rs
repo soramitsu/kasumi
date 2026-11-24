@@ -53,13 +53,12 @@ pub(crate) fn open_destinations(
     let owner = standalone
         .map(InstalledOwner::Standalone)
         .or_else(|| verifier.map(InstalledOwner::Replicated));
+    let mut index = kasumi_store::ExactBackupDestinationIndex::new();
     configured
         .iter()
         .map(|(alias, destination)| {
-            Ok((
-                alias.clone(),
-                destination.open(disk.clone(), owner.as_ref())?,
-            ))
+            let binding = destination.install(&mut index, disk.clone(), owner.as_ref())?;
+            Ok((alias.clone(), index.resolve(&binding)?))
         })
         .collect()
 }

@@ -507,3 +507,573 @@ fn seek_walks_sparse_unique_entries_and_keeps_explicit_nulls() {
     );
     assert!(page.last_key.is_none());
 }
+
+#[test]
+fn single_unique_postings_keep_sparse_seek_order_and_every_cursor_bound() {
+    let fixture = small_fixture(
+        &[("/at", ScalarType::Number)],
+        [
+            json!({}),
+            json!({"at":null}),
+            json!({"at":1}),
+            json!({"at":2}),
+            json!({"at":3}),
+        ],
+    );
+    let limits = Limits::default();
+    let cancellation = QueryCancellation::default();
+    for (request, expected) in [
+        (
+            QueryRequest::new("ordered").sort_asc("/at"),
+            vec![1, 2, 3, 4],
+        ),
+        (
+            QueryRequest::new("ordered").sort_desc("/at"),
+            vec![4, 3, 2, 1],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().gte("/at", 1).lt("/at", 3))
+                .sort_asc("/at"),
+            vec![2, 3],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().gt("/at", 1).lte("/at", 3))
+                .sort_desc("/at"),
+            vec![4, 3],
+        ),
+        (
+            QueryRequest::new("ordered")
+                .filter(Filter::new().eq("/at", 2))
+                .sort_desc("/at"),
+            vec![3],
+        ),
+    ] {
+        let request = request.limit(1).paging(Paging::Seek);
+        let mut after = None;
+        let mut ids = Vec::new();
+        loop {
+            let page = seek(&fixture, &request, after.as_deref(), &limits, &cancellation).unwrap();
+            ids.extend(page.rows.into_iter().map(|row| row.id));
+            after = page.last_key;
+            if after.is_none() {
+                break;
+            }
+            assert!(ids.len() <= expected.len());
+        }
+        assert_eq!(
+            ids,
+            expected
+                .iter()
+                .map(|n| format!("row-{n}"))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn native_pages_merge_oversized_rows_across_cursors_in_both_directions() {
+    use crate::{CollectionRecords, Header, Record, SourceIdentity};
+    use std::ops::RangeBounds;
+    struct Mixed<'a> {
+        source: ResidentSource<'a>,
+        compact: BTreeMap<Vec<u8>, String>,
+        reads: std::cell::Cell<usize>,
+        ranked: Option<&'a [([u8; 32], String)]>,
+        damage: bool,
+        displaced_rank: bool,
+        rank_reads: std::cell::Cell<usize>,
+    }
+    impl CollectionRecords for Mixed<'_> {
+        type Failure = std::convert::Infallible;
+        fn identity(&self) -> SourceIdentity<'_> {
+            self.source.identity()
+        }
+        fn definition(&self) -> &CollectionDefinition {
+            self.source.definition()
+        }
+        fn visit_records(
+            &self,
+            lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            self.source.visit_records(lend)
+        }
+    }
+    impl DocumentSource for Mixed<'_> {
+        fn indexes(&self) -> &QueryIndexes {
+            self.source.indexes
+        }
+        fn has_ordered_unique_source(&self) -> bool {
+            true
+        }
+        fn ranked_compound_count(
+            &self,
+            ordinal: usize,
+            _: &QueryCancellation,
+        ) -> ReadResult<Option<u64>, Self::Failure> {
+            assert_eq!(ordinal, 0);
+            Ok(self.ranked.map(|r| r.len() as u64))
+        }
+        fn ranked_compound_window(
+            &self,
+            _: usize,
+            start: u64,
+            end: u64,
+            descending: bool,
+            _: &QueryCancellation,
+        ) -> ReadResult<Option<Vec<crate::RankedOwner>>, Self::Failure> {
+            let Some(rows) = self.ranked else {
+                return Ok(None);
+            };
+            self.rank_reads.set(self.rank_reads.get() + 1);
+            let mut range = start..end;
+            Ok(Some(
+                (0..crate::ORDERED_TUPLE_WINDOW)
+                    .map_while(|_| directed_next(&mut range, descending))
+                    .map(|rank| {
+                        let (mut digest, id) = rows[rank as usize].clone();
+                        if self.damage {
+                            digest[0] ^= 1;
+                        }
+                        crate::RankedOwner {
+                            rank: if self.displaced_rank { rank + 1 } else { rank },
+                            digest,
+                            id,
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+        fn ordered_unique_window(
+            &self,
+            index: usize,
+            lower: Bound<&[u8]>,
+            upper: Bound<&[u8]>,
+            descending: bool,
+            cancellation: &QueryCancellation,
+        ) -> ReadResult<Option<crate::OrderedTupleWindow>, Self::Failure> {
+            assert_eq!(index, 0);
+            cancellation.check()?;
+            self.reads.set(self.reads.get() + 1);
+            let mut rows = self
+                .compact
+                .iter()
+                .filter(|(k, _)| RangeBounds::<[u8]>::contains(&(lower, upper), k.as_slice()));
+            Ok(Some(
+                (0..crate::ORDERED_TUPLE_WINDOW)
+                    .map_while(|_| directed_next(&mut rows, descending))
+                    .map(|(k, id)| (k.clone(), id.clone()))
+                    .collect(),
+            ))
+        }
+        fn with_record<T>(
+            &self,
+            id: &str,
+            version: Option<u64>,
+            cancellation: &QueryCancellation,
+            lend: impl for<'a> FnOnce(Option<Record<'a>>) -> Result<T>,
+        ) -> ReadResult<T, Self::Failure> {
+            if self.ranked.is_some()
+                && let Some(projection) = &self.source.indexes.seek_projection
+                && let Some(roots) = &projection.worker_wide
+            {
+                assert!(self.rank_reads.get() > 0);
+                assert!(
+                    roots.lock().unwrap().is_none(),
+                    "ranked document retained wide tuples"
+                );
+                assert!(
+                    projection.fallback.lock().unwrap().is_none(),
+                    "ranked document retained short tuples"
+                );
+            }
+            self.source.with_record(id, version, cancellation, lend)
+        }
+        fn header_after<T>(
+            &self,
+            after: Option<&str>,
+            cancel: &QueryCancellation,
+            lend: impl for<'a> FnOnce(Option<Header<'a>>) -> Result<T>,
+        ) -> ReadResult<T, Self::Failure> {
+            self.source.header_after(after, cancel, lend)
+        }
+    }
+
+    let mut expected: Vec<_> = (0..48).map(|n| format!("{n:02}")).collect();
+    for n in [0, 7, 15, 16, 17, 31, 32, 47] {
+        expected.push(format!("{n:02}{}", "x".repeat(2048)));
+    }
+    expected.sort();
+    let rows = expected
+        .iter()
+        .map(|v| json!({"scope":"g","key":v}))
+        .collect::<Vec<_>>();
+    let (collections, indexes) = small_fixture(
+        &[("/scope", ScalarType::String), ("/key", ScalarType::String)],
+        rows,
+    );
+    let mut compact = BTreeMap::new();
+    indexes
+        .visit_compound_rows(|_, _, key, id| {
+            compact.insert(key.to_vec(), id.to_owned());
+            Ok::<_, ()>(true)
+        })
+        .unwrap();
+    assert_eq!(compact.len(), 48);
+    let original = indexes;
+    let indexes = original.published_seek_projection("ordered").unwrap();
+    let capture = indexes.seek_projection.as_ref().unwrap();
+    assert_eq!(
+        capture.fallback.lock().unwrap().as_ref().unwrap()[0].len(),
+        48
+    );
+    let fallback = ResidentSource {
+        collection: &collections["ordered"],
+        indexes: &indexes,
+    };
+    let plain = QueryRequest::new("ordered")
+        .filter(Filter::new().eq("/scope", "g"))
+        .sort_asc("/key")
+        .limit(7)
+        .paging(Paging::Seek);
+    let page = indexes
+        .seek_page(
+            &fallback,
+            &plain,
+            None,
+            &Limits::default(),
+            &|_| Ok(32),
+            &Default::default(),
+            &mut query_memory(),
+        )
+        .unwrap();
+    assert_eq!(page.rows.len(), 7);
+    assert!(capture.fallback.lock().unwrap().is_some());
+    let source = Mixed {
+        source: ResidentSource {
+            collection: &collections["ordered"],
+            indexes: &indexes,
+        },
+        compact,
+        reads: Default::default(),
+        ranked: None,
+        damage: false,
+        displaced_rank: false,
+        rank_reads: Default::default(),
+    };
+    for desc in [false, true] {
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let req = QueryRequest::new("ordered")
+            .filter(Filter::new().eq("/scope", "g"))
+            .limit(7)
+            .paging(Paging::Seek);
+        let req = if desc {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        loop {
+            let previous = source.reads.get();
+            let page = indexes
+                .seek_page(
+                    &source,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert!(source.reads.get() > previous);
+            for row in page.rows {
+                seen.push(row.body["key"].as_str().unwrap().to_owned());
+            }
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if desc {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected);
+    }
+    assert!(capture.fallback.lock().unwrap().is_none());
+    assert_eq!(
+        indexes.collections["ordered"]
+            .structured
+            .unique
+            .values()
+            .next()
+            .unwrap()
+            .overflow
+            .len(),
+        8
+    );
+    // Each production page has its own registered worker. Verify an actual
+    // continuation after a bounded wide slice in both traversal directions.
+    for descending in [false, true] {
+        let req = QueryRequest::new("ordered")
+            .filter(Filter::new().eq("/scope", "g"))
+            .limit(3)
+            .paging(Paging::Seek);
+        let req = if descending {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let worker = original
+                .published_seek_worker_projection("ordered")
+                .unwrap();
+            let root = worker
+                .seek_projection
+                .as_ref()
+                .unwrap()
+                .worker_wide
+                .as_ref()
+                .unwrap();
+            assert_eq!(root.lock().unwrap().as_ref().unwrap()[0].len(), 8);
+            let registered = Mixed {
+                source: ResidentSource {
+                    collection: &collections["ordered"],
+                    indexes: &worker,
+                },
+                compact: source.compact.clone(),
+                reads: Default::default(),
+                ranked: None,
+                damage: false,
+                displaced_rank: false,
+                rank_reads: Default::default(),
+            };
+            let page = worker
+                .seek_page(
+                    &registered,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert!(root.lock().unwrap().is_none());
+            seen.extend(
+                page.rows
+                    .into_iter()
+                    .map(|row| row.body["key"].as_str().unwrap().to_owned()),
+            );
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if descending {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected);
+    }
+    let mut ranked_rows = Vec::new();
+    original
+        .visit_ranked_compounds(|_, _, row| {
+            match row {
+                crate::RankedCompound::Count(count) => assert_eq!(count as usize, expected.len()),
+                crate::RankedCompound::Owner { rank, digest, id } => {
+                    assert_eq!(rank as usize, ranked_rows.len());
+                    ranked_rows.push((digest, id.to_owned()));
+                }
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    for descending in [false, true] {
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let req = QueryRequest::new("ordered")
+            .filter(
+                Filter::new()
+                    .eq("/scope", "g")
+                    .gte("/key", expected[8].clone())
+                    .lt("/key", expected[45].clone()),
+            )
+            .limit(5)
+            .paging(Paging::Seek);
+        let req = if descending {
+            req.sort_desc("/key")
+        } else {
+            req.sort_asc("/key")
+        };
+        loop {
+            let worker = original
+                .published_seek_worker_projection("ordered")
+                .unwrap();
+            let registered = Mixed {
+                source: ResidentSource {
+                    collection: &collections["ordered"],
+                    indexes: &worker,
+                },
+                compact: BTreeMap::new(),
+                reads: Default::default(),
+                ranked: Some(&ranked_rows),
+                damage: false,
+                displaced_rank: false,
+                rank_reads: Default::default(),
+            };
+            let page = worker
+                .seek_page(
+                    &registered,
+                    &req,
+                    cursor.as_deref(),
+                    &Limits::default(),
+                    &|_| Ok(32),
+                    &Default::default(),
+                    &mut query_memory(),
+                )
+                .unwrap();
+            assert_eq!(registered.reads.get(), 0);
+            assert!(registered.rank_reads.get() > 0);
+            seen.extend(
+                page.rows
+                    .into_iter()
+                    .map(|r| r.body["key"].as_str().unwrap().to_owned()),
+            );
+            cursor = page.last_key;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(seen.len() < expected.len());
+        }
+        if descending {
+            seen.reverse();
+        }
+        assert_eq!(seen, expected[8..45]);
+    }
+    let damaged = Mixed {
+        source: ResidentSource {
+            collection: &collections["ordered"],
+            indexes: &original,
+        },
+        compact: BTreeMap::new(),
+        reads: Default::default(),
+        ranked: Some(&ranked_rows),
+        damage: true,
+        displaced_rank: false,
+        rank_reads: Default::default(),
+    };
+    let all = QueryRequest::new("ordered")
+        .sort_asc("/scope")
+        .sort_asc("/key")
+        .limit(2)
+        .paging(Paging::Seek);
+    let failure = original
+        .seek_page(
+            &damaged,
+            &all,
+            None,
+            &Limits::default(),
+            &|_| Ok(32),
+            &Default::default(),
+            &mut query_memory(),
+        )
+        .unwrap_err();
+    assert!(matches!(failure,crate::ReadFailure::Query(ref e) if e.code==ErrorCode::Corruption));
+    assert_eq!(damaged.rank_reads.get(), 1);
+    let shifted = Mixed {
+        damage: false,
+        displaced_rank: true,
+        rank_reads: Default::default(),
+        ..damaged
+    };
+    for cursor in [
+        None,
+        Some(vec![
+            serde_json::json!("s"),
+            serde_json::json!(expected[12]),
+        ]),
+    ] {
+        let failure = original
+            .seek_page(
+                &shifted,
+                &all,
+                cursor.as_deref(),
+                &Limits::default(),
+                &|_| Ok(32),
+                &Default::default(),
+                &mut query_memory(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(failure, crate::ReadFailure::Query(ref e) if e.code == ErrorCode::Corruption)
+        );
+    }
+}
+
+#[test]
+fn compound_keys_share_field_strings_across_build_swaps_and_new_values() {
+    use crate::scalar::IndexString;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    fn check(indexes: &QueryIndexes) {
+        let structured = &indexes.collections["ordered"].structured;
+        let unique = structured.unique.values().next().unwrap();
+        let mut count = 0;
+        for (tuple, _) in unique
+            .entries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .chain(unique.overflow.iter())
+        {
+            for (key, field) in tuple.iter().zip(&unique.fields) {
+                let Some((Scalar::String(IndexString::Shared(posting)), _)) =
+                    structured.fields[&field.path].entries.get_key_value(key)
+                else {
+                    panic!("field did not own a shared string")
+                };
+                let Scalar::String(IndexString::Shared(component)) = key else {
+                    panic!("tuple copied a field string")
+                };
+                assert!(Arc::ptr_eq(component, posting));
+            }
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+    let wide = "q".repeat(4096);
+    let (base, indexes) = small_fixture(
+        &[("/scope", ScalarType::String), ("/key", ScalarType::String)],
+        [
+            json!({"scope":"g","key":"small"}),
+            json!({"scope":"g","key":wide}),
+            json!({"scope":"g","key":"untouched"}),
+        ],
+    );
+    check(&indexes);
+    let mut next = base.clone();
+    let coll = next.get_mut("ordered").unwrap();
+    coll.data_epoch += 1;
+    for (id, key) in [("row-0", wide.as_str()), ("row-1", "small")] {
+        coll.documents.insert(
+            id.into(),
+            pending(Document {
+                id: id.into(),
+                version: 2,
+                body: json!({"scope":"fresh","key":key}),
+            }),
+        );
+    }
+    let changed = BTreeMap::from([(
+        "ordered".to_owned(),
+        BTreeSet::from(["row-0".to_owned(), "row-1".to_owned()]),
+    )]);
+    let updated = indexes.update_fixture(&base, &next, &changed).unwrap();
+    check(&updated);
+    check(&indexes);
+    let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
+    check(&rebuilt);
+}

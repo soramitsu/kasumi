@@ -119,6 +119,22 @@ class AcceptanceTests(unittest.TestCase):
                               "executable": executable})
         return witness, processes, {"kasumictl": executable["sha256"]}, expected
 
+    def test_permanent_sessions_use_the_adopted_floor_and_four_authentic_former_counts(self):
+        log = self.file("component.log")
+        counts = [{"id": key, "former_limit": limit, "observed": limit + 1, "log": log}
+                  for key, limit in acceptance.PERMANENT_HISTORY_LIMITS.items()]
+        session = {"id": "sessions", "acceptance_floor": 100_001, "observed": 100_001, "log": log}
+        acceptance.check_lifetime_counts(self.root, [*counts, session])
+        for changed in ({"observed": 100_000}, {"acceptance_floor": 256},
+                        {"former_limit": 65_536}, {"observed": True}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                acceptance.check_lifetime_counts(self.root, [*counts, {**session, **changed}])
+        for i, historical in enumerate(counts):
+            for change in ({"former_limit": 1}, {"observed": historical["former_limit"]}):
+                with self.subTest(category=historical["id"], change=change), self.assertRaises(ValueError):
+                    acceptance.check_lifetime_counts(self.root, [
+                        *counts[:i], {**historical, **change}, *counts[i + 1:], session])
+
     def test_native_admin_readback_requires_candidate_processes_and_exact_pinned_state(self):
         witness, processes, binaries, expected = self.admin_readback()
         acceptance.check_native_admin_readback(self.root, witness, processes, binaries, expected)
@@ -193,15 +209,37 @@ class AcceptanceTests(unittest.TestCase):
 
     def capacity(self):
         size = 4 << 30
-        integrity = self.lines("integrity.jsonl", [{"first": first, "documents": 256,
-            "canonical_bytes": 256 << 20, "expected_sha256": "a" * 64, "observed_sha256": "a" * 64}
-            for first in range(0, 4096, 256)])
+        plan = {"run_id": "00000000-0000-0000-0000-000000000001", "collection": "capacity",
+                "seed_sha256": "b" * 64, "documents": 4096, "document_bytes": 1 << 20,
+                "batch_documents": 3}
+        batches = [{"first": first, "documents": min(3, 4096 - first),
+                    "canonical_bytes": min(3, 4096 - first) << 20,
+                    "expected_sha256": "a" * 64, "observed_sha256": "a" * 64}
+                   for first in range(0, 4096, 3)]
+        integrity = self.lines("integrity.jsonl", batches)
+        verify_start = {"event": "started", "format": 1, "mode": "verify", "corpus": plan,
+                        "expected_canonical_bytes": size, "endpoint": "https://localhost:9444",
+                        "configuration_sha256": "1" * 64, "executable_sha256": "d" * 64,
+                        "os": "linux", "architecture": "aarch64", "credential_binding_claims": {},
+                        "credential_binding_scope": "fixture", "scope": "fixture", "generator": "fixture"}
+        prefixes = [r["first"] + r["documents"] for r in batches]
+        verification = self.lines("verification.jsonl", [verify_start,
+            *[{"event": "verified_prefix", "documents": n, "canonical_bytes": n << 20} for n in prefixes],
+            {"event": "passed", "documents": 4096, "canonical_bytes": size, "expected_sha256": "f" * 64,
+             "observed_sha256": "f" * 64, "integrity_sha256": integrity["sha256"]}])
         limits = {"rss_bytes": 1 << 30, "allocated_disk_bytes": 8 << 30, "maintenance_workspace_bytes": 64 << 20}
         resources = self.lines("resources.jsonl", [{"elapsed_seconds": i, **limits} for i in (0, 1)])
+        compression_log = self.lines("compression.jsonl", [
+            {"event": "started", "format": 1, "mode": "measure", "algorithm": "gzip-9",
+             "configuration_sha256": "c" * 64, "executable_sha256": "d" * 64, "os": "linux",
+             "architecture": "aarch64", "expected_canonical_bytes": size, "corpus": plan},
+            {"event": "measured", "documents": 4096, "algorithm": "gzip-9", "input_bytes": size,
+             "output_bytes": size * 4 // 5, "canonical_sha256": "a" * 64, "gzip_sha256": "e" * 64,
+             "expected_sha256": "f" * 64, "seconds": 100.0}])
         return {"corpus": {"documents": 4096, "canonical_bytes": size, "seed_sha256": "b" * 64,
                     "compression": {"algorithm": "gzip-9", "input_bytes": size, "output_bytes": size * 4 // 5,
-                                    "log": self.file("compression.log")}},
-                "operations": [{"id": name, "integrity": integrity, "resources": resources,
+                                    "log": compression_log}},
+                "operations": [{"id": name, "integrity": integrity, "verification": verification, "resources": resources,
                     "limits": limits.copy(), "read_retention_budget_bytes": 64 << 20}
                     for name in sorted(acceptance.SCENARIOS["capacity-ha"])]}
 
@@ -313,6 +351,42 @@ class AcceptanceTests(unittest.TestCase):
                     value[-1]["tenants"] = 100
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     acceptance.check_benchmarks(self.root, {"cases": value})
+
+    def test_capacity_replays_original_measurement_before_accepting_reported_counts(self):
+        for change in ("extra-event", "short", "different-output", "different-seed", "missing-digest"):
+            with self.subTest(change=change):
+                corpus = self.capacity()["corpus"]
+                events = list(acceptance.rows(self.root, corpus["compression"]["log"]))
+                if change == "extra-event":
+                    events.append(events[-1])
+                elif change == "short":
+                    events.pop()
+                elif change == "different-output":
+                    events[-1]["output_bytes"] -= 1
+                elif change == "different-seed":
+                    events[0]["corpus"]["seed_sha256"] = "a" * 64
+                else:
+                    del events[-1]["gzip_sha256"]
+                corpus["compression"]["log"] = self.lines("changed-compression.jsonl", events)
+                with self.assertRaises(ValueError):
+                    acceptance.replay_capacity_measurement(self.root, corpus)
+
+    def test_capacity_verification_binds_original_prefixes_driver_and_measured_framed_digest(self):
+        value = self.capacity()
+        measured = acceptance.replay_capacity_measurement(self.root, value["corpus"])
+        op = value["operations"][0]
+        measured[0]["corpus"]["batch_documents"] = 1
+        acceptance.check_integrity(self.root, op, measured)
+        original = list(acceptance.rows(self.root, op["verification"]))
+        for row, key, replacement in ((0, "executable_sha256", "3" * 64), (1, "documents", 2),
+                                      (-1, "observed_sha256", "a" * 64),
+                                      (-1, "integrity_sha256", "b" * 64)):
+            with self.subTest(key=key):
+                events = [dict(item) for item in original]
+                events[row][key] = replacement
+                op["verification"] = self.lines("changed-verification.jsonl", events)
+                with self.assertRaises(ValueError):
+                    acceptance.check_integrity(self.root, op, measured)
 
     def test_capacity_must_exceed_three_gib_and_cover_every_operation(self):
         value = self.capacity()
@@ -513,7 +587,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_only_domains_with_a_real_runner_are_registered(self):
         self.assertEqual(set(acceptance.DOMAIN_ADAPTERS),
-                         {"repeatable-assembly", "dependency-review", "ha-soak", "oci-smoke"})
+                         {"ha-faults", "recovery", "capacity-ha", "capacity-standalone", "audit-retention", "key-retention", "benchmark-matrix", "concurrency", "observability", "correctness", "repeatable-assembly", "dependency-review", "ha-soak", "oci-smoke", "package-smoke", "systemd-smoke", "installed", "providers", "backup-cleanup"})
         self.assertLessEqual(set(acceptance.DOMAIN_ADAPTERS), set(acceptance.SCENARIOS))
         self.assertEqual(set(acceptance.SCENARIOS), set(attempt_index.DOMAIN_KINDS))
         source = {"README.md": {"sha256": "a" * 64}}

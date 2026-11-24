@@ -53,11 +53,19 @@ async fn fixture() -> Result<(tempfile::TempDir, NodeStore, Arc<TenantStore>, In
 
 fn record_genesis(enrollment: &Enrollment, store: &TenantStore, input: &Input) -> Result<()> {
     if let Input::Data { configuration } = input {
-        if configuration.mode == crate::runtime::DeploymentMode::Replicated {
+        if configuration.mode == crate::runtime::DeploymentMode::Replicated
+            && configuration.control.is_some()
+        {
             enrollment.record_genesis_tenant(
                 store,
                 crate::runtime::CONTROL_TENANT,
-                Uuid::parse_str(configuration.control.incarnation.as_deref().unwrap())?,
+                Uuid::parse_str(
+                    configuration
+                        .hosted_control()?
+                        .incarnation
+                        .as_deref()
+                        .unwrap(),
+                )?,
                 "22".repeat(32),
             )?;
         }
@@ -570,5 +578,263 @@ async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_
     }
     assert_eq!(records(&store)?, original);
     store.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn dedicated_backup_transport_enrollment_rejects_callback_substitution_and_legacy_escalation()
+-> Result<()> {
+    let (_directory, node, store, mut input) = fixture().await?;
+    let Input::Data { configuration } = &mut input else {
+        unreachable!()
+    };
+    let installed = crate::remote_backup::BackupSources {
+        tls: configuration.admin.tls.clone(),
+        server_ca: configuration.admin.client_ca.clone(),
+        bearer_file: "/installed/backup-reader".into(),
+        callback_principal: "control-callback".into(),
+        members: std::collections::BTreeMap::from([(
+            10,
+            crate::remote_backup::SourceRoute {
+                admin: crate::serving_runtime::AuthorityEndpoint {
+                    endpoint: "https://data-10.example".into(),
+                    certificate_pins: std::collections::BTreeSet::from(["aa".repeat(32)]),
+                },
+                writer_principal: "data-10".into(),
+                source_certificate_pins: std::collections::BTreeSet::from(["bb".repeat(32)]),
+            },
+        )]),
+    };
+    let mut changed = configuration.clone();
+    changed.control.as_mut().unwrap().backup_sources = Some(installed.clone());
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    require_control_placement(
+        &store,
+        match &input {
+            Input::Data { configuration } => configuration,
+            _ => unreachable!(),
+        },
+    )?;
+    assert!(require_control_placement(&store, &changed).is_err());
+    let (_directory2, node2, store2, mut opted) = fixture().await?;
+    let Input::Data { configuration } = &mut opted else {
+        unreachable!()
+    };
+    configuration.control.as_mut().unwrap().backup_sources = Some(installed);
+    let checked = configuration.clone();
+    let enrollment = Enrollment::begin(&store2, &opted)?;
+    record_genesis(&enrollment, &store2, &opted)?;
+    enrollment.complete(&store2)?;
+    require_control_placement(&store2, &checked)?;
+    let mut substituted = checked;
+    substituted
+        .control
+        .as_mut()
+        .unwrap()
+        .backup_sources
+        .as_mut()
+        .unwrap()
+        .members
+        .get_mut(&10)
+        .unwrap()
+        .writer_principal = "other-node".into();
+    assert!(require_control_placement(&store2, &substituted).is_err());
+    store.shutdown().await.unwrap();
+    store2.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    node2.shutdown().await.unwrap();
+    Ok(())
+}
+#[tokio::test]
+async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_and_callback_identity()
+-> Result<()> {
+    use crate::{
+        remote_backup::BackupAccess, remote_control::RemoteControlConfig,
+        serving_runtime::AuthorityEndpoint,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let (_directory, node, store, mut input) = fixture().await?;
+    let Input::Data { configuration } = &mut input else {
+        unreachable!()
+    };
+    configuration.control = None;
+    configuration.target_recovery = None;
+    configuration.mode = crate::runtime::DeploymentMode::Replicated;
+    let replication = configuration
+        .replication
+        .as_ref()
+        .context("fixture needs replication")?;
+    let local = replication
+        .peers
+        .iter()
+        .find(|peer| peer.node_id == replication.node_id)
+        .context("fixture needs a local peer")?;
+    let writer = BackupAccess {
+        tls: replication.listener.tls.clone(),
+        source_certificate_pins: local.certificate_pins.iter().cloned().collect(),
+        bearer_file: "/installed/writer".into(),
+        principal: "backup-writer".into(),
+        callback_principal: "backup-callback".into(),
+        callback_certificate_pins: BTreeSet::from(["ab".repeat(32)]),
+    };
+    let remote = RemoteControlConfig {
+        catalog_reader: Some(std::sync::Arc::new(
+            crate::data_member_catalog::CatalogReaderGrant {
+                target_journals: false,
+                principal: "inventory-reader".into(),
+                client_certificate_pins: BTreeSet::from(["ac".repeat(32)]),
+                groups: BTreeMap::from([(
+                    configuration.tenants[0].tenant.clone(),
+                    Uuid::parse_str(configuration.tenants[0].incarnation.as_deref().unwrap())?,
+                )]),
+            },
+        )),
+        root: kasumi_types::ControlSigningRoot {
+            control_incarnation: Uuid::new_v4(),
+            public_key: "cc".repeat(32),
+        },
+        endpoints: BTreeMap::from([(
+            100,
+            AuthorityEndpoint {
+                endpoint: "https://control-100.example".into(),
+                certificate_pins: BTreeSet::from(["de".repeat(32)]),
+            },
+        )]),
+        tls: configuration.admin.tls.clone(),
+        server_ca: configuration.admin.client_ca.clone(),
+        principal: "router".into(),
+        bearer_file: "/installed/routing".into(),
+        observers: BTreeSet::from(["observer".into()]),
+        refresh_interval_ms: 1000,
+        request_timeout_ms: 1000,
+        backup: Some(writer),
+    };
+    crate::remote_control::validate_data_only(configuration, &remote)?;
+    configuration.remote_control = Some(remote);
+    let verified = configuration.clone();
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    require_complete(&store, verified.database_id, Kind::Data)?;
+    require_control_placement(&store, &verified)?;
+    let original = records(&store)?;
+    for what in [
+        "writer", "callback", "endpoint", "root", "reader", "grant", "journals",
+    ] {
+        let mut changed = verified.clone();
+        let remote = changed.remote_control.as_mut().unwrap();
+        let backup = remote.backup.as_mut().unwrap();
+        match what {
+            "journals" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap()).target_journals =
+                    true;
+            }
+            "reader" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap()).principal =
+                    "another-reader".into();
+            }
+            "grant" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap())
+                    .groups
+                    .clear();
+            }
+
+            "writer" => backup.principal = "some-other-writer".into(),
+            "callback" => backup.callback_certificate_pins = BTreeSet::from(["11".repeat(32)]),
+            "endpoint" => {
+                remote.endpoints.get_mut(&100).unwrap().endpoint =
+                    "https://other-control.example".into()
+            }
+            "root" => remote.root.public_key = "aa".repeat(32),
+            _ => unreachable!(),
+        }
+        assert!(
+            require_control_placement(&store, &changed).is_err(),
+            "{what}"
+        );
+    }
+    assert_eq!(records(&store)?, original);
+    store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn dedicated_catalog_source_enrollment_binds_verifier_reader_and_listener() -> Result<()> {
+    use crate::data_member_catalog::{DataCatalogSource, DataCatalogSources};
+    use std::collections::{BTreeMap, BTreeSet};
+    let (_directory, node, store, mut input) = fixture().await?;
+    let Input::Data { configuration } = &mut input else {
+        unreachable!()
+    };
+    let source = DataCatalogSources {
+        target_journals: false,
+        tls: configuration.admin.tls.clone(),
+        server_ca: configuration.admin.client_ca.clone(),
+        principal: "catalog-reader".into(),
+        bearer_file: "/installed/catalog.reader".into(),
+        client_certificate_pins: BTreeSet::from(["cc".repeat(32)]),
+        groups: BTreeMap::from([(
+            "books".into(),
+            kasumi_types::DataCatalogGroup {
+                incarnation: Uuid::new_v4(),
+                members: BTreeSet::from([10]),
+            },
+        )]),
+        members: BTreeMap::from([(
+            10,
+            DataCatalogSource {
+                verifier: kasumi_types::TrustVerifierIdentity {
+                    node_id: 10,
+                    installation_id: Uuid::new_v4(),
+                },
+                admin: crate::serving_runtime::AuthorityEndpoint {
+                    endpoint: "https://data-10.example".into(),
+                    certificate_pins: BTreeSet::from(["bb".repeat(32)]),
+                },
+            },
+        )]),
+    };
+    configuration.control.as_mut().unwrap().catalog_sources = Some(source);
+    let original = configuration.clone();
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    require_control_placement(&store, &original)?;
+    for replacement in [
+        "installation",
+        "listener",
+        "reader",
+        "group",
+        "journals",
+        "drop",
+    ] {
+        let mut different = original.clone();
+        let installed = &mut different.control.as_mut().unwrap().catalog_sources;
+        let source = installed.as_mut().unwrap();
+        match replacement {
+            "installation" => {
+                source
+                    .members
+                    .get_mut(&10)
+                    .unwrap()
+                    .verifier
+                    .installation_id = Uuid::new_v4()
+            }
+            "listener" => {
+                source.members.get_mut(&10).unwrap().admin.certificate_pins =
+                    BTreeSet::from(["aa".repeat(32)])
+            }
+            "journals" => source.target_journals = true,
+            "reader" => source.principal = "different-reader".into(),
+            "group" => source.groups.get_mut("books").unwrap().incarnation = Uuid::new_v4(),
+            _ => *installed = None,
+        }
+        assert!(require_control_placement(&store, &different).is_err());
+    }
+    store.shutdown().await?;
+    node.shutdown().await?;
     Ok(())
 }

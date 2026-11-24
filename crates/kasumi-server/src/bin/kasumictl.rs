@@ -80,10 +80,11 @@ fn observation_failure(status: &tonic::Status) -> anyhow::Error {
 /// Commands that use the administrative endpoint. After `--profile`, one of
 /// these selects administration through that installed profile; any other
 /// command after `--profile` is a data command.
-const ADMINISTRATIVE_OPERATIONS: [&str; 15] = [
+const ADMINISTRATIVE_OPERATIONS: [&str; 16] = [
     "health",
     "ready",
     "metrics",
+    "recovery-observation",
     "compact",
     "activate-schema",
     "read-schema",
@@ -178,6 +179,8 @@ answered 200):
   --config <client.json> health              startup completed and serving
   --config <client.json> ready               every local group covered and admitted
   --config <client.json> metrics             Prometheus text
+  --config <client.json> recovery-observation <operation-uuid>
+                                             protected phase and revision of one recovery
 
 Storage:
   --config <client.json> compact             start a compaction cycle on every node database
@@ -218,6 +221,22 @@ async fn run(arguments: &[String]) -> Result<()> {
     {
         let (status, body) = admin_client(flag, path)?
             .observe(&format!("/{operation}"))
+            .await?;
+        print!("{body}");
+        ensure!(status == 200, "{operation} answered HTTP {status}");
+        return Ok(());
+    }
+    if let [flag, path, operation, id] = arguments
+        && matches!(flag.as_str(), "--config" | "--profile")
+        && operation == "recovery-observation"
+    {
+        let operation_id = uuid::Uuid::parse_str(id).context("invalid recovery UUID")?;
+        ensure!(
+            !operation_id.is_nil() && operation_id.to_string() == *id,
+            "expected a canonical non-nil recovery UUID"
+        );
+        let (status, body) = admin_client(flag, path)?
+            .observe_recovery(operation_id)
             .await?;
         print!("{body}");
         ensure!(status == 200, "{operation} answered HTTP {status}");
@@ -575,6 +594,7 @@ mod tests {
             "--profile /p/operator.json create-collection c.json",
             "--profile /p/operator.json manage m.json",
             "--profile /p/control.json metrics",
+            "--profile /p/control.json recovery-observation 16840694-a946-4585-9e1d-877b69fecdd6",
             "--profile /p/operator.json suspend",
         ] {
             assert!(selects_profile_administration(&arguments(administrative)));

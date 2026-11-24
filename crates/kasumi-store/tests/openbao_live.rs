@@ -1,12 +1,22 @@
 //! Opt-in compatibility test against an actual, locally installed OpenBao binary.
 //! Starts only loopback listeners, writes no token helper, and kills its child.
+#[path = "support/provider_control.rs"]
+mod provider_control;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
     EncryptedBackup, KeyProvider, NodeStore, TenantStore, TransitConfig, TransitKeyProvider,
     WriteOp,
 };
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
+use std::io::Write;
+use std::{
+    os::unix::fs::OpenOptionsExt,
+    path::Path,
+    process::Stdio,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+use zeroize::Zeroizing;
 
 async fn post(client: &reqwest::Client, endpoint: &str, path: &str, body: Value) -> Result<Value> {
     let response = client
@@ -27,15 +37,89 @@ async fn post(client: &reqwest::Client, endpoint: &str, path: &str, body: Value)
     }
 }
 
-async fn ca_file(path: &Path) -> Result<Vec<u8>> {
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.contains("ca") && name.ends_with(".pem") {
-            return Ok(std::fs::read(entry.path())?);
-        }
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)?;
+    Ok(())
+}
+
+type Server = Option<tokio::process::Child>;
+
+fn start_server(binary: &Path, config: &Path, generation: u8) -> Result<Server> {
+    if provider_control::supervised() {
+        provider_control::request(&format!("start-{generation}"), json!({"config":config}))?;
+        return Ok(None);
     }
-    anyhow::bail!("OpenBao has not generated its development CA yet")
+    Ok(Some(
+        tokio::process::Command::new(binary)
+            .arg("server")
+            .arg("-config")
+            .arg(config)
+            .arg("-log-level=error")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?,
+    ))
+}
+
+async fn stop_server(child: &mut Server, generation: u8) -> Result<()> {
+    if let Some(process) = child {
+        process.kill().await?;
+        process.wait().await?;
+    } else {
+        provider_control::request(&format!("stop-{generation}"), Value::Null)?;
+    }
+    Ok(())
+}
+
+async fn ready_sealed(client: &reqwest::Client, endpoint: &str, child: &mut Server) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(process) = child {
+                ensure!(
+                    process.try_wait()?.is_none(),
+                    "OpenBao exited during startup"
+                );
+            }
+            if let Ok(response) = client
+                .get(format!("{endpoint}/v1/sys/seal-status"))
+                .send()
+                .await
+                && response.status().is_success()
+                && response.json::<Value>().await?["sealed"] == true
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?
+}
+
+async fn scoped_token(
+    client: &reqwest::Client,
+    endpoint: &str,
+    policy: &str,
+) -> Result<Zeroizing<String>> {
+    let response = post(
+        client,
+        endpoint,
+        "auth/token/create",
+        json!({"policies":[policy],"no_default_policy":true,"ttl":"15m"}),
+    )
+    .await?;
+    Ok(Zeroizing::new(
+        response
+            .pointer("/auth/client_token")
+            .and_then(Value::as_str)
+            .context("scoped token missing")?
+            .to_owned(),
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -47,67 +131,74 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
         kasumi_store::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let binary = std::env::var_os("KASUMI_OPENBAO_BIN").context("set KASUMI_OPENBAO_BIN")?;
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let certificate_dir = root.path().join("certificates");
-    std::fs::create_dir(&certificate_dir)?;
     let port = std::net::TcpListener::bind("127.0.0.1:0")?
         .local_addr()?
         .port();
     let endpoint = format!("https://127.0.0.1:{port}");
-    let root_token = uuid::Uuid::new_v4().to_string();
-    let mut child = tokio::process::Command::new(binary)
-        .args([
-            "server",
-            "-dev",
-            "-dev-tls",
-            "-dev-no-store-token",
-            "-log-level=error",
-        ])
-        .arg(format!("-dev-listen-address=127.0.0.1:{port}"))
-        .arg(format!("-dev-tls-cert-dir={}", certificate_dir.display()))
-        .env("BAO_DEV_ROOT_TOKEN_ID", &root_token)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let ca = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            ensure!(
-                child.try_wait()?.is_none(),
-                "OpenBao exited during test startup"
-            );
-            if let Ok(ca) = ca_file(&certificate_dir).await {
-                return Ok(ca);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await??;
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut token_header = reqwest::header::HeaderValue::from_str(&root_token)?;
-    token_header.set_sensitive(true);
-    headers.insert("X-Vault-Token", token_header);
-    let client = reqwest::Client::builder()
-        .https_only(true)
-        .min_tls_version(reqwest::tls::Version::TLS_1_3)
-        .add_root_certificate(reqwest::Certificate::from_pem(&ca)?)
-        .default_headers(headers)
-        .timeout(Duration::from_secs(5))
-        .no_proxy()
-        .build()?;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if client
-                .get(format!("{endpoint}/v1/sys/health"))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
+    let certificate =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])?;
+    let ca = certificate.cert.pem().into_bytes();
+    let cert_file = root.path().join("bao.pem");
+    let key_file = root.path().join("bao.key");
+    write_private(&cert_file, &ca)?;
+    write_private(
+        &key_file,
+        certificate.signing_key.serialize_pem().as_bytes(),
+    )?;
+    let config = root.path().join("bao.json");
+    write_private(
+        &config,
+        &serde_json::to_vec(&json!({
+            "api_addr": endpoint, "disable_mlock": true,
+            "storage":{"file":{"path":root.path().join("bao-storage")}},
+            "listener":[{"tcp":{"address":format!("127.0.0.1:{port}"),
+                "tls_cert_file":cert_file, "tls_key_file":key_file, "tls_min_version":"tls13",
+                "tls_disable_client_certs":true, "cluster_address":"127.0.0.1:0"}}]
+        }))?,
+    )?;
+    let builder = || -> Result<reqwest::ClientBuilder> {
+        Ok(reqwest::Client::builder()
+            .https_only(true)
+            .min_tls_version(reqwest::tls::Version::TLS_1_3)
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca)?)
+            .timeout(Duration::from_secs(5))
+            .no_proxy())
+    };
+    let public = builder()?.build()?;
+    let mut child = start_server(binary.as_ref(), &config, 1)?;
+    ready_sealed(&public, &endpoint, &mut child).await?;
+    let initialized = post(
+        &public,
+        &endpoint,
+        "sys/init",
+        json!({"secret_shares":1,"secret_threshold":1}),
+    )
     .await?;
+    let unseal = Zeroizing::new(
+        initialized
+            .pointer("/keys_base64/0")
+            .and_then(Value::as_str)
+            .context("unseal share missing")?
+            .to_owned(),
+    );
+    let mut token_header = reqwest::header::HeaderValue::from_str(
+        initialized["root_token"]
+            .as_str()
+            .context("root token missing")?,
+    )?;
+    token_header.set_sensitive(true);
+    drop(initialized);
+    let opened = post(
+        &public,
+        &endpoint,
+        "sys/unseal",
+        json!({"key":unseal.as_str()}),
+    )
+    .await?;
+    ensure!(opened["sealed"] == false, "OpenBao remained sealed");
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("X-Vault-Token", token_header);
+    let client = builder()?.default_headers(headers).build()?;
     post(
         &client,
         &endpoint,
@@ -138,25 +229,15 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             json!({"policy":policy}),
         )
         .await?;
-        let token_response = post(
-            &client,
-            &endpoint,
-            "auth/token/create",
-            json!({"policies":[key_name],"no_default_policy":true,"ttl":"5m"}),
-        )
-        .await?;
-        let service_token = token_response
-            .pointer("/auth/client_token")
-            .and_then(Value::as_str)
-            .context("service token missing")?
-            .to_owned();
+        let first_token = scoped_token(&client, &endpoint, key_name).await?;
+        let credentials = Arc::new(RwLock::new(first_token.clone()));
         let provider = Arc::new(TransitKeyProvider::new(TransitConfig {
             endpoint: endpoint.clone(),
             mount: "transit".into(),
             key_name: key_name.into(),
             credential: {
-                let token = service_token.clone();
-                Arc::new(move || Ok(zeroize::Zeroizing::new(token.clone())))
+                let credentials = credentials.clone();
+                Arc::new(move || Ok(credentials.read().expect("test credential lock").clone()))
             },
             namespace: None,
             ca_pem: ca.clone(),
@@ -240,17 +321,76 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             store.get("documents", b"private-id")?.unwrap(),
             b"private-body"
         );
+        let replacement = scoped_token(&client, &endpoint, key_name).await?;
+        ensure!(
+            replacement.as_str() != first_token.as_str(),
+            "replacement token was reused"
+        );
         post(
             &client,
             &endpoint,
             "auth/token/revoke",
-            json!({"token":service_token}),
+            json!({"token":first_token.as_str()}),
+        )
+        .await?;
+        ensure!(
+            provider.unwrap_key("tenant-a", &rewrapped).await.is_err(),
+            "revoked initial token was accepted"
+        );
+        *credentials.write().expect("test credential lock") = replacement.clone();
+        store.refresh_lease().await?;
+        assert_eq!(
+            provider
+                .unwrap_key("tenant-a", &rewrapped)
+                .await?
+                .as_bytes(),
+            original.plaintext.as_bytes()
+        );
+        if derived {
+            stop_server(&mut child, 1).await?;
+            ensure!(
+                provider.unwrap_key("tenant-a", &rewrapped).await.is_err(),
+                "stopped provider returned a key"
+            );
+            child = start_server(binary.as_ref(), &config, 2)?;
+            ready_sealed(&public, &endpoint, &mut child).await?;
+            let opened = post(
+                &public,
+                &endpoint,
+                "sys/unseal",
+                json!({"key":unseal.as_str()}),
+            )
+            .await?;
+            ensure!(
+                opened["sealed"] == false,
+                "restarted provider remained sealed"
+            );
+            assert_eq!(
+                provider
+                    .unwrap_key("tenant-a", &rewrapped)
+                    .await?
+                    .as_bytes(),
+                original.plaintext.as_bytes()
+            );
+            store.refresh_lease().await?;
+            assert_eq!(
+                store.get("documents", b"private-id")?.unwrap(),
+                b"private-body"
+            );
+        }
+        post(
+            &client,
+            &endpoint,
+            "auth/token/revoke",
+            json!({"token":replacement.as_str()}),
         )
         .await?;
         assert!(store.refresh_lease().await.is_err());
         assert!(store.get("documents", b"private-id").is_err());
     }
-    child.kill().await?;
-    child.wait().await?;
+    stop_server(&mut child, 2).await?;
+    if provider_control::supervised() {
+        provider_control::request("complete", Value::Null)?;
+    }
     Ok(())
 }

@@ -5,6 +5,81 @@ use super::*;
 use crate::index_source::SourceResult;
 use kasumi_query::ReadFailure;
 
+/// The canonical command emits its operation tag before its typed payload.
+/// The change vector holds every decoded definition, but serde buffers an
+/// internally tagged SchemaChange only while decoding that element.
+pub(super) fn publication_work(
+    command: &Command,
+    request: &SchemaChangeSet,
+) -> anyhow::Result<u64> {
+    use crate::snapshot_codec::inspect_typed_json_work;
+    use anyhow::Context as _;
+
+    fn add(total: &mut u64, n: u64) -> anyhow::Result<()> {
+        *total = total
+            .checked_add(n)
+            .context("schema publication quote overflow")?;
+        Ok(())
+    }
+    fn vec_work<T>(len: usize) -> anyhow::Result<u64> {
+        if len == 0 {
+            return Ok(0);
+        }
+        // JSON sequence decoding may grow a Vec before its length is known.
+        let capacity = len
+            .checked_next_power_of_two()
+            .context("schema vector overflow")?
+            .max(4);
+        Ok(kasumi_query::vec_bytes::<T>(capacity)?)
+    }
+
+    let mut retained = inspect_typed_json_work(&(
+        &command.context,
+        command.timestamp_ms,
+        &request.activation_id,
+        &request.expected_incarnation,
+        request.expected_schema_epoch,
+        &request.read_set,
+    ))?;
+    add(&mut retained, std::mem::size_of::<Command>() as u64)?;
+    add(
+        &mut retained,
+        vec_work::<SchemaChange>(request.changes.len())?,
+    )?;
+    let mut buffered = 0;
+    for change in &request.changes {
+        buffered = buffered.max(inspect_typed_json_work(change)?);
+        let definition = change.definition();
+        // Keep the full structural model for arbitrary JSON. Index descriptors
+        // are concrete Rust structs; their strings and nested Vecs are the only
+        // out-of-line data, including when a text analyzer is selected.
+        add(&mut retained, inspect_typed_json_work(&definition.schema)?)?;
+        add(
+            &mut retained,
+            kasumi_query::vec_bytes::<u8>(definition.name.len())?,
+        )?;
+        add(
+            &mut retained,
+            vec_work::<IndexDefinition>(definition.indexes.len())?,
+        )?;
+        for index in &definition.indexes {
+            add(
+                &mut retained,
+                kasumi_query::vec_bytes::<u8>(index.name.len())?,
+            )?;
+            add(&mut retained, vec_work::<IndexField>(index.fields.len())?)?;
+            for field in &index.fields {
+                add(
+                    &mut retained,
+                    kasumi_query::vec_bytes::<u8>(field.path.len())?,
+                )?;
+            }
+        }
+    }
+    add(&mut retained, buffered)?;
+    Ok(retained)
+}
+
 pub(crate) fn authorize(
     state: &TenantState,
     context: &RequestContext,

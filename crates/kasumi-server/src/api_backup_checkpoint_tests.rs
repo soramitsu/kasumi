@@ -235,10 +235,17 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         )
         .await
         .unwrap();
-    assert!(matches!(
-        terminal.outcome,
-        Some(kasumi_types::BackupSessionOutcome::Complete { .. })
-    ));
+    let Some(kasumi_types::BackupSessionOutcome::Complete { checkpoint, intent_ciphertext_sha256 }) = &terminal.outcome else {
+        panic!("verified session has no permanent completion")
+    };
+    assert_eq!(checkpoint, proof.checkpoint());
+    crate::observability::test_evidence::native_observation("completed-session-status", serde_json::json!({
+        "session_id": terminal.intent.session_id, "backup_id":checkpoint.backup_id,
+        "revision":terminal.intent.revision, "checkpoint_revision":checkpoint.revision,
+        "source_incarnation":terminal.intent.source_incarnation, "checkpoint_incarnation":checkpoint.source_incarnation,
+        "source_purpose_sha256":terminal.source_purpose_sha256, "intent_ciphertext_sha256":intent_ciphertext_sha256,
+        "manifest_ciphertext_sha256":checkpoint.manifest_ciphertext_sha256
+    }));
     assert!(
         client
             .cleanup_backup_session(

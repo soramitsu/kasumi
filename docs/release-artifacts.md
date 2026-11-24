@@ -281,6 +281,35 @@ restart, and requires a zero exit on the stop signal. The `oci-smoke` adapter in
 `scripts/verify_release_acceptance.py` checks that run. No image built from
 current source has passed it yet.
 
+## Native systemd qualification
+
+Run the systemd smoke on each dedicated Linux qualification machine with systemd
+as PID 1 and a cgroup v2 hierarchy. Install the package binaries at their
+documented paths and prepare both service accounts and private data and
+authority enrollments. The test needs root access to the system manager.
+Both published unit names must be free at dispatch. The smoke exclusively
+creates the delivered unit bytes under `/run/systemd/system`, checks them
+with `systemd-analyze verify`, starts and restarts each service, verifies
+its authenticated operator endpoint and stops it. The evidence includes
+kernel PID birth, cgroup, executable hash, UID, listener ownership and the
+journal's successful deactivation for each service invocation. The runner
+checks the installed inode before removing each temporary unit.
+
+Use a plan with schema `kasumi-systemd-smoke-v1`, `data_client` set to the
+absolute installed Control profile for the data service, and `authority_client`
+set to its installed authority maintenance client. Its enrolled authority peers
+must provide quorum throughout the smoke.
+The account running the smoke must own its client profiles, private keys and
+bearer files with owner-only permissions. The service accounts retain their
+own runtime files.
+
+```sh
+python3 -I -B -S scripts/run_systemd_smoke.py --evidence "$functional" \
+  --journal "$journal" --attempt-id "$attempt" --output "$output" \
+  --package "$package" --systemd-data "$data_unit" \
+  --systemd-authority "$authority_unit" --plan "$plan"
+```
+
 ## systemd installation
 
 The supplied units use separate static service users, owner-only state, an empty
@@ -313,19 +342,36 @@ the data unit after installing the exact HA configuration at its configured path
 If an installation uses external archive/key paths, explicitly configure the
 unit's required read/write directories to match those installed resources.
 
-The exact data unit passed an initial native Debian ARM64 smoke with historical
-`8e90ff2` binaries: dedicated-user startup, authenticated requests, TLS reload,
-restart and drained shutdown. Both units passed `systemd-analyze verify`; the
-authority unit still requires actual HA runtime validation. Repeat these checks
-with the final accepted artifacts.
-
-Both units have since gained `LimitCORE=0` and `MemorySwapMax=0`, and the data
-unit `LimitNOFILE=65536`, matching the [deployment template](../deploy/kasumi.service).
-`scripts/test_systemd_units.py` checks that the settings are present. The
-changed units have not been run through `systemd-analyze verify` or the smoke
-again.
+On native Debian ARM64 at `0e0a6d9d`, the shipped Data and Authority
+units each passed `systemd-analyze verify`, authenticated startup, a restart
+with a new PID and invocation ID, and a clean SIGTERM with an empty cgroup.
+These runs exercised the units with `LimitCORE=0`, `MemorySwapMax=0` and the
+Data unit's `LimitNOFILE=65536`. The Data exercise took 9.88 seconds. The
+Authority exercise took 19.46 seconds, with two other enrolled voters serving
+the same operational membership after the systemd-managed voter stopped.
+Both ran on one shared development guest. Repeat the complete two-role
+package smoke with the accepted artifacts on both native Linux architectures.
+The release integration log records the source and scope of these checks.
 
 These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual
 24-hour soak remain required before release publication. OCI assembly, full
 platform SBOMs and bit-identical compiler-build acceptance remain separate work.
+
+Run the installed lifecycle on each of the three native targets with the frozen
+functional interpreter. Allocate four consecutive free loopback ports and a
+new custody directory under the native attempt journal.
+
+```sh
+"$PYTHON" -I -B -S "$FUNCTIONAL/source/scripts/run_installed.py" \
+  --evidence "$FUNCTIONAL" --journal "$JOURNAL" --output "$INSTALLED_RUN" \
+  --attempt-id "$ATTEMPT_ID" --base-port "$PORT"
+```
+
+The runner creates a private standalone installation, exercises authenticated
+native and MCP operations, rotates credentials and keys, and reads the
+checkpoint after an exclusive offline restore. It verifies both local
+discovery suppression and the metadata returned for an explicitly configured
+loopback HTTPS issuer. Its journal retains the original outcomes of credential
+and exclusive-lock refusals. Preserve the entire custody directory with the
+functional evidence for that target.

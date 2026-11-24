@@ -6,8 +6,9 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import repeatable_assembly as assembly
 import attempt_index
@@ -148,16 +149,13 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
         self.evidence = self.root / "evidence"
         self.source = self.evidence / "source"
         (self.source / "scripts").mkdir(parents=True)
-        checkout_scripts = Path(assembly.__file__).resolve().parents[5] / "scripts"
         inventory = {}
         for relative in assembly.SCRIPTS:
             path = self.source / relative
-            original = Path(assembly.__file__).parent / Path(relative).name
             if relative == owned.RUNNER:
                 path.write_text(STUB_RUNNER)
             else:
-                if not original.exists():
-                    original = checkout_scripts / Path(relative).name
+                original = Path(__file__).resolve().with_name(Path(relative).name)
                 shutil.copyfile(original, path)
             inventory[relative] = {"sha256": sha256(path), "bytes": path.stat().st_size,
                                    "executable": False}
@@ -365,9 +363,26 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
         self.files[owned.RUNNER] = {"sha256": sha256(runner), "bytes": runner.stat().st_size,
                                     "executable": False}
         write_json(self.evidence / "source-files.json", self.files)
+        # Advance the outer deadline after the actual child was admitted.
+        # Interpreter startup, executable hashing and Darwin process census
+        # can each take longer than a one-second test deadline under load.
+        deadline = 60
+        offset = 0
+        def monotonic():
+            nonlocal offset
+            ledger = self.launch_root / owned.GROUP_LEDGER
+            if not offset and ledger.exists():
+                rows, _ = assembly.gate_process.read_group_ledger(ledger)
+                if any(row["kind"] == "group" for row in rows):
+                    offset = deadline
+            return time.monotonic() + offset
+
+        outer_clock = Mock(wraps=time)
+        outer_clock.monotonic.side_effect = monotonic
         with patch.object(owned.assembly_inputs, "validate_declaration", return_value=self.inputs), \
                 patch.object(owned, "__file__", str(self.source / owned.LAUNCHER)), \
-                patch.object(owned, "TIMEOUT_SECONDS", 1):
+                patch.object(owned, "TIMEOUT_SECONDS", deadline), \
+                patch.object(assembly.gate_process, "time", outer_clock):
             with self.assertRaises(ValueError):
                 owned.launch(self.evidence, self.declaration, self.launch_root,
                              self.root, "assembly-test")

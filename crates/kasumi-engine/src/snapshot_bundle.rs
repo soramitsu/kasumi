@@ -209,7 +209,7 @@ fn write_bundle(
         encoder: &mut encoder,
         buffer: Vec::with_capacity(CHUNK),
     };
-    TenantEngine::write_generation(generation, &mut logical)?;
+    TenantEngine::encode_generation(generation, &mut logical)?;
     logical.finish()?;
     let retention = &generation.state.audit_retention;
     if form == ArchiveForm::LocalReference {
@@ -299,6 +299,16 @@ pub(super) fn verify_chain_in(
     cache: &kasumi_store::FilesystemAuditArchive,
     check: impl Fn() -> Result<()>,
 ) -> Result<()> {
+    visit_chain(generation, store, cache, check, |_| Ok(()))
+}
+
+fn visit_chain(
+    generation: &Generation,
+    store: &TenantStore,
+    cache: &kasumi_store::FilesystemAuditArchive,
+    check: impl Fn() -> Result<()>,
+    mut visit: impl FnMut(&AuditArchiveReference) -> Result<()>,
+) -> Result<()> {
     check()?;
     store.check_access()?;
     let source = store.storage_access().purpose();
@@ -325,6 +335,7 @@ pub(super) fn verify_chain_in(
                 && counts.archive_records <= retention.archive_segments,
             "local audit archive budget exceeded"
         );
+        visit(&reference)?;
         expected = reference.previous;
     }
     ensure!(
@@ -345,6 +356,19 @@ pub(crate) fn verify_dependency(
     link: &AuditArchiveLink,
 ) -> Result<AuditArchiveReference> {
     let inspected = InspectedAuditDependency::from_link(bytes, link)?;
+    Ok(
+        verify_inspected_dependency(state, source, store, &inspected)?
+            .reference()
+            .clone(),
+    )
+}
+
+pub(crate) fn verify_inspected_dependency(
+    state: &TenantState,
+    source: &StoragePurpose,
+    store: &TenantStore,
+    inspected: &InspectedAuditDependency<'_>,
+) -> Result<kasumi_store::VerifiedAuditSegment> {
     ensure!(
         inspected.source_tenant() == state.tenant
             && inspected.reference().stream_id == state.audit_retention.stream_id,
@@ -358,12 +382,12 @@ pub(crate) fn verify_dependency(
             inspected.source_purpose() == source,
             "Control audit source purpose differs"
         );
-        runtime.block_on(store.decrypt_audit_segment(bytes, inspected.reference()))?
+        runtime.block_on(inspected.verify_current(store))?
     } else {
         crate::authorize_audit_source(state, source, inspected.source_purpose())?;
-        runtime.block_on(store.verify_historical_audit(&inspected, inspected.source_purpose()))?
+        runtime.block_on(store.verify_historical_audit(inspected, inspected.source_purpose()))?
     };
-    Ok(verified.reference().clone())
+    Ok(verified)
 }
 
 struct Decoder<'a> {
@@ -624,7 +648,17 @@ fn read_inner(
         let retention = &generation.state.audit_retention;
         if form == ArchiveForm::LocalReference {
             // Nothing is copied: the exact chain must already be in this cache.
-            verify_local_chain(&generation, store)?;
+            if retention.archive_segments == 0 {
+                verify_local_chain(&generation, store)?;
+            } else {
+                let placement = store.tenant_audit_archive()?;
+                let mut directory =
+                    crate::tenant_audit_directory::Rebuild::new(store, retention.archive_segments)?;
+                visit_chain(&generation, store, placement.cache(), check, |reference| {
+                    directory.visit(reference)
+                })?;
+                directory.finish()?;
+            }
             ensure!(
                 decoder.tag()? == END,
                 "a local snapshot carries no archive record"
@@ -640,7 +674,10 @@ fn read_inner(
             .map(|head| head.object.clone());
         if expected.is_some() {
             let placement = store.tenant_audit_archive()?;
+            let mut directory =
+                crate::tenant_audit_directory::Rebuild::new(store, retention.archive_segments)?;
             while let Some(link) = expected {
+                check()?;
                 ensure!(
                     decoder.tag()? == ARCHIVE,
                     "snapshot archive dependency missing"
@@ -656,6 +693,7 @@ fn read_inner(
                         "snapshot archive head differs"
                     );
                 }
+                directory.visit(&reference)?;
                 expected = reference.previous.clone();
                 decoder.counts.record(true, length)?;
                 ensure!(
@@ -669,6 +707,7 @@ fn read_inner(
                     .cache()
                     .publish_blocking(&store.copy_audit_segment(reference, &ciphertext)?)?;
             }
+            directory.finish()?;
         }
         ensure!(
             decoder.counts.archive_bytes == retention.archive_bytes
@@ -1058,11 +1097,82 @@ mod tests {
                     .unwrap()
             );
         }
+        let retention = &target.generation().unwrap().state.audit_retention;
+        let mut expected = references.iter().rev();
+        let missing = crate::tenant_audit_directory::visit_key_references(
+            &target_store,
+            retention,
+            |reference| {
+                assert_eq!(Some(reference), expected.next());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(missing, None);
+        assert!(expected.next().is_none());
+        let cancellation =
+            crate::tenant_audit_directory::visit_key_references(&target_store, retention, |_| {
+                Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::ResourceExhausted,
+                    "inventory caller cancelled",
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(
+            cancellation.code,
+            kasumi_types::ErrorCode::ResourceExhausted
+        );
+        let mut other_chain = retention.clone();
+        let missing_id = uuid::Uuid::new_v4();
+        other_chain
+            .archive_head
+            .as_mut()
+            .unwrap()
+            .previous
+            .as_mut()
+            .unwrap()
+            .object_id = missing_id;
+        let mut seen = Vec::new();
+        let missing = crate::tenant_audit_directory::visit_key_references(
+            &target_store,
+            &other_chain,
+            |reference| {
+                seen.push(reference.object.object_id);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [references.last().unwrap().object.object_id]);
+        assert_eq!(missing, Some(missing_id));
+        let head = references.last().unwrap();
+        for reference in &references {
+            for sequence in reference.object.first_sequence..reference.object.next_sequence {
+                assert_eq!(
+                    &crate::tenant_audit_directory::containing(
+                        &target_store,
+                        head,
+                        references.len() as u64,
+                        sequence,
+                        || Ok(())
+                    )
+                    .unwrap(),
+                    reference
+                );
+            }
+        }
         source_store.shutdown().await.unwrap();
         // The replacement is independently sufficient to create and reinstall
         // the snapshot while the original source is unavailable.
         let recaptured = capture(target.clone()).await.unwrap();
         assert_eq!(snapshot, recaptured);
+        println!(
+            "KASUMI_AUDIT_COMPONENT {}",
+            serde_json::json!({
+                "case":"replacement","source_bundle_sha256":hex::encode(sha2::Sha256::digest(&snapshot)),
+                "replacement_bundle_sha256":hex::encode(sha2::Sha256::digest(&recaptured)),
+                "replacement":target.generation().unwrap().state.audit_retention,"chain":references,
+            })
+        );
         restore(target.clone(), recaptured).await.unwrap();
         tokio::task::spawn_blocking(move || target.restore_candidate(&logical))
             .await
@@ -1392,9 +1502,30 @@ mod tests {
             .unwrap();
         assert_eq!(prepared.image(), &image);
         source
-            .verify_bootstrap_dependencies_owned(admission)
+            .verify_bootstrap_dependencies_owned(admission.clone())
             .await
             .unwrap();
+        // Final process drain seals the installed core. Public capture and
+        // restore must refuse before either can start another filesystem job.
+        admission.memory().blocking_children().seal();
+        let refused = source
+            .snapshot(admission.clone(), 60_000)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Unavailable
+        );
+        let refused = target
+            .prepare_snapshot_restore(image, admission.clone(), 60_000)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Unavailable
+        );
+        admission.drain_blocking_children().await.unwrap();
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
     }

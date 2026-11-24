@@ -293,6 +293,12 @@ impl std::fmt::Debug for Owner {
 }
 
 impl Owner {
+    pub(super) fn remaining_logical_bytes(&self) -> io::Result<u64> {
+        self.with(|state| {
+            let occupied = state.total()?;
+            Ok(state.limit.saturating_sub(occupied))
+        })
+    }
     pub(crate) fn census_id(&self) -> crate::StorageOwnerId {
         *self.census_id.get().unwrap()
     }
@@ -312,7 +318,7 @@ impl Owner {
             provider.clone(),
             crate::disk_memory::add(
                 crate::disk_memory::add(
-                    64 << 10, // serialized spool resize zero-fill workspace
+                    crate::spool::NATIVE_IO_WORKSPACE as u64,
                     crate::disk_memory::size::<claim::GroupTransaction>()?,
                 )?,
                 crate::disk_memory::add(
@@ -869,7 +875,7 @@ impl SegmentGroupBackend for Backend {
             let spool = state.spool(file)?;
             spool.reserve_growth(old, end)?;
             spool.seek(SeekFrom::Start(at))?;
-            spool.write_all(bytes)
+            spool.write_native(bytes)
         })
     }
     fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {

@@ -278,6 +278,32 @@ pub(crate) struct InstalledSignerVerifier {
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    pub(crate) fn install_authority_key_catalogs(
+        &self,
+        authority: &kasumi_authority::IndependentAuthority,
+        audit: &Arc<kasumi_engine::SecurityAudit>,
+    ) -> Result<()> {
+        authority.install_operational_key_catalogs(audit.store(), &self.store)?;
+        let inventory: Arc<dyn kasumi_raft::member_catalog::MemberAuditInventory> = audit.clone();
+        authority.install_audit_archive_inventory(audit.store(), &inventory)
+    }
+    pub(crate) fn key_inventory(
+        &self,
+        trusts: &BTreeMap<String, AuthorityTrust>,
+    ) -> Result<Arc<kasumi_engine::SignerCatalog>> {
+        let partitions = trusts
+            .values()
+            .flat_map(|trust| {
+                let manifest = trust.manifest();
+                manifest
+                    .partitions
+                    .keys()
+                    .map(move |&partition| (manifest.authority_id, partition))
+            })
+            .collect();
+        kasumi_engine::SignerCatalog::installed(&self.store, &self.installed_identity, partitions)
+    }
+
     /// The parent runtime's acknowledged handoff activates this already
     /// retained worker; installation and abandoned opens remain dormant.
     pub(crate) fn activate_cache_warming(&self) -> Result<()> {

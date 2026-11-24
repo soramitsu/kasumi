@@ -1459,7 +1459,14 @@ fn terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths()
 #[ignore = "explicit permanent-receipt capacity cohort; streams 100,000 encrypted point rows"]
 fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation() {
     const PREVIOUS_LIMIT: u64 = 100_000;
-    let source = engine(fixture_memory(), 2 << 20);
+    // The 100,000-row run needs resident segment and directory owners that the
+    // small-case 64-slot fixture cannot hold. Keep the original byte limit.
+    const OWNER_BYTES: u64 = 64 << 20;
+    const OWNER_SLOTS: usize = 1024;
+    let source_memory = kasumi_store::test_utils::TestDiskMemory::new(OWNER_BYTES, OWNER_SLOTS);
+    let source = engine(source_memory.clone(), 2 << 20);
+    let mut sampled_slots = 0;
+    let mut sampled_bytes = 0;
     let previous = source.generation().unwrap();
     let mut state = previous.state.clone();
     state.revision = PREVIOUS_LIMIT + 1;
@@ -1508,7 +1515,17 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
                 )),
             },
         };
-        builder.push(&row, &state).unwrap();
+        builder.push(&row, &state).unwrap_or_else(|error| {
+            panic!(
+                "receipt {ordinal} staging failed with {:?}: {error:#}",
+                source_memory.snapshot()
+            );
+        });
+        if ordinal.is_multiple_of(256) || ordinal == PREVIOUS_LIMIT {
+            let current = source_memory.snapshot();
+            sampled_slots = sampled_slots.max(current.live_reservations);
+            sampled_bytes = sampled_bytes.max(current.bookkeeping_bytes + current.used_bytes);
+        }
         crate::mutation_receipt::advance(&mut state.mutation_receipt_head, &row).unwrap();
     }
     let receipts = builder.finish(&state.mutation_receipt_head).unwrap();
@@ -1526,8 +1543,20 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
     source.publish_generation(Some(Arc::new(generation)));
     drop(previous);
     let snapshot = source.logical_snapshot(&disk).unwrap();
-    let restored = engine(fixture_memory(), 2 << 20);
-    restored.fixture_restore(&snapshot).unwrap();
+    let restored_memory = kasumi_store::test_utils::TestDiskMemory::new(OWNER_BYTES, OWNER_SLOTS);
+    let restored = engine(restored_memory.clone(), 2 << 20);
+    restored.fixture_restore(&snapshot).unwrap_or_else(|error| {
+        panic!(
+            "receipt restore failed with snapshot owner {:?}, destination owner {:?}: {error:#}",
+            source_memory.snapshot(),
+            restored_memory.snapshot()
+        );
+    });
+    // restore_candidate stages rows through SnapshotImage::disk(), which still
+    // owns the source point table and the retained snapshot. Distinguish that
+    // owner from the destination engine's separate fixture device.
+    let snapshot_owner_after_restore = source_memory.snapshot();
+    let destination_owner_after_restore = restored_memory.snapshot();
     // The history is deliberately manufactured canonical fixture state. The
     // post-restore admission below executes the real deterministic mutation path;
     // this is not an actual-HA throughput, production-reserve, or hard-RSS claim.
@@ -1577,6 +1606,19 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
         PREVIOUS_LIMIT + 1
     );
     assert_eq!(restored.generation().unwrap().state.document_count, 1);
+    println!(
+        "KASUMI_AUDIT_COMPONENT {}",
+        serde_json::json!({
+            "case":"mutation-receipts","restored_count":restored.generation().unwrap().state.mutation_receipt_head.count,
+            "prior_count":PREVIOUS_LIMIT,
+            "owner_max_bytes":OWNER_BYTES, "owner_max_reservations":OWNER_SLOTS,
+            "source_sampled_peak_bytes":sampled_bytes, "source_sampled_peak_reservations":sampled_slots,
+            "snapshot_owner_after_restore_bytes":snapshot_owner_after_restore.bookkeeping_bytes + snapshot_owner_after_restore.used_bytes,
+            "snapshot_owner_after_restore_reservations":snapshot_owner_after_restore.live_reservations,
+            "destination_owner_after_restore_bytes":destination_owner_after_restore.bookkeeping_bytes + destination_owner_after_restore.used_bytes,
+            "destination_owner_after_restore_reservations":destination_owner_after_restore.live_reservations,
+        })
+    );
 }
 
 fn inconsistent_generation(previous: &Arc<Generation>, fault: usize) -> Arc<Generation> {

@@ -17,6 +17,7 @@ pub(crate) enum RecoverStage {
     StorageOpen,
     AdmissionReserve,
     EngineOpen,
+    RestoreSnapshot,
     RouteRegister,
     SetupRouteChanged,
     Publish,
@@ -35,6 +36,7 @@ impl RecoverStage {
             Self::StorageOpen => "storage_open",
             Self::AdmissionReserve => "admission_reserve",
             Self::EngineOpen => "engine_open",
+            Self::RestoreSnapshot => "restore_snapshot",
             Self::RouteRegister => "route_register",
             Self::SetupRouteChanged => "setup_route_changed",
             Self::Publish => "publish",
@@ -1267,13 +1269,24 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
         &mut self,
         work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
     ) -> std::result::Result<T, OriginalRecoveryObservation> {
+        self.run_snapshot_at(None, work).await
+    }
+    async fn run_snapshot_at<T>(
+        &mut self,
+        stage: Option<RecoverStage>,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> std::result::Result<T, OriginalRecoveryObservation> {
         if !self.seat.empty() {
             return Err(self.observation());
         }
         match work.await {
             Ok(value) => Ok(value),
             Err(original) => {
-                self.seat.failure = Some(original.into());
+                let mut failure = OriginalRecoveryFailure::from(original);
+                if failure.source_stage().is_none() {
+                    failure.stage = stage;
+                }
+                self.seat.failure = Some(failure);
                 Err(self.observation())
             }
         }
@@ -1285,7 +1298,14 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
         &mut self,
         work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
     ) -> std::result::Result<kasumi_types::Result<T>, OriginalRecoveryObservation> {
-        self.run_snapshot(async {
+        self.run_snapshot_operation_at(None, work).await
+    }
+    pub(crate) async fn run_snapshot_operation_at<T>(
+        &mut self,
+        stage: Option<RecoverStage>,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> std::result::Result<kasumi_types::Result<T>, OriginalRecoveryObservation> {
+        self.run_snapshot_at(stage, async {
             match work.await {
                 Ok(value) => Ok(Ok(value)),
                 Err(kasumi_engine::SnapshotFailure::Operation(original)) => Ok(Err(original)),
@@ -1639,10 +1659,7 @@ impl Administration {
                 RecoverStage::EnrollmentMismatch
             );
         }
-        let context = RequestContext {
-            tenant: tenant.to_owned(),
-            ..self.control_context.clone()
-        };
+        let context = self.retirement_registry_context(tenant);
         if matches!(
             self.registry.retirement_source(&context, incarnation),
             Ok(kasumi_engine::InstalledRetirementSource::RetiredCustody(_))
@@ -1751,17 +1768,17 @@ impl Administration {
             .map_err(|original| {
                 OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::CustodyOpen)
             })?;
-            if kasumi_raft::ControlLog::installed(custody.clone())
+            if let Some(log) = kasumi_raft::ControlLog::installed(custody.clone())
                 .context(RecoverStage::CustodyOpen)?
-                .is_some()
-                && self
-                    .control
-                    .raft_group()
-                    .recover_retired_custody(&custody)
-                    .map_err(kasumi_engine::SnapshotFailure::from)
-                    .map_err(|original| {
-                        OriginalRecoveryFailure::snapshot_at(original, RecoverStage::CustodyOpen)
-                    })?
+                && crate::runtime::recover_original_retirement(
+                    self.control.local().ok().map(Arc::as_ref),
+                    &log,
+                    &custody,
+                )
+                .map_err(kasumi_engine::SnapshotFailure::from)
+                .map_err(|original| {
+                    OriginalRecoveryFailure::snapshot_at(original, RecoverStage::CustodyOpen)
+                })?
             {
                 let owner = crate::runtime::open_retired_source(
                     &self.config,
@@ -1824,7 +1841,7 @@ impl Administration {
             // Replay requires the configured tenant audit placement, installed on
             // this fresh store exactly as at startup; none is selected by default.
             self.config
-                .install_tenant_audit_archive(stores.application(), None)
+                .install_tenant_archives_with(stores.application(), None, self.credential.clone())
                 .context(RecoverStage::StorageOpen)?;
             let size_workspace =
                 || kasumi_engine::OriginalRecoveryWorkspace::reserve(&stores, &self.admission);
@@ -1874,9 +1891,9 @@ impl Administration {
                         ..
                     } = opened;
                     let store = stores.application().clone();
-                    if let Err(error) = network.register_group_with_bootstrap(
+                    if let Err(error) = network.register_database_group(
                         group.as_ref().expect("unpublished route").clone(),
-                        database.raft_group().raft().clone(),
+                        &database,
                         self.config
                             .replication
                             .as_ref()

@@ -51,6 +51,7 @@ impl VerifiedBackup {
     pub(super) async fn into_genesis(
         self,
         deadline: VerificationDeadline,
+        cancellation: kasumi_query::QueryCancellation,
         admission: Arc<NodeAdmission>,
         tenant: String,
         incarnation: String,
@@ -110,6 +111,14 @@ impl VerifiedBackup {
                             )?
                             .enter()
                             .map(Some)
+                        },
+                        &|| {
+                            deadline.check()?;
+                            cancellation.check()?;
+                            if let Some(work) = &self._registration {
+                                work.check()?;
+                            }
+                            Ok(())
                         },
                     )
                     .map_err(crate::SnapshotFailure::into_scratch_failure)?;
@@ -232,8 +241,12 @@ impl BackupReader for RestoreReader<'_> {
             .authorize_state(self.target, self.audit, state)
             .await
     }
-    fn audit_target(&self) -> Option<Arc<TenantStore>> {
-        Some(self.target.clone())
+    type AuditSegment = kasumi_store::PreparedAuditSegment;
+    fn audit_publication(
+        &self,
+        segment: Self::AuditSegment,
+    ) -> Option<(Arc<TenantStore>, kasumi_store::PreparedAuditSegment)> {
+        Some((self.target.clone(), segment))
     }
     async fn audit_dependency<'a>(
         &'a self,
@@ -357,9 +370,7 @@ pub(super) async fn load_authorized(
             _ => anyhow::bail!("restore requires a permanently completed backup session"),
         };
         anyhow::ensure!(
-            bound_checkpoint
-                .as_ref()
-                .is_none_or(|expected| expected == &completed),
+            bound_checkpoint == completed,
             "completed session differs from authorized checkpoint"
         );
         let bound_checkpoint = Some(completed);

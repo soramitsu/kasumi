@@ -2090,10 +2090,10 @@ fn stat_leaf(parent: &File, name: &std::ffi::CStr, device: u64) -> io::Result<li
     }
     // SAFETY: successful fstatat initializes the complete native structure.
     let stat = unsafe { stat.assume_init() };
-    let observed_device = u64::try_from(stat.st_dev).map_err(|_| io::ErrorKind::InvalidData)?;
+    // dev_t is signed on Darwin and unsigned on Linux.
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG
         || stat.st_nlink != 1
-        || observed_device != device
+        || i128::from(stat.st_dev) != i128::from(device)
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -3261,6 +3261,11 @@ impl NodeDiskFile {
             self.0.disk.fail_locked(&mut state);
             return Err(self.0.record_error(error));
         }
+        #[cfg(test)]
+        self.0
+            .disk
+            .written_bytes
+            .fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
         if !data.is_empty() {
             budget.actual_len = budget.actual_len.max(end);
         }

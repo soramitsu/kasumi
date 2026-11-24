@@ -12,6 +12,20 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+#[path = "target_journal_accounting.rs"]
+mod accounting;
+#[path = "target_journal_retirements.rs"]
+mod retirements;
+use retirements::JournalCheckpointPermit;
+#[derive(Debug)]
+pub struct MissingTargetWriter;
+impl std::fmt::Display for MissingTargetWriter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("first target journal write requires its original writer observation")
+    }
+}
+impl std::error::Error for MissingTargetWriter {}
+pub use retirements::{CurrentTargetJournalWriter, TargetWriterRead};
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -70,11 +84,18 @@ pub struct TargetJournalInstallation {
     /// external archive is opened. These are configuration identities, not
     /// provider credential contents.
     pub audit_placement_bindings: std::collections::BTreeMap<String, String>,
+    /// Absent in deployed journals. New installations with backup sources
+    /// bind their complete tenant/incarnation/alias and provider roster here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key_bindings_sha256: Option<String>,
 }
 impl TargetJournalInstallation {
     pub fn validate(&self) -> Result<()> {
         self.root.validate()?;
         self.node.validate()?;
+        if let Some(binding) = &self.source_key_bindings_sha256 {
+            kasumi_types::validate_sha256(binding)?;
+        }
         ensure!(
             (1..=10_000).contains(&self.audit_placement_bindings.len()),
             "target journal audit placement roster must be explicitly bounded"
@@ -108,6 +129,33 @@ struct TargetJournalStop {
     intent: TargetJournalIntent,
     stopped: kasumi_serving::SignedTargetStop,
     authority: kasumi_serving::AuthorityManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_drain: Option<TargetOwnerDrain>,
+}
+
+/// Bounded progress of the original target owners. A missing owner supplies
+/// no start or completion observation. Higher marks never imply missed marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetOwnerDrain {
+    ClosingGates,
+    GatesClosed,
+    DrainingWorkers,
+    WorkersDrained,
+    DrainingStorage,
+    StorageDrained,
+}
+impl From<TargetOwnerDrain> for kasumi_types::TargetDeletionProgress {
+    fn from(value: TargetOwnerDrain) -> Self {
+        match value {
+            TargetOwnerDrain::ClosingGates => Self::ClosingGates,
+            TargetOwnerDrain::GatesClosed => Self::GatesClosed,
+            TargetOwnerDrain::DrainingWorkers => Self::DrainingWorkers,
+            TargetOwnerDrain::WorkersDrained => Self::WorkersDrained,
+            TargetOwnerDrain::DrainingStorage => Self::DrainingStorage,
+            TargetOwnerDrain::StorageDrained => Self::StorageDrained,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +168,9 @@ struct GenerationBinding {
     nodes: std::collections::BTreeMap<u64, kasumi_types::LifecycleNode>,
     control_incarnation: Uuid,
     partition: ControlAuthorityPartition,
+    /// This generation identity was reserved solely by a terminal stop.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stop_before_prepare: bool,
 }
 impl GenerationBinding {
     fn from_intent(i: &TargetJournalIntent) -> Self {
@@ -133,6 +184,7 @@ impl GenerationBinding {
             nodes: r.target_nodes.clone(),
             control_incarnation: i.intent.control_incarnation,
             partition: i.authority_partition.clone(),
+            stop_before_prepare: false,
         }
     }
 }
@@ -140,7 +192,59 @@ impl GenerationBinding {
 #[serde(deny_unknown_fields)]
 struct FileCreation {
     materialization_command_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_stamp: Option<Uuid>,
 }
+
+/// The exact storage an original materialization created: its installed
+/// path, the identity of the directory created there and the store identity
+/// its root carries. Recorded before any catalog is initialized.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetFileBinding {
+    pub tenant: String,
+    pub target_incarnation: Uuid,
+    pub path: std::path::PathBuf,
+    pub directory: kasumi_store::private_files::DirectoryIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_stamp: Option<Uuid>,
+    pub node_store_id: Uuid,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetCleanupStage {
+    /// Exact deletion of the bound storage has begun.
+    Deleting,
+    /// The enrolled generation is absent after its original exact unlink.
+    Unlinked,
+    /// The enrolled parent was synchronized after the generation disappeared.
+    ParentSynced,
+    /// Deletion, or the absence of any storage, is confirmed after the
+    /// parent directory sync. Terminal.
+    Deleted,
+}
+impl TargetCleanupStage {
+    pub fn permits_successor(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Deleting, Self::Unlinked)
+                | (Self::Unlinked, Self::ParentSynced)
+                | (Self::ParentSynced, Self::Deleted)
+        )
+    }
+}
+/// Durable local cleanup progress of one permanently stopped target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetCleanup {
+    pub tenant: String,
+    pub target_incarnation: Uuid,
+    pub stage: TargetCleanupStage,
+    /// Absent only for a target that never had storage bound.
+    pub binding: Option<TargetFileBinding>,
+}
+// One fixed charge covers a cleanup record, including all same-key progress rewrites.
+const CLEANUP_RESERVE: usize = 4 << 10;
 
 /// One journal-selected file operation. Only the first durably accepted
 /// original materialization may create; replay always requires a ready file.
@@ -149,7 +253,7 @@ pub struct MaterializationFile {
     operation: TargetOperation,
     persistent_disk: Arc<kasumi_store::NodeDisk>,
     node_store_id: Uuid,
-    create: bool,
+    create_stamp: Option<Uuid>,
 }
 /// The catalog action follows this original journal decision, never a disk
 /// existence probe. Replayed file reservations always return `Existing`.
@@ -170,10 +274,11 @@ impl MaterializationFile {
         self.operation
             .check()
             .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
-        let node = if self.create {
-            kasumi_store::NodeStore::create_new(
+        let node = if let Some(stamp) = self.create_stamp {
+            kasumi_store::NodeStore::create_materialization_target(
                 path,
                 self.node_store_id,
+                stamp,
                 self.persistent_disk.clone(),
                 scratch,
                 self.persistent_disk.native_storage_config(),
@@ -190,7 +295,7 @@ impl MaterializationFile {
         // The runtime must first retain this physical owner, then recheck the
         // operation before starting catalog work. A failed post-open fence here
         // would discard the only explicit-close owner of the new file.
-        Ok(if self.create {
+        Ok(if self.create_stamp.is_some() {
             MaterializationNode::Created(node)
         } else {
             MaterializationNode::Existing(node)
@@ -210,6 +315,11 @@ struct Metadata {
     dispatch_starts: u64,
     dispatch_initializes: u64,
     charged_bytes: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "retirements::WriterRetirements::is_empty"
+    )]
+    retirements: retirements::WriterRetirements,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
 /// journal handle. No application provider is constructed by opening it.
@@ -223,6 +333,210 @@ pub struct TargetJournal {
 type JournalOwner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
 
 impl TargetJournal {
+    pub(crate) fn key_inventory_owner(&self) -> (&TargetJournalInstallation, &Arc<TenantStore>) {
+        (&self.installed, &self.store)
+    }
+
+    /// Each encrypted row retains its observed wrapping version. The caller must
+    /// obtain the independent external key graph for each permanent checkpoint.
+    #[cfg(test)]
+    pub(crate) fn visit_key_dependencies(
+        &self,
+        token: &kasumi_query::QueryCancellation,
+        version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
+        mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.visit_scoped_key_dependencies(
+            token,
+            version,
+            |id, record, _| checkpoint(id, record),
+            |_, _| Ok(false),
+        )
+    }
+
+    pub(crate) fn visit_scoped_key_dependencies(
+        &self,
+        token: &kasumi_query::QueryCancellation,
+        mut version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
+        mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint, bool) -> Result<()>,
+        mut stopped_absent: impl FnMut(&str, Uuid) -> Result<bool>,
+    ) -> Result<[u8; 32]> {
+        use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionEntry, KeyVersionRef};
+        use sha2::{Digest, Sha256};
+        token.check()?;
+        let _workspace = self
+            .admission
+            .reserve((MAX_RECORD * 8) as u64, Some(token.clone()))?;
+        // Opening and inventory share the full accounting checks. Hold the writer
+        // while the validators follow immutable links to their original records.
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let head = self.metadata()?;
+        let node_id = self.installed.node.node_id;
+        let mut entry = |reference: KeyReference, provider: &str, key_ref: &str, version_number| {
+            token.check()?;
+            ensure!(
+                provider.len() <= kasumi_types::MAX_KEY_PROVIDER_BYTES
+                    && key_ref.len() <= kasumi_types::MAX_KEY_REF_BYTES,
+                "target journal wrapping identity exceeds its bound"
+            );
+            let row = KeyRetentionEntry {
+                key: KeyVersionRef {
+                    provider: provider.into(),
+                    key_ref: key_ref.into(),
+                    version: version_number,
+                },
+                reference,
+            };
+            row.validate()?;
+            version(row)
+        };
+        let view = self.store.read_view()?;
+        let result = (|| -> Result<[u8; 32]> {
+            let physical = view.wrapping_inventory()?;
+            let mut digest = Sha256::new();
+            digest.update(b"kasumi.target-journal-key-inventory.v1\0");
+            digest.update(
+                physical.visit_catalog(|catalog_id, provider, key_ref, number| {
+                    entry(
+                        KeyReference::Catalog {
+                            node_id,
+                            catalog_id,
+                            domain: KeyCatalogDomain::TargetJournal,
+                        },
+                        provider,
+                        key_ref,
+                        number,
+                    )
+                })?,
+            );
+            let mut accounting = accounting::JournalAccounting::new();
+            physical.visit_records(NS, MAX_RECORD, |key, value, provider, key_ref, number| {
+                token.check()?;
+                let owner = accounting.observe(self, key, value, |row| {
+                    ensure!(
+                        row.control_incarnation == self.installed.root.control_incarnation
+                            && row.checkpoint.tenant == row.tenant
+                            && row.checkpoint.source_incarnation
+                                == row.source_incarnation.to_string(),
+                        "target journal generation differs from its checkpoint"
+                    );
+                    row.checkpoint.validate().map_err(Into::into)
+                })?;
+                if let Some(incarnation) = owner {
+                    entry(
+                        KeyReference::TargetJournal {
+                            node_id,
+                            incarnation,
+                        },
+                        provider,
+                        key_ref,
+                        number,
+                    )?;
+                } else {
+                    ensure!(
+                        decode_current::<Metadata>(value)? == head,
+                        "target journal head changed during inventory"
+                    );
+                }
+                serde_json::to_writer(&mut digest, &(provider, key_ref, number))?;
+                for field in [key, value] {
+                    digest.update((field.len() as u64).to_be_bytes());
+                    digest.update(field);
+                }
+                Ok(())
+            })?;
+            accounting.verify(&head)?;
+            // Keep the authenticated root pinned, but release the writer before
+            // the visitor contacts a backup destination or a historical provider.
+            drop(_guard);
+            if head.generations != 0 || head.dispatches != 0 {
+                view.visit(NS, MAX_RECORD, |key, value| {
+                    token.check()?;
+                    if key.starts_with(b"generation/") {
+                        let row: GenerationBinding = decode_current(value)?;
+                        if row.stop_before_prepare {
+                            let bytes = view
+                                .get(
+                                    NS,
+                                    &stop_key(&row.tenant, row.target_incarnation),
+                                    MAX_RECORD,
+                                )?
+                                .context("stop-only generation lacks its terminal proof")?;
+                            self.validate_terminal_generation(&row, &bytes)?;
+                            if let Some(bytes) = view.get(
+                                NS,
+                                &cleanup_key(&row.tenant, row.target_incarnation),
+                                MAX_RECORD,
+                            )? {
+                                let cleanup: TargetCleanup = decode_current(&bytes)?;
+                                self.validate_cleanup(&cleanup)?;
+                                if cleanup.stage == TargetCleanupStage::Deleted
+                                    && cleanup.binding.is_none()
+                                    && view
+                                        .get(
+                                            NS,
+                                            &file_key(&row.tenant, row.target_incarnation),
+                                            MAX_RECORD,
+                                        )?
+                                        .is_none()
+                                    && view
+                                        .get(
+                                            NS,
+                                            &binding_key(&row.tenant, row.target_incarnation),
+                                            MAX_RECORD,
+                                        )?
+                                        .is_none()
+                                    && stopped_absent(&row.tenant, row.target_incarnation)?
+                                {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        checkpoint(
+                            row.target_incarnation,
+                            &row.checkpoint,
+                            row.stop_before_prepare,
+                        )?;
+                    } else if key.starts_with(b"dispatch/") {
+                        let row = self.validate_dispatch_record(key, value)?;
+                        let request = &row.lifecycle.request;
+                        let generation =
+                            generation_key(&request.tenant, request.target_incarnation);
+                        if let Some(bytes) = view.get(NS, &generation, MAX_RECORD)? {
+                            let original: GenerationBinding = decode_current(&bytes)?;
+                            ensure!(
+                                original.checkpoint == request.checkpoint
+                                    && original.source_incarnation == request.source_incarnation
+                                    && original.source_epoch == request.source_authority_epoch
+                                    && original.nodes == request.target_nodes,
+                                "target dispatch differs from its retained generation"
+                            );
+                            if original.stop_before_prepare {
+                                checkpoint(request.target_incarnation, &request.checkpoint, false)?;
+                            }
+                        } else {
+                            // A lost initial dispatch can precede the first local
+                            // prepare. Its immutable checkpoint is already retained.
+                            checkpoint(request.target_incarnation, &request.checkpoint, false)?;
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+            token.check()?;
+            physical.check_current()?;
+            Ok(digest.finalize().into())
+        })();
+        match (result, view.close()) {
+            (Ok(digest), Ok(())) => Ok(digest),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close)) => Err(error.context(close)),
+        }
+    }
+
     /// The installed runner must first close and drain its operations. Retained
     /// journal handles remain sealed after this store's own workers are joined.
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
@@ -341,6 +655,7 @@ impl TargetJournal {
                 dispatch_starts: 0,
                 dispatch_initializes: 0,
                 charged_bytes: MAX_RECORD as u64,
+                retirements: Default::default(),
             };
             journal.store.write_batch(&[WriteOp::put(
                 NS,
@@ -351,107 +666,40 @@ impl TargetJournal {
         let metadata = journal.metadata()?;
         // Streaming startup verification retains one bounded encrypted record at
         // a time. Permanent identities are never silently dropped or truncated.
-        let mut intents = 0u64;
-        let mut generations = 0u64;
-        let mut dispatches = 0u64;
-        let mut dispatch_terminals = 0u64;
-        let mut dispatch_starts = 0u64;
-        let mut dispatch_initializes = 0u64;
-        let mut charged = MAX_RECORD as u64;
+        let mut accounting = accounting::JournalAccounting::new();
         journal.store.visit(NS, MAX_RECORD, |key, value| {
-            if key.starts_with(b"intent/") {
-                intents = intents.checked_add(1).context("journal count exhausted")?;
-                let i: TargetJournalIntent = decode_current(value)?;
-                journal.validate_intent(&i)?;
-                ensure!(
-                    key == intent_key(i.intent.request.command_id),
-                    "journal intent key differs"
-                );
-                charged = charged
-                    .checked_add(value.len() as u64 + COMPLETION_RESERVE)
-                    .context("journal bytes exhausted")?;
-            } else if key.starts_with(b"generation/") {
-                generations = generations
-                    .checked_add(1)
-                    .context("journal count exhausted")?;
-                let target: GenerationBinding = decode_current(value)?;
-                ensure!(
-                    journal
-                        .installed
-                        .audit_placement_bindings
-                        .contains_key(&target.tenant),
-                    "target generation has no installed audit placement"
-                );
-                ensure!(
-                    key == generation_key(&target.tenant, target.target_incarnation),
-                    "journal generation key differs"
-                );
-                charged = charged
-                    .checked_add(value.len() as u64 + GENERATION_RESERVE)
-                    .context("journal bytes exhausted")?;
-            } else if key.starts_with(b"dispatch/") {
-                dispatches = dispatches
-                    .checked_add(1)
-                    .context("journal dispatch count exhausted")?;
-                journal.validate_dispatch_record(key, value)?;
-                charged = charged
-                    .checked_add(value.len() as u64 + DISPATCH_TERMINAL_RESERVE)
-                    .context("journal dispatch bytes exhausted")?;
-            } else if key.starts_with(b"file/") {
-                let file: FileCreation = decode_current(value)?;
-                journal.validate_file_creation(key, &file)?;
-                charged = charged
-                    .checked_add(value.len() as u64)
-                    .context("journal file bytes exhausted")?;
-            } else if key.starts_with(b"dispatch-terminal/") {
-                dispatch_terminals = dispatch_terminals
-                    .checked_add(1)
-                    .context("journal dispatch terminal count exhausted")?;
-                journal.validate_dispatch_terminal(key, value)?;
-                // Its original dispatch already charged the full bounded
-                // terminal reserve; publication never needs more capacity.
-            } else if key.starts_with(b"dispatch-start/") {
-                dispatch_starts = dispatch_starts
-                    .checked_add(1)
-                    .context("journal Start observation count exhausted")?;
-                journal.validate_initial_start_record(key, value)?;
-            } else if key.starts_with(b"dispatch-initialize/") {
-                dispatch_initializes = dispatch_initializes
-                    .checked_add(1)
-                    .context("journal Initialize association count exhausted")?;
-                journal.validate_initial_initialize_record(key, value)?;
-            } else if key.starts_with(b"serving/") {
-                journal.decode_serving_candidate(key, value)?;
-            } else if key.starts_with(b"activation/") {
-                journal.decode_projection_record(key, value)?;
-            } else if key.starts_with(b"stop/") {
-                let stop: TargetJournalStop = decode_current(value)?;
-                journal.validate_stop(&stop)?;
-                ensure!(
-                    key == stop_key(
-                        &stop.intent.intent.request.tenant,
-                        stop.intent.intent.request.target_incarnation
-                    ),
-                    "journal stop key differs"
-                );
-            } else {
-                ensure!(key == b"metadata", "unknown target journal record");
-            }
+            accounting.observe(&journal, key, value, |row| {
+                if row.stop_before_prepare {
+                    let bytes = journal
+                        .store
+                        .get_bounded(
+                            NS,
+                            &stop_key(&row.tenant, row.target_incarnation),
+                            MAX_RECORD,
+                        )?
+                        .context("stop-only generation lacks its terminal proof")?;
+                    journal.validate_terminal_generation(row, &bytes)?;
+                }
+                Ok(())
+            })?;
             Ok(())
         })?;
-        ensure!(
-            metadata.intents == intents
-                && metadata.generations == generations
-                && metadata.dispatches == dispatches
-                && metadata.dispatch_terminals == dispatch_terminals
-                && metadata.dispatch_starts == dispatch_starts
-                && metadata.dispatch_initializes == dispatch_initializes
-                && metadata.charged_bytes == charged,
-            "target journal accounting differs"
-        );
+        accounting.verify(&metadata)?;
         *owner = Arc::downgrade(&journal);
         Ok(journal)
     }
+    fn validate_terminal_generation(&self, row: &GenerationBinding, bytes: &[u8]) -> Result<()> {
+        let stop: TargetJournalStop = decode_current(bytes)?;
+        self.validate_stop(&stop)?;
+        let mut original = GenerationBinding::from_intent(&stop.intent);
+        original.stop_before_prepare = true;
+        ensure!(
+            original == *row,
+            "stop-only generation differs from its original signed stop"
+        );
+        Ok(())
+    }
+
     fn metadata(&self) -> Result<Metadata> {
         let value = self
             .store
@@ -468,6 +716,7 @@ impl TargetJournal {
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
         );
+        m.retirements.validate()?;
         Ok(m)
     }
     fn validate_intent(&self, i: &TargetJournalIntent) -> Result<()> {
@@ -511,6 +760,15 @@ impl TargetJournal {
         &self,
         op: &TargetOperation,
         exact_input_sha256: &str,
+    ) -> Result<TargetJournalIntent> {
+        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None, None)
+    }
+    fn prepare_with_checkpoint_permit(
+        &self,
+        op: &TargetOperation,
+        exact_input_sha256: &str,
+        permit: Option<&JournalCheckpointPermit>,
+        writer: Option<&CurrentTargetJournalWriter>,
     ) -> Result<TargetJournalIntent> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
@@ -578,6 +836,18 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            writer
+                .context(
+                    "first target generation requires its registered Control writer observation",
+                )?
+                .require(self, &metadata.retirements)?;
+            if metadata.retirements.requires_graph() {
+                permit
+                    .context(
+                        "new target checkpoint requires verification at its durable writer fence",
+                    )?
+                    .require(self, &binding, &metadata.retirements)?;
+            }
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations
@@ -621,6 +891,7 @@ impl TargetJournal {
         let request = &intent.intent.request;
         ensure!(
             request.command_id == file.materialization_command_id
+                && file.directory_stamp.is_none_or(|stamp| !stamp.is_nil())
                 && request.phase == LifecyclePhase::Materialize
                 && key == file_key(&request.tenant, request.target_incarnation),
             "target file creation identity differs"
@@ -640,6 +911,38 @@ impl TargetJournal {
             "target file creation generation differs"
         );
         Ok(intent)
+    }
+
+    /// Match the target database's genesis to the permanent command that
+    /// created this physical directory. No writer or generation is opened.
+    pub(crate) fn require_checkpoint_origin(
+        &self,
+        origin: &kasumi_types::TargetOrigin,
+        target: &Arc<TenantStore>,
+    ) -> Result<()> {
+        origin.validate()?;
+        let request = &origin.materialization.request;
+        let key = file_key(&request.tenant, request.target_incarnation);
+        let file = decode_current::<FileCreation>(
+            &self
+                .store
+                .get_bounded(NS, &key, MAX_RECORD)?
+                .context("target creation record missing")?,
+        )?;
+        let accepted = self.validate_file_creation(&key, &file)?;
+        let binding = self
+            .materialization_file_binding(&request.tenant, request.target_incarnation)?
+            .context("target physical binding missing")?;
+        ensure!(
+            accepted.intent == origin.materialization
+                && self.installed.source_key_bindings_sha256.is_some()
+                && matches!(target.storage_access().purpose(), kasumi_store::StoragePurpose::Serving {identity, ..} if identity.tenant == request.tenant && identity.incarnation == request.target_incarnation && identity.node == self.installed.node)
+                && Arc::ptr_eq(target.persistent_disk(), self.store.persistent_disk())
+                && target.node_store().physical_identity()?.directory == binding.directory
+                && target.node_store().target_directory_stamp()? == binding.directory_stamp,
+            "target genesis or physical owner differs from its journal"
+        );
+        target.check_access()
     }
 
     /// Require the permanent causal creation intent before opening an existing
@@ -690,14 +993,7 @@ impl TargetJournal {
                 .is_none(),
             "target incarnation permanently stopped locally"
         );
-        let file = FileCreation {
-            materialization_command_id: request.command_id,
-        };
         let key = file_key(&request.tenant, request.target_incarnation);
-        ensure!(
-            self.validate_file_creation(&key, &file)? == intent,
-            "target file creation original intent differs"
-        );
         let node_store_id = kasumi_store::node_store_ids::target_generation(
             self.installed.root.control_incarnation,
             &request.tenant,
@@ -706,7 +1002,8 @@ impl TargetJournal {
         )?;
         if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
             ensure!(
-                decode_current::<FileCreation>(&old)? == file,
+                self.validate_file_creation(&key, &decode_current::<FileCreation>(&old)?)?
+                    == intent,
                 "target file already bound to another original materialization"
             );
             op.check()?;
@@ -714,9 +1011,18 @@ impl TargetJournal {
                 operation: op.clone(),
                 persistent_disk: self.store.persistent_disk().clone(),
                 node_store_id,
-                create: false,
+                create_stamp: None,
             });
         }
+        let stamp = Uuid::new_v4();
+        let file = FileCreation {
+            materialization_command_id: request.command_id,
+            directory_stamp: Some(stamp),
+        };
+        ensure!(
+            self.validate_file_creation(&key, &file)? == intent,
+            "target file creation original intent differs"
+        );
         let bytes = serde_json::to_vec(&file)?;
         let mut metadata = self.metadata()?;
         metadata.charged_bytes = metadata
@@ -739,8 +1045,421 @@ impl TargetJournal {
             operation: op.clone(),
             persistent_disk: self.store.persistent_disk().clone(),
             node_store_id,
-            create: true,
+            create_stamp: Some(stamp),
         })
+    }
+
+    fn validate_binding(&self, binding: &TargetFileBinding) -> Result<()> {
+        kasumi_types::validate_name(&binding.tenant)?;
+        let key = file_key(&binding.tenant, binding.target_incarnation);
+        let file: FileCreation = decode_current(
+            &self
+                .store
+                .get_bounded(NS, &key, MAX_RECORD)?
+                .context("target file binding has no original creation")?,
+        )?;
+        self.validate_file_creation(&key, &file)?;
+        ensure!(
+            binding.path.is_absolute()
+                && binding.directory_stamp == file.directory_stamp
+                && binding.node_store_id
+                    == kasumi_store::node_store_ids::target_generation(
+                        self.installed.root.control_incarnation,
+                        &binding.tenant,
+                        binding.target_incarnation,
+                        &self.installed.node.verifier,
+                    )?,
+            "target file binding names another store"
+        );
+        Ok(())
+    }
+    fn validate_cleanup(&self, cleanup: &TargetCleanup) -> Result<()> {
+        let binding =
+            self.materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?;
+        self.validate_cleanup_binding(cleanup, binding.as_ref())
+    }
+
+    fn validate_cleanup_binding(
+        &self,
+        cleanup: &TargetCleanup,
+        binding: Option<&TargetFileBinding>,
+    ) -> Result<()> {
+        kasumi_types::validate_name(&cleanup.tenant)?;
+        ensure!(
+            self.store
+                .get_bounded(
+                    NS,
+                    &stop_key(&cleanup.tenant, cleanup.target_incarnation),
+                    MAX_RECORD,
+                )?
+                .is_some(),
+            "target cleanup precedes its permanent stop"
+        );
+        ensure!(
+            cleanup.binding.as_ref() == binding,
+            "target cleanup differs from the enrolled storage binding"
+        );
+        ensure!(
+            cleanup.binding.is_some() || cleanup.stage == TargetCleanupStage::Deleted,
+            "target deletion in progress has no binding"
+        );
+        Ok(())
+    }
+
+    /// Record the exact storage the original materialization created, before
+    /// any catalog is initialized. Repeating it must name the same storage.
+    pub fn bind_materialization_file(
+        &self,
+        op: &TargetOperation,
+        binding: &TargetFileBinding,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let intent = self.intent(op)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.tenant == binding.tenant
+                && request.target_incarnation == binding.target_incarnation,
+            "target file binding belongs to another phase"
+        );
+        self.validate_binding(binding)?;
+        let key = binding_key(&binding.tenant, binding.target_incarnation);
+        if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
+            ensure!(
+                decode_current::<TargetFileBinding>(&old)? == *binding,
+                "target file is bound to other storage"
+            );
+            op.check()?;
+            return Ok(());
+        }
+        ensure!(
+            self.target_cleanup(&binding.tenant, binding.target_incarnation)?
+                .is_none(),
+            "target cleanup already has a durable outcome"
+        );
+        let bytes = serde_json::to_vec(binding)?;
+        let mut metadata = self.metadata()?;
+        metadata.charged_bytes = metadata
+            .charged_bytes
+            .checked_add(bytes.len() as u64)
+            .context("journal binding bytes exhausted")?;
+        ensure!(
+            metadata.charged_bytes <= self.limits.max_metadata_bytes,
+            "target file binding exceeds permanent journal capacity"
+        );
+        op.check()?;
+        self.store
+            .write_batch(&[
+                WriteOp::put(NS, key, bytes),
+                WriteOp::put(NS, b"metadata", serde_json::to_vec(&metadata)?),
+            ])
+            .map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
+    pub fn materialization_file_binding(
+        &self,
+        tenant: &str,
+        target: Uuid,
+    ) -> Result<Option<TargetFileBinding>> {
+        kasumi_types::validate_name(tenant)?;
+        let Some(bytes) = self
+            .store
+            .get_bounded(NS, &binding_key(tenant, target), MAX_RECORD)?
+        else {
+            return Ok(None);
+        };
+        let binding: TargetFileBinding = decode_current(&bytes)?;
+        ensure!(
+            binding.tenant == tenant && binding.target_incarnation == target,
+            "journal file binding key differs"
+        );
+        self.validate_binding(&binding)?;
+        Ok(Some(binding))
+    }
+
+    pub fn target_cleanup(&self, tenant: &str, target: Uuid) -> Result<Option<TargetCleanup>> {
+        kasumi_types::validate_name(tenant)?;
+        let Some(bytes) = self
+            .store
+            .get_bounded(NS, &cleanup_key(tenant, target), MAX_RECORD)?
+        else {
+            return Ok(None);
+        };
+        let cleanup: TargetCleanup = decode_current(&bytes)?;
+        ensure!(
+            cleanup.tenant == tenant && cleanup.target_incarnation == target,
+            "journal cleanup key differs"
+        );
+        self.validate_cleanup(&cleanup)?;
+        Ok(Some(cleanup))
+    }
+
+    /// Observe under the original journal lock. No generation opens and no
+    /// cleanup command is admitted by this read. The two installed signers and
+    /// the original physical binding are checked again before returning.
+    pub fn deletion_status(
+        &self,
+        query: &kasumi_types::TargetDeletionQuery,
+        original: &kasumi_serving::VerifiedControlIntent,
+        marked: &kasumi_types::RecoveryPhaseRecord,
+    ) -> Result<kasumi_types::TargetDeletionStatus> {
+        use kasumi_types::{
+            RecoveryDispatch, RecoveryEffect, RecoveryPhase, TargetDeletionProgress,
+            TargetRuntimeStep,
+        };
+        query.validate()?;
+        marked.validate()?;
+        let observed = original.observation();
+        let intent = &observed.intent;
+        let RecoveryDispatch::Target { node_id, request } = &marked.input else {
+            anyhow::bail!("deletion phase is not a target effect");
+        };
+        let TargetRuntimeStep::Stop(reference) = &request.step else {
+            anyhow::bail!("deletion phase is not StopLocal");
+        };
+        let attempt = marked
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .context("deletion effect has not begun")?;
+        ensure!(
+            marked.operation_id == query.operation_id
+                && marked.phase_id == query.phase_id
+                && marked.phase == RecoveryPhase::Cleanup
+                && *node_id == query.node_id
+                && query.node_id == self.installed.node.node_id
+                && observed.root == self.installed.root
+                && intent.control_incarnation == observed.root.control_incarnation
+                && request.command_id == intent.request.command_id
+                && request.tenant == intent.request.tenant
+                && intent.request.target_incarnation == query.target_incarnation
+                && intent.request.phase == LifecyclePhase::StopLocal
+                && attempt.input_sha256 == marked.input_sha256,
+            "original Control deletion dispatch differs"
+        );
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let bytes = self
+            .store
+            .get_bounded(
+                NS,
+                &stop_key(&request.tenant, query.target_incarnation),
+                MAX_RECORD,
+            )?
+            .context("local permanent stop has not been recorded")?;
+        let stop: TargetJournalStop = decode_current(&bytes)?;
+        self.validate_stop(&stop)?;
+        ensure!(
+            &stop.intent.intent == intent
+                && stop.intent.partition_set_sha256 == observed.partition_set_sha256
+                && stop.intent.authority_partition == observed.authority_partition
+                && stop.stopped.observation.reference == *reference,
+            "local signed stop differs from original Control effect"
+        );
+        let binding =
+            self.materialization_file_binding(&request.tenant, query.target_incarnation)?;
+        let progress = match self
+            .target_cleanup(&request.tenant, query.target_incarnation)?
+            .map(|record| record.stage)
+        {
+            None => stop
+                .owner_drain
+                .map(Into::into)
+                .unwrap_or(TargetDeletionProgress::StopRecorded),
+            Some(TargetCleanupStage::Deleting) => TargetDeletionProgress::Deleting,
+            Some(TargetCleanupStage::Unlinked) => TargetDeletionProgress::Unlinked,
+            Some(TargetCleanupStage::ParentSynced) => TargetDeletionProgress::ParentSynced,
+            Some(TargetCleanupStage::Deleted) => TargetDeletionProgress::Deleted,
+        };
+        let result = kasumi_types::TargetDeletionStatus {
+            query: query.clone(),
+            intent_id: request.command_id,
+            attempt_id: attempt.attempt_id,
+            stop_receipt_sha256: stop.stopped.observation.stop.digest()?,
+            binding_sha256: binding.as_ref().map(kasumi_serving::digest).transpose()?,
+            progress,
+        };
+        result.validate_for(query)?;
+        Ok(result)
+    }
+
+    /// The StopLocal operation must present the same verified Authority stop.
+    /// A retried drain never regresses the durable point or fills historical
+    /// gaps from the mere absence of a previous process.
+    pub fn record_owner_drain(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        stage: TargetOwnerDrain,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let installed = self.intent(op)?;
+        let requested = &installed.intent.request;
+        ensure!(
+            requested.phase == LifecyclePhase::StopLocal,
+            "target drain requires StopLocal"
+        );
+        let key = stop_key(&requested.tenant, requested.target_incarnation);
+        let bytes = self
+            .store
+            .get_bounded(NS, &key, MAX_RECORD)?
+            .context("target drain precedes permanent stop")?;
+        let mut stop: TargetJournalStop = decode_current(&bytes)?;
+        self.validate_stop(&stop)?;
+        ensure!(
+            GenerationBinding::from_intent(&stop.intent)
+                == GenerationBinding::from_intent(&installed)
+                && stop.stopped.observation.stop.digest()? == proof.observation().stop.digest()?,
+            "target drain differs from the original permanent stop"
+        );
+        op.check()?;
+        // Another correctly authorized StopLocal can retire this same generation,
+        // but its resource drain never supplies evidence for the first command.
+        if installed != stop.intent
+            || stop.owner_drain.is_some_and(|old| old >= stage)
+            || self
+                .store
+                .get_bounded(
+                    NS,
+                    &cleanup_key(&requested.tenant, requested.target_incarnation),
+                    MAX_RECORD,
+                )?
+                .is_some()
+        {
+            return Ok(());
+        }
+        stop.owner_drain = Some(stage);
+        let next = serde_json::to_vec(&stop)?;
+        ensure!(
+            next.len() <= MAX_RECORD,
+            "drain progress exceeds original stop reserve"
+        );
+        op.check()?;
+        self.store
+            .write_batch(&[WriteOp::put(NS, key, next)])
+            .map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
+    /// Advance the local cleanup of a permanently stopped target. Only a first
+    /// record, an exact replay, or the immediate next stage of the same
+    /// binding is accepted. The terminal outcome never changes.
+    pub fn record_target_cleanup(
+        &self,
+        op: &TargetOperation,
+        cleanup: &TargetCleanup,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let intent = self.intent(op)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.phase == LifecyclePhase::StopLocal
+                && request.tenant == cleanup.tenant
+                && request.target_incarnation == cleanup.target_incarnation,
+            "target cleanup belongs to another phase"
+        );
+        let writes = self.cleanup_writes(cleanup)?;
+        op.check()?;
+        if writes.is_empty() {
+            return Ok(());
+        }
+        self.store.write_batch(&writes).map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
+    // Called under the original operation's journal mutation lock. A first
+    // binding, progress and their permanent capacity belong to one transaction.
+    fn cleanup_writes(&self, cleanup: &TargetCleanup) -> Result<Vec<WriteOp>> {
+        let enrolled =
+            self.materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?;
+        // If creation stopped before enrollment, the native stamp binds the
+        // original directory. Publish this binding and Deleting together: on
+        // restart an already-bound rootless directory always has its progress.
+        let new_binding = match (enrolled.as_ref(), cleanup.binding.as_ref()) {
+            (None, Some(binding)) if cleanup.stage == TargetCleanupStage::Deleting => {
+                ensure!(
+                    binding.tenant == cleanup.tenant
+                        && binding.target_incarnation == cleanup.target_incarnation
+                        && binding.directory_stamp.is_some(),
+                    "unbound cleanup requires the original materialization stamp"
+                );
+                self.validate_binding(binding)?;
+                Some(binding)
+            }
+            _ => None,
+        };
+        self.validate_cleanup_binding(cleanup, enrolled.as_ref().or(new_binding))?;
+        let bytes = serde_json::to_vec(cleanup)?;
+        ensure!(
+            bytes.len() <= CLEANUP_RESERVE,
+            "target cleanup record exceeds its reserve"
+        );
+        let key = cleanup_key(&cleanup.tenant, cleanup.target_incarnation);
+        let mut writes = vec![WriteOp::put(NS, key.clone(), bytes)];
+        match self.store.get_bounded(NS, &key, MAX_RECORD)? {
+            Some(old) => {
+                ensure!(
+                    new_binding.is_none(),
+                    "recorded target cleanup lost its storage binding"
+                );
+                let old: TargetCleanup = decode_current(&old)?;
+                if old == *cleanup {
+                    return Ok(Vec::new());
+                }
+                ensure!(
+                    old.stage.permits_successor(cleanup.stage) && old.binding == cleanup.binding,
+                    "target cleanup outcome differs"
+                );
+            }
+            None => {
+                ensure!(
+                    cleanup.binding.is_none() || cleanup.stage == TargetCleanupStage::Deleting,
+                    "bound storage must record deletion in progress before completion"
+                );
+                let binding_bytes = if let Some(binding) = new_binding {
+                    let bytes = serde_json::to_vec(binding)?;
+                    let size = bytes.len() as u64;
+                    writes.push(WriteOp::put(
+                        NS,
+                        binding_key(&cleanup.tenant, cleanup.target_incarnation),
+                        bytes,
+                    ));
+                    size
+                } else {
+                    0
+                };
+                let mut metadata = self.metadata()?;
+                metadata.charged_bytes = metadata
+                    .charged_bytes
+                    .checked_add(binding_bytes)
+                    .and_then(|total| total.checked_add(CLEANUP_RESERVE as u64))
+                    .context("journal cleanup bytes exhausted")?;
+                ensure!(
+                    metadata.charged_bytes <= self.limits.max_metadata_bytes,
+                    "target cleanup exceeds permanent journal capacity"
+                );
+                writes.push(WriteOp::put(
+                    NS,
+                    b"metadata",
+                    serde_json::to_vec(&metadata)?,
+                ));
+            }
+        }
+        Ok(writes)
     }
 
     fn validate_stop(&self, stop: &TargetJournalStop) -> Result<()> {
@@ -794,6 +1513,22 @@ impl TargetJournal {
     /// Must precede local scope closure and any physical deletion. The returned
     /// value describes a permanent stop only, never completed local cleanup.
     pub fn stop(&self, op: &TargetOperation, proof: &VerifiedTargetStop) -> Result<()> {
+        self.record_stop(op, proof, None)
+    }
+    pub fn stop_observed(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        writer: &CurrentTargetJournalWriter,
+    ) -> Result<()> {
+        self.record_stop(op, proof, Some(writer))
+    }
+    fn record_stop(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        writer: Option<&CurrentTargetJournalWriter>,
+    ) -> Result<()> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
             .mutation
@@ -803,6 +1538,7 @@ impl TargetJournal {
         let lease = op.invocation().gate().current()?;
         let requested = TargetJournalStop {
             intent,
+            owner_drain: None,
             stopped: proof.signed().clone(),
             authority: lease.authority().manifest().clone(),
         };
@@ -842,6 +1578,11 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            writer
+                .ok_or(MissingTargetWriter)?
+                .require(self, &metadata.retirements)?;
+            let mut binding = binding;
+            binding.stop_before_prepare = true;
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations
@@ -883,6 +1624,12 @@ fn file_key(tenant: &str, id: Uuid) -> Vec<u8> {
 }
 fn stop_key(tenant: &str, id: Uuid) -> Vec<u8> {
     format!("stop/{tenant}/{id}").into_bytes()
+}
+fn binding_key(tenant: &str, id: Uuid) -> Vec<u8> {
+    format!("binding/{tenant}/{id}").into_bytes()
+}
+fn cleanup_key(tenant: &str, id: Uuid) -> Vec<u8> {
+    format!("cleanup/{tenant}/{id}").into_bytes()
 }
 
 impl TargetJournalIntent {

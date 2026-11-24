@@ -261,11 +261,11 @@ impl NodesWork {
 impl Administration {
     pub(crate) fn committed_topology(&self) -> Result<CommittedTopology> {
         Ok(CommittedTopology(ControlPlane::local_topology(
-            &self.control,
+            self.control.local()?,
         )?))
     }
     pub(super) fn configured_nodes(&self) -> Result<ConfiguredNodes> {
-        let selection = ControlPlane::select_local(&self.control)?;
+        let selection = ControlPlane::select_local(self.control.local()?)?;
         selection.check_admission(&self.admission)?;
         let local = if self.config.replication.is_none() {
             Some(self.committed_topology()?)

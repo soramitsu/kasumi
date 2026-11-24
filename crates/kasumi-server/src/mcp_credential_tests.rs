@@ -339,16 +339,39 @@ impl Fixture {
             .into_iter()
             .map(|(id, body)| json!({"op":"put", "collection":"docs", "id":id, "body":body, "expected":"absent"}))
             .collect::<Vec<_>>();
-        self.database
-            .mutate(
-                Self::context(),
-                serde_json::from_value(
-                    json!({"idempotency_key":key, "read_set":[], "operations":operations}),
-                )
-                .unwrap(),
-            )
+        let batch: kasumi_types::MutationBatch = serde_json::from_value(
+            json!({"idempotency_key":key, "read_set":[], "operations":operations}),
+        )
+        .unwrap();
+        let digest = batch.digest().unwrap();
+        let context = Self::context();
+        if let Err(error) = self.database.mutate(context.clone(), batch).await {
+            assert_eq!(
+                error.code,
+                kasumi_types::ErrorCode::UnknownOutcome,
+                "{error}"
+            );
+            eprintln!("Resolving the original fixture write {key}: {error}");
+            let receipt = tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    if let Some(receipt) = self
+                        .database
+                        .operation_receipt(&context, key)
+                        .await
+                        .unwrap()
+                    {
+                        break receipt;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
             .await
-            .unwrap();
+            .expect("uncertain fixture write never acquired a durable receipt");
+            assert_eq!(receipt.request_digest, digest);
+            assert_eq!(receipt.scope.tenant, context.tenant);
+            assert_eq!(receipt.scope.principal, context.principal);
+            receipt.outcome.unwrap();
+        }
     }
     fn context() -> RequestContext {
         RequestContext {
@@ -1192,15 +1215,27 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
             .await;
     }
     let query = json!({"collection":"docs", "allow_scan":true, "limit":1000});
-    let before_source = fixture.admission.snapshot().reserved_bytes;
-    let direct = fixture
-        .database
-        .query(
-            &Fixture::context(),
-            serde_json::from_value(query.clone()).unwrap(),
-        )
-        .await
-        .unwrap();
+    let baseline_query: kasumi_types::QueryRequest = serde_json::from_value(query.clone()).unwrap();
+    // Establish the independent baseline before installing the MCP charge hook.
+    // A read that expired without releasing a page has no baseline to measure.
+    let until = tokio::time::Instant::now() + Duration::from_secs(300);
+    let (before_source, direct) = loop {
+        let before = fixture.admission.snapshot().reserved_bytes;
+        match fixture
+            .database
+            .query(&Fixture::context(), baseline_query.clone())
+            .await
+        {
+            Err(error)
+                if error.code == kasumi_types::ErrorCode::ResourceExhausted
+                    && error.message == "query deadline exceeded"
+                    && tokio::time::Instant::now() < until =>
+            {
+                eprintln!("MCP tree fixture baseline read withheld: {error}");
+            }
+            result => break (before, result.unwrap()),
+        }
+    };
     assert_eq!(direct.rows.len(), 1000);
     let source_charge = fixture
         .admission

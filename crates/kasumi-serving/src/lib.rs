@@ -26,6 +26,8 @@ mod tests;
 
 mod maintenance;
 pub use maintenance::*;
+mod authority_catalog;
+pub use authority_catalog::*;
 
 mod signing;
 pub use signing::*;
