@@ -543,7 +543,25 @@ def replacement(d, ctx, load):
             "membership change was not committed")
     control = original["control_leader"]
     require(control in ctx.controls, "a dedicated Control leader is required to publish Data membership")
-    published = d.json("replace-publish", ctx.ctl(ctx.control_member(control), "manage", publish), scenario)
+    command = ctx.ctl(ctx.control_member(control), "manage", publish)
+    code, raw = d.attempt("replace-publish", command, timeout=driver.COMMAND_SECONDS)
+    if code == 0:
+        published = driver.decode(raw)
+        d.count_observation(scenario[0])
+    else:
+        # Control may commit the route and fence the write response. Retain
+        # that exact refusal. Resolve the identical request through the current
+        # Control leader after independently observing the new Data voter set.
+        require(code == 1 and not raw.strip()
+                and d.last_attempt_stderr().strip() == (
+                    b"Error: UnknownOutcome: write response release was fenced; "
+                    b"resolve or retry the same idempotency key"),
+                "Control membership publication failed without the original fenced response")
+        elected = view(d, ctx, "replace-publish-view", leader, voters)
+        control = elected["control_leader"]
+        require(control in ctx.controls, "dedicated Control leader missing after the fenced publication")
+        published = d.json("replace-publish-resolve",
+                           ctx.ctl(ctx.control_member(control), "manage", publish), scenario)
     require(published == {"published": True}, "dedicated Control did not confirm Data membership")
     window.append(d.clock())
     d.pause(ctx.load_seconds)

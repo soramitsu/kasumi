@@ -242,6 +242,15 @@ if args[:1] == ["--profile"]:
                         or request["previous_voters"] != registry["voters"]
                         or sorted(request["voters"]) != cluster["voters"]):
                     fail("dedicated Control did not observe the expected Data membership")
+                if behavior.get("fence_first_publication"):
+                    original = load("original-publication.json", None)
+                    if original is None:
+                        save("original-publication.json", request)
+                        print("Error: UnknownOutcome: write response release was fenced; "
+                              "resolve or retry the same idempotency key", file=sys.stderr)
+                        sys.exit(1)
+                    if request != original:
+                        fail("membership resolution changed the original publication")
                 output = {"published": True}
             else:
                 fail("unknown operation")
@@ -634,6 +643,9 @@ class HaFaultTests(FaultFixture):
         return output
 
     def test_every_fault_is_replayed_and_accepted_and_forgeries_are_rejected(self):
+        knobs = self.evidence / "target/release/behavior.json"
+        knobs.write_text(json.dumps({"fence_first_publication": True}))
+
         self.contract(faults)
         self.adapters(faults.KIND, faults)
         custody = self.run_faults()
@@ -653,6 +665,11 @@ class HaFaultTests(FaultFixture):
                 call, = (row for row in actions if row["kind"] == "call"
                          and row["step"].endswith("-" + probe + "-" + verb))
                 self.assertEqual(call["argv"][2], self.plan["members"][str(leader)])
+        publication, = (row for row in actions if row.get("step", "").endswith("-replace-publish"))
+        resolved, = (row for row in actions if row.get("step", "").endswith("-replace-publish-resolve"))
+        self.assertEqual(publication["exit_code"], 1)
+        self.assertEqual(publication["argv"][-1], resolved["argv"][-1])
+        self.assertEqual(resolved["exit_code"], 0)
         # The nine originals are the topology; restarts are separate executions.
         self.assertEqual(len(report["topology"]), 9)
         dispositions = {}
