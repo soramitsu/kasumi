@@ -1311,6 +1311,23 @@ impl Operator {
             Ok::<_, anyhow::Error>(())
         })();
         validated?;
+        // The bootstrap and its mandatory start audit commit separately. A crash
+        // may leave either outcome on this exact target. Resolve it with the
+        // original phase ID while this operator exclusively owns the database.
+        if initialized && mode == TargetOpen::Materialize {
+            let context = self.context(
+                &request.tenant, &request.source_principal,
+                kasumi_types::CredentialResource::Database { incarnation: request.target_incarnation },
+                journal.status.phase_id,
+            ).await?;
+            let recorded = tokio::time::timeout(
+                std::time::Duration::from_millis(request.phase_timeout_ms),
+                database.local_restore_start_recorded(&context, &request.checkpoint),
+            ).await.context("resolving the original local restore start audit timed out")??;
+            if !recorded {
+                database.maintenance_audit(context, "restore", "started", request.checkpoint.revision).await?;
+            }
+        }
         node.drain_initializers().await.map_err(|failure| failure.observation())?;
         Ok(database)
         }.await;
