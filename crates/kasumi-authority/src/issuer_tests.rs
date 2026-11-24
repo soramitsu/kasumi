@@ -655,6 +655,8 @@ async fn accepted_on_current_leader(
     request: LifecycleAuthorityRequest,
 ) -> (Arc<IndependentAuthority>, SignedLifecycleAuthorityReceipt) {
     let context = f.context("operator");
+    let digest = request.digest().unwrap();
+    let mut unknown_replies = Vec::new();
     tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let service = f.leader().await;
@@ -664,14 +666,22 @@ async fn accepted_on_current_leader(
             {
                 Ok((receipt, fence)) => {
                     if fence.release().await.is_ok() {
+                        assert_eq!(receipt.receipt.reference, request.reference());
+                        assert_eq!(receipt.receipt.request_sha256, digest);
+                        f.record_resolved_replies(unknown_replies, &digest);
                         return (service, receipt);
                     }
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::Unavailable | ErrorCode::UnknownOutcome
-                    ) => {}
+                Err(error) if error.code == ErrorCode::UnknownOutcome => {
+                    if let Some(original) = service
+                        .request_jobs
+                        .original_unknown_reply(&service.requests)
+                        .await
+                    {
+                        unknown_replies.push(original);
+                    }
+                }
+                Err(error) if error.code == ErrorCode::Unavailable => {}
                 Err(error) => panic!("definitive setup rejection: {error:?}"),
             }
             // A retry uses the same exact original command. No absent/read error

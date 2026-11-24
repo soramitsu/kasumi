@@ -2057,7 +2057,7 @@ async fn exercise_target_activation(maintenance: bool) {
     intent.observation.intent.revision += 3;
     intent.observation.observed_revision = intent.observation.intent.revision;
     f.control.sign_intent(&mut intent);
-    let (issuer, _) = accepted_on_current_leader(&f.issuer, request(&intent)).await;
+    accepted_on_current_leader(&f.issuer, request(&intent)).await;
     let request_ref = request(&intent);
     let command = f.issuer.command(AuthorityAction::ActivateCommitted {
         fence_id: fence.command.command_id,
@@ -2072,12 +2072,38 @@ async fn exercise_target_activation(maintenance: bool) {
         },
     });
     // Actual source fencing alone cannot skip the full original lease drain.
-    assert!(
-        issuer
-            .execute(f.issuer.context("operator"), command.clone())
-            .await
-            .is_err()
-    );
+    let context = f.issuer.context("operator");
+    let mut unknown_replies = Vec::new();
+    let deadline = tokio::time::Instant::now() + FIXTURE_OBSERVATION_WINDOW;
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "missing original fence drain refusal"
+        );
+        let issuer = f.issuer.leader().await;
+        match issuer.execute(context.clone(), command.clone()).await {
+            Err(error)
+                if error.code == ErrorCode::Unavailable
+                    && error.message
+                        == "exact fence drain has not completed; retry the same identity" =>
+            {
+                break;
+            }
+            Err(error) if error.code == ErrorCode::UnknownOutcome => {
+                if let Some(original) = issuer
+                    .request_jobs
+                    .original_unknown_reply(&issuer.requests)
+                    .await
+                {
+                    unknown_replies.push(original);
+                }
+            }
+            Err(error) if error.code == ErrorCode::Unavailable => {}
+            Err(error) => panic!("unexpected pre-drain rejection: {error:?}"),
+            Ok(_) => panic!("activation accepted before the original fence drained"),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     f.issuer.clock.0.store(1000, Ordering::SeqCst);
     let mut invalid = command.clone();
     invalid.command_id = Uuid::new_v4();
@@ -2096,6 +2122,8 @@ async fn exercise_target_activation(maintenance: bool) {
         accepted.outcome,
         AuthorityOutcome::Activated { .. }
     ));
+    f.issuer
+        .record_resolved_replies(unknown_replies, &accepted.command_digest);
     let current = f.issuer.leader().await;
     let accepted_signed = current
         .receipt(f.issuer.context("operator"), "city", command.command_id)
@@ -2387,9 +2415,35 @@ async fn exercise_target_activation(maintenance: bool) {
     // The extended case also reopens after ordinary maintenance; no old phase
     // grant becomes data authority and no original activation fact changes.
     serving_tests::exercise_serving(&f, &router, projected_node_id, &fact, maintenance).await;
-    drop(issuer);
     drop(current);
-    f.close().await;
+    // A later signed receipt resolves the permanent command. Its original
+    // abandoned request can still report its own uncertainty at shutdown.
+    for service in &f.issuer.services {
+        if let Err(failure) = service.shutdown().await {
+            let resolved = f.issuer.replayed_unknown_replies.lock().unwrap();
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete,
+                "{failure:?}"
+            );
+            assert!(!failure.issues().is_empty());
+            for issue in failure.issues() {
+                let (digest, _) = resolved
+                    .iter()
+                    .find(|(_, original)| {
+                        kasumi_types::drain::DrainIssueRef::ptr_eq(original, issue)
+                    })
+                    .unwrap_or_else(|| panic!("unexpected issuer drain {failure:?}"));
+                eprintln!("original issuer drain {issue} after resolving {digest}");
+            }
+        }
+        assert_eq!(service.request_jobs.registered(), 0);
+        assert_eq!(
+            service.requests.available_permits(),
+            AUTHORITY_REQUEST_SLOTS
+        );
+    }
+    f.issuer.close_storage().await;
 }
 #[tokio::test]
 async fn dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain() {
