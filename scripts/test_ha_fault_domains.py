@@ -165,6 +165,14 @@ def data(words):
                  if (STATE / ("hb-" + str(a))).exists()]
         expired = not heard or time.time() - max(heard) > registry["lease_ms"] / 1000
         if expired and not any(alive(a) for a in registry["authorities"]) and not behavior.get("ignore_lease"):
+            if words[0] == "put" and behavior.get("lose_first_expired_write"):
+                original = load("original-expired-write.json", None)
+                if original is None:
+                    save("original-expired-write.json", words)
+                    return 10, {"ok": False, "error": {"class": "uncertain", "code": "UNKNOWN_OUTCOME",
+                                                       "idempotency_key": words[-1]}}
+                if words != original:
+                    fail("lease probe changed the original write")
             if words[0] == "put" and behavior.get("commit_after_expiry"):
                 documents = load("documents.json", {})
                 documents[words[2]] = json.loads(words[3])
@@ -644,7 +652,7 @@ class HaFaultTests(FaultFixture):
 
     def test_every_fault_is_replayed_and_accepted_and_forgeries_are_rejected(self):
         knobs = self.evidence / "target/release/behavior.json"
-        knobs.write_text(json.dumps({"fence_first_publication": True}))
+        knobs.write_text(json.dumps({"fence_first_publication": True, "lose_first_expired_write": True}))
 
         self.contract(faults)
         self.adapters(faults.KIND, faults)
@@ -688,7 +696,8 @@ class HaFaultTests(FaultFixture):
         # Every refusal the scenarios demanded is retained outside the roster.
         refused = [item for item in details["attempts"]
                    if owned.read(owned.check_ref(custody, item["receipt"]))["exit_code"] != 0]
-        self.assertTrue(any("expired-write" in item["id"] for item in refused))
+        for label in ("outage-expired-write", "outage-expired-read", "outage-expired-write-retry"):
+            self.assertTrue(any(item["id"].endswith(label) for item in refused), label)
         self.assertTrue(any("trust-old-refused" in item["id"] for item in refused))
         self.assertEqual(owned.read(custody / "outcome.json")["qualification"], "qualifying")
 

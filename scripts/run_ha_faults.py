@@ -444,6 +444,24 @@ def outage(d, ctx):
     code, output = d.attempt("outage-expired-write", document)
     require(code != 0, "data serving continued after its authority lease expired")
     refused = driver.decode(output)
+    if (refused is not None and refused.get("ok") is False
+            and isinstance(refused.get("error"), dict)
+            and refused["error"].get("code") == "UNKNOWN_OUTCOME"
+            and refused["error"].get("class") == "uncertain"
+            and refused["error"].get("idempotency_key") == ctx.attempt_id + "/lease-expired"):
+        # The CLI can lose its first reply and exhaust its resend deadline.
+        # Observe the already-written document while every authority stays down,
+        # then demand the native write refusal for the identical request.
+        read_code, read_output = d.attempt("outage-expired-read",
+                                           ctx.ctl(profile, "get", ctx.plan["collection"], "fault-4"))
+        read_refusal = driver.decode(read_output)
+        require(read_code != 0 and read_refusal is not None and read_refusal.get("ok") is False
+                and isinstance(read_refusal.get("error"), dict)
+                and read_refusal["error"].get("code") in {"UNAVAILABLE", "SEALED"},
+                "expired read lacks the native serving refusal")
+        code, output = d.attempt("outage-expired-write-retry", document)
+        require(code != 0, "data serving resumed before authority restart")
+        refused = driver.decode(output)
     require(refused is not None and refused.get("ok") is False
             and isinstance(refused.get("error"), dict)
             and refused["error"].get("code") in {"UNAVAILABLE", "SEALED"},
