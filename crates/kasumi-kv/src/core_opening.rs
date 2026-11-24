@@ -751,6 +751,10 @@ impl<B> fmt::Display for NativeOpenFailure<B> {
     clippy::result_large_err,
     reason = "Constructor failure retains the exact backend and cleanup inline when allocation admission fails."
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Each builder choice is passed by value into the one native opening; a carrier struct would only rename them."
+)]
 pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
     backend: B,
     admission: Arc<dyn StorageAdmission>,
