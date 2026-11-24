@@ -194,6 +194,9 @@ pub(crate) struct StorageObservation {
     /// Seconds since the worker last published this status.
     pub status_age_seconds: f64,
     pub garbage_files: u64,
+    /// Snapshot pins held at the last publication and the registry size.
+    pub snapshot_pins: u64,
+    pub snapshot_pin_limit: u64,
     pub compaction_phase: &'static str,
     pub compaction_cycle: u64,
     pub compaction_requested: bool,
@@ -269,6 +272,8 @@ impl StorageObservation {
                 .saturating_duration_since(published.published_at)
                 .as_secs_f64(),
             garbage_files: status.garbage_files,
+            snapshot_pins: status.snapshot_pins,
+            snapshot_pin_limit: status.snapshot_pin_limit,
             compaction_phase: status.phase.as_str(),
             compaction_cycle: status.cycle,
             compaction_requested: status.requested,
@@ -1372,7 +1377,7 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 /// Storage families shared by the node's database and each group that has
 /// one of its own: (suffix, kind, value).
 type StorageFamily = (&'static str, &'static str, fn(&StorageObservation) -> Value);
-const STORAGE_FAMILIES: [StorageFamily; 36] = [
+const STORAGE_FAMILIES: [StorageFamily; 38] = [
     ("measured", "gauge", |s| s.measured.into()),
     ("segment_files", "gauge", |s| s.segment_files.into()),
     ("segment_bytes", "gauge", |s| s.segment_bytes.into()),
@@ -1385,6 +1390,10 @@ const STORAGE_FAMILIES: [StorageFamily; 36] = [
         s.status_age_seconds.into()
     }),
     ("garbage_files", "gauge", |s| s.garbage_files.into()),
+    ("snapshot_pins", "gauge", |s| s.snapshot_pins.into()),
+    ("snapshot_pin_limit", "gauge", |s| {
+        s.snapshot_pin_limit.into()
+    }),
     ("compaction_cycle", "gauge", |s| s.compaction_cycle.into()),
     ("compaction_requested", "gauge", |s| {
         s.compaction_requested.into()
