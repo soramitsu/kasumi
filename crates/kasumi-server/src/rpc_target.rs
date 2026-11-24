@@ -5,10 +5,20 @@ use zeroize::Zeroizing;
 pub struct NativeTargetRecovery {
     runtime: Arc<TargetRecoveryRuntime>,
     auth: Arc<Authenticator>,
+    #[cfg(test)]
+    pub(crate) activation_reader: Option<(
+        kasumi_client::KasumiLifecyclePool,
+        Arc<std::sync::OnceLock<uuid::Uuid>>,
+    )>,
 }
 impl NativeTargetRecovery {
     pub fn new(runtime: Arc<TargetRecoveryRuntime>, auth: Arc<Authenticator>) -> Self {
-        Self { runtime, auth }
+        Self {
+            runtime,
+            auth,
+            #[cfg(test)]
+            activation_reader: None,
+        }
     }
     pub fn service(self) -> kasumi_target_recovery_server::KasumiTargetRecoveryServer<Self> {
         kasumi_target_recovery_server::KasumiTargetRecoveryServer::new(self)
@@ -310,6 +320,23 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
             .map_err(|cause| status(error(cause)))?;
         // The wire identity is structural only. Runtime authority and journal
         // admission remain separate; never turn these claimed IDs into a ticket.
+        #[cfg(test)]
+        if matches!(
+            input.request.step,
+            kasumi_types::TargetRuntimeStep::Activate { .. }
+        ) && let Some((reader, observed)) = &self.activation_reader
+            && observed.get().is_none()
+        {
+            // A different, already-started voter must be able to renew its own
+            // read-only grant while this enrollment's Activate RPC is in flight.
+            let mut reader = reader.clone();
+            if let Ok(intent) = reader
+                .observe_intent(input.request.command_id, std::time::Duration::from_secs(5))
+                .await
+            {
+                let _ = observed.set(intent.observation().intent.request.command_id);
+            }
+        }
         #[cfg(test)]
         let command_id = input.request.command_id;
         let reply = match self.runtime.execute(context.clone(), bearer, input).await {

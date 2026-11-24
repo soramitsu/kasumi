@@ -2627,7 +2627,7 @@ fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
                         reader: &kasumi_types::LifecycleNode,
                         pin: &str,
                         now| {
-            quorum::current_initial_intent_reader(
+            quorum::current_replica_intent_reader(
                 generation,
                 head,
                 phase,
@@ -2711,7 +2711,7 @@ fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
         assert!(read(&state, &operation, cap - 1));
         assert!(!read(&state, &operation, cap));
         assert!(
-            !quorum::current_initial_intent_reader(
+            !quorum::current_replica_intent_reader(
                 &state,
                 &operation,
                 id,

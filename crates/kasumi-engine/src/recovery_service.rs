@@ -69,10 +69,10 @@ impl RecoveryEffectDispatchTicket {
     }
 }
 impl Database {
-    /// A read-only return connection may observe the original Initialize intent
+    /// A read-only return connection may observe the original Initialize or Activate intent
     /// while a sibling's physical dispatch is still active. Resolve its sender
     /// and positive Start in the current Control generation on every check.
-    pub fn is_current_initial_intent_reader(
+    pub fn is_current_replica_intent_reader(
         &self,
         operation: Uuid,
         pending: Uuid,
@@ -90,7 +90,7 @@ impl Database {
         else {
             return Ok(false);
         };
-        recovery::quorum::current_initial_intent_reader(
+        recovery::quorum::current_replica_intent_reader(
             &current.state,
             head,
             pending,
