@@ -676,7 +676,7 @@ fn persist_new(
 fn persist_new_checked(
     stores: &TenantStorageSet,
     bytes: &SnapshotImage,
-    identity: [WriteOp; 2],
+    identity: impl IntoIterator<Item = WriteOp>,
     mut check: impl FnMut() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     check()?;
@@ -789,6 +789,48 @@ impl LocalDatabaseStartup {
         initial_limits: Limits,
         incarnation: uuid::Uuid,
     ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        self.initialize_as(
+            stores,
+            initial_policy,
+            initial_limits,
+            incarnation,
+            LocalRuntime::Production,
+        )
+        .await
+    }
+
+    /// Commit the original standalone creation identity together with both sides
+    /// of its fresh genesis, before a fallible database constructor can run.
+    pub async fn initialize_enrollment(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+        original_dispatch: [u8; 32],
+        check_original: impl Fn() -> anyhow::Result<()> + Send + Sync,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        self.initialize_as(
+            stores,
+            initial_policy,
+            initial_limits,
+            incarnation,
+            LocalRuntime::Enrollment {
+                dispatch: original_dispatch,
+                check: &check_original,
+            },
+        )
+        .await
+    }
+
+    async fn initialize_as(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+        runtime: LocalRuntime<'_>,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         crate::SnapshotFailure::ordinary(|| {
             anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
             Ok(())
@@ -798,7 +840,7 @@ impl LocalDatabaseStartup {
             initial_policy,
             initial_limits,
             Some(incarnation),
-            LocalRuntime::Production,
+            runtime,
         )
         .await
     }
@@ -962,10 +1004,70 @@ pub async fn open_fixture_with_epoch_clock(
 #[path = "bootstrap_fixtures.rs"]
 pub(crate) mod fixtures;
 
-enum LocalRuntime {
+enum LocalRuntime<'a> {
     Production,
+    Enrollment {
+        dispatch: [u8; 32],
+        check: &'a (dyn Fn() -> anyhow::Result<()> + Send + Sync),
+    },
     #[cfg(any(test, feature = "test-utils"))]
     FixtureDefault,
+}
+
+const LOCAL_ENROLLMENT_KEY: &[u8] = b"local_enrollment_genesis";
+
+fn local_enrollment_commitment(
+    stores: &TenantStorageSet,
+    dispatch: &[u8; 32],
+    bootstrap_digest: &str,
+) -> anyhow::Result<[u8; 32]> {
+    anyhow::ensure!(
+        matches!(
+            stores.application().storage_access().purpose(),
+            kasumi_store::StoragePurpose::Standalone { .. }
+        ),
+        "local enrollment requires an installed standalone pair"
+    );
+    let pair = stores.custody().binding();
+    let mut hash = Sha256::new();
+    hash.update(b"kasumi-standalone-enrollment-genesis-v1\0");
+    hash.update(dispatch);
+    hash.update(pair.application_catalog().as_bytes());
+    hash.update(pair.custody_catalog().as_bytes());
+    hash.update(bootstrap_digest.as_bytes());
+    Ok(hash.finalize().into())
+}
+
+/// Check the immutable, original-dispatch receipt from the same read generation
+/// as the two deployment rows and the manifest. Existing data without the
+/// receipt cannot be adopted by an incomplete security enrollment.
+pub fn require_local_enrollment_genesis(
+    stores: &TenantStorageSet,
+    dispatch: &[u8; 32],
+) -> anyhow::Result<()> {
+    let view = stores.read_view()?;
+    let binding = view
+        .deployment_binding()?
+        .ok_or_else(|| anyhow::anyhow!("local enrollment deployment pair absent"))?;
+    anyhow::ensure!(
+        binding.as_bytes() == b"local-v1",
+        "local enrollment deployment differs"
+    );
+    let digest = persisted_bootstrap_digest_at(&view)?;
+    anyhow::ensure!(
+        view.custody_get("raft.meta", b"application_bootstrap_sha256", 256)?
+            .as_deref()
+            == Some(serde_json::to_vec(&digest)?.as_slice()),
+        "local enrollment custody bootstrap differs"
+    );
+    let expected = local_enrollment_commitment(stores, dispatch, &digest)?;
+    anyhow::ensure!(
+        view.custody_get("raft.meta", LOCAL_ENROLLMENT_KEY, 32)?
+            .as_deref()
+            == Some(expected.as_slice()),
+        "original local enrollment genesis receipt is missing or differs"
+    );
+    Ok(())
 }
 
 async fn open_local_inner(
@@ -973,7 +1075,7 @@ async fn open_local_inner(
     initial_policy: Policy,
     initial_limits: Limits,
     incarnation: Option<uuid::Uuid>,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores().clone();
     let store = stores.application().clone();
@@ -986,9 +1088,40 @@ async fn open_local_inner(
     })?;
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
+    let check = || -> anyhow::Result<()> {
+        stores.check_access()?;
+        if let LocalRuntime::Enrollment { check, .. } = &runtime {
+            check()?;
+        }
+        Ok(())
+    };
+    if matches!(runtime, LocalRuntime::Enrollment { .. }) {
+        check()?;
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                stores.deployment_binding()?.is_none()
+                    && stores
+                        .custody()
+                        .store()
+                        .get_bounded("raft.meta", LOCAL_ENROLLMENT_KEY, 32)?
+                        .is_none(),
+                "original local enrollment requires fresh catalogs"
+            );
+            Ok(())
+        })?;
+    }
     bind_deployment(&stores, b"local-v1")?;
     let bytes = match load(&store)? {
-        Some(bytes) => bytes,
+        Some(bytes) => {
+            crate::SnapshotFailure::ordinary(|| {
+                anyhow::ensure!(
+                    !matches!(runtime, LocalRuntime::Enrollment { .. }),
+                    "original local enrollment cannot adopt an existing bootstrap"
+                );
+                Ok(())
+            })?;
+            bytes
+        }
         None => {
             let engine = TenantEngine::new(
                 store.tenant().into(),
@@ -1005,7 +1138,13 @@ async fn open_local_inner(
                     engine.generation()?.state.incarnation
                 ),
             )?;
-            persist_new_checked(&stores, &bytes, identity, || stores.check_access())?;
+            let receipt = if let LocalRuntime::Enrollment { dispatch, .. } = &runtime {
+                let value = local_enrollment_commitment(&stores, dispatch, bytes.sha256())?;
+                Some(WriteOp::put("raft.meta", LOCAL_ENROLLMENT_KEY, value))
+            } else {
+                None
+            };
+            persist_new_checked(&stores, &bytes, identity.into_iter().chain(receipt), check)?;
             bytes
         }
     };
@@ -1015,7 +1154,7 @@ async fn open_local_inner(
 async fn start(
     construction: DatabaseConstruction,
     bytes: &SnapshotImage,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
     expected_incarnation: Option<uuid::Uuid>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores();
@@ -1056,7 +1195,7 @@ async fn start_prepared(
     construction: DatabaseConstruction,
     engine: Arc<TenantEngine>,
     bytes: &SnapshotImage,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let store = construction.stores().application().clone();
     engine.install_storage_access(&store)?;
@@ -1064,7 +1203,10 @@ async fn start_prepared(
     engine
         .verify_bootstrap_dependencies_owned(admission.clone())
         .await?;
-    if matches!(runtime, LocalRuntime::Production) {
+    if matches!(
+        runtime,
+        LocalRuntime::Production | LocalRuntime::Enrollment { .. }
+    ) {
         engine.install_audit_maintenance(&admission)?;
     }
     let incarnation = engine.generation()?.state.incarnation.clone();

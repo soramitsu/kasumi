@@ -87,7 +87,8 @@ pub use bootstrap::{
     initialize_replicated, materialize_target_replica, open_existing_local,
     open_existing_replicated, open_local, open_local_with_incarnation, open_replicated,
     open_target_replica, persisted_bootstrap_digest, persisted_bootstrap_digest_at,
-    recovery_workspace_bytes, restore_local, resume_target_materialization,
+    recovery_workspace_bytes, require_local_enrollment_genesis, restore_local,
+    resume_target_materialization,
 };
 pub use security_audit::{
     ArchivePrune, SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind,
