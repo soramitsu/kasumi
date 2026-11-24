@@ -104,7 +104,7 @@ pub(crate) fn header<'a>(
     // Zero is a valid restored version, as in the snapshot and primary codecs.
     // The selected source still cannot lend a version newer than its revision.
     let valid_version = |version| version <= revision;
-    if live.is_some_and(|document| document.id() != id || !valid_version(document.version()))
+    if live.is_some_and(|document| !document.has_id(id) || !valid_version(document.version()))
         || archived.is_some_and(|reference| !valid_version(reference.version))
     {
         return Err(corruption("source document identity/version differs"));
@@ -141,17 +141,14 @@ pub(crate) fn record<'a>(
     if let Some(document) = collection.documents.get(id) {
         let loan = match document.as_ref() {
             DocumentSlot::Pending(document) => DocumentLoan::Pending(document),
-            DocumentSlot::Stored(document) => {
+            slot => {
                 let resolver = resolver.ok_or_else(|| {
                     ReadFailure::Source(DocumentSourceFailure(anyhow::anyhow!(
                         "stored document has no selected resolver"
                     )))
                 })?;
-                DocumentLoan::Stored(
-                    document
-                        .load(resolver)
-                        .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?,
-                )
+                slot.load_at(&collection.definition.name, id, resolver)
+                    .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?
             }
         };
         return Ok(Some(RecordLoan::Live(loan)));
@@ -162,26 +159,7 @@ pub(crate) fn record<'a>(
         .map(|reference| RecordLoan::Archived(reference.as_ref())))
 }
 
-/// Merge two strictly ordered key streams, yielding a shared key once.
-pub(crate) fn ordered_union<T: Ord>(
-    left: impl Iterator<Item = T>,
-    right: impl Iterator<Item = T>,
-) -> impl Iterator<Item = T> {
-    let mut left = left.peekable();
-    let mut right = right.peekable();
-    std::iter::from_fn(move || match (left.peek(), right.peek()) {
-        (Some(a), Some(b)) => match a.cmp(b) {
-            std::cmp::Ordering::Less => left.next(),
-            std::cmp::Ordering::Greater => right.next(),
-            std::cmp::Ordering::Equal => {
-                right.next();
-                left.next()
-            }
-        },
-        (Some(_), None) => left.next(),
-        _ => right.next(),
-    })
-}
+pub(crate) use kasumi_query::ordered_union;
 
 pub(crate) fn resident_ids_after<'a>(
     collection: &'a CollectionState,
@@ -299,12 +277,14 @@ pub(crate) fn build_with_resolver(
     resolver: Option<&dyn DocumentResolver>,
     residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
-    QueryIndexes::build_with_residency(
-        state.collections.iter().map(|(name, collection)| {
-            StateCollection::with_resolver(state, name, collection, resolver)
-        }),
-        residency,
-    )
+    let records = state.collections.iter().map(|(name, collection)| {
+        StateCollection::with_resolver(state, name, collection, resolver)
+    });
+    if resolver.is_some() {
+        QueryIndexes::build_installed_with_residency(records, residency)
+    } else {
+        QueryIndexes::build_with_residency(records, residency)
+    }
 }
 
 fn check_scope(old: &TenantState, new: &TenantState) -> Result<()> {
@@ -395,12 +375,10 @@ fn action<'a>(
         )));
     };
     if previous.definition != collection.definition {
-        return Ok(IndexUpdate::Rebuild(StateCollection::with_resolver(
-            new,
-            name,
-            collection,
-            new_resolver,
-        )));
+        return Ok(IndexUpdate::Replace {
+            previous,
+            source: StateCollection::with_resolver(new, name, collection, new_resolver),
+        });
     }
     if previous.documents.ptr_eq(&collection.documents)
         && previous

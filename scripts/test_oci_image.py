@@ -18,10 +18,14 @@ import sys
 import tarfile
 import threading
 import unittest
+from unittest.mock import patch
 
+import attempt_index
 import domain_run
 import oci_image
 import release_gate
+import run_oci_image_owned
+import verify_release_acceptance as acceptance
 import repeatable_assembly as owned
 import run_oci_smoke as smoke
 import test_domain_runs
@@ -58,14 +62,43 @@ if args[0] == "load":
     print("Loaded image")
 elif args[:2] == ["image", "inspect"]:
     print(behavior.get("image_id", memory["id"]))
+elif args[:2] == ["volume", "create"]:
+    memory["volume"] = args[-1]
+    memory["volume_label"] = behavior.get("existing_label", args[args.index("--label") + 1])
+    print(args[-1])
+elif args[:2] == ["volume", "inspect"]:
+    assert memory["volume"] == args[-1]
+    print(memory["volume_label"].split("=", 1)[1])
+elif args[:2] == ["volume", "ls"]:
+    if memory.get("volume") and args[args.index("--filter") + 1] == "label=" + memory["volume_label"]:
+        print(memory["volume"])
+elif args[:2] == ["volume", "rm"]:
+    assert memory.pop("volume") == args[-1]
+elif args[:2] == ["container", "ls"]:
+    if memory.get("container") and args[args.index("--filter") + 1] == "label=" + memory["container_label"]:
+        print(memory["container"])
 elif args[0] == "run" and "--detach" in args:
     assert args.count("--volume") == 1
-    print("container")
+    memory["container"] = "a" * 64
+    memory["container_label"] = args[args.index("--label") + 1]
+    print(memory["container"])
+elif args[0] == "run":
+    assert args[args.index("--label") + 1] == memory["volume_label"]
+    memory["writers"] = memory.get("writers", 0) + 1
+elif args[0] == "rm":
+    assert args[-1] in (memory["volume"], memory["container"])
+    del memory["container"]
 elif args[0] == "exec" and args[-1] == "ready":
     memory["polls"] = memory.get("polls", 0) + 1
     state.write_text(json.dumps(memory))
-    sys.exit(0 if memory["polls"] > behavior.get("ready_failures", 0) else 1)
+    if memory["polls"] <= behavior.get("ready_failures", 0):
+        sys.exit(1)
+    ready = memory["polls"] > behavior.get("ready_failures", 0) + behavior.get("not_ready", 0)
+    print(json.dumps({"ready": ready, "lifecycle": "serving" if ready else "starting"}))
 elif args[0] == "exec" and args[-1] == "collections":
+    if behavior.get("client_error"):
+        print("injected native failure", file=sys.stderr)
+        sys.exit(37)
     print(json.dumps({"ok": behavior.get("native_ok", True), "result": {"collections": []}}))
 elif args[0] == "cp":
     source = Path(args[1].split(":", 1)[1]).relative_to("/var/lib/kasumi/installation")
@@ -143,6 +176,50 @@ class ImageFixture(test_domain_runs.DomainFixture):
 
 
 class AssemblyTests(ImageFixture):
+    def test_original_native_assembly_binds_delivered_image_and_session(self):
+        self.functional["build_environment"] = {"SOURCE_DATE_EPOCH": "1767225600"}
+        evidence = self.evidence / "evidence.json"
+        evidence.write_text(json.dumps(self.functional))
+        provenance = {key: self.functional[key] for key in ("source_commit", "source_tree", "lockfile_sha256")}
+        provenance.update(target=TARGET, source_date_epoch=1767225600, executables=self.candidates,
+                          functional_evidence_sha256=release_gate.sha256(evidence))
+        archive = self.pack("kasumi-release", **{"provenance.json": (json.dumps(provenance).encode(), 0o644)})
+        output = self.root / "native-image"
+        with patch.object(run_oci_image_owned, "native_target", return_value=TARGET):
+            run_oci_image_owned.launch(self.root, "image-1", output, self.evidence, self.layout, archive)
+        record = json.loads((output / "image/image.json").read_text())
+        ref = lambda path: attempt_index.file_ref(self.root, path)
+        primary = {"functional": ref(evidence)}
+        products = {"oci:" + TARGET: {"file": ref(output / "image" / record["image"]["path"])},
+                    "image-sbom:" + TARGET: {"file": ref(output / "image" / record["image_sbom"]["path"])},
+                    "package:" + TARGET: {"file": ref(archive)}}
+        selected = acceptance.selected_oci_outcome(self.root, TARGET, products, primary)
+        attempts = [{"id": "image-1", "receipt": ref(self.root / "attempts/image-1/attempt.json")}]
+        acceptance.verify_attempts(self.root, attempts, {selected: "oci-image"})
+        duplicate = self.root / "other-sbom.json"
+        shutil.copyfile(output / "image" / record["image_sbom"]["path"], duplicate)
+        products["image-sbom:" + TARGET] = {"file": ref(duplicate)}
+        with self.assertRaisesRegex(ValueError, "same native assembly"):
+            acceptance.selected_oci_outcome(self.root, TARGET, products, primary)
+
+    def test_owned_image_seals_preflight_and_post_dispatch_failures(self):
+        with patch.object(run_oci_image_owned, "native_target", side_effect=ValueError("wrong target")):
+            with self.assertRaisesRegex(ValueError, "wrong target"):
+                run_oci_image_owned.launch(self.root, "wrong-host", self.root / "wrong-host",
+                                           self.evidence, self.layout, self.package)
+        self.functional["build_environment"] = {"SOURCE_DATE_EPOCH": "1767225600"}
+        with patch.object(run_oci_image_owned, "native_target", return_value=TARGET):
+            with self.assertRaises((ValueError, OSError)):
+                run_oci_image_owned.launch(self.root, "wrong-package", self.root / "wrong-package",
+                                           self.evidence, self.layout, self.package)
+        for name, dispatched in (("wrong-host", False), ("wrong-package", True)):
+            record = json.loads((self.root / name / "outcome.json").read_text())
+            self.assertEqual((record["status"], record["dispatch_started"], record["products"]),
+                             ("failed", dispatched, []))
+        attempts = [{"id": name, "receipt": attempt_index.file_ref(self.root, self.root / "attempts" / name / "attempt.json")}
+                    for name in ("wrong-host", "wrong-package")]
+        acceptance.verify_attempts(self.root, attempts, {})
+
     def test_same_inputs_give_identical_bytes_and_a_self_consistent_sbom(self):
         first, second = self.assemble("image-a"), self.assemble("image-b")
         self.assertEqual(first, second)
@@ -165,6 +242,12 @@ class AssemblyTests(ImageFixture):
         self.assertNotEqual(self.assemble("image-c", epoch=1767225601)["manifest_digest"],
                             first["manifest_digest"])
         with tarfile.open(archive) as bundle:
+            docker, = json.load(bundle.extractfile("manifest.json"))
+            manifest = json.load(bundle.extractfile("blobs/sha256/" + first["manifest_digest"][7:]))
+            self.assertEqual(docker["RepoTags"], [first["reference"]])
+            self.assertEqual(docker["Config"], "blobs/sha256/" + first["config_digest"][7:])
+            self.assertEqual(docker["Layers"],
+                             ["blobs/sha256/" + item["digest"][7:] for item in manifest["layers"]])
             layer = bundle.extractfile("blobs/sha256/" + first["layer_digest"][7:]).read()
         with tarfile.open(fileobj=io.BytesIO(layer)) as contents:
             members = {member.name: member for member in contents}
@@ -247,6 +330,14 @@ class AssemblyTests(ImageFixture):
         root_user = rebuilt(lambda config, manifest, members: config["config"].update(User="0:0"))
         with self.assertRaisesRegex(ValueError, "runtime configuration differs"):
             oci_image.verify(self.source, root_user, sbom, TARGET, self.candidates)
+
+        def reverse_docker_layers(config, manifest, members):
+            docker = json.loads(members["manifest.json"])
+            docker[0]["Layers"].reverse()
+            members["manifest.json"] = oci_image.canonical(docker)
+
+        with self.assertRaisesRegex(ValueError, "Docker and OCI archive manifests differ"):
+            oci_image.verify(self.source, rebuilt(reverse_docker_layers), sbom, TARGET, self.candidates)
 
         def extra_layer(config, manifest, members):
             extra = b"unreviewed layer"
@@ -349,12 +440,12 @@ class SmokeTests(ImageFixture):
         return record, identity, configs, delivered, candidates
 
     def test_delivered_image_is_loaded_exercised_restarted_and_stopped(self):
-        self.behave_runtime(ready_failures=2)
+        self.behave_runtime(ready_failures=2, not_ready=1)
         custody = self.smoke("oci-1")
         report = json.loads((custody / "report.json").read_text())
         self.assertEqual({item["id"] for item in report["scenarios"]},
                          {"load-image", "fresh-install", "native", "mcp", "restart", "clean-stop"})
-        self.assertEqual(len(report["details"]["ready_polls"]), 2)
+        self.assertEqual(len(report["details"]["ready_polls"]), 3)
         self.assertEqual([request[2] for request in self.requests], ["tools/list", "tools/list"])
         self.assertTrue(all(request[:2] == ("/mcp", "Bearer unit-token") for request in self.requests))
         copied = json.loads((self.runtime.parent / "runtime-state.json").read_text())["copied"]
@@ -370,6 +461,13 @@ class SmokeTests(ImageFixture):
         record, identity, configs, delivered, candidates = self.bundle(custody)
         self.assertEqual(self.accept(record, identity, configs, delivered, candidates),
                          ("oci-smoke", "runs/oci-1/outcome.json"))
+        altered = copy.deepcopy(report)
+        altered["details"]["ready_polls"].pop(0)
+        steps = smoke.plan(report["invocation"]["parameters"], report["details"]["image"],
+                           report["details"]["tools"]["python"]["path"],
+                           str(self.source / "scripts/mcp_probe.py"))
+        with self.assertRaisesRegex(ValueError, "missing or reordered OCI readiness poll"):
+            smoke.verify_polls(acceptance, custody, altered, steps)
 
         def rejected(message, change):
             altered = copy.deepcopy((record, identity, configs, delivered, candidates))
@@ -415,6 +513,32 @@ class SmokeTests(ImageFixture):
         outcome = json.loads((self.root / "runs/oci-stale/outcome.json").read_text())
         self.assertEqual((outcome["status"], outcome["dispatch_started"]), ("failed", False))
 
+    def test_command_failure_drains_detached_resources_and_keeps_original_exit(self):
+        self.behave_runtime(client_error=True)
+        with self.assertRaisesRegex(ValueError, "domain command failed: native"):
+            self.smoke("oci-drain")
+        custody = self.root / "runs/oci-drain"
+        report = json.loads((custody / "report.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("domain command failed: native", report["error"])
+        self.assertEqual(report["details"]["cleanup_errors"], [])
+        self.assertEqual(json.loads((custody / "native/process.json").read_text())["exit_code"], 37)
+        self.assertIn("injected native failure", (custody / "native/stderr.log").read_text())
+        self.assertEqual((custody / "cleanup-containers/stdout.log").read_text().strip(), "a" * 64)
+        for kind in ("containers", "volumes"):
+            self.assertEqual((custody / f"cleanup-remaining-{kind}/stdout.log").read_bytes(), b"")
+        state = json.loads((self.runtime.parent / "runtime-state.json").read_text())
+        self.assertFalse("container" in state or "volume" in state)
+
+    def test_foreign_volume_is_preserved_before_first_writer(self):
+        self.behave_runtime(existing_label=smoke.OWNER_LABEL + "=another-run")
+        with self.assertRaisesRegex(ValueError, "smoke volume belongs to another owner"):
+            self.smoke("oci-foreign")
+        state = json.loads((self.runtime.parent / "runtime-state.json").read_text())
+        self.assertTrue(state["volume"])
+        self.assertNotIn("writers", state)
+        self.assertFalse((self.root / "runs/oci-foreign/cleanup-remove-volume").exists())
+
     def test_command_plan_is_a_pure_function_of_the_retained_parameters(self):
         parameters = {"attempt_id": "Oci-1", "runtime": "/usr/bin/docker", "base_port": 9440,
                       "image": "/bundle/image.oci.tar", "export": "/private/export"}
@@ -431,7 +555,8 @@ class SmokeTests(ImageFixture):
                              for argument in init), 2)
         for step in ("ready-start", "ready-restart"):
             self.assertEqual(commands[step][-3:], ["--profile", smoke.INSTALLATION + "/profiles/control.json", "ready"])
-        self.assertIn("kasumi-smoke-oci-1:/var/lib/kasumi", commands["start"])
+        self.assertIn("kasumi-smoke-" + smoke.resource_owner(parameters) + ":/var/lib/kasumi",
+                      commands["start"])
         self.assertEqual(commands["mcp"][:5], ["/usr/bin/python3", "-I", "-B", "-S",
                                                "/frozen/scripts/mcp_probe.py"])
         self.assertIn('"mcp_listen":"127.0.0.1:9440"', commands["inputs"][-1])

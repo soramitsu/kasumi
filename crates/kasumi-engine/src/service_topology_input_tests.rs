@@ -116,7 +116,6 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
     use crate::allocation_tests::check_deallocation;
     let fixture = CredentialFixture::new().await;
     let node = fixture.db.admission().clone();
-    let before = node.snapshot();
     let source = proposal_topology();
     let exact = proposal_input::retained_for_test(&source, "refused");
     let input =
@@ -124,16 +123,19 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
             .unwrap();
     let command = input.into_command(fixture.context.clone());
     let address = proposal_input::payload_address_for_test(&command);
+    let topology_charge = proposal_input::observe_topology_charge_for_test(&command);
+    assert_eq!(topology_charge(), Some((exact, true)));
+    let reservation = node
+        .reserve(ProposalBudget::required_bytes().unwrap(), None)
+        .unwrap();
+    let work_charge = reservation.observe_fixture_charge();
     let work = ProposalWork {
         group: fixture.db.group.clone(),
         admission_gate: fixture.db.proposal_gate.clone(),
         clock: fixture.db.command_clock.lock().unwrap().clone(),
         source_engine: fixture.db.engine.clone(),
         admission: node.clone(),
-        _reservation: ProposalBudget::new(
-            node.reserve(ProposalBudget::required_bytes().unwrap(), None)
-                .unwrap(),
-        ),
+        _reservation: ProposalBudget::new(reservation),
         _registration: Arc::new(fixture.db.work.begin(QueryCancellation::default()).unwrap()),
     };
     let jobs = proposal_jobs::Jobs::default();
@@ -144,12 +146,11 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
             let error = jobs.start(work, command, 8 << 20, None).err().unwrap();
             assert_eq!(error.code, ErrorCode::Unavailable);
         },
-        || {
-            assert!(node.snapshot().reserved_bytes >= before.reserved_bytes + exact);
-            assert!(node.snapshot().live_reservations > before.live_reservations);
-        },
+        // Other proposals and maintenance share the node. Observe the grant
+        // that owns these exact JSON bytes while their deallocation is paused.
+        || assert_eq!(topology_charge(), Some((exact, true))),
     );
-    assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
-    assert_eq!(node.snapshot().live_reservations, before.live_reservations);
+    assert_eq!(topology_charge(), None);
+    assert_eq!(work_charge(), None);
     fixture.close().await;
 }

@@ -13,6 +13,10 @@ enum Behavior {
     Repeated,
     InvalidMetadata,
     PanicAfterRefusal,
+    // The engine's own apply owner refuses before any publication once the
+    // target phase capability or key lease has expired.
+    SealedRefusal,
+    ContextualSealedRefusal,
 }
 struct Pause {
     entered: tokio::sync::oneshot::Sender<()>,
@@ -47,6 +51,23 @@ impl StateMachineBackend for Backend {
         self.calls.fetch_add(1, Ordering::AcqRel);
         if matches!(self.behavior, Behavior::Missing) {
             return Ok(());
+        }
+        if matches!(
+            self.behavior,
+            Behavior::SealedRefusal | Behavior::ContextualSealedRefusal
+        ) {
+            let refusal = anyhow::Error::from(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Sealed,
+                "tenant key authorization expired; recovery required",
+            ));
+            return Err(
+                if matches!(self.behavior, Behavior::ContextualSealedRefusal) {
+                    refusal.context("owning apply context")
+                } else {
+                    refusal
+                }
+                .into(),
+            );
         }
         let bytes = match input {
             crate::AppliedInput::Command(bytes) => bytes.to_vec(),
@@ -363,6 +384,101 @@ async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> 
         Some(b"old".as_slice())
     );
     assert_eq!(durable_cursor(&domains)?, Some(command(1, b"old").log_id));
+    Ok(())
+}
+
+/// A target phase capability can expire while its Raft group still runs; the
+/// next committed entry, such as a new leader's blank entry, then meets the
+/// access fence before any publication. The machine stays fenced with its
+/// exact diagnostic, but a bare refusal owns nothing: the drain completes and
+/// the group fence releases, so the next phase can reopen the same store.
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn access_refusal_fences_apply_without_retaining_group_ownership() -> FixtureResult<()> {
+    for (behavior, seal_store, settled) in [
+        // `StateMachine::apply_serialized` checks the sealed store first.
+        (Behavior::Publish, true, true),
+        (Behavior::SealedRefusal, false, true),
+        (Behavior::ContextualSealedRefusal, false, false),
+    ] {
+        let mut fixture = fixture(behavior).await?;
+        let claim = crate::claim_store(&fixture.domains)?;
+        fixture
+            .owner
+            .bind_group_ownership(claim.clone(), fixture.domains.custody().store().clone())?;
+        if seal_store {
+            fixture.domains.application().seal();
+        }
+        assert!(
+            fixture
+                .machine
+                .apply([entry(1, EntryPayload::Blank)])
+                .await
+                .is_err()
+        );
+        assert!(fixture.machine.failed());
+        assert!(fixture.machine.apply([command(2, b"later")]).await.is_err());
+        assert_eq!(
+            fixture.backend.calls.load(Ordering::Acquire),
+            usize::from(!seal_store)
+        );
+        assert_eq!(fixture.machine.state.lock().unwrap().log_id, None);
+        assert!(fixture.backend.selected.0.lock().unwrap().is_empty());
+        if !seal_store {
+            assert_eq!(durable_cursor(&fixture.domains)?, None);
+        }
+        let retained = fixture
+            .owner
+            .apply_failure()
+            .context("fenced apply diagnostic absent")?;
+        retained
+            .try_with_report(|report| {
+                let crate::RetainedApplyReport::Single(original) = report else {
+                    panic!("an access refusal has a single original")
+                };
+                if seal_store {
+                    assert!(original.is::<kasumi_store::KeyAccessDenied>());
+                } else {
+                    assert_eq!(
+                        original
+                            .downcast_ref::<kasumi_types::Error>()
+                            .map(|error| error.code),
+                        Some(kasumi_types::ErrorCode::Sealed)
+                    );
+                }
+            })
+            .expect("settled retained report is busy");
+        drop(retained);
+        let Fixture {
+            machine,
+            drain,
+            owner,
+            domains,
+            ..
+        } = fixture;
+        drop(machine);
+        tokio::time::timeout(WAIT, drain.wait()).await?;
+        let failure = owner.drain_buffers().await.unwrap_err();
+        assert_eq!(
+            failure.completion(),
+            if settled {
+                kasumi_types::drain::DrainCompletion::Complete
+            } else {
+                kasumi_types::drain::DrainCompletion::Retained
+            }
+        );
+        // As `RaftGroup::shutdown`: only a census with nothing retained
+        // releases the duplicate-open fence for the next phase's group.
+        if settled {
+            owner.release_group_ownership();
+        }
+        assert_eq!(claim.load(Ordering::Acquire), !settled);
+        assert_eq!(crate::claim_store(&domains).is_ok(), settled);
+        assert!(owner.apply_failure().is_some(), "diagnostic must survive");
+    }
     Ok(())
 }
 

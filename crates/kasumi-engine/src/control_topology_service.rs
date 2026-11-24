@@ -23,7 +23,9 @@ impl VerifiedControlTopology {
             .get("topology")
             .and_then(|collection| collection.documents.get("current"))
             .ok_or_else(|| changed("Control topology disappeared before release"))?;
-        let document = state.load_document(document).map_err(document_load_error)?;
+        let document = state
+            .load_document_at("topology", "current", document)
+            .map_err(document_load_error)?;
         if document.version != self.observation.topology.version
             || serde_json::to_value(&self.observation.topology.topology)
                 .map_err(|_| changed("Control topology release encoding failed"))?
@@ -124,7 +126,9 @@ impl Database {
                 .get("topology")
                 .and_then(|collection| collection.documents.get("current"))
                 .ok_or_else(|| changed("installed Control topology unavailable"))?;
-            let document = state.load_document(document).map_err(document_load_error)?;
+            let document = state
+                .load_document_at("topology", "current", document)
+                .map_err(document_load_error)?;
             let bytes = topology_workspace_bytes(&document.body)?;
             let reservation = self.admission().reserve(bytes, None)?;
             let observation = ControlTopologyObservation {

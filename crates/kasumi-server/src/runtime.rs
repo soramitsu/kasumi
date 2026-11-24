@@ -37,7 +37,7 @@ pub use kasumi_engine::{
     TransportAuditMetadata,
 };
 pub const CONTROL_TENANT: &str = "__kasumi_control";
-const MAX_CONFIG_BYTES: usize = 2 << 20;
+pub(crate) const MAX_CONFIG_BYTES: usize = 2 << 20;
 const MAX_PEM_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1617,7 +1617,7 @@ impl NodeRuntime {
                 .expect("same installed original startup inventory").claim(0).await;
             constructor.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| NodeStore::open_existing(
                 &config.database_path, config.database_id,
-                persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config(),
+                persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config().shared_node(),
             )).map_err(|observed| observed.foreign_error())?
         };
         pending.owned_nodes.push(node.clone());
@@ -1750,7 +1750,7 @@ impl NodeRuntime {
                 crate::node_enrollment::target_journal_exclusion(config.database_id, &admission),
             )?;
         }
-        let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
+        let serving_registration = crate::serving_owner::Registration::reserve(config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
             telemetry: crate::observability::Telemetry::new(),
@@ -2033,13 +2033,15 @@ impl NodeRuntime {
             if let Some(signer) = lifecycle_signer {
                 // Only a hosted Control installs a lifecycle signer.
                 let control = runtime.control.as_ref().context("lifecycle signer requires a hosted Control group")?.database.clone();
+                let mut lifecycle_rpc = crate::rpc::NativeLifecycleControl::new(control.clone(), signer.clone(), auth.clone())?;
                 if config.hosted_control()?.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
                     let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, control.clone(), signer.clone(), runtime.authority_trusts.clone())?;
                     let writer_network:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
                     control.install_target_writer_network(Arc::downgrade(&writer_network))?;
+                    lifecycle_rpc = lifecycle_rpc.with_writer_callbacks(coordinator.clone());
                     admin = admin.add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth.clone()).service());
                 }
-                admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(control, signer, auth.clone())?.service());
+                admin = admin.add_service(lifecycle_rpc.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
             let admin = admin.into_axum_router().layer(request_admission).merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
@@ -2652,7 +2654,13 @@ impl NodeRuntime {
         observe(
             &mut self.startup_drain,
             &mut retained,
-            crate::target_runtime::shutdown_target(&mut self.target_recovery).await,
+            crate::target_runtime::shutdown_target(
+                &mut self.target_recovery,
+                self.administration
+                    .as_ref()
+                    .map(|manager| &manager.readiness.probe),
+            )
+            .await,
         );
         if !self.stopping_audit_started {
             self.stopping_audit_started = true;
@@ -6885,18 +6893,58 @@ mod lifecycle_tests {
         .unwrap();
         fixture_stage!("source suspend accepted");
         fixture_stage!("starting backup");
+        let backup_id = uuid::Uuid::new_v4();
         let backup = managers[leader]
             .execute_for_test(
                 context.clone(),
                 M::Backup {
-                    session_id: uuid::Uuid::new_v4(),
+                    session_id: backup_id,
                     destination: "primary".into(),
                 },
             )
-            .await
-            .unwrap();
+            .await;
+        match &backup {
+            Ok(reply) => assert_eq!(reply["backup_id"], backup_id.to_string()),
+            Err(error) if error.code == kasumi_types::ErrorCode::UnknownOutcome => {}
+            Err(error) => panic!("source backup failed: {error:?}"),
+        }
+        if backup.is_err() || protected_prepare_only {
+            // The response fence can close after the original backup completed.
+            // Resolve its single session on the source without resubmitting a write.
+            let checkpoint = fixture_operation(|| async {
+                let started = tokio::time::Instant::now();
+                let request = kasumi_types::BackupSessionRequest {
+                    session_id: backup_id,
+                    destination: "primary".into(),
+                };
+                loop {
+                    let status = databases[leader]
+                        .backup_session_status(context.clone(), request.clone())
+                        .await;
+                    let observation = match status {
+                        Ok(status) => {
+                            assert_eq!(status.intent.session_id, backup_id);
+                            assert_eq!(status.intent.tenant, context.tenant);
+                            assert_eq!(status.intent.principal, context.principal);
+                            match status.outcome {
+                                Some(kasumi_types::BackupSessionOutcome::Complete { checkpoint, .. }) => break checkpoint,
+                                Some(kasumi_types::BackupSessionOutcome::Aborted { .. }) => panic!("original source backup aborted: {backup:?}"),
+                                None => "pending".to_string(),
+                            }
+                        }
+                        Err(error) if matches!(error.code, kasumi_types::ErrorCode::Unavailable
+                            | kasumi_types::ErrorCode::UnknownOutcome | kasumi_types::ErrorCode::NotFound) => format!("{error:?}"),
+                        Err(error) => panic!("original source backup status failed: {error:?}; original reply: {backup:?}"),
+                    };
+                    assert!(started.elapsed() < Duration::from_secs(20),
+                        "backup {backup_id} did not resolve: {observation}; original reply: {backup:?}");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await;
+            assert_eq!(checkpoint.backup_id, backup_id);
+            assert_eq!(checkpoint.tenant, context.tenant);
+        }
         fixture_stage!("backup command completed");
-        let backup_id = uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
         fixture_stage!("waiting for suspend replication");
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
@@ -7017,14 +7065,6 @@ mod lifecycle_tests {
             )
             .await;
         fixture_stage!("recovery targets installed");
-        if let Some(observer) = restart_initial_inspection {
-            fixture_stage!("checking expired Initialize after owned target restart");
-            fixture_operation(|| {
-                recovery.assert_expired_initialize_after_target_restart(&recovery_handles, observer)
-            })
-            .await;
-            fixture_stage!("expired Initialize after owned target restart checked");
-        }
         if protected_prepare_only || initial_start_only {
             // A separate installed three-node point-status acceptance case:
             // observe Prepare or resolve lost Start and Initialize replies
@@ -7113,6 +7153,17 @@ mod lifecycle_tests {
                 source_incarnation.to_string()
             );
             source_release.check_release().unwrap();
+            if let Some(observer) = restart_initial_inspection {
+                // The inspection starts real recovery and can unroute the source.
+                // Carry the response selected before that transition through it.
+                fixture_stage!("checking expired Initialize after owned target restart");
+                fixture_operation(|| {
+                    recovery
+                        .assert_expired_initialize_after_target_restart(&recovery_handles, observer)
+                })
+                .await;
+                fixture_stage!("expired Initialize after owned target restart checked");
+            }
             fixture_stage!("starting recovery");
             fixture_operation(|| {
                 recovery.recover(&cluster_networks, restart_initial_inspection.is_some())
@@ -7269,11 +7320,25 @@ mod lifecycle_tests {
                 .downcast_ref::<crate::target_runtime::TargetCallFailure>()
                 .expect("joined diagnostic retains its admitted cell")
                 .with_original(|original| {
-                    let operation = original
-                        .and_then(kasumi_engine::SnapshotFailure::operation_error)
-                        .expect("joined target deadline holds its original typed error");
-                    assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
-                    assert_eq!(operation.message, "backup verification deadline expired");
+                    match original.expect("joined target call retains its original error") {
+                        kasumi_engine::SnapshotFailure::Operation(operation) => {
+                            assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
+                            assert_eq!(operation.message, "backup verification deadline expired");
+                        }
+                        kasumi_engine::SnapshotFailure::Source(source) => {
+                            let outer: &(dyn std::error::Error + Send + Sync) = source.as_ref();
+                            let Some(kasumi_client::ClientError::LocalDeadline(deadline)) =
+                                outer.downcast_ref::<kasumi_client::ClientError>()
+                            else {
+                                panic!("expected a locally measured recovery deadline: {source:?}");
+                            };
+                            assert_eq!(
+                                deadline.reason(),
+                                "installed recovery operation deadline elapsed"
+                            );
+                        }
+                        other => panic!("unexpected joined target call error: {other:?}"),
+                    }
                 });
         }
         for stop in &stops {
@@ -7834,6 +7899,10 @@ mod deployed_format_tests;
 
 impl crate::startup_owner::Runtime for NodeRuntime {
     fn handoff(&mut self) -> Result<()> {
+        self.serving_registration
+            .as_ref()
+            .expect("a prepared runtime owns its serving reservation")
+            .admit(crate::serving_owner::Kind::Data)?;
         // Ticket::claim calls this synchronously while retaining the entire
         // runtime. Failed/abandoned publication still drains dormant workers.
         for node in &self.owned_nodes {

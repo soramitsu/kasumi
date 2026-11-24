@@ -6,6 +6,7 @@ type BlockingHook = Box<dyn FnOnce() + Send>;
 
 #[derive(Default)]
 pub(super) struct BlockingHooks {
+    pub(super) monitor_iteration: tokio::sync::Mutex<()>,
     pub(super) monitor: Mutex<Option<BlockingHook>>,
     pub(super) audit: Mutex<Option<BlockingHook>>,
     pub(super) backup_stream: Mutex<Option<BlockingHook>>,

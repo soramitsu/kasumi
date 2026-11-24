@@ -1,8 +1,10 @@
 use crate::scalar::{
-    Scalar, decimal, indexed_values, invalid, validate_indexed_values, validate_pointer,
+    Scalar, decimal, indexed_values, invalid, scalar, validate_indexed_values, validate_pointer,
 };
 use crate::{
-    CollectionRecords, ReadResult, Record, index_input::CheckedRecords, structured::Structured,
+    CollectionRecords, ReadResult, Record,
+    index_input::CheckedRecords,
+    structured::{record_value, unique_conflict, unique_tuple},
 };
 use kasumi_types::*;
 use serde_json::Value;
@@ -361,8 +363,7 @@ pub fn validate_collection<R: CollectionRecords + ?Sized>(
 ) -> ReadResult<(), R::Failure> {
     let source = CheckedRecords::new(source)?;
     validate_collection_and_compile(&source)?;
-    Structured::build_unique(&source)?;
-    Ok(())
+    validate_unique_keys(&source)
 }
 
 pub(crate) fn validate_collection_and_compile<R: CollectionRecords + ?Sized>(
@@ -436,9 +437,56 @@ pub(crate) fn validate_definition_and_compile(
     Ok((validator, schema.sha256))
 }
 
+// Validation needs only membership. The maintained generation additionally owns
+// document IDs, ranked overflow and copy-on-write roots for future edits.
+enum SeenKeys<'a> {
+    Scalar(&'a IndexField, BTreeSet<Scalar>),
+    Compound(&'a [IndexField], BTreeSet<Vec<Scalar>>),
+}
+
+impl SeenKeys<'_> {
+    fn insert(&mut self, record: Record<'_>) -> Result<bool> {
+        match self {
+            Self::Scalar(field, seen) => {
+                let key = scalar(record_value(record, &field.path), Some(field.kind))?;
+                Ok(key == Scalar::Missing || seen.insert(key))
+            }
+            Self::Compound(fields, seen) => {
+                Ok(unique_tuple(fields, record)?.is_none_or(|key| seen.insert(key)))
+            }
+        }
+    }
+}
+
+fn validate_unique_keys<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<(), R::Failure> {
+    let mut unique: BTreeMap<_, _> = source
+        .definition()
+        .indexes
+        .iter()
+        .filter(|index| index.unique)
+        .map(|index| {
+            let keys = match index.fields.as_slice() {
+                [field] => SeenKeys::Scalar(field, BTreeSet::new()),
+                fields => SeenKeys::Compound(fields, BTreeSet::new()),
+            };
+            (index.name.as_str(), keys)
+        })
+        .collect();
+    if unique.is_empty() {
+        return Ok(());
+    }
+    source.visit_records(|_, record| {
+        for (name, seen) in &mut unique {
+            if !seen.insert(record)? {
+                return Err(unique_conflict(name));
+            }
+        }
+        Ok(())
+    })
+}
+
 pub fn check_unique<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<(), R::Failure> {
-    let source = CheckedRecords::new(source)?;
-    Structured::build_unique(&source).map(|_| ())
+    validate_unique_keys(&CheckedRecords::new(source)?)
 }
 
 /// A bounded, canonical equality key for one unique index. Missing fields are

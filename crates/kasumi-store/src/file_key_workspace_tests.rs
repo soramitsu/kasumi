@@ -26,6 +26,7 @@ fn keyring(versions: u64) -> Vec<u8> {
         id: uuid::Uuid::from_u128(7),
         domain: "synthetic-application".into(),
         active: versions,
+        first_retained_version: None,
         versions: (1..=versions)
             .map(|version| (version, STANDARD.encode([7u8; 32])))
             .collect::<BTreeMap<_, _>>(),

@@ -422,6 +422,23 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         BTreeMap::from([("issuer".into(), f.trust.clone())]),
     )
     .unwrap();
+    let reader = f
+        .auth
+        .authenticate(&format!("Bearer {}", f.readonly))
+        .await
+        .unwrap();
+    let admin = f
+        .auth
+        .authenticate(&format!("Bearer {}", f.control_admin))
+        .await
+        .unwrap();
+    exercise_writer_callback(
+        &coordinator,
+        &admin,
+        &reader,
+        &request.target_nodes[&1],
+        &f.installation.root,
+    );
     let routes = tonic::service::Routes::new(
         NativeRecoveryControl::new(coordinator, f.auth.clone()).service(),
     )
@@ -563,6 +580,23 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     assert!(matches!(
         issuer_phase.outcome,
         Some(RecoveryDispatchOutcome::Authority(_))
+    ));
+    let wrong_phase = kasumi_types::TargetDeletionQuery {
+        operation_id: operation,
+        phase_id: issuer_phase.phase_id,
+        target_incarnation: request.target_incarnation,
+        node_id: *request.target_nodes.keys().next().unwrap(),
+    };
+    for reader in [f.wrong_resource, f.readonly] {
+        assert!(matches!(
+            client.read_target_deletion(reader, &wrong_phase).await,
+            Err(kasumi_client::ClientError::Transport(ref denied))
+                if matches!(denied.code(), tonic::Code::PermissionDenied | tonic::Code::Unauthenticated)
+        ));
+    }
+    assert!(matches!(
+        client.read_target_deletion(f.control_admin, &wrong_phase).await,
+        Err(kasumi_client::ClientError::Transport(ref wrong)) if wrong.code() == tonic::Code::InvalidArgument
     ));
     let intent = client.resume(f.control_admin, &advance).await.unwrap();
     assert!(intent.current_intent.is_some());
@@ -712,4 +746,75 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+/// A returned journal challenge retains the original administrator at the
+/// issuing Control member. Dropping that call closes even a resolved callback.
+fn exercise_writer_callback(
+    coordinator: &crate::recovery_runtime::ControlRecoveryCoordinator,
+    admin: &RequestContext,
+    reader: &RequestContext,
+    enrolled: &LifecycleNode,
+    root: &ControlSigningRoot,
+) {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let key = Ed25519KeyPair::from_seed_unchecked(&[0xa4; 32]).unwrap();
+    let mut node = enrolled.clone();
+    let peer = [0x4c; 32];
+    node.certificate_sha256 = hex::encode(peer);
+    node.attestation_public_key = hex::encode(key.public_key().as_ref());
+    node.principal = reader.principal.clone();
+    let refresh = RefreshTargetWriter {
+        protocol: TARGET_WRITER_PROTOCOL,
+        root: root.clone(),
+        verifier: node.verifier.clone(),
+        state_sha256: "a7".repeat(32),
+        nonce: Uuid::new_v4(),
+    };
+    let sign = |challenge: TargetWriterChallenge| SignedTargetWriterChallenge {
+        signature: hex::encode(
+            key.sign(
+                &serde_json::to_vec(&("kasumi.target-writer-challenge.v1", &challenge)).unwrap(),
+            )
+            .as_ref(),
+        ),
+        challenge,
+    };
+    let original = TargetWriterChallenge {
+        protocol: TARGET_WRITER_PROTOCOL,
+        root: root.clone(),
+        verifier: node.verifier.clone(),
+        catalog_minimums: Default::default(),
+        catalog: Uuid::new_v4(),
+        lifecycle_command: None,
+        nonce: Uuid::new_v4(),
+    };
+    let challenge = sign(original.clone());
+    let callbacks = &coordinator.writer_callbacks;
+    let resolve = |nonce, actor, peer: [u8; 32], signed: &SignedTargetWriterChallenge| {
+        callbacks.resolve(nonce, actor, &peer, signed, &coordinator.database)
+    };
+    let opened = callbacks
+        .open(&refresh, &node, admin, &coordinator.database)
+        .unwrap();
+    assert!(
+        callbacks
+            .open(&refresh, &node, admin, &coordinator.database)
+            .is_err()
+    );
+    assert!(resolve(Uuid::new_v4(), reader, peer, &challenge).is_err());
+    assert!(resolve(refresh.nonce, admin, peer, &challenge).is_err());
+    assert!(resolve(refresh.nonce, reader, [0x88; 32], &challenge).is_err());
+    let mut invalid = challenge.clone();
+    invalid.signature = "00".repeat(64);
+    assert!(resolve(refresh.nonce, reader, peer, &invalid).is_err());
+    let held = resolve(refresh.nonce, reader, peer, &challenge).unwrap();
+    assert_eq!(held.original(), admin);
+    assert!(resolve(refresh.nonce, reader, peer, &challenge).is_ok());
+    let mut other = original;
+    other.nonce = Uuid::new_v4();
+    assert!(resolve(refresh.nonce, reader, peer, &sign(other)).is_err());
+    drop(opened);
+    assert!(held.check(reader, &coordinator.database).is_err());
+    assert!(resolve(refresh.nonce, reader, peer, &challenge).is_err());
 }

@@ -316,7 +316,7 @@ impl DiskState {
                     && witness.root != self.selected
             });
             let (reach, superseded) = if let Some(witness) = witness {
-                if publication.capture.roots().contains(&witness.root) {
+                if publication.capture.contains(&witness.root) {
                     self.auto_warm.deferred.set(kept, identity);
                     kept += 1;
                     continue;

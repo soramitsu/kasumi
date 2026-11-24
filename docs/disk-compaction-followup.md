@@ -61,7 +61,11 @@ describe density restarts, forced rotation and the 1 MiB trigger are historical.
   Reopen may revisit a truncated key prefix but consumes the same remaining
   budget, so repeated restarts cannot keep Packing alive indefinitely.
   The next cycle packs ranges that foreground writes left sparse. Reaching the
-  root height publishes `Packing -> Idle`.
+  root height publishes `Packing -> Idle`. Packing can also return to Idle early
+  when newly confirmed file IDs beyond both frozen cutoffs add up to the full
+  file-count trigger. Idle measures retained files again. A new reclamation
+  pass still proves reachability against the selected directory and pins
+  before retiring a file.
 - **Trigger.** While Idle, bounded census steps (one `exists` and `len` probe
   per identifier from the reclaim floor) measure retained segment and arena
   files after open and after every new file. A cycle is due when bytes reach

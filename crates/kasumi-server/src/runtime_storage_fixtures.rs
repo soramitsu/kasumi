@@ -68,6 +68,16 @@ pub(crate) fn initialize_standalone<'a>(
 ) -> impl std::future::Future<
     Output = Result<(crate::standalone::InitializedInstallation, RuntimeStorage)>,
 > + 'a {
+    initialize_standalone_with_policy(directory, tenant, AdmissionConfig::default())
+}
+
+pub(crate) fn initialize_standalone_with_policy<'a>(
+    directory: &'a Path,
+    tenant: &'a str,
+    mut policy: AdmissionConfig,
+) -> impl std::future::Future<
+    Output = Result<(crate::standalone::InitializedInstallation, RuntimeStorage)>,
+> + 'a {
     // Construct this large cold-start future outside its caller's poll frame.
     // Boxing at the await site still leaves its inline construction temporary
     // on that frame while the nested startup-owner futures are polled.
@@ -75,7 +85,6 @@ pub(crate) fn initialize_standalone<'a>(
         // Keep the former fixture's ordinary budget after node audit maintenance
         // admits one 128 MiB native KV escrow and protects another 128 MiB for
         // maintenance writes. Both amounts remain charged or guarded by admission.
-        let mut policy = AdmissionConfig::default();
         let former_total = policy.resolved_fixture_total_bytes()?;
         policy.max_inflight_bytes = Some(
             former_total

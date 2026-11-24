@@ -391,16 +391,38 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
         )
         .unwrap();
         result.validate(&request).unwrap();
-        assert_eq!(
-            result.retired,
-            SecurityAuditRetirement {
-                index: through,
-                sequence: boundary,
-                record_sha256: records[boundary as usize - 1].sha256().unwrap(),
-                deleting_from: None,
-            }
-        );
+        let anchor = SecurityAuditRetirement {
+            index: through,
+            sequence: boundary,
+            record_sha256: records[boundary as usize - 1].sha256().unwrap(),
+            deleting_from: None,
+        };
+        let check_retirement = |retired: &SecurityAuditRetirement| {
+            assert_eq!(retired.index, anchor.index);
+            assert_eq!(retired.sequence, anchor.sequence);
+            assert_eq!(retired.record_sha256, anchor.record_sha256);
+        };
+        check_retirement(&result.retired);
         assert_eq!(result.pruned_segments, through);
+        // A prune commits its anchor before deleting the remaining objects in
+        // bounded maintenance turns. Observe the same anchor until all are gone.
+        let mut deleted = result.retired.deleting_from.unwrap_or(through);
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let status = admin.security_audit_status(&operator).await.unwrap();
+                let retired = status.retired.unwrap();
+                check_retirement(&retired);
+                let next = retired.deleting_from.unwrap_or(through);
+                assert!((deleted..=through).contains(&next));
+                if retired.deleting_from.is_none() {
+                    break;
+                }
+                deleted = next;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("audit maintenance must finish deleting the retired objects");
         // A published result is never overwritten; the same request under a
         // new output prunes nothing more.
         assert!(cli(&arguments).await.is_err());
@@ -415,13 +437,10 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
             &private_files::read(&repeated, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            (again.pruned_segments, again.retired),
-            (0, result.retired.clone())
-        );
+        assert_eq!((again.pruned_segments, again.retired), (0, anchor.clone()));
 
         let status = admin.security_audit_status(&operator).await.unwrap();
-        assert_eq!(status.retired, Some(result.retired.clone()));
+        assert_eq!(status.retired, Some(anchor));
         // Every CLI connection records its accept and authentication, so
         // maintenance may archive more meanwhile. The bytes still counted are
         // exactly the retained roots' at this one status.

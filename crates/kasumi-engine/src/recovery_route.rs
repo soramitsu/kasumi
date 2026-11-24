@@ -20,6 +20,7 @@ pub(crate) fn workspace(state: &TenantState) -> Result<u64> {
                 encoded_len(&document.body).map(|bytes| bytes as u64)
             }
             DocumentSlot::Stored(document) => Ok(document.body_bytes),
+            DocumentSlot::Located(document) => Ok(document.body_bytes()),
         })
         .transpose()?
         .unwrap_or(0);
@@ -43,7 +44,7 @@ fn current(
         .and_then(|c| c.documents.get(DOCUMENT))
         .ok_or_else(|| error(ErrorCode::NotFound, "installed Control topology absent"))?;
     let document = document
-        .load_owned(resolver)
+        .load_owned_at(COLLECTION, DOCUMENT, resolver)
         .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?;
     let topology: ControlTopology = serde_json::from_value(document.body.clone())
         .map_err(|_| error(ErrorCode::Corruption, "invalid installed Control topology"))?;

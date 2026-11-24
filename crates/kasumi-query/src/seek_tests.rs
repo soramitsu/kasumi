@@ -1077,3 +1077,150 @@ fn compound_keys_share_field_strings_across_build_swaps_and_new_values() {
     let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
     check(&rebuilt);
 }
+
+#[test]
+fn compound_indexes_share_the_document_owner_across_short_and_oversized_tuples() {
+    fn verify(fixture: &(BTreeMap<String, CollectionState>, QueryIndexes), expected: [&str; 3]) {
+        for path in ["/key", "/rank"] {
+            let request = QueryRequest::new("ordered")
+                .filter(Filter::new().eq("/scope", "g"))
+                .sort_asc(path)
+                .limit(2)
+                .paging(Paging::Seek);
+            let first = seek(
+                fixture,
+                &request,
+                None,
+                &Limits::default(),
+                &QueryCancellation::default(),
+            )
+            .unwrap();
+            let second = seek(
+                fixture,
+                &request,
+                first.last_key.as_deref(),
+                &Limits::default(),
+                &QueryCancellation::default(),
+            )
+            .unwrap();
+            assert!(second.last_key.is_none());
+            let ids: Vec<_> = first
+                .rows
+                .iter()
+                .chain(&second.rows)
+                .map(|row| row.id.as_str())
+                .collect();
+            assert_eq!(ids, expected);
+        }
+        let indexes = &fixture.1.collections["ordered"].structured.unique;
+        assert_eq!(indexes["ordered_key"].overflow.len(), 1);
+        assert!(indexes["by_rank"].overflow.is_empty());
+        let mut owners = BTreeMap::new();
+        for index in indexes.values() {
+            for (_, id) in index
+                .entries
+                .as_ref()
+                .unwrap()
+                .iter()
+                .chain(index.overflow.iter())
+            {
+                if let Some(previous) = owners.insert(id.as_bytes(), id.as_bytes().as_ptr()) {
+                    assert_eq!(
+                        previous,
+                        id.as_bytes().as_ptr(),
+                        "duplicate document-ID backing"
+                    );
+                }
+            }
+        }
+        assert_eq!(owners.len(), expected.len());
+        let structured = &fixture.1.collections["ordered"].structured;
+        for id in structured
+            .ids
+            .iter()
+            .chain(structured.fields.values().flat_map(|field| {
+                field
+                    .present
+                    .iter()
+                    .chain(field.entries.values().flat_map(|posting| posting.iter()))
+            }))
+        {
+            assert_eq!(
+                owners[id.as_bytes()],
+                id.as_bytes().as_ptr(),
+                "logical or field posting copied the document ID"
+            );
+        }
+    }
+
+    let wide = "z".repeat(4096);
+    let (mut collections, _) = small_fixture(
+        &[("/scope", ScalarType::String), ("/key", ScalarType::String)],
+        [
+            json!({"scope":"g","key":"a","rank":"1"}),
+            json!({"scope":"g","key":"b","rank":"2"}),
+            json!({"scope":"g","key":wide,"rank":"3"}),
+        ],
+    );
+    let collection = collections.get_mut("ordered").unwrap();
+    let mut definition = (*collection.definition).clone();
+    let mut second = definition.indexes[0].clone();
+    second.name = "by_rank".into();
+    second.fields[1].path = "/rank".into();
+    definition.indexes.push(second);
+    collection.definition = definition.into();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let original = (collections, indexes);
+    verify(&original, ["row-0", "row-1", "row-2"]);
+
+    let mut next = original.0.clone();
+    let collection = next.get_mut("ordered").unwrap();
+    collection.data_epoch += 1;
+    for (id, key, rank) in [("row-0", wide.as_str(), "3"), ("row-2", "a", "1")] {
+        collection.documents.insert(
+            id.into(),
+            pending(Document {
+                id: id.into(),
+                version: 2,
+                body: json!({"scope":"g","key":key,"rank":rank}),
+            }),
+        );
+    }
+    let changed = BTreeMap::from([("ordered".into(), ["row-0".into(), "row-2".into()].into())]);
+    let updated = original
+        .1
+        .update_fixture(&original.0, &next, &changed)
+        .unwrap();
+    let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
+    let updated = (next.clone(), updated);
+    verify(&updated, ["row-2", "row-1", "row-0"]);
+    verify(&(next.clone(), rebuilt), ["row-2", "row-1", "row-0"]);
+    for id in updated.1.collections["ordered"].structured.ids.iter() {
+        let prior = original.1.collections["ordered"]
+            .structured
+            .ids
+            .get::<str>(id)
+            .unwrap();
+        assert_eq!(prior.as_bytes().as_ptr(), id.as_bytes().as_ptr());
+    }
+
+    let collection = next.get_mut("ordered").unwrap();
+    collection.data_epoch += 1;
+    collection.documents.remove("row-1");
+    collection.documents.insert(
+        "new".into(),
+        pending(Document {
+            id: "new".into(),
+            version: 1,
+            body: json!({"scope":"g","key":"b","rank":"2"}),
+        }),
+    );
+    let changed = BTreeMap::from([("ordered".into(), ["row-1".into(), "new".into()].into())]);
+    let replacement = updated
+        .1
+        .update_fixture(&updated.0, &next, &changed)
+        .unwrap();
+    verify(&(next, replacement), ["row-2", "new", "row-0"]);
+    verify(&updated, ["row-2", "row-1", "row-0"]);
+    verify(&original, ["row-0", "row-1", "row-2"]);
+}

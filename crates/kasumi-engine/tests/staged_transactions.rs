@@ -1068,7 +1068,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
 }
 
 #[tokio::test]
-async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure() {
+async fn small_lease_budget_keeps_disk_versions_and_reclaims_closed_roots() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("lease-delta.kv"), Default::default());
@@ -1085,9 +1085,7 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
         expected: Precondition::Absent,
         body: json!({"n":1,"body":"a".repeat(256 << 10)}),
     }];
-    // Stored bodies retain compact descriptors. Eight shared entries make one
-    // replaced tree path exceed 32 KiB once its metadata is retained, without
-    // treating the large document's disk-backed body as resident lease memory.
+    // Both revisions use the installed primary directory for these live rows.
     documents.extend((0..7).map(|ordinal| Mutation::Put {
         collection: "docs".into(),
         id: format!("companion-{ordinal}"),
@@ -1152,8 +1150,45 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     )
     .await
     .unwrap();
-    // The same bound fences used by native adapters retain only header
-    // metadata. Both encoded/in-flight pages are expired by this publication.
+    // Replacing the disk-backed body leaves the leased primary root readable.
+    point_fence.check().unwrap();
+    scan_fence.check().unwrap();
+    let retained = db
+        .read_snapshot_page(&context(), point.clone())
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_vec(&retained).unwrap(), encoded);
+
+    let scan = ScanSnapshotPage {
+        lease_id: lease.lease_id.clone(),
+        collection: "docs".into(),
+        after_id: Some("companion-6".into()),
+        limit: 1,
+    };
+    let scanned = db
+        .scan_snapshot_page(&context(), scan.clone())
+        .await
+        .unwrap();
+    assert_eq!(scanned.snapshot.revision, lease.revision);
+    assert_eq!(
+        scanned.documents.as_slice(),
+        std::slice::from_ref(page.documents[0].document.as_ref().unwrap())
+    );
+
+    let another_root = OpenSnapshotLease { ttl_ms: 60_000 };
+    assert_eq!(
+        db.open_snapshot_lease(&context(), another_root.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    // A refused second root must leave the first lease and both handoffs live.
+    point_fence.check().unwrap();
+    scan_fence.check().unwrap();
+    db.close_snapshot_lease(&context(), &lease.lease_id)
+        .await
+        .unwrap();
     assert_eq!(
         point_fence.check().unwrap_err().code,
         ErrorCode::CursorExpired
@@ -1169,11 +1204,41 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
         lease.revision
     );
     assert_eq!(
-        db.read_snapshot_page(&context(), point)
+        db.read_snapshot_page(&context(), point.clone())
             .await
             .unwrap_err()
             .code,
         ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        db.scan_snapshot_page(&context(), scan)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    let newer = db
+        .open_snapshot_lease(&context(), another_root)
+        .await
+        .unwrap();
+    assert!(newer.revision > lease.revision);
+    let retained = db
+        .read_snapshot_page(
+            &context(),
+            ReadSnapshotPage {
+                lease_id: newer.lease_id,
+                ..point
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retained.revision, newer.revision);
+    assert_eq!(
+        retained.documents[0].document.as_ref().unwrap().body["body"]
+            .as_str()
+            .unwrap()
+            .as_bytes()[0],
+        b'b'
     );
     let current = db.engine().generation().unwrap();
     let document = kasumi_engine::test_utils::fixture_document(&current, "docs", "large").unwrap();

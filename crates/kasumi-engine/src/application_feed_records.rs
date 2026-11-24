@@ -57,15 +57,16 @@ impl<'a, 'view> SnapshotFeed<'a, 'view> {
         tree: &'a TreeReader<'view>,
         memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
         snapshot_revision: u64,
-        state: &kasumi_types::TenantState,
+        current_revision: u64,
+        next_sequence: u64,
     ) -> Result<Option<Self>> {
         let mut feed = Self {
             tree,
             memory,
             revision: snapshot_revision,
-            end_sequence: state.change_feed.next_sequence,
+            end_sequence: next_sequence,
         };
-        if snapshot_revision < state.revision {
+        if snapshot_revision < current_revision {
             let Some(last) = feed.adjacent_header(Bound::Excluded(&[10]), Direction::Reverse)?
             else {
                 return Ok(None);
@@ -91,7 +92,7 @@ impl<'a, 'view> SnapshotFeed<'a, 'view> {
             })?;
             feed.end_sequence = end.context("snapshot change tail missing")?;
             ensure!(
-                feed.end_sequence <= state.change_feed.next_sequence,
+                feed.end_sequence <= next_sequence,
                 "snapshot feed exceeds selected head"
             );
         }
@@ -198,7 +199,8 @@ impl<'a, 'view> SnapshotFeed<'a, 'view> {
                         let record = ChangeRecord {
                             collection,
                             id,
-                            document: document.map(|v| Arc::new(DocumentSlot::Stored(v))),
+                            document: document
+                                .map(|v| Arc::new(DocumentSlot::stored_descriptor(v))),
                         };
                         Ok(visit(sequence, revision, ordinal as usize, count, &record))
                     })

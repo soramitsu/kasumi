@@ -97,6 +97,62 @@ pub(super) async fn checkpoint(node: Uuid, phase: &'static str) -> Result<()> {
     }
     Ok(())
 }
+#[test]
+fn large_staged_roster_round_trips_within_the_configuration_limit() -> Result<()> {
+    run_large_staging_fixture("large staged configuration", || async {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let (installed, _storage) = crate::runtime_storage_fixtures::initialize_standalone(
+            &directory.path().join("installed"),
+            "initial",
+        )
+        .await?;
+        let mut config = RuntimeConfig::load(&installed.configuration)?;
+        assert_eq!(
+            encode_staged_configuration(&config)?,
+            serde_json::to_string_pretty(&config)?
+        );
+
+        let template = config.tenants[0].clone();
+        for number in 1..2_000 {
+            let mut tenant = template.clone();
+            let name = format!("tenant-{number:04}");
+            let keys = PathBuf::from("/var/lib/kasumi/operator").join(&name);
+            tenant.tenant = name.clone();
+            tenant.incarnation = Some(Uuid::from_u128(number).to_string());
+            tenant.keys = KeyProviderSettings::File {
+                path: keys.join("application.json"),
+            };
+            tenant.custody_keys = KeyProviderSettings::File {
+                path: keys.join("custody.json"),
+            };
+            config.tenants.push(tenant);
+            config
+                .tenant_audit_placements
+                .insert(name, TenantAuditPlacementConfig::LocalReplicaOnly);
+
+            if config.tenants.len() == 1_000 {
+                assert!(serde_json::to_string_pretty(&config)?.len() > MAX_CONFIG_BYTES);
+                let encoded = encode_staged_configuration(&config)?;
+                assert!(encoded.len() <= MAX_CONFIG_BYTES);
+                std::fs::write(&installed.configuration, encoded)?;
+                let decoded = RuntimeConfig::load(&installed.configuration)?;
+                assert_eq!(
+                    serde_json::to_value(&decoded)?,
+                    serde_json::to_value(&config)?
+                );
+            }
+        }
+        assert!(serde_json::to_vec(&config)?.len() > MAX_CONFIG_BYTES);
+        assert_eq!(
+            encode_staged_configuration(&config)
+                .unwrap_err()
+                .to_string(),
+            "staged configuration exceeds budget"
+        );
+        Ok(())
+    })
+}
+
 fn request(config: &RuntimeConfig) -> StageTenantRequest {
     StageTenantRequest {
         operation_id: Uuid::new_v4(),

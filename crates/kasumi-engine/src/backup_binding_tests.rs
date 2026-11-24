@@ -585,7 +585,13 @@ async fn encrypted_restart_keeps_future_binding_invisible_until_exact_replay() {
 
 #[tokio::test]
 async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_after_restart() {
-    for fault in ["catalog", "point", "index", "alternate-index"] {
+    for fault in [
+        "catalog",
+        "point",
+        "index",
+        "alternate-index",
+        "alternate-point",
+    ] {
         let (directory, node, store, initial, old) = durable().await;
         let disk = store.scratch_disk().clone();
         let session_id = uuid::Uuid::from_u128(9);
@@ -677,6 +683,14 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         );
         drop(healthy);
 
+        let (alternate_key, alternate_error) = if fault == "alternate-point" {
+            (
+                id_key(&session_id.to_string()),
+                "noncanonical backup binding point",
+            )
+        } else {
+            (ordinal_key(1), "noncanonical backup binding ordinal")
+        };
         let damage = match fault {
             "catalog" => kasumi_store::test_utils::FixtureWriteBatch::prepare(
                 &store,
@@ -703,16 +717,26 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
                 )],
             )
             .unwrap(),
-            "alternate-index" => {
+            "alternate-index" | "alternate-point" => {
                 let bytes = store
-                    .get_bounded(&namespace, &ordinal_key(1), MAX_ROW_BYTES)
+                    .get_bounded(&namespace, &alternate_key, MAX_ROW_BYTES)
                     .unwrap()
                     .unwrap();
-                assert_eq!(
-                    serde_json::to_vec(&serde_json::from_slice::<Ordinal>(&bytes).unwrap())
-                        .unwrap(),
-                    bytes
-                );
+                if fault == "alternate-index" {
+                    crate::current_json::require_current_writer_bytes(
+                        &bytes,
+                        &serde_json::from_slice::<Ordinal>(&bytes).unwrap(),
+                        "original ordinal",
+                    )
+                    .unwrap();
+                } else {
+                    crate::current_json::require_current_writer_bytes(
+                        &bytes,
+                        &serde_json::from_slice::<Row>(&bytes).unwrap(),
+                        "original point",
+                    )
+                    .unwrap();
+                }
                 let alternate = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
                     &store,
                     bytes.as_bytes(),
@@ -723,7 +747,7 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
                     &store,
                     &[kasumi_store::test_utils::FixtureWrite::Put(
                         &namespace,
-                        &ordinal_key(1),
+                        &alternate_key,
                         alternate.as_bytes(),
                     )],
                 )
@@ -752,13 +776,17 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
                     .as_deref(),
                 Some(b"not-json".as_slice())
             ),
-            "alternate-index" => {
+            "alternate-index" | "alternate-point" => {
                 let bytes = store
-                    .get_bounded(&namespace, &ordinal_key(1), MAX_ROW_BYTES)
+                    .get_bounded(&namespace, &alternate_key, MAX_ROW_BYTES)
                     .unwrap()
                     .unwrap();
                 assert_eq!(bytes.last(), Some(&b' '));
-                assert!(serde_json::from_slice::<Ordinal>(&bytes).is_ok());
+                if fault == "alternate-point" {
+                    assert!(serde_json::from_slice::<Row>(&bytes).is_ok());
+                } else {
+                    assert!(serde_json::from_slice::<Ordinal>(&bytes).is_ok());
+                }
             }
             _ => unreachable!(),
         }
@@ -801,19 +829,16 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
                 error.downcast_ref::<serde_json::Error>().is_some(),
                 "{error:#}"
             ),
-            "alternate-index" => {
-                assert!(
-                    format!("{error:#}").contains("noncanonical backup binding ordinal"),
-                    "{error:#}"
-                );
+            "alternate-index" | "alternate-point" => {
+                assert!(format!("{error:#}").contains(alternate_error), "{error:#}");
                 assert_eq!(
                     store
-                        .get_bounded(&namespace, &ordinal_key(1), MAX_ROW_BYTES)
+                        .get_bounded(&namespace, &alternate_key, MAX_ROW_BYTES)
                         .unwrap()
                         .unwrap()
                         .last(),
                     Some(&b' '),
-                    "failed restart repaired alternate ordinal bytes"
+                    "failed restart repaired alternate binding bytes"
                 );
             }
             _ => unreachable!(),

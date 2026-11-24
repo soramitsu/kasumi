@@ -111,14 +111,15 @@ The platform identifiers are exactly:
 - `aarch64-unknown-linux-gnu`
 - `aarch64-apple-darwin`
 
-Each primary build reuses `package_release.verify_evidence`. Its complete
-19-gate roster and commands come from frozen `release_gate.functional_gates`:
+Each primary build reuses `package_release.verify_evidence`. The frozen
+`release_gate.functional_gates` defines its 22 commands, covering
 toolchain, formatting, Python checks, patch provenance, all retained patched
 dependency variants, full workspace/all features/all targets, doctests,
 strict Clippy, network feature isolation/build, and fixture-free production
-feature isolation/build. All 57 native functional gates must pass. Native
-executable headers and actual `kasumid`, `kasumictl`, and `kasumi-authority`
-hashes are checked.
+feature isolation/build. All 66 native functional gate results must pass.
+The acceptance manifest also requires 27 target results across 19 domains.
+The verifier checks native executable headers and the actual `kasumid`,
+`kasumictl` and `kasumi-authority` hashes.
 
 The rmcp gates include all new terminal-ownership regressions and six upstream
 protocol/header/JSON/discovery suites. This minimum functional roster does not
@@ -282,7 +283,13 @@ mutation receipts and 10,000 lifecycle intents. Each count must exceed its
 own limit. The backup-session entry carries `acceptance_floor: 100001`,
 the observed distinct count and its original log reference. Its count must
 meet or exceed that floor. The full gate requires the cold-kill, reopen,
-authenticated replay and pagination evidence specified in G11. The combined
+authenticated replay and pagination evidence specified in G11. The floor counts
+permanent sessions of both outcomes, including at least 257 failed or aborted
+sessions. The prospective workload profile sets the mix. The current qualifying
+runner owns a fresh installation and records the entire initial population before
+its planned kills. A cold continuation of an interrupted development attempt
+provides separate recovery evidence. Allow up to 14 days for the complete
+session process on the measured ARM64 deployment. The combined
 report retains `qualification: component` until all five witnesses qualify.
 
 The concurrency producer runs all nine separately enrolled processes on native

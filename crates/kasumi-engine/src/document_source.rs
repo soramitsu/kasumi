@@ -131,6 +131,63 @@ fn corruption(message: &'static str) -> Error {
     Error::new(ErrorCode::Corruption, message)
 }
 
+#[derive(Debug)]
+pub(crate) struct NativeIdPages {
+    selection: crate::application_sources::SelectedApplication,
+    boundary: crate::application_sources::SnapshotBoundary<String>,
+    collection: String,
+}
+
+impl NativeIdPages {
+    pub(crate) fn new(generation: &Generation, collection: &str) -> Self {
+        Self {
+            selection: generation
+                .cursor_primary()
+                .expect("worker verified its primary")
+                .clone(),
+            boundary: (&generation.state).into(),
+            collection: collection.into(),
+        }
+    }
+}
+
+impl kasumi_query::PrimaryIdPages for NativeIdPages {
+    fn ids_after(&self, after: Option<&str>, limit: usize) -> Result<Vec<String>> {
+        self.selection
+            .with_primary_boundary(None, &self.boundary, |tree, memory, layout| {
+                anyhow::ensure!(
+                    layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT,
+                    "verified directory lost its document headers"
+                );
+                let _workspace = crate::document_restore::ReadAdmissionFailure::reserve(
+                    memory,
+                    (2048 + limit * (256 + std::mem::size_of::<String>())) as u64,
+                )?;
+                let mut ids = Vec::new();
+                crate::application_records::visit_snapshot_headers(
+                    tree,
+                    &self.collection,
+                    after,
+                    self.boundary.revision,
+                    |id, _, _| {
+                        ids.push(id.to_owned());
+                        Ok(ids.len() < limit)
+                    },
+                )?;
+                Ok(ids)
+            })
+            .map_err(crate::service::document_load_error)?
+            .ok_or_else(|| corruption("worker lost its verified primary directory"))
+    }
+}
+
+fn primary_read_failure(error: anyhow::Error) -> kasumi_query::ReadFailure<DocumentSourceFailure> {
+    match error.downcast::<kasumi_query::ReadFailure<std::convert::Infallible>>() {
+        Ok(query) => query.into_query_error().into(),
+        Err(storage) => kasumi_query::ReadFailure::Source(DocumentSourceFailure(storage)),
+    }
+}
+
 impl GenerationDocumentSource<'_> {
     fn with_ranked_compounds<T>(
         &self,
@@ -179,6 +236,17 @@ impl GenerationDocumentSource<'_> {
         self.reads.map_or(Ok(()), DocumentReads::check_deadline)
     }
 
+    // A selected tree also reports storage errors through anyhow. Mark the
+    // local operation check so the caller can return its original query error.
+    fn check_primary_read(&self, cancellation: &QueryCancellation) -> anyhow::Result<()> {
+        cancellation
+            .check()
+            .and_then(|()| self.check_deadline())
+            .map_err(|error| {
+                kasumi_query::ReadFailure::<std::convert::Infallible>::Query(error).into()
+            })
+    }
+
     /// The selected directory owns both point records. Only an archived row
     /// may be replaced by the verified hydration overlay of this read.
     fn with_primary_point<T>(
@@ -192,43 +260,21 @@ impl GenerationDocumentSource<'_> {
         if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
                 .with_serving_primary(self.directory_reader(), state, |tree, memory, _| {
-                    let mut leases = Vec::new();
-                    let mut retained = 0u64;
-                    let point = crate::application_records::snapshot_point(
+                    crate::application_records::admitted_snapshot_point(
                         tree,
+                        memory,
                         &self.collection,
                         id,
                         state.revision,
-                        |bytes| {
-                            let work = crate::snapshot_codec::inspect_external_json_work(
-                                bytes,
-                                &mut || {
-                                    cancellation.check()?;
-                                    self.check_deadline()?;
-                                    Ok(())
-                                },
-                            )?;
-                            let required =
-                                work.checked_add(2 * bytes.len() as u64 + 512).ok_or_else(
-                                    || anyhow::anyhow!("primary record workspace overflow"),
-                                )?;
-                            retained = retained.checked_add(required).ok_or_else(|| {
-                                anyhow::anyhow!("primary record workspace overflow")
-                            })?;
-                            leases.push(crate::document_restore::ReadAdmissionFailure::reserve(
-                                memory, required,
-                            )?);
-                            Ok(())
-                        },
-                    )?;
-                    Ok((point, leases, retained))
+                        || self.check_primary_read(cancellation),
+                    )
                 })
-                .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+                .map_err(primary_read_failure)?;
             if let Some((mut point, _leases, retained)) = selected {
                 if let PrimaryPoint::Archived(reference) = &point
                     && let Some(hydrated) = self.collection().documents.get(id)
                 {
-                    if hydrated.id() != id || hydrated.version() != reference.version {
+                    if !hydrated.has_id(id) || hydrated.version() != reference.version {
                         return Err(
                             corruption("hydrated record differs from selected archive").into()
                         );
@@ -239,7 +285,7 @@ impl GenerationDocumentSource<'_> {
             }
         }
         lend(
-            PrimaryPoint::resident(self.collection(), id, state.revision)?,
+            PrimaryPoint::resident(self.collection(), id, state.revision, self.resolver())?,
             0,
         )
     }
@@ -345,14 +391,14 @@ impl GenerationDocumentSource<'_> {
                             after,
                             state.revision,
                             |id, version, _| {
-                                self.check_deadline()?;
+                                self.check_primary_read(cancellation)?;
                                 page.push((id.to_owned(), version));
                                 Ok(page.len() < ROWS)
                             },
                         )?;
                         Ok(Some((page, grant)))
                     })
-                    .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+                    .map_err(primary_read_failure)?;
                 let Some((page, _grant)) = selected.flatten() else {
                     if length != 0 {
                         return Err(corruption(
@@ -622,7 +668,22 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         &self,
         search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> Result<T>,
     ) -> ReadResult<Option<T>, Self::Failure> {
-        self.check_deadline()?;
+        self.with_text_shards_until(&QueryCancellation::default(), search)
+    }
+
+    /// The request's token and this read's deadline bound directory setup,
+    /// traversal and every shard open; a tripped stop is the typed query
+    /// error, never a storage failure.
+    fn with_text_shards_until<T>(
+        &self,
+        cancellation: &QueryCancellation,
+        search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        let stop = crate::application_text::TextStop::new(
+            cancellation,
+            self.reads.map(|reads| reads.deadline),
+        );
+        stop.check()?;
         let state = &self.generation.state;
         let Some(selection) = self.generation.application_selection.get() else {
             return Ok(None);
@@ -632,6 +693,9 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                 self.directory_reader(),
                 state,
                 |tree, source, manifest, memory| {
+                    if let Err(stopped) = stop.check() {
+                        return Ok(Err(stopped));
+                    }
                     let primary =
                         selection.text_version_root_at(source, state, &self.collection)?;
                     let primary = primary
@@ -659,7 +723,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                             None => Ok(crate::application_text::live_version(collection, id)
                                 == Some(version)),
                         },
-                        memory,
+                        (memory, &stop),
                         search,
                     )
                 },
@@ -751,7 +815,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                         if kind == kasumi_query::RecordKind::Archived
                             && let Some(live) = self.collection().documents.get(id)
                         {
-                            if live.id() != id || live.version() != *version {
+                            if !live.has_id(id) || live.version() != *version {
                                 return Err(corruption(
                                     "hydrated header differs from selected version",
                                 ));

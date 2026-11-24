@@ -8,6 +8,38 @@ and drains its storage owners before success. Cancellation of the CLI waiter
 does not abandon that owned initializer. Existing or incomplete files are never
 adopted or reset. The configured parent directory must already exist.
 
+For target-journal key retirement across separate Control and Data nodes, set
+`target_recovery.writer_observation_bearer_file` on each target. Issue this
+credential for the installed Control incarnation, the target's enrolled node
+principal and its `control_tls` client certificate, with the single
+`kasumi:read` scope. In the Control policy, grant that principal `read` on
+`target_journal_writers`. Control continues to authenticate the initiating
+administrator. Each target presents its own credential and signed journal
+challenge while that administrator's request is active. If a target credential
+is unavailable after the fence commits, restore it at its installed path and
+retry the same retirement request.
+
+For distributed recovery with separate Control and target TLS identities, set
+`target_recovery.phase_observation_bearer_file` to a credential issued for
+the target's enrolled principal, its `control_tls` certificate and the installed
+Control incarnation. Grant its single `kasumi:read` scope read access to
+`target_recovery_observations` in the Control policy. The original dispatcher
+holds the administrator's authorization while the target reads the exact
+committed intent, membership evidence or journal writer for that dispatch.
+The callback closes when the dispatch returns or its deadline expires. Each
+target uses its own certificate and credential. A target with both observation
+grants can use the same read-scoped credential for journal retirement and
+phase observation.
+
+An operator can inspect a stopped physical target using
+`kasumid control-recovery target-deletion-via-control CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS`.
+Control reads the original marked StopLocal effect, selects the enrolled target
+from that operation's installed route, and checks the returned command and
+attempt. The target rereads the phase and signed intent using its own credential.
+This point read also works after the original dispatch has ended or the target
+has restarted. The direct `target-deletion` command accepts a single pinned
+target profile for installations that share an eligible return identity.
+
 Every `target_recovery.tenants[tenant]` template requires its own
 `audit_placement`, using the tagged local replica only or nested external choice
 in the [tenant audit retention guide](tenant-audit-retention.md). The ordinary

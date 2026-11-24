@@ -5,7 +5,11 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
+import resource
+import shutil
 import signal
+import struct
 import sys
 import subprocess
 import tarfile
@@ -13,6 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+import attempt_index
 import release_gate
 
 OPENRAFT_LOG = "vendor/openraft-0.9.25/tests/_log"
@@ -21,6 +26,27 @@ WRITE_OPENRAFT_LOG = ("from pathlib import Path; log = Path(" + repr(OPENRAFT_LO
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_release_rustflags_preserve_arguments_and_map_generated_and_registry_sources(self):
+        with tempfile.TemporaryDirectory(prefix="native build ") as temporary:
+            root = Path(temporary).resolve()
+            source, target = root / "source", root / "target"
+            cargo = root / "cargo"
+            alias = root / "cache"
+            cargo.mkdir()
+            alias.symlink_to(cargo, target_is_directory=True)
+            supplied = {"CARGO_HOME": str(alias), "RUSTFLAGS": "--cap-lints allow",
+                        "CARGO_ENCODED_RUSTFLAGS": "--cfg\x1ffeature=\"with space\""}
+            for platform in ("darwin", "linux"):
+                with self.subTest(platform=platform), patch.object(sys, "platform", platform):
+                    actual = release_gate.production_environment(supplied, source, target)
+                    flags = actual["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+                    self.assertEqual(flags[:2], ["--cfg", 'feature="with space"'])
+                    for path, name in ((source, "source"), (target, "target"),
+                                       (cargo / "registry", "registry"), (alias / "registry", "registry")):
+                        self.assertIn(f"--remap-path-prefix={path}=/kasumi-build/{name}", flags)
+                    self.assertEqual("link-arg=-Wl,-S,-reproducible" in flags, platform == "darwin")
+            self.assertEqual(supplied["CARGO_ENCODED_RUSTFLAGS"], '--cfg\x1ffeature="with space"')
+
     def dispatch(self, root, gates, prepare=None):
         """Dispatch gates against a minimal frozen source and keep the record terminal."""
         output = root / "run"
@@ -292,6 +318,23 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertFalse(missing["available"])
             self.assertTrue(missing["errors"])
 
+    def test_resource_record_matches_the_limits_inherited_by_the_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c", "import json, resource; from pathlib import Path; "
+                       "assert json.loads(Path('limits-resources.json').read_bytes())['after'] is None; "
+                       "print(json.dumps({"
+                       "name: resource.getrlimit(getattr(resource, 'RLIMIT_' + name)) "
+                       "for name in ('AS', 'CPU', 'FSIZE', 'NOFILE', 'STACK')}))"]
+            result = release_gate.run_gate("limits", command, root, root, os.environ.copy())
+            self.assertEqual(result["exit_code"], 0)
+            child = json.loads((root / result["log"]).read_text())
+            expected = {name: {"soft": soft, "hard": hard} for name, (soft, hard) in child.items()}
+            report = json.loads((root / result["resources"]).read_text())
+            for opening in ("before", "after"):
+                self.assertEqual(report[opening]["runner_rlimits"], expected)
+                self.assertEqual(report[opening]["rlim_infinity"], resource.RLIM_INFINITY)
+
     def test_compiled_fixture_or_test_artifact_cannot_pass_production_driver(self):
         command = dict(release_gate.functional_gates(2, sys.executable))["network-driver"]
         self.assertNotIn("--bins", command)
@@ -352,12 +395,33 @@ class ReleaseGateTests(unittest.TestCase):
                        "package_id": "synthetic:compiled-test"}
             encoded = json.dumps(message).replace("compiler-artifact", "compiler\\u002dartifact")
             command = [sys.executable, "-c", "print(" + repr(encoded) + ")"]
-            result = release_gate.run_gate("escaped", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("escaped", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertIn("compiled-test", result["executables"])
             command = [sys.executable, "-c", "print(" + repr(encoded) + "); print(" + repr(encoded) + ")"]
             with self.assertRaisesRegex(ValueError, "duplicate compiler-artifact"):
-                release_gate.run_gate("duplicate", command, root, root, os.environ.copy())
+                release_gate.run_gate("duplicate", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertTrue((root / "duplicate-process.json").is_file())
+
+    def test_multiline_service_output_is_preserved_without_a_compiler_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            command = [sys.executable, "-c", "import json; print(json.dumps({'ready': True}, indent=2))"]
+            output, record = self.dispatch(Path(temporary), [("service", command)])
+            gate = record["gates"][0]
+            self.assertEqual(gate["exit_code"], 0)
+            self.assertEqual(json.loads((output / gate["log"]).read_bytes()), {"ready": True})
+            self.assertEqual((gate["compiled_packages"], gate["executables"]), ({}, {}))
+
+    def test_incomplete_failed_build_retains_the_compiler_exit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            command = [sys.executable, "-c", "import sys; print('{'); sys.exit(101)", release_gate.CARGO_JSON]
+            output, record = self.dispatch(Path(temporary), [("production", command)])
+            gate = record["gates"][0]
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(gate["exit_code"], 101)
+            self.assertEqual(json.loads((output / gate["process"]).read_bytes())["exit_code"], 101)
+            self.assertIn("malformed", gate["inventory_error"])
+            self.assertTrue(gate["missing_production_executables"])
+            self.assertEqual((gate["compiled_packages"], gate["executables"]), ({}, {}))
 
     def test_failed_gate_retains_log_and_exact_executable_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -370,7 +434,7 @@ class ReleaseGateTests(unittest.TestCase):
                                   "crate_types": ["bin"]}, "profile": {"test": True},
                        "features": [], "package_id": "example"}
             command = [sys.executable, "-c", "import sys; print(" + repr(json.dumps(message)) + "); print('failed assertion'); sys.exit(7)"]
-            result = release_gate.run_gate("failed", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("failed", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertEqual(result["exit_code"], 7)
             self.assertIn("failed assertion", (root / "failed.log").read_text())
             recorded = result["executables"]["tested-artifact"]["sha256"]
@@ -391,7 +455,7 @@ class ReleaseGateTests(unittest.TestCase):
                  "kind": ["custom-build"], "crate_types": ["bin"]}},
             ]
             command = [sys.executable, "-c", "print(" + repr("\n".join(map(json.dumps, messages))) + ")"]
-            result = release_gate.run_gate("inventory", command, root, root, os.environ.copy())
+            result = release_gate.run_gate("inventory", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertEqual(result["executables"], {})
             package = result["compiled_packages"]["registry+example#dep@1.0.0"]
             self.assertEqual(package["features"], ["alloc", "std"])
@@ -406,7 +470,7 @@ class ReleaseGateTests(unittest.TestCase):
                                   "crate_types": ["lib"]}}
             command = [sys.executable, "-c", "print(" + repr(json.dumps(message)) + ")"]
             with self.assertRaisesRegex(ValueError, "package metadata is malformed"):
-                release_gate.run_gate("malformed-features", command, root, root, os.environ.copy())
+                release_gate.run_gate("malformed-features", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
 
     def test_content_and_new_inputs_change_inventory_without_relying_on_mtime(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -429,7 +493,7 @@ class ReleaseGateTests(unittest.TestCase):
             artifact = {"reason": "compiler-artifact", "executable": str(root / "unowned")}
             command = [sys.executable, "-c", "print(" + repr(json.dumps(artifact)) + ")"]
             with self.assertRaises(ValueError):
-                release_gate.run_gate("unowned", command, root, root, os.environ.copy())
+                release_gate.run_gate("unowned", command + [release_gate.CARGO_JSON], root, root, os.environ.copy())
             self.assertTrue((root / "unowned.log").is_file())
 
     def test_uncertain_cleanup_stops_before_parsing_or_hashing_artifacts(self):
@@ -588,6 +652,424 @@ class ReleaseGateTests(unittest.TestCase):
                     result = release_gate.gate_process.drain(process, grace_seconds=0)
                 self.assertEqual(result["drained"], reaped and remaining == [])
                 self.assertEqual(bool(result["errors"]), not result["drained"])
+
+
+NATIVE = release_gate.NATIVE_TARGETS.get((platform.system(), platform.machine()))
+# Twenty-byte executable headers accepted by package_release.verify_architecture.
+HEADERS = {"x86_64-unknown-linux-gnu": b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HH", 2, 62),
+           "aarch64-unknown-linux-gnu": b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HH", 2, 183),
+           "aarch64-apple-darwin": b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x100000C) + bytes(12)}
+# A stand-in Cargo: it emits the compiler-artifact transcript and outputs that
+# the real gates would, so the whole journaled launcher, runner and attempt
+# journal run for real. No Rust code is compiled; this is not release evidence.
+FAKE_CARGO = """import json, os, signal, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+if os.environ.get("KASUMI_FAKE_FAIL") in args:
+    print("fixture gate failure", flush=True)
+    sys.exit(3)
+if os.environ.get("KASUMI_FAKE_SIGNAL") in args:
+    os.kill(int(os.environ["KASUMI_FAKE_SIGNAL_PID"]), signal.SIGTERM)
+    time.sleep(30)
+target = Path(os.environ["CARGO_TARGET_DIR"])
+def emit(package, name):
+    path = target / "release" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(HEADER + name.encode())
+    path.chmod(0o755)
+    print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///fixture/" + package + "#0.1.0",
+                      "target": {"name": name, "kind": ["bin"], "crate_types": ["bin"]},
+                      "profile": {"test": False}, "features": [], "executable": str(path), "fresh": False}))
+if "life_cycle" in args:
+    log = Path("vendor/openraft-0.9.25/tests/_log")
+    log.mkdir()
+    (log / "ut.fixture").write_text("fixture trace\\n")
+if "build" in args and "kasumi-server" in args:
+    for name in ("kasumid", "kasumictl", "kasumi-authority"):
+        emit("kasumi-server", name)
+if "build" in args and "kasumi-bench" in args:
+    for name in ("kasumi-bench-network", "kasumi-bench-capacity"):
+        emit("kasumi-bench", name)
+if "tree" in args:
+    print("kasumi-server v0.1.0 default")
+"""
+
+
+class JournaledFunctionalRunTests(unittest.TestCase):
+    """The primary functional attempt end to end, against a stand-in toolchain."""
+
+    def setUp(self):
+        if NATIVE is None:
+            self.skipTest("no native release target on this host")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name).resolve()
+        self.repository = self.base / "repository"
+        scripts = self.repository / "scripts"
+        scripts.mkdir(parents=True)
+        for module in (release_gate, release_gate.gate_process, attempt_index):
+            shutil.copyfile(module.__file__, scripts / Path(module.__file__).name)
+        (scripts / "test_fixture.py").write_text(
+            "import unittest\n\nclass Fixture(unittest.TestCase):\n    def test_passes(self):\n        pass\n")
+        (scripts / "check_dependency_patches.py").write_text("print('fixture patches checked')\n")
+        (self.repository / "Cargo.lock").write_text("# fixture lockfile\n")
+        (self.repository / "vendor/openraft-0.9.25/tests").mkdir(parents=True)
+        (self.repository / "vendor/openraft-0.9.25/tests/Cargo.toml").write_text("[package]\nname = \"tests\"\n")
+        git = ["git", "-C", str(self.repository)]
+        subprocess.run(["git", "init", "-q", str(self.repository)], check=True)
+        subprocess.run(git + ["add", "."], check=True)
+        subprocess.run(git + ["-c", "user.name=test", "-c", "user.email=test@invalid", "commit", "-qm", "fixture"],
+                       check=True)
+        tools = self.base / "toolchain"
+        tools.mkdir()
+        for name, program in (("cargo", "HEADER = " + repr(HEADERS[NATIVE]) + "\n" + FAKE_CARGO),
+                              ("rustc", "print('rustc 1.97.1 (fixture)\\nhost: " + NATIVE + "')\n")):
+            (tools / name).write_text("#!" + sys.executable + "\n" + program)
+            (tools / name).chmod(0o755)
+        self.root = self.base / "custody"
+        self.root.mkdir()
+        attempt_index.create(self.root, "journal-unit", "host-unit", NATIVE)
+        environment = {key: value for key, value in os.environ.items()
+                       if key != release_gate.gate_process.GROUP_LEDGER_ENV}
+        environment["PATH"] = str(tools) + os.pathsep + os.environ.get("PATH", os.defpath)
+        self.environment = environment
+
+    def launch(self, *extra, journaled=True, output=None, **variables):
+        arguments = ["--repository", str(self.repository), "--output", str(output or self.root / "run"),
+                     "--execution-description", "stand-in toolchain unit run", "--jobs", "1",
+                     "--gate-timeout-seconds", "60", *extra]
+        if journaled:
+            arguments += ["--attempt-root", str(self.root), "--attempt-id", "functional-1"]
+        with patch.dict(os.environ, {**self.environment, **variables}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return release_gate.main(arguments)
+
+    def attempt(self):
+        receipt = attempt_index.file_ref(self.root, self.root / "attempts/functional-1/attempt.json")
+        record = json.loads((self.root / receipt["path"]).read_bytes())
+        outcome = json.loads((self.root / record["evidence"]["path"]).read_bytes())
+        return receipt, record, outcome
+
+    def verify(self, selected=None):
+        import verify_release_acceptance as acceptance
+
+        receipt, _, _ = self.attempt()
+        acceptance.verify_attempts(self.root, [{"id": "functional-1", "receipt": receipt}], selected or {},
+                                   head=attempt_index.head(self.root), original_root=str(self.root))
+
+    def test_passed_attempt_binds_original_evidence_products_and_runner_custody(self):
+        import package_release
+
+        self.assertEqual(self.launch(), 0)
+        output = self.root / "run"
+        receipt, record, outcome = self.attempt()
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["evidence"]["path"], "run/outcome.json")
+        self.assertEqual((outcome["status"], outcome["dispatch_started"], outcome["error"],
+                          outcome["functional_status"], outcome["target"]),
+                         ("passed", True, None, "passed", NATIVE))
+        self.assertEqual({item["id"]: item["file"]["path"] for item in outcome["products"]},
+                         release_gate.FUNCTIONAL_PRODUCTS)
+        # The original evidence is the qualification record, unchanged since.
+        self.assertEqual(outcome["build_evidence"], attempt_index.file_ref(output, output / "evidence.json"))
+        evidence = json.loads((output / "evidence.json").read_bytes())
+        self.assertEqual((evidence["status"], evidence["dispatch_started"], evidence["attempt"]["id"],
+                          evidence["started_at"]), ("passed", True, "functional-1", record["started_at"]))
+        self.assertEqual(len(evidence["gates"]), 22)
+        self.assertEqual(evidence["journal_inputs"], {"scripts/attempt_index.py": release_gate.sha256(
+            self.repository / "scripts/attempt_index.py")})
+        # One owned runner: the frozen script under the retained interpreter.
+        runner, = record["processes"]
+        process = json.loads((self.root / runner["receipt"]["path"]).read_bytes())
+        self.assertEqual(process["command"][0], process["executable"]["path"])
+        self.assertEqual(process["command"][1:], ["-B", "-S", str(output / "source/scripts/release_gate.py"),
+                                                  release_gate.PREPARED_COMMAND, "--output", str(output)])
+        self.assertEqual(runner["executable"]["path"], "run/tools/python")
+        self.assertEqual(runner["executable"]["sha256"], process["executable"]["sha256"])
+        census = json.loads((output / "runner/gate-census.json").read_bytes())
+        self.assertTrue(census["complete"])
+        self.assertEqual([item["receipt"] for item in census["groups"] if item["drained_by_runner"]],
+                         sorted(gate["process"] for gate in evidence["gates"]))
+        self.assertEqual(process["gate_census"]["path"], "runner/gate-census.json")
+        # The verifier's own checks: drained runner custody, the selected
+        # build's products beside evidence.json, and the functional contract.
+        self.verify({"run/evidence.json": "functional"})
+        _, _, host, binaries = package_release.verify_evidence(output)
+        self.assertEqual((host, set(binaries)), (NATIVE, set(release_gate.PRODUCTION_BINARIES)))
+        # A second admission of the same id is refused before writing, and a
+        # development run cannot reuse the attempt's output.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.launch(output=self.root / "second")
+        with self.assertRaises(FileExistsError):
+            self.launch(journaled=False, output=output)
+        self.assertFalse((self.root / "second").exists())
+        self.assertEqual(list(attempt_index.replay(self.root)), ["functional-1"])
+
+    def test_failed_gate_is_retained_and_cannot_be_selected(self):
+        self.assertEqual(self.launch(KASUMI_FAKE_FAIL="--doc"), 1)
+        _, record, outcome = self.attempt()
+        self.assertEqual((record["status"], outcome["functional_status"]), ("failed", "failed"))
+        self.assertIn("functional evidence status is failed", outcome["error"])
+        evidence = json.loads((self.root / "run/evidence.json").read_bytes())
+        self.assertEqual([gate["name"] for gate in evidence["gates"] if gate["exit_code"]], ["workspace-docs"])
+        # Later gates still ran; their retained outputs stay named and hashed.
+        self.assertEqual({item["id"] for item in outcome["products"]}, set(release_gate.FUNCTIONAL_PRODUCTS))
+        self.assertEqual(outcome["build_evidence"]["sha256"], release_gate.sha256(self.root / "run/evidence.json"))
+        self.verify()
+        with self.assertRaisesRegex(ValueError, "selected attempt failed"):
+            self.verify({"run/evidence.json": "functional"})
+
+    def test_pre_dispatch_failure_retains_evidence_without_child_custody(self):
+        with patch.object(release_gate, "verify_export", side_effect=ValueError("fixture export mismatch")):
+            self.assertEqual(self.launch(), 1)
+        _, record, outcome = self.attempt()
+        self.assertEqual((record["status"], record["processes"], outcome["dispatch_started"]), ("failed", [], False))
+        self.assertIn("fixture export mismatch", outcome["error"])
+        evidence = json.loads((self.root / "run/evidence.json").read_bytes())
+        self.assertEqual((evidence["status"], evidence["dispatch_started"], evidence["gates"]), ("failed", False, []))
+        self.assertIn("fixture export mismatch", evidence["runner_error"])
+        self.assertFalse((self.root / "run/runner").exists())
+        self.assertEqual({item["id"] for item in outcome["products"]}, {"source-archive"})
+        self.verify()
+
+    def test_sigterm_drains_runner_and_terminates_an_interrupted_attempt(self):
+        previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+        self.assertEqual(self.launch(KASUMI_FAKE_SIGNAL="--doc", KASUMI_FAKE_SIGNAL_PID=str(os.getpid())), 130)
+        self.assertEqual(previous, {number: signal.getsignal(number) for number in previous})
+        _, record, outcome = self.attempt()
+        self.assertEqual((record["status"], outcome["functional_status"], outcome["dispatch_started"]),
+                         ("interrupted", "interrupted", True))
+        process = json.loads((self.root / record["processes"][0]["receipt"]["path"]).read_bytes())
+        self.assertEqual(process["received_signals"], [signal.SIGTERM])
+        self.assertTrue(process["outputs_stable"] and process["cleanup"]["drained"])
+        evidence = json.loads((self.root / "run/evidence.json").read_bytes())
+        self.assertEqual(evidence["gates"][-1]["name"], "workspace-docs")
+        self.assertEqual(evidence["gates"][-1]["received_signals"], [signal.SIGTERM])
+        census = json.loads((self.root / "run/runner/gate-census.json").read_bytes())
+        self.assertTrue(census["complete"])
+        # The interrupted gate itself still ran with deliverable signals.
+        gate = json.loads((self.root / "run/workspace-docs-process.json").read_bytes())
+        self.assertEqual((gate["cleanup"]["signals"], gate["cleanup"]["drained"]), (["SIGTERM"], True))
+        self.verify()
+
+    def test_refusals_before_admission_write_nothing(self):
+        head = attempt_index.head(self.root)
+        cases = {"partial": ["--attempt-root", str(self.root)],
+                 "outside": ["--attempt-root", str(self.root), "--attempt-id", "functional-1"]}
+        for case, extra in cases.items():
+            output = self.base / "elsewhere" if case == "outside" else self.root / "run"
+            with self.subTest(case=case), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.launch(*extra, journaled=False, output=output)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.launch(**{release_gate.gate_process.GROUP_LEDGER_ENV: str(self.base / "ledger")})
+        other = self.base / "other-target"
+        other.mkdir()
+        foreign = next(target for target in sorted(attempt_index.TARGETS) if target != NATIVE)
+        attempt_index.create(other, "journal-other", "host-unit", foreign)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as error:
+            self.launch("--attempt-root", str(other), "--attempt-id", "functional-1",
+                        journaled=False, output=other / "run")
+        self.assertIn("not this native host", error.getvalue())
+        self.assertFalse((self.root / "run").exists() or (other / "run").exists())
+        self.assertEqual(attempt_index.head(self.root), head)
+
+    def test_development_run_stays_unjournaled(self):
+        import package_release
+
+        output = self.base / "development"
+        self.assertEqual(self.launch(journaled=False, output=output), 0)
+        self.assertFalse((output / "outcome.json").exists() or (output / "runner").exists())
+        record, _, host, _ = package_release.verify_evidence(output)
+        self.assertNotIn("attempt", record)
+        self.assertEqual(host, NATIVE)
+        self.assertEqual(attempt_index.head(self.root)["sequence"], 1)
+
+    def test_runner_refuses_an_unprepared_run_without_rewriting_it(self):
+        output = self.base / "development"
+        self.assertEqual(self.launch(journaled=False, output=output), 0)
+        before = release_gate.sha256(output / "evidence.json")
+        with patch.dict(os.environ, {release_gate.RUNNER_ENV: "functional-1"}), \
+                self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            release_gate.main([release_gate.PREPARED_COMMAND, "--output", str(output)])
+        self.assertEqual(release_gate.sha256(output / "evidence.json"), before)
+
+
+class GroupLedgerSpawnTests(unittest.TestCase):
+    """A ledgered spawn stays atomic without handing the child a blocked signal mask.
+
+    Every child here is a real, benign Python process; nothing is mocked
+    between the owner and the kernel except where a signal is injected.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.ledger = self.root / "groups.jsonl"
+        self.ledger.touch()
+
+    def mask(self):
+        return {int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, [])}
+
+    def run_ledgered(self, program, timeout):
+        before = self.mask()
+        log = self.root / "child.log"
+        with patch.dict(os.environ, {release_gate.gate_process.GROUP_LEDGER_ENV: str(self.ledger)}), \
+                log.open("wb") as stream:
+            record = release_gate.gate_process.run([sys.executable, "-c", program], self.root, dict(os.environ),
+                                                   stream, timeout, lambda value: None,
+                                                   stderr=subprocess.STDOUT)
+        self.assertEqual(self.mask(), before)
+        rows, closed = release_gate.gate_process.read_group_ledger(self.ledger)
+        self.assertFalse(closed)
+        self.assertEqual([(row["group"], row["leader_birth"]) for row in rows],
+                         [(record["process_group"], record["leader_birth"])])
+        self.assertTrue(record["cleanup"]["drained"])
+        self.assertEqual(record["cleanup"]["after"], [])
+        return record, log.read_text()
+
+    def test_ledgered_child_receives_sigint_and_sigterm_through_its_own_handlers(self):
+        program = ("import os, signal, sys, time\n"
+                   "blocked = sorted(int(s) for s in signal.pthread_sigmask(signal.SIG_BLOCK, []))\n"
+                   "print('blocked', blocked, flush=True)\n"
+                   "seen = []\n"
+                   "for number in (signal.SIGINT, signal.SIGTERM):\n"
+                   "    signal.signal(number, lambda n, _f: seen.append(n))\n"
+                   "    os.kill(os.getpid(), number)\n"
+                   "deadline = time.monotonic() + 5\n"
+                   "while len(seen) < 2 and time.monotonic() < deadline:\n"
+                   "    time.sleep(.01)\n"
+                   "print('seen', sorted(seen), flush=True)\n"
+                   "sys.exit(0 if sorted(seen) == [2, 15] else 9)\n")
+        record, log = self.run_ledgered(program, 30)
+        self.assertEqual((record["exit_code"], record["status"]), (0, "passed"), log)
+        blocked = json.loads(log.splitlines()[0].split(" ", 1)[1])
+        self.assertNotIn(signal.SIGINT, blocked)
+        self.assertNotIn(signal.SIGTERM, blocked)
+        self.assertIn("seen [2, 15]", log)
+        self.assertEqual(record["cleanup"]["signals"], [])
+
+    def test_ledgered_child_is_stopped_by_sigterm_alone(self):
+        record, _ = self.run_ledgered("import time\ntime.sleep(30)\n", 1)
+        self.assertTrue(record["timed_out"])
+        # A blocked SIGTERM would wait out drain's grace and need SIGKILL.
+        self.assertEqual(record["cleanup"]["signals"], ["SIGTERM"])
+        self.assertEqual(record["cleanup"]["process_returncode"], -signal.SIGTERM)
+        self.assertLess(record["duration_seconds"], 1 + 8)
+
+    def test_signal_during_ledgered_admission_still_registers_and_drains_the_group(self):
+        identity = release_gate.gate_process.leader_identity
+        injected = []
+
+        def interrupted_admission(pid, **options):
+            # Between Popen and the group row, under the ledger lock.
+            witness = identity(pid, **options)
+            if not injected:
+                injected.append(pid)
+                signal.raise_signal(signal.SIGTERM)
+            return witness
+
+        previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+        with patch.object(release_gate.gate_process, "leader_identity", interrupted_admission):
+            record, _ = self.run_ledgered("import time\ntime.sleep(30)\n", 30)
+        self.assertEqual(previous, {number: signal.getsignal(number) for number in previous})
+        self.assertEqual(injected, [record["process_group"]])
+        self.assertEqual(record["received_signals"], [signal.SIGTERM])
+        self.assertEqual(record["exit_code"], 128 + signal.SIGTERM)
+        self.assertEqual(record["cleanup"]["signals"], ["SIGTERM"])
+        self.assertEqual(record["cleanup"]["process_returncode"], -signal.SIGTERM)
+
+    def test_sealed_ledger_still_refuses_the_spawn(self):
+        release_gate.gate_process.seal_group_ledger(self.ledger)
+        with patch.dict(os.environ, {release_gate.gate_process.GROUP_LEDGER_ENV: str(self.ledger)}), \
+                (self.root / "late.log").open("wb") as stream:
+            record = release_gate.gate_process.run([sys.executable, "-c", "open('spawned', 'w').close()"],
+                                                   self.root, dict(os.environ), stream, 30, lambda value: None,
+                                                   stderr=subprocess.STDOUT)
+        self.assertIsNone(record["process_group"])
+        self.assertIn("admission is closed", record["error"])
+        self.assertFalse((self.root / "spawned").exists())
+        self.assertEqual(release_gate.gate_process.read_group_ledger(self.ledger), ([{"schema": 1, "kind": "closed"}], True))
+
+
+class GateGroupCensusTests(unittest.TestCase):
+    def orphan(self):
+        """A sleeping new-session process whose parent has exited, as after a killed runner."""
+        program = ("import subprocess, sys; child = subprocess.Popen([sys.executable, '-c', "
+                   "'import time; time.sleep(30)'], start_new_session=True, stdin=subprocess.DEVNULL, "
+                   "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(child.pid)")
+        pid = int(subprocess.run([sys.executable, "-c", program], check=True, capture_output=True,
+                                 text=True).stdout)
+
+        def kill():
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pid, signal.SIGKILL)
+        self.addCleanup(kill)
+        return pid
+
+    def receipt(self, root, name, group, birth, cleanup=None):
+        release_gate.write_json(root / (name + "-process.json"), {
+            "status": "running", "process_group": group, "leader_birth": birth, "cleanup": cleanup})
+
+    def test_undrained_gate_group_is_terminated_and_fails_the_census(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid = self.orphan()
+            self.receipt(root, "workspace", pid, release_gate.gate_process.leader_identity(pid)["birth"])
+            with self.assertRaisesRegex(RuntimeError, "outlived their runner"):
+                release_gate.census_gate_groups(root, root / "census.json")
+            group, = json.loads((root / "census.json").read_text())["groups"]
+            self.assertEqual((group["receipt"], group["signals"][:1], group["after"]),
+                             ("workspace-process.json", ["SIGTERM"], []))
+
+    def test_changed_leader_is_never_signalled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid = self.orphan()
+            self.receipt(root, "workspace", pid, "linux:0" if sys.platform.startswith("linux") else "darwin:0:0")
+            with self.assertRaisesRegex(RuntimeError, "could not be inspected"):
+                release_gate.census_gate_groups(root, root / "census.json")
+            group, = json.loads((root / "census.json").read_text())["groups"]
+            self.assertEqual(group["signals"], [])
+            self.assertIn("leader is unavailable or changed", group["errors"][0])
+            self.assertEqual(release_gate.gate_process.group_members(pid)[0]["pid"], pid)
+
+    def test_drained_and_unspawned_gates_complete_the_census_without_inspection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid = self.orphan()
+            # A drained gate's numeric group may be reused by an unrelated live group.
+            self.receipt(root, "format", pid, "darwin:0:0", {"drained": True, "after": []})
+            self.receipt(root, "toolchain", None, None)
+            census = release_gate.census_gate_groups(root, root / "census.json")
+            self.assertTrue(census["complete"])
+            self.assertEqual([(item["receipt"], item["before"]) for item in census["groups"]],
+                             [("format-process.json", None), ("toolchain-process.json", None)])
+            (root / "torn-process.json").write_text("{")
+            with self.assertRaisesRegex(RuntimeError, "could not be inspected"):
+                release_gate.census_gate_groups(root, root / "census.json")
+
+
+class ReleaseWorkflowJournalTests(unittest.TestCase):
+    def test_native_entrypoints_admit_the_primary_functional_attempt_to_one_journal(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release-candidate.yml").read_text()
+        self.assertIn("KASUMI_FUNCTIONAL_ATTEMPT_ID: functional-${{ matrix.target }}", workflow)
+        self.assertIn("KASUMI_JOURNAL_ID: native-${{ matrix.target }}", workflow)
+        self.assertIn('--env KASUMI_FUNCTIONAL_ATTEMPT_ID="$KASUMI_FUNCTIONAL_ATTEMPT_ID"', workflow)
+        for root, output in (("/evidence", "/evidence/run"), ('"$KASUMI_RUN"', '"$KASUMI_RUN/run"')):
+            with self.subTest(root=root):
+                created = workflow.index("attempt_index.py create --root " + root)
+                gate = workflow.index("release_gate.py", created)
+                admitted = workflow.index("--attempt-root " + root + ' --attempt-id "$KASUMI_FUNCTIONAL_ATTEMPT_ID"',
+                                          gate)
+                assembly = workflow.index("run_repeatable_assembly_owned.py", admitted)
+                self.assertIn("--output " + output, workflow[gate:admitted])
+                self.assertIn("--attempt-root " + root, workflow[assembly:assembly + 400])
+        self.assertEqual(workflow.count('--attempt-id "$KASUMI_FUNCTIONAL_ATTEMPT_ID"'), 2)
+        self.assertIn("attempt_index.py head --root /evidence", workflow)
+        self.assertIn("/evidence/run/outcome.json", workflow)
+        self.assertIn("${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/runner/**", workflow)
 
 
 if __name__ == "__main__":

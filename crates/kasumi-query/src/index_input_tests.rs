@@ -259,7 +259,7 @@ fn unique_entries(indexes: &QueryIndexes, name: &str) -> Vec<(String, String)> {
         .filter(|(key, _)| **key != Scalar::Missing)
         .map(|(key, ids)| {
             assert_eq!(ids.len(), 1);
-            (format!("[{key:?}]"), ids.get_min().unwrap().clone())
+            (format!("[{key:?}]"), ids.get_min().unwrap().to_string())
         })
         .collect()
 }
@@ -283,7 +283,7 @@ fn ledger_rows(values: &[(&str, u32, u32)]) -> Rows {
     });
     rows
 }
-fn ledger_posting<'a>(indexes: &'a QueryIndexes, field: &str, id: &str) -> &'a structured::IdSet {
+fn ledger_posting<'a>(indexes: &'a QueryIndexes, field: &str, id: &str) -> &'a structured::Posting {
     indexes.collections["docs"].structured.fields[field]
         .entries
         .values()
@@ -306,10 +306,92 @@ fn distinct_fields_share_new_singleton_owners_and_split_on_later_writes() {
     assert_eq!(
         ledger_posting(&second, "/amount", "b")
             .iter()
-            .map(String::as_str)
+            .map(AsRef::as_ref)
             .collect::<Vec<_>>(),
         ["b", "c"]
     );
+}
+
+#[test]
+fn sole_posting_owners_stay_inline_and_share_the_collection_id() {
+    fn rows(values: &[(&str, u64)]) -> Rows {
+        let values: Vec<_> = values
+            .iter()
+            .map(|&(id, key)| (id, serde_json::json!({"key": key})))
+            .collect();
+        let mut rows = Rows::new("docs", &values, true, false);
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::Number;
+        rows
+    }
+    // Every posting with one document is inline and names the exact ID
+    // allocation of the collection; larger postings keep a persistent set.
+    fn check(indexes: &QueryIndexes, expected: &[(u64, &[&str])]) {
+        let structured = &indexes.collections["docs"].structured;
+        let field = &structured.fields["/key"];
+        assert_eq!(field.entries.len(), expected.len());
+        for ((key, posting), (value, ids)) in field.entries.iter().zip(expected) {
+            let wanted =
+                scalar::scalar(Some(&serde_json::json!(value)), Some(ScalarType::Number)).unwrap();
+            assert_eq!(key, &wanted);
+            assert_eq!(posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(), *ids);
+            match posting {
+                structured::Posting::One(owner) => {
+                    assert_eq!(ids.len(), 1);
+                    assert!(Arc::ptr_eq(
+                        owner,
+                        structured.ids.get(owner.as_ref()).unwrap()
+                    ));
+                }
+                structured::Posting::Many(set) => {
+                    assert!(set.len() > 1);
+                    for id in set {
+                        assert!(Arc::ptr_eq(id, structured.ids.get(id.as_ref()).unwrap()));
+                    }
+                }
+            }
+        }
+    }
+    let distinct = rows(&[("a", 1), ("b", 2), ("c", 3)]);
+    let joined = rows(&[("a", 1), ("b", 2), ("c", 3), ("d", 2)]);
+    let split = rows(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+    let deleted = rows(&[("a", 1), ("c", 3), ("d", 2)]);
+    let first = QueryIndexes::build([&distinct]).unwrap();
+    check(&first, &[(1, &["a"]), (2, &["b"]), (3, &["c"])]);
+    let second = update(&first, Changes::new(&distinct, &joined, &first, &["d"])).unwrap();
+    check(&second, &[(1, &["a"]), (2, &["b", "d"]), (3, &["c"])]);
+    let third = update(&second, Changes::new(&joined, &split, &second, &["d"])).unwrap();
+    check(
+        &third,
+        &[(1, &["a"]), (2, &["b"]), (3, &["c"]), (4, &["d"])],
+    );
+    let fourth = update(&second, Changes::new(&joined, &deleted, &second, &["b"])).unwrap();
+    check(&fourth, &[(1, &["a"]), (2, &["d"]), (3, &["c"])]);
+    // Untouched sole owners are the same allocation in every generation.
+    let posting = |indexes: &QueryIndexes, value: u64| {
+        let key =
+            scalar::scalar(Some(&serde_json::json!(value)), Some(ScalarType::Number)).unwrap();
+        indexes.collections["docs"].structured.fields["/key"].entries[&key].clone()
+    };
+    assert!(posting(&first, 1).ptr_eq(&posting(&fourth, 1)));
+    assert!(posting(&first, 3).ptr_eq(&posting(&third, 3)));
+    // Each generation agrees with a cold build of its rows.
+    for (indexes, rows) in [(&second, &joined), (&third, &split), (&fourth, &deleted)] {
+        let rebuilt = QueryIndexes::build([rows]).unwrap();
+        let entries = |indexes: &QueryIndexes| {
+            indexes.collections["docs"].structured.fields["/key"]
+                .entries
+                .iter()
+                .map(|(key, posting)| {
+                    (
+                        key.clone(),
+                        posting.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(entries(indexes), entries(&rebuilt));
+    }
 }
 
 #[test]
@@ -342,7 +424,7 @@ fn correlated_postings_share_repeated_edits_only_for_the_same_predecessor() {
         let group = ledger_posting(version, "/serial", "e");
         assert!(group.ptr_eq(ledger_posting(version, "/amount", "e")));
         assert_eq!(
-            group.iter().map(String::as_str).collect::<Vec<_>>(),
+            group.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
             expected
         );
     }
@@ -350,11 +432,11 @@ fn correlated_postings_share_repeated_edits_only_for_the_same_predecessor() {
     let amount = ledger_posting(&last, "/amount", "e");
     assert!(!serial.ptr_eq(amount));
     assert_eq!(
-        serial.iter().map(String::as_str).collect::<Vec<_>>(),
+        serial.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["e", "f"]
     );
     assert_eq!(
-        amount.iter().map(String::as_str).collect::<Vec<_>>(),
+        amount.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["c", "e", "f"]
     );
 }
@@ -382,8 +464,22 @@ fn a_late_array_change_keeps_every_prior_id_in_the_original_posting() {
     assert_eq!(field.entries.len(), 2);
     assert_eq!(field.present.len(), 98);
     let mut postings = field.entries.values();
-    assert!(postings.next().unwrap().iter().eq(&names[..97]));
-    assert!(postings.next().unwrap().iter().eq(&names[96..97]));
+    assert!(
+        postings
+            .next()
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .eq(names[..97].iter().map(String::as_str))
+    );
+    assert!(
+        postings
+            .next()
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .eq(names[96..97].iter().map(String::as_str))
+    );
 }
 
 #[test]
@@ -407,8 +503,11 @@ fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
         let entries = &structured.fields["/key"].entries;
         assert_eq!(entries.len(), 1);
         let (_, posting) = entries.get_min().unwrap();
-        assert_eq!(posting.iter().map(String::as_str).collect::<Vec<_>>(), ids);
-        assert_eq!(posting.ptr_eq(&structured.ids), all);
+        assert_eq!(posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(), ids);
+        assert_eq!(
+            matches!(posting, structured::Posting::Many(ids) if ids.ptr_eq(&structured.ids)),
+            all
+        );
     }
     let uniform = rows(serde_json::json!([7]));
     let hole = rows(serde_json::json!([]));
@@ -423,6 +522,55 @@ fn a_single_posting_reuses_all_ids_only_when_every_document_matches() {
 }
 
 #[test]
+fn sparse_field_presence_shares_only_a_posting_that_covers_every_present_document() {
+    fn rows(last: Value) -> Rows {
+        let mut rows = Rows::new(
+            "docs",
+            &[
+                ("a", serde_json::json!({})),
+                ("b", serde_json::json!({"key": [7]})),
+                ("c", serde_json::json!({"key": last})),
+            ],
+            true,
+            false,
+        );
+        rows.definition.indexes[0].unique = false;
+        rows.definition.indexes[0].fields[0].kind = ScalarType::NumberArray;
+        rows
+    }
+
+    fn check(indexes: &QueryIndexes, matches: &[&str], shared: bool) {
+        let field = &indexes.collections["docs"].structured.fields["/key"];
+        let key =
+            scalar::scalar(Some(&serde_json::json!(7)), Some(ScalarType::NumberArray)).unwrap();
+        let posting = &field.entries[&key];
+        assert_eq!(
+            posting.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            matches
+        );
+        assert_eq!(
+            field.present.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+        assert_eq!(
+            matches!(posting, structured::Posting::Many(ids) if field.present.ptr_eq(ids)),
+            shared
+        );
+    }
+
+    let repeated = rows(serde_json::json!([7, 7]));
+    let empty = rows(serde_json::json!([]));
+    let restored = rows(serde_json::json!([7]));
+    let first = QueryIndexes::build([&repeated]).unwrap();
+    let second = update(&first, Changes::new(&repeated, &empty, &first, &["c"])).unwrap();
+    let third = update(&second, Changes::new(&empty, &restored, &second, &["c"])).unwrap();
+    check(&first, &["b", "c"], true);
+    check(&second, &["b"], false);
+    check(&third, &["b", "c"], true);
+    check(&QueryIndexes::build([&empty]).unwrap(), &["b"], false);
+}
+
+#[test]
 fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
     fn rows(values: &[(&str, Value)]) -> Rows {
         let mut rows = Rows::new("docs", values, true, false);
@@ -433,7 +581,7 @@ fn field_presence_reuses_complete_ids_across_dense_sparse_and_deleted_rows() {
     fn check(indexes: &QueryIndexes, ids: &[&str], dense: bool) {
         let structured = &indexes.collections["docs"].structured;
         let presence = &structured.fields["/key"].present;
-        assert_eq!(presence.iter().map(String::as_str).collect::<Vec<_>>(), ids);
+        assert_eq!(presence.iter().map(AsRef::as_ref).collect::<Vec<_>>(), ids);
         assert_eq!(presence.ptr_eq(&structured.ids), dense);
     }
 
@@ -496,6 +644,77 @@ fn paired_delta_loans_allow_atomic_swaps_and_match_full_rebuild() {
         unique_entries(&indexes, "docs")
     );
     assert!(!old.active.get() && !new.active.get());
+}
+
+#[test]
+fn payload_changes_keep_verified_short_and_overflow_unique_roots() {
+    fn rows(payload: u32, keys: [u32; 2]) -> Rows {
+        let mut rows = Rows::new(
+            "docs",
+            &[
+                (
+                    "a",
+                    serde_json::json!({"scope":"s","key":keys[0],"payload":payload}),
+                ),
+                (
+                    "b",
+                    serde_json::json!({"scope":"z".repeat(4096),"key":keys[1],"payload":payload}),
+                ),
+            ],
+            true,
+            false,
+        );
+        let mut compound = rows.definition.indexes[0].clone();
+        compound.name = "compound".into();
+        compound.fields.insert(
+            0,
+            IndexField {
+                path: "/scope".into(),
+                kind: ScalarType::String,
+            },
+        );
+        rows.definition.indexes.push(compound);
+        rows
+    }
+    let original = rows(1, [1, 2]);
+    let changed = rows(2, [1, 2]);
+    let indexes = QueryIndexes::build([&original]).unwrap();
+    let next = update(
+        &indexes,
+        Changes::new(&original, &changed, &indexes, &["a", "b"]),
+    )
+    .unwrap();
+    let roots = |generation: &QueryIndexes| {
+        generation.collections["docs"].structured.unique["compound"].clone()
+    };
+    let previous = roots(&indexes);
+    let current = roots(&next);
+    let previous_entries = previous.entries.as_ref().unwrap();
+    assert_eq!((previous_entries.len(), previous.overflow.len()), (1, 1));
+    assert!(previous_entries.ptr_eq(current.entries.as_ref().unwrap()));
+    assert!(previous.overflow.ptr_eq(&current.overflow));
+
+    let swapped = rows(3, [2, 1]);
+    let changed_again =
+        update(&next, Changes::new(&changed, &swapped, &next, &["a", "b"])).unwrap();
+    let rebuilt = QueryIndexes::build([&swapped]).unwrap();
+    assert_eq!(roots(&changed_again).entries, roots(&rebuilt).entries);
+    assert_eq!(roots(&changed_again).overflow, roots(&rebuilt).overflow);
+    assert_eq!(
+        unique_entries(&changed_again, "docs"),
+        unique_entries(&rebuilt, "docs")
+    );
+
+    let conflict = rows(3, [1, 1]);
+    assert!(matches!(
+        update(&next, Changes::new(&changed, &conflict, &next, &["a", "b"])),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::Conflict
+    ));
+    let wrong_previous = rows(1, [2, 1]);
+    assert!(matches!(
+        update(&indexes, Changes::new(&wrong_previous, &swapped, &indexes, &["a", "b"])),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption
+    ));
 }
 
 #[test]
@@ -608,7 +827,7 @@ fn absent_unique_constraints_skip_body_replays_but_keep_schema_ids_and_field_che
                 .structured
                 .ids
                 .iter()
-                .map(String::as_str)
+                .map(AsRef::as_ref)
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );
@@ -764,6 +983,166 @@ fn snapshot_primary_ids_match_the_rebuilt_root_and_invalid_input_cannot_finish()
     };
     assert!(invalid.add_document("docs", &wrong).is_err());
     assert!(invalid.finish(TextResidency::Directory).is_err());
+}
+
+#[test]
+fn installed_snapshot_build_binds_original_headers_and_rejects_substitution() {
+    let rows = Rows::new("docs", &[], false, false);
+    let definition = Arc::new(rows.definition);
+    let mut building = SnapshotIndexBuilder::for_installed_rows();
+    building.add_collection(&definition).unwrap();
+    let mut collection = CollectionState {
+        documents: Default::default(),
+        archived_documents: Default::default(),
+        archived_document_bytes: 0,
+        data_epoch: 1,
+        definition,
+    };
+    for id in ["a", "b", "c"] {
+        let doc = Document {
+            id: id.into(),
+            version: 7,
+            body: serde_json::json!({}),
+        };
+        building.add_document("docs", &doc).unwrap();
+        collection
+            .documents
+            .insert(id.into(), crate::source_test_utils::pending(doc));
+    }
+    let mut catalog = BTreeMap::from([("docs".to_string(), collection)]);
+    assert!(building.clone().finish(TextResidency::Directory).is_err());
+    let refused = building
+        .clone()
+        .finish_installed(TextResidency::Directory, &catalog, || {
+            Err(Error::new(
+                ErrorCode::Unavailable,
+                "selected snapshot check refused",
+            ))
+        });
+    assert!(matches!(
+        refused,
+        Err(Error {
+            code: ErrorCode::Unavailable,
+            ..
+        })
+    ));
+    let selected = building
+        .clone()
+        .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+        .unwrap();
+    assert!(selected.collections["docs"].structured.ids.is_empty());
+    assert_eq!(
+        selected.document_ids_after("docs", Some("a"), 2).unwrap(),
+        ["b", "c"]
+    );
+    let wrong = Document {
+        id: "b".into(),
+        version: 8,
+        body: serde_json::json!({}),
+    };
+    catalog
+        .get_mut("docs")
+        .unwrap()
+        .documents
+        .insert("b".into(), crate::source_test_utils::pending(wrong));
+    assert!(
+        building
+            .clone()
+            .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+            .is_err()
+    );
+    catalog.get_mut("docs").unwrap().documents.remove("b");
+    assert!(
+        building
+            .finish_installed(TextResidency::Directory, &catalog, || Ok::<_, Error>(()))
+            .is_err()
+    );
+}
+
+#[test]
+fn installed_rebuild_replays_checked_records_and_preserves_source_failure() {
+    struct Records<'a> {
+        owner: &'a CollectionState,
+        loans: &'a Rows,
+        failure: Option<&'a Arc<()>>,
+    }
+    impl CollectionRecords for Records<'_> {
+        type Failure = SourceError;
+        fn definition(&self) -> &CollectionDefinition {
+            &self.owner.definition
+        }
+        fn identity(&self) -> SourceIdentity<'_> {
+            SourceIdentity::new(self.owner, "tenant", "incarnation", "docs")
+        }
+        fn visit_records(
+            &self,
+            lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            self.loans.visit_records(lend)?;
+            if let Some(failure) = self.failure {
+                return Err(ReadFailure::Source(SourceError(Arc::clone(failure))));
+            }
+            Ok(())
+        }
+    }
+    let rows = Rows::new(
+        "docs",
+        &[("a", serde_json::json!({})), ("b", serde_json::json!({}))],
+        false,
+        false,
+    );
+    let mut collection = CollectionState {
+        documents: Default::default(),
+        archived_documents: Default::default(),
+        definition: Arc::new(rows.definition.clone()),
+        archived_document_bytes: 0,
+        data_epoch: 1,
+    };
+    for (id, record) in &rows.rows {
+        let Decoded::Live(doc) = record.decode() else {
+            unreachable!()
+        };
+        collection
+            .documents
+            .insert(id.clone(), crate::source_test_utils::pending(doc));
+    }
+    let build = |loans, failure| {
+        QueryIndexes::build_installed_with_residency(
+            [Records {
+                owner: &collection,
+                loans,
+                failure,
+            }],
+            TextResidency::Directory,
+        )
+    };
+    let indexes = build(&rows, None).unwrap();
+    assert!(indexes.collections["docs"].structured.ids.is_empty());
+    assert_eq!(
+        indexes.document_ids_after("docs", None, 2).unwrap(),
+        ["a", "b"]
+    );
+    let original = Arc::new(());
+    assert!(
+        matches!(build(&rows, Some(&original)), Err(ReadFailure::Source(SourceError(source))) if Arc::ptr_eq(&source,&original))
+    );
+    let missing = Rows::new("docs", &[("a", serde_json::json!({}))], false, false);
+    assert!(matches!(
+        build(&missing, None),
+        Err(ReadFailure::Query(Error {
+            code: ErrorCode::Corruption,
+            ..
+        }))
+    ));
+    let invalid = Rows::new(
+        "docs",
+        &[("a", Value::Null), ("b", serde_json::json!({}))],
+        false,
+        false,
+    );
+    assert!(matches!(build(&invalid, None), Err(ReadFailure::Query(_))));
+    let independent = QueryIndexes::build([&rows]).unwrap();
+    assert_eq!(independent.collections["docs"].structured.ids.len(), 2);
 }
 
 #[test]

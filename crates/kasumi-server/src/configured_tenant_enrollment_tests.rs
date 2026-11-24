@@ -223,18 +223,39 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
 #[test]
 fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
 -> Result<()> {
+    standalone_preparation_after_abandonment(PreparationCut::Prepared)
+}
+
+#[test]
+fn original_local_genesis_finishes_only_the_matching_dispatched_enrollment() -> Result<()> {
+    standalone_preparation_after_abandonment(PreparationCut::CommittedGenesis)
+}
+
+#[test]
+fn unreceipted_local_deployment_and_older_genesis_stay_incomplete() -> Result<()> {
+    standalone_preparation_after_abandonment(PreparationCut::BeforePublication)
+}
+
+#[derive(Clone, Copy)]
+enum PreparationCut {
+    Prepared,
+    CommittedGenesis,
+    BeforePublication,
+}
+
+fn standalone_preparation_after_abandonment(cut: PreparationCut) -> Result<()> {
     // Cold standalone preparation carries large nested startup futures. Run
     // this fixture on the same explicit stack used by other cold-open tests.
     std::thread::Builder::new()
         .name("enrollment cold-preparation fixture".into())
         .stack_size(16 << 20)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
                 .block_on(Box::pin(
-                    abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl(),
+                    abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl(cut),
                 ))
         })
         .unwrap()
@@ -242,8 +263,9 @@ fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries
         .unwrap()
 }
 
-async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl()
--> Result<()> {
+async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl(
+    cut: PreparationCut,
+) -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(
         &directory.path().join("installed"),
@@ -280,11 +302,138 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
     ))
     .await?;
     let manager = runtime.administration_for_enrollment_test();
-    let original = manager.configured("tenant-a")?;
-    let original_bytes = original.store.get("engine.bootstrap", b"manifest")?;
     let context =
         crate::runtime::configured_control_context(manager.config.hosted_control().unwrap())?;
     approve_fixture(&manager, &context, &request.tenant).await?;
+    if matches!(cut, PreparationCut::BeforePublication) {
+        let proposal = manager.enrollment_proposal(&request.tenant)?;
+        let original = node_enrollment::dispatch_tenant(
+            manager.audit.store(),
+            proposal,
+            context.request_id.clone(),
+        )?;
+        let dispatch = original.local_creation_digest()?;
+        let configured = manager
+            .config
+            .tenants
+            .iter()
+            .find(|e| e.tenant == request.tenant)
+            .unwrap();
+        let TenantServingConfig::Standalone { installation_id } = configured.serving else {
+            unreachable!()
+        };
+        let access = kasumi_store::StorageAccess::standalone(
+            installation_id,
+            &request.tenant,
+            request.incarnation,
+        )?;
+        let application = configured.keys.provider(manager.credential.clone())?;
+        let custody = configured
+            .custody_keys
+            .provider(manager.credential.clone())?;
+        let stores = TenantStorageSet::initialize_catalogs(
+            manager.node.clone(),
+            request.tenant.clone(),
+            application.clone(),
+            custody.clone(),
+            access.clone(),
+        )
+        .await?;
+        let mode = WriteOp::put("engine.deployment", b"mode", b"local-v1");
+        stores.write_batch(std::slice::from_ref(&mode), std::slice::from_ref(&mode))?;
+        let original_pair = stores.custody().binding().clone();
+        let prepare = || {
+            manager.execute_for_test(
+                context.clone(),
+                ManagementCommand::PrepareTenant {
+                    tenant: request.tenant.clone(),
+                },
+            )
+        };
+        let open = || {
+            TenantStorageSet::open_existing(
+                manager.node.clone(),
+                request.tenant.clone(),
+                application.clone(),
+                custody.clone(),
+                access.clone(),
+            )
+        };
+        assert_eq!(
+            kasumi_engine::require_local_enrollment_genesis(&stores, &dispatch)
+                .unwrap_err()
+                .to_string(),
+            "bootstrap manifest absent"
+        );
+        stores.shutdown().await?;
+        drop(stores);
+        assert!(prepare().await.is_err());
+        let stores = open().await?;
+        assert_eq!(stores.custody().binding(), &original_pair);
+        assert!(
+            stores
+                .application()
+                .get_bounded("engine.bootstrap", b"manifest", 256)?
+                .is_none()
+        );
+        manager.config.install_tenant_archives_with(
+            stores.application(),
+            None,
+            manager.credential.clone(),
+        )?;
+        let old = kasumi_engine::LocalDatabaseStartup::reserve(manager.audit.clone())?
+            .initialize(
+                stores.clone(),
+                request.initial_policy.clone(),
+                request.initial_limits.clone(),
+                request.incarnation,
+            )
+            .await
+            .expect("historical initializer creates a real, unreceipted local genesis");
+        old.shutdown().await?;
+        drop(old);
+        drop(stores);
+        let stores = open().await?;
+        assert_eq!(stores.custody().binding(), &original_pair);
+        assert_eq!(
+            kasumi_engine::require_local_enrollment_genesis(&stores, &dispatch)
+                .unwrap_err()
+                .to_string(),
+            "original local enrollment genesis receipt is missing or differs"
+        );
+        stores.shutdown().await?;
+        drop(stores);
+        assert!(prepare().await.is_err());
+        assert!(manager.configured(&request.tenant).is_err());
+        let stores = open().await?;
+        assert_eq!(stores.custody().binding(), &original_pair);
+        assert!(
+            stores
+                .custody()
+                .store()
+                .get_bounded("raft.meta", kasumi_store::LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
+                .is_none()
+        );
+        assert!(
+            stores
+                .application()
+                .get_bounded("runtime.provisioning", b"prepared", 256)?
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_vec(&original)?,
+            serde_json::to_vec(
+                &node_enrollment::tenant_record(manager.audit.store(), &request.tenant)?.unwrap()
+            )?
+        );
+        stores.shutdown().await?;
+        drop(stores);
+        drop(manager);
+        runtime.shutdown().await?;
+        return Ok(());
+    }
+    let original = manager.configured("tenant-a")?;
+    let original_bytes = original.store.get("engine.bootstrap", b"manifest")?;
     let pause = Arc::new(Pause::default());
     pauses()
         .lock()
@@ -324,6 +473,107 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         original.store.get("engine.bootstrap", b"manifest")?,
         original_bytes
     );
+    if matches!(cut, PreparationCut::CommittedGenesis) {
+        let configured = manager
+            .config
+            .tenants
+            .iter()
+            .find(|entry| entry.tenant == request.tenant)
+            .unwrap();
+        let TenantServingConfig::Standalone { installation_id } = configured.serving else {
+            unreachable!()
+        };
+        let open_pair = || async {
+            TenantStorageSet::open_existing(
+                manager.node.clone(),
+                request.tenant.clone(),
+                configured.keys.provider(manager.credential.clone())?,
+                configured
+                    .custody_keys
+                    .provider(manager.credential.clone())?,
+                kasumi_store::StorageAccess::standalone(
+                    installation_id,
+                    &request.tenant,
+                    request.incarnation,
+                )?,
+            )
+            .await
+        };
+        let stores = open_pair().await?;
+        let marker = WriteOp::delete("runtime.provisioning", b"prepared");
+        let receipt_key = kasumi_store::LOCAL_ENROLLMENT_GENESIS_KEY;
+        assert_eq!(
+            stores
+                .custody()
+                .store()
+                .get_bounded("raft.meta", receipt_key, 32)?
+                .unwrap()
+                .len(),
+            32
+        );
+        assert!(
+            stores
+                .custody()
+                .store()
+                .write_batch(&[WriteOp::delete("raft.meta", receipt_key)])
+                .is_err()
+        );
+        stores.application().write_batch(&[marker])?;
+        stores.shutdown().await?;
+        drop(stores);
+        let security = manager.audit.store();
+        let ledger_key = format!("tenant/{}", request.tenant);
+        let mut dispatched = record.clone();
+        dispatched.stage = Stage::CreationDispatched;
+        dispatched.bootstrap_sha256 = None;
+        let save = |value: &_| {
+            security.write_batch(&[WriteOp::put(
+                "node.enrollment",
+                ledger_key.as_bytes(),
+                serde_json::to_vec(value)?,
+            )])
+        };
+        save(&dispatched)?;
+        let prepare = || {
+            manager.execute_for_test(
+                context.clone(),
+                ManagementCommand::PrepareTenant {
+                    tenant: request.tenant.clone(),
+                },
+            )
+        };
+        let mut substituted = dispatched.clone();
+        let node_enrollment::Origin::Control { creation_id, .. } = &mut substituted.origin else {
+            unreachable!()
+        };
+        *creation_id = Uuid::new_v4();
+        save(&substituted)?;
+        assert!(prepare().await.is_err());
+        assert!(manager.configured(&request.tenant).is_err());
+        save(&dispatched)?;
+        let stores = open_pair().await?;
+        stores.application().write_batch(&[WriteOp::put(
+            "runtime.provisioning",
+            b"prepared",
+            b"another-proposal",
+        )])?;
+        stores.shutdown().await?;
+        drop(stores);
+        assert!(prepare().await.is_err());
+        let stores = open_pair().await?;
+        assert_eq!(
+            stores
+                .application()
+                .get_bounded("runtime.provisioning", b"prepared", 256)?
+                .as_deref(),
+            Some(&b"another-proposal"[..])
+        );
+        stores
+            .application()
+            .write_batch(&[WriteOp::delete("runtime.provisioning", b"prepared")])?;
+        stores.shutdown().await?;
+        drop(stores);
+    }
     manager
         .execute_for_test(
             context,
@@ -333,6 +583,17 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         )
         .await?;
     let installed = manager.configured(&request.tenant)?;
+    if matches!(cut, PreparationCut::CommittedGenesis) {
+        let after =
+            node_enrollment::tenant_record(manager.audit.store(), &request.tenant)?.unwrap();
+        assert_eq!(serde_json::to_vec(&after)?, serde_json::to_vec(&record)?);
+        assert!(
+            installed
+                .store
+                .get_bounded("runtime.provisioning", b"prepared", 256)?
+                .is_some()
+        );
+    }
     assert_eq!(
         Some(crate::runtime::persisted_replicated_bootstrap_fingerprint(
             installed.database.stores()

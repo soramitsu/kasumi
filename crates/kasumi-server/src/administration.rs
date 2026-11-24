@@ -375,6 +375,15 @@ impl ControlAccess {
             Self::Remote(remote) => Some(remote),
         }
     }
+    pub(crate) fn routes_to(&self, tenant: &str, incarnation: &str) -> Result<bool> {
+        Ok(self
+            .routes()?
+            .topology()
+            .tenants
+            .get(tenant)
+            .is_some_and(|route| route.incarnation == incarnation))
+    }
+
     pub(crate) fn routes(&self) -> Result<CommittedRoutes> {
         Ok(match self {
             Self::Local(database) => {
@@ -873,13 +882,9 @@ impl Administration {
         }
         let database = self.registry.database(context)?;
         let generation = database.engine().generation()?;
-        let topology = self.control.routes()?;
-        let topology = topology.topology();
         ensure!(
-            topology
-                .tenants
-                .get(&context.tenant)
-                .is_some_and(|route| route.incarnation == generation.incarnation()),
+            self.control
+                .routes_to(&context.tenant, generation.incarnation())?,
             kasumi_types::Error::new(
                 kasumi_types::ErrorCode::Unavailable,
                 "registered generation differs from committed control route"

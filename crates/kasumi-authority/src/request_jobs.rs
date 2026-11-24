@@ -75,6 +75,55 @@ impl RequestJobs {
         self.registry.lock().unwrap().jobs.iter().flatten().count()
     }
 
+    // The serial integration fixture calls this immediately after an uncertain
+    // reply and before its next dispatch. Preserve the actual reported issue
+    // so it can be compared by identity when the original command resolves.
+    #[cfg(test)]
+    pub(super) async fn original_unknown_reply(
+        &self,
+        requests: &Semaphore,
+    ) -> Option<kasumi_types::drain::DrainIssueRef> {
+        let (slot, job, previously_reported) = {
+            let registry = self.registry.lock().unwrap();
+            let mut abandoned = registry.jobs.iter().enumerate().filter_map(|(slot, job)| {
+                let job = job.as_ref()?;
+                (job.abandoned.load(Ordering::Acquire) && !job.claimed.load(Ordering::Acquire))
+                    .then(|| (slot, job.clone()))
+            });
+            let (slot, job) = abandoned.next()?;
+            assert!(
+                abandoned.next().is_none(),
+                "ambiguous original fixture request"
+            );
+            // DrainReport preserves the first issue for each component and
+            // slot, including after the slot is returned to the request pool.
+            let reported = registry.report.issues().iter().any(|issue| {
+                issue.component() == "authority request outcome" && issue.instance() == slot
+            });
+            (slot, job, reported)
+        };
+        job.child.drain().await.unwrap();
+        let original_unknown = {
+            let outcome = job.outcome.lock().unwrap();
+            matches!(outcome.as_ref(), Some(Err(error)) if error.code == ErrorCode::UnknownOutcome
+                && error.message == "authority acknowledgement unavailable; resolve the exact permanent command identity")
+        };
+        self.observe(requests);
+        (original_unknown && !previously_reported).then(|| {
+            self.registry
+                .lock()
+                .unwrap()
+                .report
+                .issues()
+                .iter()
+                .find(|issue| {
+                    issue.component() == "authority request outcome" && issue.instance() == slot
+                })
+                .expect("abandoned original outcome must remain in the report")
+                .clone()
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn completed_unclaimed_errors(&self) -> usize {
         let registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());

@@ -38,6 +38,7 @@ pub(crate) struct DiskOpening {
     auto_warm: Option<AutoWarm>,
     completed: Option<DiskState>,
     disposal: [DisposalObservation; 16],
+    snapshot_pins: usize,
 }
 impl Default for DiskOpening {
     fn default() -> Self {
@@ -62,10 +63,22 @@ impl Default for DiskOpening {
             auto_warm: None,
             completed: None,
             disposal: std::array::from_fn(|_| DisposalObservation::default()),
+            snapshot_pins: MAX_PINNED_ROOTS,
         }
     }
 }
 impl DiskOpening {
+    /// Size the pin registry and warm baseline before the fixed grant.
+    pub(crate) fn set_snapshot_pins(&mut self, snapshot_pins: usize) -> Result<(), CoreError> {
+        assert!(self.admission.is_none());
+        if snapshot_pins == 0 || snapshot_pins > MAX_SNAPSHOT_PINS {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot pin limit is out of range",
+            )));
+        }
+        self.snapshot_pins = snapshot_pins;
+        Ok(())
+    }
     #[cfg(test)]
     pub(crate) fn create(
         &mut self,
@@ -249,7 +262,10 @@ impl DiskOpening {
         assert!(self.admission.is_none());
         self.original_backend = Some(backend);
         self.admission = Some(admission);
-        self.fixed = Some(fixed_admission(self.admission.as_ref().unwrap())?);
+        self.fixed = Some(fixed_admission(
+            self.admission.as_ref().unwrap(),
+            self.snapshot_pins,
+        )?);
         self.backend = Some(BackendRef::Checked(NativeOwnedArc::new(CheckedGroup::new(
             self.original_backend.take().unwrap(),
             self.admission.as_ref().unwrap().clone(),
@@ -306,14 +322,17 @@ impl DiskOpening {
             self.fixed.as_ref().unwrap(),
         )));
         self.pins
-            .build(admission.clone(), group_id, MAX_PINNED_ROOTS)?;
+            .build(admission.clone(), group_id, self.snapshot_pins)?;
         self.pages = Some(CachedDirectoryBackend::with_shared_cache(
             self.arena.as_ref().unwrap().clone(),
             admission.clone(),
             group_id,
             self.cache.as_ref().unwrap().clone(),
         ));
-        self.auto_warm = Some(AutoWarm::new(self.fixed.as_ref().unwrap())?);
+        self.auto_warm = Some(AutoWarm::new(
+            self.fixed.as_ref().unwrap(),
+            self.snapshot_pins,
+        )?);
         self.owner.as_ref().unwrap().check()?;
         self.completed = Some(DiskState {
             owner: self.owner.take().unwrap(),

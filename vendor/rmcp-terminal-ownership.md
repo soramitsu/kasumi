@@ -100,3 +100,9 @@ the epoch. Timeout diagnostics use the standard duration formatter.
 The upstream SDK's optional OAuth client depends on `oauth2` 5.0.0. That
 separate crate still selects Chrono in the SDK's own all-features lockfile.
 Kasumi implements its own authentication and does not select that SDK feature.
+
+The upstream cancellation and concurrent-response suites both launch a child
+server on standard input and output. Their Cargo test targets require the
+server and `transport-io` features. The upstream HTTP test case enables that
+transport to exercise both child-process suites. The product feature roster
+continues to match the workspace lockfile resolution.

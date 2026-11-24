@@ -17,6 +17,7 @@ pub(crate) type Reply<'a, T> = Pin<Box<dyn Future<Output = Result<T, ClientError
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Dispatch {
     Retry,
+    ObservePhase,
     Once,
     Resolve,
 }
@@ -182,6 +183,27 @@ impl<C: RoutedClient> InstalledPool<C> {
             .await
     }
 
+    /// The callback exists only on the member currently dispatching the
+    /// target request. A complete pass of explicit refusals settles this
+    /// observation. Ordinary transport failures keep their usual retry budget.
+    pub(crate) async fn observe_phase<T, F>(
+        &mut self,
+        timeout: Duration,
+        dispatch: F,
+    ) -> Result<T, ClientError>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, T>,
+    {
+        self.request_inner(
+            timeout,
+            Dispatch::ObservePhase,
+            |_, _| Box::pin(async { Ok(None) }),
+            dispatch,
+        )
+        .await
+    }
+
     pub(crate) async fn request_with_probe<T, F, P>(
         &mut self,
         timeout: Duration,
@@ -252,6 +274,7 @@ impl<C: RoutedClient> InstalledPool<C> {
         // or dispatch refusal cannot rule it out.
         let mut uncertain = false;
         loop {
+            let mut inactive_members = 0;
             for (tried, member) in members.iter().enumerate() {
                 let remaining = budget.remaining()?;
                 let attempt_end = Instant::now()
@@ -292,11 +315,12 @@ impl<C: RoutedClient> InstalledPool<C> {
                             let remaining = budget.remaining()?;
                             let operation_end =
                                 Instant::now().checked_add(remaining).ok_or_else(deadline)?;
-                            let dispatch_end = if policy == Dispatch::Retry {
-                                attempt_end.min(operation_end)
-                            } else {
-                                operation_end
-                            };
+                            let dispatch_end =
+                                if matches!(policy, Dispatch::Retry | Dispatch::ObservePhase) {
+                                    attempt_end.min(operation_end)
+                                } else {
+                                    operation_end
+                                };
                             if dispatch_end <= Instant::now() {
                                 return Err(deadline());
                             }
@@ -323,6 +347,16 @@ impl<C: RoutedClient> InstalledPool<C> {
                         return Ok(reply);
                     }
                     Ok(None) => {}
+                    Err(error)
+                        if dispatched
+                            && policy == Dispatch::ObservePhase
+                            && error.is_inactive_target_callback() =>
+                    {
+                        inactive_members += 1;
+                        if inactive_members == members.len() {
+                            return Err(error);
+                        }
+                    }
                     Err(error) if retryable(&error) => {
                         if elapsed {
                             self.connections.discard(*member);
@@ -382,10 +416,11 @@ impl RequestDeadline {
     }
 }
 fn deadline() -> ClientError {
-    tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed").into()
+    ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_RECOVERY)
 }
 fn retryable(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport(status) if matches!(status.code(),
+    matches!(error, ClientError::LocalDeadline(_))
+        || matches!(error, ClientError::Transport(status) if matches!(status.code(),
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown | tonic::Code::Cancelled))
 }
 
@@ -477,6 +512,60 @@ mod tests {
         )
         .unwrap()
     }
+    fn inactive_member() -> ClientError {
+        let error = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            kasumi_types::INACTIVE_TARGET_CALLBACK_REASON,
+        );
+        let mut status = tonic::Status::with_details(
+            tonic::Code::Unavailable,
+            &error.message,
+            serde_json::to_vec(&error).unwrap().into(),
+        );
+        status.metadata_mut().insert(
+            kasumi_types::INACTIVE_TARGET_CALLBACK_HEADER,
+            tonic::metadata::MetadataValue::from_static("1"),
+        );
+        status.into()
+    }
+
+    #[tokio::test]
+    async fn callback_read_requires_every_member_to_report_its_own_absence() {
+        let loads = Arc::new(AtomicU64::new(0));
+        let mut pool = pool(Members::default(), loads.clone());
+        let mut visited = Vec::new();
+        let answer: Result<(), _> = pool
+            .observe_phase(Duration::from_secs(2), |peer, _| {
+                visited.push(peer.member);
+                // One member sent an ordinary transport failure on the first
+                // pass. The other two members cannot speak for it.
+                let error = if visited.len() == 2 {
+                    tonic::Status::unavailable(kasumi_types::INACTIVE_TARGET_CALLBACK_REASON).into()
+                } else {
+                    inactive_member()
+                };
+                Box::pin(async move { Err(error) })
+            })
+            .await;
+        assert!(answer.unwrap_err().is_inactive_target_callback());
+        assert_eq!(visited, [1, 2, 3, 1, 2, 3]);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        let answer = pool
+            .observe_phase(Duration::from_secs(2), |peer, _| {
+                let member = peer.member;
+                Box::pin(async move {
+                    if member == 3 {
+                        Ok(member)
+                    } else {
+                        Err(inactive_member())
+                    }
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer, 3);
+    }
+
     #[tokio::test]
     async fn failover_keeps_one_credential_and_original_request_until_the_next_invocation() {
         let loads = Arc::new(AtomicU64::new(0));
@@ -595,9 +684,12 @@ mod tests {
         )
         .await
         .expect("original invocation must finish");
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
@@ -667,9 +759,12 @@ mod tests {
                 },
             )
             .await;
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         assert!(reads.load(Ordering::SeqCst) >= 3);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
@@ -689,9 +784,12 @@ mod tests {
                 |_, _| Box::pin(async { Err(tonic::Status::unknown("outcome lost").into()) }),
             )
             .await;
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         // Every member reported the absence several times over one connection
         // each, rather than reconnecting after every 25 ms pass.
         assert!(reads.load(Ordering::SeqCst) >= 6);
@@ -817,6 +915,25 @@ mod tests {
         clock.0.store(100, Ordering::SeqCst);
         assert!(deadline.remaining().is_err());
     }
+    #[test]
+    fn only_local_expiration_carries_pool_provenance() {
+        let Err(error) = RequestDeadline::new(Duration::ZERO, Arc::new(SystemLeaseClock)) else {
+            panic!("zero budget must expire immediately");
+        };
+        let peer: ClientError =
+            tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed")
+                .into();
+        assert!(matches!(
+            error,
+            ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_RECOVERY)
+        ));
+        assert!(matches!(peer, ClientError::Transport(_)));
+        assert_eq!(error.grpc_code(), peer.grpc_code());
+        assert_eq!(error.to_string(), peer.to_string());
+        assert!(retryable(&error) && retryable(&peer));
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
     #[test]
     fn authority_and_response_failures_do_not_change_routes() {
         for code in [

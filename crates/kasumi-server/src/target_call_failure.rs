@@ -193,9 +193,36 @@ impl Original {
         match self {
             Self::Snapshot(SnapshotFailure::Operation(error)) => !error.has_physical_source(),
             Self::Snapshot(SnapshotFailure::AdmissionRefused(_)) => true,
+            Self::Snapshot(SnapshotFailure::Source(error)) => installed_route_failure(error),
             _ => false,
         }
     }
+    /// Fixed class of what a preserved cell still holds; never original text.
+    fn class(&self) -> &'static str {
+        match self {
+            Self::Snapshot(SnapshotFailure::Source(_)) => "source",
+            Self::Snapshot(SnapshotFailure::Operation(_)) => "operation",
+            Self::Snapshot(SnapshotFailure::Creation(_)) => "creation",
+            Self::Snapshot(SnapshotFailure::AdmissionRefused(_)) => "admission",
+            Self::RetiredSource(_) => "retired_source",
+            Self::NodeStartup(_) => "node_startup",
+        }
+    }
+}
+/// An installed pool measured its own operation deadline before any member
+/// returned a verified reply: for example `KasumiAuthorityPool` while StopLocal
+/// acquires its lifecycle lease. Only that typed, crate-constructed reason
+/// qualifies, and only as the outermost object; it owns a static reason and
+/// nothing else, so the producer's return settles it and Control retries the
+/// same committed phase. A transport status (whose source, details or metadata
+/// may own anything), JSON, connection or contextual error stays retained, and
+/// neither a matching gRPC code nor matching text establishes provenance.
+fn installed_route_failure(error: &anyhow::Error) -> bool {
+    let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+    matches!(
+        outer.downcast_ref::<kasumi_client::ClientError>(),
+        Some(kasumi_client::ClientError::LocalDeadline(_))
+    )
 }
 /// The two actual owning failures reach the same prepaid cell whole.
 /// Captured failures leave `run` as their closed diagnostic facade.
@@ -281,6 +308,27 @@ impl Drop for Cell {
             && !self.state.retained.swap(true, Ordering::AcqRel)
         {
             std::mem::forget(self.clone());
+        }
+    }
+}
+
+impl Cell {
+    fn retained_class(&self) -> &'static str {
+        if self.state.dispatch.get().is_some() {
+            return "dispatch";
+        }
+        if self.state.observed_panic.load(Ordering::Acquire) {
+            return "panic";
+        }
+        // A concurrently borrowed report is not inspected through its owner.
+        let Ok(outcome) = self.state.outcome.try_lock() else {
+            return "borrowed";
+        };
+        match (&outcome.original, &outcome.output, outcome.body.entry) {
+            (Some(original), _, _) => original.class(),
+            (None, Some(_), _) => "unclaimed_output",
+            (None, None, Entry::NotEntered) => "unentered",
+            (None, None, _) => "unsettled",
         }
     }
 }
@@ -657,10 +705,16 @@ impl TargetFailureInventory {
         }
         Err(TargetCallFailure::Admission(ScratchAdmissionRefusal::Busy))
     }
-    pub(super) fn retained(&self) -> bool {
-        self.cells
-            .iter()
-            .any(|cell| cell.state.preserve.load(Ordering::Acquire))
+    /// The first preserved cell's actual index and a fixed class of what it
+    /// still holds, for the private drain diagnostic. No original text, path,
+    /// endpoint or credential leaves the paid cell.
+    pub(super) fn first_retained(&self) -> Option<(usize, &'static str)> {
+        self.cells.iter().enumerate().find_map(|(index, cell)| {
+            cell.state
+                .preserve
+                .load(Ordering::Acquire)
+                .then(|| (index, cell.retained_class()))
+        })
     }
     pub(super) fn original_failure(&self, index: usize) -> Option<TargetCallFailure> {
         let cell = self.cells.get(index)?;

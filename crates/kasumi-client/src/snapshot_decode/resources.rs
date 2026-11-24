@@ -296,6 +296,8 @@ pub(crate) fn normalize(error: ClientError) -> ClientError {
             tonic::Code::ResourceExhausted,
             "native request exceeds its byte limit",
         ),
+        // Exactly what the equivalent `DeadlineExceeded` status normalizes to.
+        ClientError::LocalDeadline(local) => (local.status().code(), "native transport failed"),
     };
     ClientError::DecodeRejected {
         code,

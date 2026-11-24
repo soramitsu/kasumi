@@ -1,7 +1,7 @@
 //! Default URL parse heap only, not the surrounding topology/decode operation.
 //!
 //! Pinned sources: Rust 1.97.1 (8bab26f4f68e0e26f0bb7960be334d5b520ea452),
-//! url 2.5.8, idna 1.1.0, idna_adapter 1.2.2, ICU normalizer 2.3.0 and
+//! url 2.5.9, idna 1.1.0, idna_adapter 1.2.2, ICU normalizer 2.3.0 and
 //! smallvec 1.16.0. Requalify on changes to those versions or allocator policy.
 //!
 //! This sums overlapping and mutually exclusive buffers conservatively. Each

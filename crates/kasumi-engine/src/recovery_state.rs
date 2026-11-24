@@ -159,7 +159,10 @@ pub(crate) fn dispatch_limit(
         .ok_or_else(|| conflict("recovery phase deadline overflow"))?
         .min(phase.original_credential_expires_at_ms))
 }
-fn effect_dispatch_limit(operation: &RecoveryRecord, phase: &RecoveryPhaseRecord) -> Result<u64> {
+pub(crate) fn effect_dispatch_limit(
+    operation: &RecoveryRecord,
+    phase: &RecoveryPhaseRecord,
+) -> Result<u64> {
     let limit = dispatch_limit(operation, phase)?;
     Ok(match &phase.input {
         RecoveryDispatch::Authority(input) => limit.min(input.not_after_ms),

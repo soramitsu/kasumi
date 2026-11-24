@@ -30,6 +30,10 @@ jobs:
       KASUMI_TARGET: ${{ matrix.target }}
       KASUMI_RUN_NAME: kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
       KASUMI_ASSEMBLY_ATTEMPT_ID: assembly-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # One append-only native attempt journal per host run, rooted at
+      # KASUMI_RUN. The primary functional attempt is admitted to it first.
+      KASUMI_JOURNAL_ID: native-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+      KASUMI_FUNCTIONAL_ATTEMPT_ID: functional-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       PYTHONDONTWRITEBYTECODE: "1"
       KASUMI_ASSEMBLY_INPUTS_DIR: ${{ vars.KASUMI_ASSEMBLY_INPUTS_DIR }}
       KASUMI_FUNCTIONAL_MAX_BYTES: ${{ vars.KASUMI_FUNCTIONAL_MAX_BYTES }}
@@ -57,6 +61,10 @@ jobs:
           [[ "$KASUMI_ASSEMBLY_MAX_BYTES" =~ ^[1-9][0-9]*$ ]]
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf 'KASUMI_EXPECTED_TREE=%s\n' "$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+          # The journal names its host; the candidate selection must use the
+          # same operator-registered runner name.
+          [[ "$RUNNER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+          printf 'KASUMI_HOST_ID=%s\n' "$RUNNER_NAME" >> "$GITHUB_ENV"
           python3 scripts/release_host.py --output "$KASUMI_RUN/host.json" --target "$KASUMI_TARGET"
       - name: Linux frozen gates and candidate assembly
         id: linux_candidate
@@ -84,6 +92,9 @@ jobs:
             --env KASUMI_ASSEMBLY_TAR="$KASUMI_ASSEMBLY_TAR" \
             --env KASUMI_ASSEMBLY_PRODUCER="$KASUMI_ASSEMBLY_PRODUCER" \
             --env KASUMI_ASSEMBLY_ATTEMPT_ID="$KASUMI_ASSEMBLY_ATTEMPT_ID" \
+            --env KASUMI_JOURNAL_ID="$KASUMI_JOURNAL_ID" \
+            --env KASUMI_HOST_ID="$KASUMI_HOST_ID" \
+            --env KASUMI_FUNCTIONAL_ATTEMPT_ID="$KASUMI_FUNCTIONAL_ATTEMPT_ID" \
             --env KASUMI_EXPECTED_SHA="$GITHUB_SHA" \
             --env KASUMI_EXPECTED_TREE="$KASUMI_EXPECTED_TREE" \
             --env KASUMI_UPLOAD_UID="$KASUMI_UPLOAD_UID" \
@@ -95,8 +106,12 @@ jobs:
             --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
               python3 /workspace/scripts/release_host.py \
                 --output /evidence/container-host.json --target "$KASUMI_TARGET"
+              python3 -B -S /workspace/scripts/attempt_index.py create --root /evidence \
+                --journal-id "$KASUMI_JOURNAL_ID" --host "$KASUMI_HOST_ID" --target "$KASUMI_TARGET" \
+                > /evidence/journal-created.json
               python3 /workspace/scripts/release_gate.py --repository /workspace \
                 --output /evidence/run --jobs 2 \
+                --attempt-root /evidence --attempt-id "$KASUMI_FUNCTIONAL_ATTEMPT_ID" \
                 --execution-description "Native Linux acceptance host; two CPUs and 15 GiB container ceiling; host.json, container-host.json, container-created.json and build-image.json record the environment"
               python3 -B -S /evidence/run/source/scripts/export_functional_evidence.py create \
                 --evidence /evidence/run --output /evidence/functional-export \
@@ -152,6 +167,7 @@ jobs:
             # container stops, even if its shell exited before publication.
             # A second always-run host step retries when this Docker helper fails.
             if ! docker run --rm --network none \
+              --volume "$GITHUB_WORKSPACE:/workspace:ro" \
               --env KASUMI_UPLOAD_UID="$KASUMI_UPLOAD_UID" \
               --env KASUMI_UPLOAD_GID="$KASUMI_UPLOAD_GID" \
               --env KASUMI_ASSEMBLY_TAR="$KASUMI_ASSEMBLY_TAR" \
@@ -185,7 +201,14 @@ jobs:
                     snapshot_result=1
                   fi
                 fi
-                for path in /evidence/attempts /evidence/repeatable-assembly \
+                # The journal head is replayed against its original /evidence
+                # root; the host cannot replay container custody paths.
+                if test -e /evidence/attempts; then
+                  python3 -B -S /workspace/scripts/attempt_index.py head --root /evidence \
+                    > /evidence/journal-head.json || snapshot_result=1
+                fi
+                for path in /evidence/attempts /evidence/run/outcome.json \
+                            /evidence/repeatable-assembly \
                             "/evidence/$KASUMI_ASSEMBLY_TAR" \
                             "/evidence/$KASUMI_ASSEMBLY_PRODUCER" \
                             /evidence/assembly-transport.json \
@@ -224,7 +247,11 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy \
             > "$KASUMI_RUN/toolchain-install.log" 2>&1
+          python3 -B -S scripts/attempt_index.py create --root "$KASUMI_RUN" \
+            --journal-id "$KASUMI_JOURNAL_ID" --host "$KASUMI_HOST_ID" --target "$KASUMI_TARGET" \
+            > "$KASUMI_RUN/journal-created.json"
           python3 scripts/release_gate.py --output "$KASUMI_RUN/run" --jobs 2 \
+            --attempt-root "$KASUMI_RUN" --attempt-id "$KASUMI_FUNCTIONAL_ATTEMPT_ID" \
             --execution-description 'Native macOS ARM64 development acceptance; host.json records the environment' \
             > "$KASUMI_RUN/runner.log" 2>&1
           python3 -B -S "$KASUMI_RUN/run/source/scripts/export_functional_evidence.py" create \
@@ -542,6 +569,19 @@ jobs:
             "$KASUMI_ASSEMBLY_ARCHIVE_NAME" "$KASUMI_ASSEMBLY_UPLOADED_ID" "$KASUMI_ASSEMBLY_UPLOADED_DIGEST" \
             "$KASUMI_ASSEMBLY_PRODUCER_NAME" "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_ID" "$KASUMI_ASSEMBLY_PRODUCER_UPLOADED_DIGEST" \
             > "$KASUMI_RUN/assembly-upload.txt"
+      # Print the chain tip for an operator to anchor outside the bundle. The
+      # Linux custody helper replays it inside its original /evidence mount.
+      - name: Record native attempt journal head
+        if: ${{ always() && runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -z "${KASUMI_RUN:-}" || ! test -e "$KASUMI_RUN/attempts"; then
+            exit 0
+          fi
+          python3 -B -S scripts/attempt_index.py head --root "$KASUMI_RUN" \
+            > "$KASUMI_RUN/journal-head.json"
+          cat "$KASUMI_RUN/journal-head.json"
       - name: Preserve candidate and failed or successful evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -559,5 +599,7 @@ jobs:
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.json
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.log
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/source.tar
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/runner/**
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/tools/**
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/attempts/**
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/repeatable-assembly/**

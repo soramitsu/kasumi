@@ -141,6 +141,23 @@ impl TenantRecord {
         }
         Ok(())
     }
+    /// Bind a standalone genesis to the original creation UUID, request and
+    /// complete approved inputs. Replaying Prepare creates a new invocation,
+    /// but its identity can never replace this digest.
+    pub(crate) fn local_creation_digest(&self) -> Result<[u8; 32]> {
+        ensure!(
+            matches!(&self.origin, Origin::Control { proposal, .. } if proposal.authority_id.is_none())
+                && self.original_grant.is_none()
+                && self.stage == Stage::CreationDispatched,
+            "standalone genesis requires its original local creation dispatch"
+        );
+        let mut writer = DigestWriter(Sha256::new());
+        writer
+            .0
+            .update(b"kasumi-standalone-enrollment-dispatch-v1\0");
+        serde_json::to_writer(&mut writer, &self.origin)?;
+        Ok(writer.0.finalize().into())
+    }
     pub(crate) fn require_proposal(&self, proposal: &Proposal) -> Result<()> {
         self.validate(&proposal.tenant)?;
         let Origin::Control {

@@ -249,7 +249,7 @@ impl Warmup {
                 layout: descriptor.layout,
             };
             if let ShardLoad::Capacity(bytes) =
-                load_selected_shard(tree, source, key, &layout, admission, false)?
+                load_selected_shard(tree, source, key, &layout, admission, None)?
             {
                 denied = Some(bytes);
             }

@@ -228,6 +228,8 @@ mod tests {
                 public_key: "ab".repeat(32),
             },
             control_endpoints: BTreeMap::new(),
+            writer_observation_bearer_file: None,
+            phase_observation_bearer_file: None,
             control_tls: config.native.tls.clone(),
             control_ca: directory.path().join("ca.pem"),
             node: kasumi_serving::NodeIdentity {

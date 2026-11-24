@@ -168,7 +168,7 @@ fn logical_identity(registry: &crate::api::DatabaseRegistry) -> Result<(String, 
     ensure!(
         documents
             .values()
-            .all(|slot| matches!(slot.as_ref(), DocumentSlot::Stored(_))),
+            .all(|slot| !matches!(slot.as_ref(), DocumentSlot::Pending(_))),
         "published generation retained decoded proof bodies"
     );
     let incarnation = generation.state.incarnation.clone();

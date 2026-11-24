@@ -62,7 +62,8 @@ class SessionEvidenceTests(unittest.TestCase):
                              checkpoint=None, outcome={"reason": f"permanent {ordinal}"}, seconds=0.25,
                              resolution=None))
         plan = dict(sessions=258, kill_reserve=2, nonce=self.nonce)
-        for mutation in ("none", "duplicate", "missing", "wrong-id", "short-failure-cohort", "unplanned-resolution"):
+        for mutation in ("none", "duplicate", "missing", "wrong-id", "short-failure-cohort", "unplanned-resolution",
+                         "resumed-population-resolution"):
             with self.subTest(mutation=mutation):
                 db = sqlite3.connect(":memory:")
                 try:
@@ -75,6 +76,9 @@ class SessionEvidenceTests(unittest.TestCase):
                         current[9]["session_id"] = current[10]["session_id"]
                     elif mutation == "unplanned-resolution":
                         current[7].update(stage="resolve", resolution={})
+                    elif mutation == "resumed-population-resolution":
+                        # A resumed population records its reopened abort in the populate stage.
+                        current[7].update(resolution={"before": {}, "after": {}})
                     elif mutation == "short-failure-cohort":
                         for row in current[:2]:
                             row.update(kind="complete", checkpoint={}, outcome=None)
@@ -88,6 +92,18 @@ class SessionEvidenceTests(unittest.TestCase):
                             sessions.index_originals(db, self.root, plan, report)
                 finally:
                     db.close()
+
+    def test_full_cohort_binds_the_original_admitted_population(self):
+        total, reserve = 100_001, 2
+        population = {"resumed": False, "written": total - reserve}
+        sessions.check_full_cohort(total, reserve, population)
+        for report in ({"resumed": True, "written": total - reserve},
+                       {"resumed": True, "written": total - reserve - 25_090},
+                       {**population, "written": total - reserve - 1},
+                       {**population, "resumed": 0},
+                       {**population, "written": float(total - reserve)}):
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                sessions.check_full_cohort(total, reserve, report)
 
     def test_destination_hashes_selected_files_and_sorts_original_names(self):
         target = sessions.session_id(self.nonce, 0)

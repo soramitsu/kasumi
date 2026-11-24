@@ -75,12 +75,8 @@ pub(super) fn checked_entry<'a>(
     };
     if !entry.settled
         || entry.binding != binding
-        || entry.parent != parent
-        || entry
-            .bytes
-            .checked_sub(entry.pending)
-            .ok_or(io::ErrorKind::InvalidData)?
-            != census::directory_extent(&metadata)?
+        || entry.parent(identity) != parent
+        || !entry.matches_allocation(&metadata)?
         || entry.len != metadata.len()
     {
         return Err(io::ErrorKind::InvalidData.into());
@@ -322,15 +318,23 @@ impl NodeDiskDirectory {
         if state.phase == NodeDiskPhase::Failed || !self.owner().disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
-        self.verify(&state)
-            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
-        let entry = state.accounted[&self.owner().identity]
-            .directory()
-            .expect("verified directory enrollment");
-        entry
-            .bytes
-            .checked_sub(entry.pending)
-            .ok_or_else(|| io::ErrorKind::InvalidData.into())
+        let physical = || {
+            self.verify(&state)?;
+            let owner = self.owner();
+            let metadata = owner
+                .file
+                .as_ref()
+                .expect("retained directory")
+                .metadata()?;
+            let entry = state.accounted[&owner.identity]
+                .directory()
+                .expect("verified directory");
+            if !entry.matches_allocation(&metadata)? || metadata.len() != entry.len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            census::directory_extent(&metadata)
+        };
+        physical().inspect_err(|_| self.owner().disk.fail_locked(&mut state))
     }
 
     /// Synchronize an unchanged enrolled directory through its retained FD.

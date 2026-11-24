@@ -2,8 +2,11 @@ use crate::admission::{
     CancelOnDrop, NodeAdmission, ProposalBudget, Reservation, WorkFence, WorkRegistration,
 };
 use crate::document_source::DocumentReads;
+#[path = "query_cursor_source.rs"]
+mod query_cursor_source;
 use crate::output::{AdmittedOutput, OUTPUT_CHARGE_BYTES};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
+use query_cursor_source::CursorDocuments;
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
 #[path = "backup_producer_jobs.rs"]
@@ -171,7 +174,7 @@ struct Cursor {
 #[derive(Default)]
 struct PinnedRows {
     rows: Vec<PinnedRow>,
-    generation: Option<Arc<crate::Generation>>,
+    source: Option<CursorDocuments>,
     /// Admitted resident bytes, including the row vector: the measure that
     /// `max_cursor_bytes` bounds across a tenant's open cursors.
     bytes: usize,
@@ -184,17 +187,15 @@ impl std::fmt::Debug for PinnedRows {
             .field("bytes", &self.bytes)
             .field(
                 "revision",
-                &self
-                    .generation
-                    .as_ref()
-                    .map(|generation| generation.state.revision),
+                &self.source.as_ref().map(CursorDocuments::revision),
             )
             .finish()
     }
 }
 #[derive(Debug)]
 struct PinnedRow {
-    document: Arc<DocumentSlot>,
+    id: Box<str>,
+    version: u64,
     score: Option<f32>,
 }
 
@@ -203,6 +204,7 @@ fn pin_rows(
     remaining: kasumi_query::RemainingRows<'_>,
     generation: &Arc<crate::Generation>,
     collection: &str,
+    reads: &DocumentReads,
     max_cursor_bytes: usize,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<Reservation>,
@@ -211,53 +213,67 @@ fn pin_rows(
         return Ok((PinnedRows::default(), 0));
     }
     let mut charged = kasumi_query::vec_bytes::<PinnedRow>(remaining.len())?;
-    memory.reserve(charged)?;
-    let mut rows = Vec::with_capacity(remaining.len());
-    for (id, score) in remaining {
-        cancellation.check()?;
-        let document = generation.state.collections[collection]
-            .documents
-            .get(id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Unavailable,
-                    "selected archived content requires bounded hydration",
-                )
-            })?;
-        let bytes = pinned_slot_bytes(document)?;
-        charged = charged
-            .checked_add(bytes)
-            .filter(|charged| *charged <= max_cursor_bytes as u64)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "query result exceeds max_cursor_bytes; narrow the filter or use seek paging",
-                )
-            })?;
-        memory.reserve(bytes)?;
-        rows.push(PinnedRow {
-            document: document.clone(),
-            score,
-        });
+    if charged > max_cursor_bytes as u64 {
+        return Err(cursor_budget_exceeded());
     }
+    memory.reserve(charged)?;
+    let (source, source_bytes) = CursorDocuments::capture(
+        generation,
+        collection,
+        (max_cursor_bytes as u64).saturating_sub(charged),
+        memory,
+    )?;
+    charged += source_bytes;
+    let mut rows = Vec::with_capacity(remaining.len());
+    source.visit_versions(
+        collection,
+        remaining,
+        reads,
+        cancellation,
+        |id, score, version, slot_bytes| {
+            let bytes = (id.len() as u64 + 32)
+                .checked_add(slot_bytes)
+                .ok_or_else(query_workspace_overflow)?;
+            charged = charged
+                .checked_add(bytes)
+                .filter(|charged| *charged <= max_cursor_bytes as u64)
+                .ok_or_else(cursor_budget_exceeded)?;
+            memory.reserve(bytes)?;
+            rows.push(PinnedRow {
+                id: id.into(),
+                version,
+                score,
+            });
+            Ok(())
+        },
+    )?;
     let bytes = usize::try_from(charged).map_err(|_| query_workspace_overflow())?;
     Ok((
         PinnedRows {
             rows,
-            generation: Some(generation.clone()),
+            source: Some(source),
             bytes,
         },
         charged,
     ))
 }
 
+fn cursor_budget_exceeded() -> Error {
+    Error::new(
+        ErrorCode::ResourceExhausted,
+        "query result exceeds max_cursor_bytes; narrow the filter or use seek paging",
+    )
+}
+
 fn pinned_slot_bytes(document: &DocumentSlot) -> Result<u64> {
     match document {
         DocumentSlot::Pending(document) => Ok(crate::retained_document_bytes(document)? as u64),
         DocumentSlot::Stored(document) => (std::mem::size_of::<DocumentSlot>() as u64)
-            .checked_add(document.id.len() as u64)
+            .checked_add(std::mem::size_of::<StoredDocument>() as u64)
+            .and_then(|bytes| bytes.checked_add(document.id.len() as u64))
             .and_then(|bytes| bytes.checked_add(128))
             .ok_or_else(query_workspace_overflow),
+        DocumentSlot::Located(_) => Ok(std::mem::size_of::<DocumentSlot>() as u64 + 128),
     }
 }
 
@@ -332,7 +348,11 @@ fn finish_document_read<T>(
     read: impl FnOnce(&DocumentReads) -> Result<T>,
 ) -> Result<T> {
     let result = read(&reads);
-    match (result, reads.finish()) {
+    retire_document_read(result, reads.finish())
+}
+
+fn retire_document_read<T>(result: Result<T>, retirement: anyhow::Result<()>) -> Result<T> {
+    match (result, retirement) {
         (result, Ok(())) => result,
         (Ok(value), Err(error)) => {
             drop(value);
@@ -782,81 +802,73 @@ struct QueryOutput {
 impl QueryWork {
     /// Copy the first page and pin the rest for a cursor, or read one seek page.
     fn run(mut self) -> QueryOutput {
-        if self.request.paging == Paging::Seek {
-            let mut projection_charge = 0;
-            let mut response = self
-                .generation
-                .physical_seek_view(&self.request.collection, |bytes| {
-                    match self.memory.reserve(bytes) {
-                        Ok(()) => {
-                            projection_charge = bytes;
-                            Ok(true)
-                        }
-                        Err(e) if e.code == ErrorCode::ResourceExhausted => Ok(false),
-                        Err(e) => Err(e),
-                    }
-                })
-                .map_err(document_load_error)
-                .and_then(|projected| {
-                    if let Some(projected) = projected {
-                        self.generation = Arc::new(projected);
-                    }
-                    with_document_reads(&self.generation, self.deadline, |reads| {
-                        query_seek::seek_page(
+        let mut charge = 0;
+        let mut response = self
+            .generation
+            .query_worker_view(&self.request, |bytes| match self.memory.reserve(bytes) {
+                Ok(()) => {
+                    charge = bytes;
+                    Ok(true)
+                }
+                Err(error) if error.code == ErrorCode::ResourceExhausted => Ok(false),
+                Err(error) => Err(error),
+            })
+            .map_err(document_load_error)
+            .and_then(|projection| {
+                if let Some(projection) = projection {
+                    self.generation = Arc::new(projection);
+                }
+                with_document_reads(&self.generation, self.deadline, |reads| {
+                    if self.request.paging == Paging::Seek {
+                        return query_seek::seek_page(
                             &self.generation,
                             reads,
                             &self.request,
                             &self.cancellation,
                             &mut self.memory,
                         )
-                    })
-                })
-                .map(|page| (page, PinnedRows::default()));
-            drop(self.generation);
-            if projection_charge > 0
-                && let Err(error) = self.memory.release(projection_charge)
-                && response.is_ok()
-            {
-                response = Err(error);
-            }
-            return QueryOutput {
-                response,
-                request: self.request,
-                memory: self.memory,
-                _registration: self.registration.clone(),
-            };
-        }
-        let generation = &self.generation;
-        let limits = &generation.state.limits;
-        let cancellation = &self.cancellation;
-        let bound = kasumi_query::PageBound {
-            rows: self.request.page_size(),
-            bytes: limits.max_result_bytes,
-        };
-        let response = with_document_reads(generation, self.deadline, |reads| {
-            let source = reads.source(&self.request.collection)?;
-            generation
-                .indexes
-                .execute_page(
-                    &source,
-                    &self.request,
-                    limits,
-                    bound,
-                    cancellation,
-                    &mut self.memory,
-                    |remaining, memory| {
-                        pin_rows(
-                            remaining,
-                            generation,
-                            &self.request.collection,
-                            limits.max_cursor_bytes,
+                        .map(|page| (page, PinnedRows::default()));
+                    }
+                    let generation = &self.generation;
+                    let limits = &generation.state.limits;
+                    let cancellation = &self.cancellation;
+                    let bound = kasumi_query::PageBound {
+                        rows: self.request.page_size(),
+                        bytes: limits.max_result_bytes,
+                    };
+
+                    let source = reads.source(&self.request.collection)?;
+                    generation
+                        .indexes
+                        .execute_page(
+                            &source,
+                            &self.request,
+                            limits,
+                            bound,
                             cancellation,
-                            memory,
+                            &mut self.memory,
+                            |remaining, memory| {
+                                pin_rows(
+                                    remaining,
+                                    generation,
+                                    &self.request.collection,
+                                    reads,
+                                    limits.max_cursor_bytes,
+                                    cancellation,
+                                    memory,
+                                )
+                            },
                         )
-                    },
-                )
-                .map_err(source_read_error)
-        });
+                        .map_err(source_read_error)
+                })
+            });
+        drop(self.generation);
+        if charge > 0
+            && let Err(error) = self.memory.release(charge)
+            && response.is_ok()
+        {
+            response = Err(error);
+        }
         QueryOutput {
             response,
             request: self.request,
@@ -911,29 +923,22 @@ impl QueryResultOwner {
             rows: self.request.page_size(),
             bytes: max_result_bytes,
         };
-        let generation = self.rows.generation.as_ref().ok_or_else(|| {
+        let source = self.rows.source.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::Corruption,
                 "cursor selected generation is missing",
             )
         })?;
-        // Each continuation page opens its own shared view; the cursor
-        // retains only the generation, never a view, between pages.
-        let rows = with_document_reads(generation, deadline, |reads| {
-            kasumi_query::copy_page_from_source(
-                &reads.source(&self.request.collection)?,
-                self.rows.rows[offset.min(self.rows.rows.len())..]
-                    .iter()
-                    .map(|row| (row.document.id(), row.document.version(), row.score)),
-                &self.request.select,
-                bound,
-                cancellation,
-                self.memory
-                    .as_mut()
-                    .expect("query page keeps its operation ledger"),
-            )
-            .map_err(source_read_error)
-        })?;
+        let rows = source.copy_page(
+            &self.request,
+            &self.rows.rows[offset.min(self.rows.rows.len())..],
+            bound,
+            cancellation,
+            deadline,
+            self.memory
+                .as_mut()
+                .expect("query page keeps its operation ledger"),
+        )?;
         Ok(QueryResponse {
             revision,
             rows,
@@ -1371,6 +1376,13 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
 }
 
 impl<'a> ResponseFence<'a> {
+    /// Observe the adapter workspace without extending its lifetime.
+    #[cfg(feature = "test-utils")]
+    pub fn observe_fixture_workspace(&self) -> impl Fn() -> Option<u64> + use<> {
+        let charge = self.workspace.observe_fixture_charge();
+        move || charge().map(|(bytes, _resident)| bytes)
+    }
+
     fn capture(database: ResponseDatabase<'a>, context: &RequestContext) -> Result<Self> {
         Self::capture_workspace(database, context, false)
     }
@@ -2007,6 +2019,8 @@ impl Database {
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {},
                     }
                     let Some(db) = weak.upgrade() else { break };
+                    #[cfg(test)]
+                    let _iteration = db.worker_test_hooks.monitor_iteration.lock().await;
                     // Explicit shutdown stops the idle loop and joins this actual
                     // blocking child before discarding the monitor handle. The work
                     // registration also retains roots if an external actor aborts it.

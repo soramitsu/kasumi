@@ -10,7 +10,7 @@
 mod application_bootstrap;
 pub use application_bootstrap::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
-    ApplicationBootstrapManifest,
+    ApplicationBootstrapManifest, LOCAL_ENROLLMENT_GENESIS_KEY,
 };
 mod archive_keys;
 mod archive_objects;
@@ -83,7 +83,7 @@ pub use storage_opening::{
     NodeStartupPhase, NodeStorageConfig, NodeStorageCreateOptions, NodeTablesBodyError,
     NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow, RegisteredBindingPut,
     RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead, RegisteredNodeStartup,
-    RegisteredNodeTables,
+    RegisteredNodeTables, SHARED_NODE_SNAPSHOT_PINS,
 };
 pub use storage_opening::{NodeWriteReport, RegisteredNodeWrite};
 #[cfg(any(test, feature = "test-utils"))]
@@ -1247,6 +1247,12 @@ pub enum NodeStoreLookup {
 }
 
 impl NodeStoreLocator {
+    /// Compare the installed census and its exact generation without acquiring
+    /// another facade or treating a missing owner as a retirement receipt.
+    pub fn same_owner(&self, other: &Self) -> bool {
+        self.id == other.id && Arc::ptr_eq(&self.provider, &other.provider)
+    }
+
     pub fn try_borrow(&self) -> NodeStoreLookup {
         // The actual census implementation must distinguish metadata contention
         // from absent generation; both remain distinct from retirement receipts.
@@ -1274,6 +1280,13 @@ pub struct NodeRetirement {
 }
 
 impl NodeRetirement {
+    pub fn locator(&self) -> NodeStoreLocator {
+        NodeStoreLocator {
+            id: self.id,
+            provider: self.provider.clone(),
+        }
+    }
+
     pub fn id(&self) -> StorageOwnerId {
         self.id
     }
@@ -1397,7 +1410,7 @@ impl NodeStore {
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
@@ -2432,16 +2445,21 @@ impl TenantStore {
 
     pub fn check_access(&self) -> Result<()> {
         let state = self.state.read();
-        if self.valid(&state) {
+        let access = self.access.check();
+        if access.is_ok() && self.keys_valid(&state) {
             return Ok(());
         }
-        // An unsealed lease past its deadline expired without a successful
-        // probe. An explicit seal or shutdown is not a lease failure.
+        // Preserve the gate that failed on this access before sealing the
+        // cached keys. An explicit seal or shutdown has its own cause.
         if !state.sealed
             && !self.shutdown_requested.load(Ordering::Acquire)
-            && self.clock.now() >= state.deadline
+            && self.access_epoch.load(Ordering::Acquire) & 1 == 0
         {
-            self.lease_failed(LeaseFailure::LeaseExpired);
+            if access.is_err() {
+                self.lease_failed(LeaseFailure::AccessRevoked);
+            } else if self.clock.now() >= state.deadline {
+                self.lease_failed(LeaseFailure::LeaseExpired);
+            }
         }
         drop(state);
         self.seal();
@@ -2467,9 +2485,8 @@ impl TenantStore {
             .and_then(|index| LEASE_FAILURE_CLASSES.get(index).copied())
     }
 
-    fn valid(&self, state: &KeyState) -> bool {
-        self.access.check().is_ok()
-            && !self.shutdown_requested.load(Ordering::Acquire)
+    fn keys_valid(&self, state: &KeyState) -> bool {
+        !self.shutdown_requested.load(Ordering::Acquire)
             && self.access_epoch.load(Ordering::Acquire) & 1 == 0
             && !state.sealed
             && !state.keys.is_empty()
@@ -2477,7 +2494,7 @@ impl TenantStore {
     }
 
     fn require_access(&self, state: &KeyState) -> Result<()> {
-        if self.valid(state) {
+        if self.access.check().is_ok() && self.keys_valid(state) {
             Ok(())
         } else {
             Err(KeyAccessDenied::new().into())
@@ -3140,10 +3157,7 @@ fn validate_batch(domains: &[&[WriteOp]]) -> Result<()> {
 /// writable TenantStore. A repeated, byte-identical first-install write is a
 /// no-op so interrupted chunk publication can resume after an unknown commit.
 pub(crate) fn is_write_once_identity(namespace: &str, key: &[u8]) -> bool {
-    namespace == "engine.bootstrap"
-        || (namespace == "engine.deployment" && key == b"mode")
-        || (namespace == "raft.meta"
-            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+    namespace == "engine.bootstrap" || is_paired_identity(namespace, key)
 }
 
 pub(crate) fn is_initial_identity_namespace(namespace: &str) -> bool {
@@ -3157,7 +3171,13 @@ pub(crate) fn is_paired_identity(namespace: &str, key: &[u8]) -> bool {
     (namespace == "engine.deployment" && key == b"mode")
         || (namespace == "engine.bootstrap" && key == b"manifest")
         || (namespace == "raft.meta"
-            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+            && matches!(
+                key,
+                b"application_bootstrap_sha256"
+                    | b"node_id"
+                    | b"group"
+                    | LOCAL_ENROLLMENT_GENESIS_KEY
+            ))
 }
 
 pub(crate) fn reject_unpaired_identity_ops(operations: &[WriteOp]) -> Result<()> {

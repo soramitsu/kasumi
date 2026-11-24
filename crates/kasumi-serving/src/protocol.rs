@@ -129,6 +129,17 @@ pub struct LeaseDiscovery {
     pub node: NodeIdentity,
     pub purpose: LeasePurpose,
 }
+/// Opt-in discovery reports a permanent negative observation only for the
+/// enrolled node and incarnation. Neither variant is a serving capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum LeaseDiscoveryObservation {
+    Serving(ServingIdentity),
+    Fenced { fenced: LeaseDiscovery },
+}
+
+pub const DISCOVERY_FENCE_METADATA: &str = "kasumi-discover-fenced-incarnation";
+
 impl LeaseDiscovery {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.tenant)?;

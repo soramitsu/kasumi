@@ -11,8 +11,82 @@ use kasumi_types::{Operation, RequestContext, validate_name};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::recovery_runtime::{
+    ControlRecoveryCoordinator,
+    phase_callbacks::{Observation, PhaseCallback},
+};
 pub use kasumi_client::proto;
 use proto::*;
+
+fn callback_peer<T>(request: &Request<T>) -> Result<[u8; 32], Status> {
+    request
+        .extensions()
+        .get::<crate::tls::AuthenticatedTlsPeer>()
+        .and_then(|peer| peer.certificate_pin())
+        .ok_or_else(|| Status::unauthenticated("target observation requires authenticated TLS"))
+}
+
+fn phase_reader(
+    coordinator: Option<&ControlRecoveryCoordinator>,
+    reader: &RequestContext,
+    peer: &[u8; 32],
+    observation: Observation,
+) -> kasumi_types::Result<Option<Arc<PhaseCallback>>> {
+    if reader.scopes.contains(&kasumi_types::Action::Admin) {
+        return Ok(None);
+    }
+    let coordinator = coordinator.ok_or_else(|| {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "target observation coordinator unavailable",
+        )
+    })?;
+    if let Some(active) =
+        coordinator
+            .phase_callbacks
+            .find(reader, peer, observation, &coordinator.database)?
+    {
+        return Ok(Some(active));
+    }
+    if let Observation::Intent(command) = observation
+        && let Some(active) = coordinator.phase_callbacks.find_replica_start_reader(
+            reader,
+            peer,
+            command,
+            &coordinator.database,
+        )?
+    {
+        return Ok(Some(active));
+    }
+    if !matches!(observation, Observation::Writer(_))
+        && let Some(active) =
+            coordinator
+                .deletion_observers
+                .find(reader, peer, observation, &coordinator.database)?
+    {
+        return Ok(Some(active));
+    }
+    Err(kasumi_types::Error::new(
+        kasumi_types::ErrorCode::Unavailable,
+        kasumi_types::INACTIVE_TARGET_CALLBACK_REASON,
+    ))
+}
+
+// Only an explicit absence from the local dispatch registry carries this
+// marker. A quorum, network, credential or service failure has no such proof.
+fn phase_reader_status(error: kasumi_types::Error) -> tonic::Status {
+    let inactive = error.code == kasumi_types::ErrorCode::Unavailable
+        && error.message == kasumi_types::INACTIVE_TARGET_CALLBACK_REASON;
+    let mut reply = status(error);
+    if inactive {
+        reply.metadata_mut().insert(
+            kasumi_types::INACTIVE_TARGET_CALLBACK_HEADER,
+            tonic::metadata::MetadataValue::from_static("1"),
+        );
+    }
+    reply
+}
+
 #[path = "rpc_lifecycle.rs"]
 mod lifecycle;
 #[path = "rpc_recovery.rs"]

@@ -24,6 +24,8 @@ async fn add_remove_voter() -> Result<()> {
     let config = Arc::new(
         Config {
             enable_heartbeat: false,
+            // The asserted indexes count membership and client entries in one leader term.
+            enable_elect: false,
             ..Default::default()
         }
         .validate()?,
@@ -63,6 +65,8 @@ async fn add_remove_voter() -> Result<()> {
         assert!(x[4].last_log_index < Some(log_index - 50));
     }
 
+    // A removed voter that missed the final configuration may now campaign.
+    router.get_raft_handle(&4)?.runtime_config().elect(true);
     router
         .wait(&4, timeout())
         .metrics(

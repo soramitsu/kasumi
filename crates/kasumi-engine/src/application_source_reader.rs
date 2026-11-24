@@ -119,6 +119,64 @@ impl SelectedApplication {
             u64,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
+        self.with_base_snapshot_boundary(shared, &SnapshotBoundary::<&str>::from(state), read)
+    }
+
+    pub(crate) fn verified_feed_end(&self, base: u64, revision: u64) -> Option<u64> {
+        let &(seen_base, seen_revision, end) = self.cell.verified_feed.get()?;
+        ((base, revision) == (seen_base, seen_revision)).then_some(end)
+    }
+
+    /// Read the selected snapshot even when a previous page has proved its
+    /// extent. Only the extent is reusable; access and the rows are checked
+    /// on the reader's own view for every page.
+    pub(crate) fn with_snapshot_feed<T>(
+        &self,
+        state: &SnapshotBoundary<impl AsRef<str>>,
+        next_sequence: u64,
+        read: impl FnOnce(crate::application_records::SnapshotFeed<'_, '_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let result = self
+            .with_base_snapshot_boundary(None, state, |tree, memory, _, revision| {
+                let Some(feed) = crate::application_records::SnapshotFeed::open(
+                    tree,
+                    memory,
+                    revision,
+                    state.revision,
+                    next_sequence,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let extent = (state.revision_base, state.revision, feed.end_sequence);
+                ensure!(
+                    *self.cell.verified_feed.get_or_init(|| extent) == extent,
+                    "selected snapshot change-feed extent differs"
+                );
+                read(feed).map(Some)
+            })?
+            .flatten();
+        ensure!(
+            result.is_some()
+                || self
+                    .verified_feed_end(state.revision_base, state.revision)
+                    .is_none(),
+            "previously selected snapshot change feed is missing"
+        );
+        Ok(result)
+    }
+
+    pub(crate) fn with_base_snapshot_boundary<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &SnapshotBoundary<impl AsRef<str>>,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
+            u64,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
         let Some(position) = self.serving_position() else {
             return Ok(None);
         };
@@ -135,13 +193,13 @@ impl SelectedApplication {
             else {
                 return Ok(None);
             };
+            let memory = kasumi_store::ordered_pages::PageSource::memory(view);
             let tree = kasumi_store::ordered_pages::TreeReader::new(
                 view,
                 &manifest.page_space,
                 manifest.records,
-                None,
+                shared.map(|read| read.directory_pages(&memory)),
             )?;
-            let memory = kasumi_store::ordered_pages::PageSource::memory(view);
             read(&tree, &memory, manifest.layout_epoch, manifest.revision).map(Some)
         })
     }
@@ -155,7 +213,7 @@ impl SelectedApplication {
     fn base_snapshot_manifest_at(
         position: &Position,
         view: &TenantStorageReadView,
-        state: &kasumi_types::TenantState,
+        state: &SnapshotBoundary<impl AsRef<str>>,
         roots: &SourceRoots,
     ) -> Result<Option<kasumi_store::application_manifest::ApplicationManifest>> {
         use kasumi_raft::SelectedAppliedRef;
@@ -204,8 +262,8 @@ impl SelectedApplication {
                         snapshot.meta,
                         snapshot.backend_sha256
                     )?
-                    && manifest.tenant == state.tenant
-                    && manifest.incarnation == state.incarnation
+                    && manifest.tenant == state.tenant.as_ref()
+                    && manifest.incarnation == state.incarnation.as_ref()
                     && manifest.revision_base == state.revision_base
                     && manifest.revision == snapshot_revision
                     && (snapshot_revision < state.revision
@@ -241,16 +299,41 @@ impl SelectedApplication {
             u32,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
-        if self.has_exact_snapshot(state.revision_base, state.revision) {
-            return self.with_snapshot_records(shared, state, read);
+        self.with_primary_boundary(shared, &SnapshotBoundary::<&str>::from(state), read)
+    }
+
+    pub(crate) fn with_primary_boundary<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &SnapshotBoundary<impl AsRef<str>>,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
+        let mut has_headers = true;
+        let result = if self.has_exact_snapshot(state.revision_base, state.revision) {
+            self.with_base_snapshot_boundary(shared, state, |tree, memory, layout, _| {
+                has_headers = layout >= DOCUMENT_HEADERS_LAYOUT;
+                read(tree, memory, layout)
+            })
+        } else {
+            self.with_current_primary(shared, state, |tree, memory| {
+                read(tree, memory, DOCUMENT_HEADERS_LAYOUT)
+            })
+        }?;
+        if result.is_some() && has_headers {
+            self.cell
+                .verified_primary
+                .get_or_init(|| (state.revision_base, state.revision));
         }
-        self.with_primary_records(shared, state, |tree, memory| {
-            read(
-                tree,
-                memory,
-                kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT,
-            )
-        })
+        Ok(result)
+    }
+
+    pub(crate) fn served_primary_at(&self, base: u64, revision: u64) -> bool {
+        self.cell.verified_primary.get() == Some(&(base, revision))
     }
 
     /// Lend the ordinary primary directory this selection pinned, only when it
@@ -263,6 +346,18 @@ impl SelectedApplication {
         &self,
         shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.with_current_primary(shared, &SnapshotBoundary::<&str>::from(state), read)
+    }
+
+    fn with_current_primary<T>(
+        &self,
+        shared: Option<&crate::document_store::SelectedRead>,
+        state: &SnapshotBoundary<impl AsRef<str>>,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
             &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
@@ -297,25 +392,34 @@ impl SelectedApplication {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned primary view");
-            let Some(manifest) = self.current_primary_manifest(view, state)? else {
+            let Some(manifest) = self.current_primary_manifest(shared, view, state)? else {
                 return Ok(None);
             };
-            let tree =
-                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
+            let tree = TreeReader::new(
+                view.as_ref(),
+                &manifest.page_space,
+                manifest.records,
+                shared.map(|read| read.directory_pages(&memory)),
+            )?;
             read(&tree, &memory).map(Some)
         })
     }
 
     /// Both primary point readers and text shard version checks use this
     /// manifest on the same immutable paired source as their data.
-    fn current_primary_manifest(
+    fn current_primary_manifest<'r>(
         &self,
+        shared: Option<&'r crate::document_store::SelectedRead>,
         view: &kasumi_store::TenantStorageReadView,
-        state: &kasumi_types::TenantState,
-    ) -> Result<Option<kasumi_store::primary_manifest::PrimaryManifest>> {
+        state: &SnapshotBoundary<impl AsRef<str>>,
+    ) -> Result<Option<std::borrow::Cow<'r, kasumi_store::primary_manifest::PrimaryManifest>>> {
         use kasumi_store::primary_manifest::PrimaryManifest;
-        let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+        let manifest = match shared {
+            Some(read) => read.primary_manifest(view)?,
+            None => PrimaryManifest::load_from_pair(view)?.map(std::borrow::Cow::Owned),
+        };
+        let Some(manifest) = manifest else {
             return Ok(None);
         };
         if !manifest.is_current()
@@ -325,7 +429,7 @@ impl SelectedApplication {
             return Ok(None);
         }
         ensure!(
-            manifest.incarnation == state.incarnation
+            manifest.incarnation == state.incarnation.as_ref()
                 && manifest.revision_base == state.revision_base
                 && manifest.document_count == state.document_count
                 && manifest.logical_bytes == state.logical_bytes,
@@ -344,7 +448,9 @@ impl SelectedApplication {
     ) -> Result<Option<(String, kasumi_store::ordered_pages::TreeRoot)>> {
         use kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT;
         use kasumi_store::ordered_pages::{PageSource, TreeReader};
-        if let Some(primary) = self.current_primary_manifest(view, state)? {
+        let boundary = SnapshotBoundary::<&str>::from(state);
+        if let Some(primary) = self.current_primary_manifest(None, view, &boundary)? {
+            let primary = primary.into_owned();
             return Ok(Some((primary.page_space, primary.records)));
         }
         let Some(position) = self.serving_position() else {
@@ -355,7 +461,7 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected text installation absent")?;
-        let Some(base) = Self::base_snapshot_manifest_at(position, view, state, &roots)? else {
+        let Some(base) = Self::base_snapshot_manifest_at(position, view, &boundary, &roots)? else {
             return Ok(None);
         };
         if base.layout_epoch < DOCUMENT_HEADERS_LAYOUT {

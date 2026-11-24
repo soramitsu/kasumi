@@ -1189,6 +1189,11 @@ fn validate_paired_initial_identity(application: &[WriteOp], custody: &[WriteOp]
     let digest = initial_identity_put(custody, "raft.meta", b"application_bootstrap_sha256")?;
     let node_id = initial_identity_put(custody, "raft.meta", b"node_id")?;
     let group = initial_identity_put(custody, "raft.meta", b"group")?;
+    let enrollment = initial_identity_put(custody, "raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY)?;
+    ensure!(
+        enrollment.is_none_or(|bytes| bytes.len() == 32 && manifest.is_some()),
+        "standalone enrollment receipt requires its initial bootstrap publication"
+    );
     ensure!(
         manifest.is_some() == digest.is_some(),
         "initial bootstrap manifest requires a paired custody digest"
@@ -1206,7 +1211,9 @@ fn validate_paired_initial_identity(application: &[WriteOp], custody: &[WriteOp]
             && initial_identity_put(application, "raft.meta", b"application_bootstrap_sha256")?
                 .is_none()
             && initial_identity_put(application, "raft.meta", b"node_id")?.is_none()
-            && initial_identity_put(application, "raft.meta", b"group")?.is_none(),
+            && initial_identity_put(application, "raft.meta", b"group")?.is_none()
+            && initial_identity_put(application, "raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY)?
+                .is_none(),
         "initial bootstrap identity uses the wrong storage domain"
     );
     Ok(())
@@ -1293,6 +1300,30 @@ fn check_paired_initial_identity_state(
         )?;
         let node = initial_identity_present(tx, custody, "raft.meta", b"node_id", 32)?;
         let group = initial_identity_present(tx, custody, "raft.meta", b"group", 4096)?;
+        if manifest_write {
+            let original_receipt = initial_identity_present(
+                tx,
+                custody,
+                "raft.meta",
+                LOCAL_ENROLLMENT_GENESIS_KEY,
+                32,
+            )?;
+            let receipt_write =
+                initial_identity_put(custody_ops, "raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY)?
+                    .is_some();
+            ensure!(
+                (!original_receipt || app) && (!app || original_receipt == receipt_write),
+                "standalone enrollment receipt cannot be attached or omitted after genesis"
+            );
+            ensure!(
+                !receipt_write
+                    || matches!(
+                        application.storage_access().purpose(),
+                        StoragePurpose::Standalone { .. }
+                    ),
+                "standalone enrollment receipt requires an installed standalone pair"
+            );
+        }
         ensure!(
             app == peer && node == group && (!app || node),
             "initial bootstrap and raft identity is only partially installed"

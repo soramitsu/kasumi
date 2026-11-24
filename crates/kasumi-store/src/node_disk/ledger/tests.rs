@@ -8,9 +8,9 @@ fn file(binding: u8) -> AccountedFile {
 fn directory(binding: u8, parent: Option<Identity>) -> AccountedDirectory {
     AccountedDirectory {
         binding: NamespaceBinding([binding; 32]),
-        parent,
+        parent_inode: parent.map(|parent| parent.1),
         bytes: 8192,
-        pending: 0,
+        allocation: super::super::census::DirectoryAllocation::default(),
         settled: true,
         len: 24,
         children: 3,

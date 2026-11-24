@@ -420,3 +420,21 @@ fn cancellation_is_checked_before_lending_and_after_the_callback() {
         matches!(result, Err(ReadFailure::Query(error)) if error.code == ErrorCode::Forbidden && error.message == "callback rejected")
     );
 }
+
+#[test]
+fn primary_read_keeps_a_native_owner_even_when_it_carries_a_query_deadline() {
+    let interruption =
+        ReadFailure::<std::convert::Infallible>::Query(DocumentReads::deadline_error());
+    let failure = std::io::Error::new(std::io::ErrorKind::BrokenPipe, interruption);
+    let ReadFailure::Source(original) = primary_read_failure(anyhow::Error::new(failure)) else {
+        panic!("native failure was reported as an operation deadline");
+    };
+    let owner = original.0.downcast::<std::io::Error>().unwrap();
+    assert_eq!(owner.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(
+        owner
+            .get_ref()
+            .unwrap()
+            .is::<ReadFailure<std::convert::Infallible>>()
+    );
+}

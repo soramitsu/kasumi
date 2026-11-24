@@ -15,14 +15,12 @@ Options:
       compacts earlier and needs less free disk at the peak of a cycle; a
       higher one rewrites less often.
   --local-snapshot-archive <reference|embedded>
-      How a standalone group stores its own snapshots (default reference).
+      How a standalone group writes new snapshots (default reference).
       reference: the snapshot names the tenant audit archive chain this node
         already keeps under tenant-audit-archives/ (format KASUMIL1), so each
         snapshot holds only the tenant's logical state.
       embedded: every snapshot carries a full copy of that archive chain
-        (format KASUMID1), the only form releases before KASUMIL1 can reopen.
-        Before installing such a release, serve once with embedded and wait
-        until every tenant serves: each by-reference snapshot is rewritten.
+        (format KASUMID1).
   -h, --help
       Print this help.";
 
@@ -63,7 +61,7 @@ pub enum ServeCommand {
 
 /// The engine's process default for this invocation: `serve` stores the form
 /// its option names (by reference unless `embedded`); every other command keeps
-/// each tenant's stored form and converts nothing.
+/// the form it opened for each tenant.
 pub fn process_snapshot_archive(
     serve: Option<&ServeOptions>,
 ) -> kasumi_engine::LocalSnapshotArchive {

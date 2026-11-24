@@ -133,7 +133,10 @@ fn search_at(
         &manifest,
         &state.collections["docs"].definition,
         |id, version| Ok(live_version(&state.collections["docs"], id) == Some(version)),
-        admission,
+        (
+            admission,
+            &TextStop::new(&QueryCancellation::default(), None),
+        ),
         |shards| {
             search_text_shards(
                 shards,
@@ -235,7 +238,7 @@ fn next(previous: &TenantState, put: &[(&str, &str)], remove: &[&str]) -> (Tenan
 }
 
 fn stored(id: &str, version: u64) -> Arc<DocumentSlot> {
-    Arc::new(DocumentSlot::Stored(StoredDocument {
+    Arc::new(DocumentSlot::stored_descriptor(StoredDocument {
         id: id.into(),
         version,
         body_bytes: 10,
@@ -249,12 +252,51 @@ fn stored(id: &str, version: u64) -> Arc<DocumentSlot> {
 }
 
 #[test]
+fn expanded_unicode_text_cuts_the_persisted_shard_at_its_normalized_byte_limit() {
+    use kasumi_store::test_utils::TestDiskMemory;
+    let layout = TextShardLayout::for_definition(&definition("/title")).unwrap();
+    let memory = TestDiskMemory::new(32 << 20, 1);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let title = "㍿ ".repeat(4096);
+    let normalized_bytes = ("株式会社 ".len() * 4096) as u64;
+    let first_shard = CUT_TEXT_BYTES.div_ceil(normalized_bytes) as u32;
+    let documents: Vec<_> = (0..=first_shard)
+        .map(|n| {
+            let id = format!("doc-{n:03}");
+            let slot = DocumentSlot::Pending(Arc::new(Document {
+                id: id.clone(),
+                version: 1,
+                body: json!({"title": title}),
+            }));
+            (id, slot)
+        })
+        .collect();
+    let mut sizes = Vec::new();
+    build_shards(
+        &provider,
+        &layout,
+        "docs",
+        documents.iter().map(|(id, slot)| (id.as_str(), slot)),
+        &ResolverBodies(None),
+        |shard| {
+            sizes.push(shard.documents);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(sizes, [first_shard, 1]);
+    assert_eq!(memory.snapshot().used_bytes, 0);
+}
+
+#[test]
 fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
     use kasumi_store::test_utils::TestDiskMemory;
     struct FailAtBody<'a>(&'a TestDiskMemory, u64);
     impl TextBodies for FailAtBody<'_> {
         fn with_body(
             &self,
+            _: &str,
+            _: &str,
             _: &DocumentSlot,
             _: &mut dyn FnMut(&Document) -> Result<()>,
         ) -> Result<()> {
@@ -274,6 +316,7 @@ fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
         build_shards(
             &provider,
             &layout,
+            "docs",
             std::iter::empty(),
             &bodies,
             |_| unreachable!(),
@@ -283,6 +326,7 @@ fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
         let error = build_shards(
             &provider,
             &layout,
+            "docs",
             [("one", slot.as_ref())].into_iter(),
             &bodies,
             |_| unreachable!(),
@@ -858,5 +902,293 @@ async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
     assert!(!failed.is_current());
     assert_eq!(failed.revision, unreadable.revision);
     assert_eq!(failed.shards, 0);
+    fixture.close().await;
+}
+
+// --- Request cancellation through a selected persisted directory ---------
+
+/// Every row the search reads through a pinned selected view, counted.
+struct CountingSource<'v> {
+    view: &'v kasumi_store::TenantReadView,
+    reads: std::cell::Cell<u64>,
+}
+impl PageSource for CountingSource<'_> {
+    fn check_access(&self) -> Result<()> {
+        PageSource::check_access(self.view)
+    }
+    fn read_row(
+        &self,
+        space: &str,
+        key: &[u8],
+        max_bytes: usize,
+    ) -> Result<Option<kasumi_store::ordered_pages::PageRow>> {
+        self.reads.set(self.reads.get() + 1);
+        PageSource::read_row(self.view, space, key, max_bytes)
+    }
+    fn memory(&self) -> Arc<dyn kasumi_store::NodeDiskMemoryAdmission> {
+        PageSource::memory(self.view)
+    }
+    fn domain(&self) -> &str {
+        PageSource::domain(self.view)
+    }
+}
+
+/// A selected directory of several level-0 shards: one document each.
+fn sharded(fixture: &Fixture, shards: usize) -> TenantState {
+    let s0 = genesis();
+    let (mut state, changed) = next(&s0, &[("a0", "alpha0 shared")], &[]);
+    fixture.publish(&s0, &state, &changed).unwrap();
+    for i in 1..shards {
+        let (id, title) = (format!("a{i}"), format!("alpha{i} shared"));
+        let (following, changed) = next(&state, &[(id.as_str(), title.as_str())], &[]);
+        fixture.publish(&state, &following, &changed).unwrap();
+        state = following;
+    }
+    assert_eq!(fixture.descriptor("docs").shards, shards as u64);
+    state
+}
+
+const SHARDS: usize = FANIN - 2;
+
+/// The native directory entry for "docs" at `state`, under `token`.
+fn collection_search<T>(
+    tree: &TreeReader<'_>,
+    source: &dyn PageSource,
+    manifest: &TextManifest,
+    state: &TenantState,
+    admission: &Arc<NodeAdmission>,
+    token: &QueryCancellation,
+    search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> kasumi_types::Result<T>,
+) -> Result<kasumi_types::Result<T>> {
+    let collection = &state.collections["docs"];
+    search_collection(
+        tree,
+        source,
+        manifest,
+        &collection.definition,
+        |id, version| Ok(live_version(collection, id) == Some(version)),
+        (admission, &TextStop::new(token, None)),
+        search,
+    )
+}
+
+fn cancelled() -> QueryCancellation {
+    let token = QueryCancellation::default();
+    token.cancel();
+    token
+}
+
+#[tokio::test]
+async fn a_cancelled_request_reads_no_selected_text_directory_page() {
+    let fixture = Fixture::new().await;
+    let state = sharded(&fixture, SHARDS);
+    let admission = &fixture.storage.admission;
+    let view = fixture.store.read_view().unwrap();
+    let manifest = TextManifest::load_at(&view).unwrap().unwrap();
+    let counting = CountingSource {
+        view: &view,
+        reads: Default::default(),
+    };
+    let tree = TreeReader::new(&counting, &manifest.page_space, manifest.records, None).unwrap();
+    let token = cancelled();
+    let outcome = collection_search(
+        &tree,
+        &counting,
+        &manifest,
+        &state,
+        admission,
+        &token,
+        |set| search_text_shards(set, &TextSearch::new("text", "shared"), 100, &token),
+    )
+    .expect("cancellation is not a storage failure");
+    let error = outcome.expect_err("a cancelled request returns its query error");
+    assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted);
+    assert_eq!(
+        counting.reads.get(),
+        0,
+        "the level census read the directory after the request was cancelled"
+    );
+    drop(tree);
+    view.close().unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_request_tripped_mid_search_opens_no_further_shard() {
+    let fixture = Fixture::new().await;
+    let state = sharded(&fixture, SHARDS);
+    let admission = &fixture.storage.admission;
+    let view = fixture.store.read_view().unwrap();
+    let manifest = TextManifest::load_at(&view).unwrap().unwrap();
+    let counting = CountingSource {
+        view: &view,
+        reads: Default::default(),
+    };
+    let tree = TreeReader::new(&counting, &manifest.page_space, manifest.records, None).unwrap();
+    let token = QueryCancellation::default();
+    let mut late_visits = 0;
+    let mut late_reads = None;
+    let outcome = collection_search(
+        &tree,
+        &counting,
+        &manifest,
+        &state,
+        admission,
+        &token,
+        |set| {
+            assert_eq!(set.shard_count(), SHARDS);
+            set.with_shard(0, &mut |_| Ok(()))?;
+            // The public waiter gives up: its drop cancels the shared token.
+            token.cancel();
+            let before = counting.reads.get();
+            // A nonsequential ordinal would traverse levels and open a shard.
+            let late = set.with_shard(SHARDS - 1, &mut |_| {
+                late_visits += 1;
+                Ok(())
+            });
+            late_reads = Some(counting.reads.get() - before);
+            late
+        },
+    )
+    .expect("cancellation is not a storage failure");
+    assert_eq!(late_reads, Some(0), "a tripped request kept reading");
+    assert_eq!(late_visits, 0, "a tripped request opened another shard");
+    let error = outcome.expect_err("a tripped request returns its query error");
+    assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted);
+    drop(tree);
+    view.close().unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_live_request_completes_and_a_retained_generation_keeps_its_rows() {
+    let fixture = Fixture::new().await;
+    let state = sharded(&fixture, SHARDS);
+    let admission = &fixture.storage.admission;
+    let token = QueryCancellation::default();
+    let search = |view: &kasumi_store::TenantReadView, state: &TenantState| {
+        let manifest = TextManifest::load_at(view).unwrap().unwrap();
+        let tree = TreeReader::new(view, &manifest.page_space, manifest.records, None).unwrap();
+        let mut opened = 0;
+        let hits = collection_search(&tree, view, &manifest, state, admission, &token, |set| {
+            for shard in 0..set.shard_count() {
+                set.with_shard(shard, &mut |_| {
+                    opened += 1;
+                    Ok(())
+                })?;
+            }
+            search_text_shards(set, &TextSearch::new("text", "shared"), 100, &token)
+        })
+        .unwrap()
+        .unwrap();
+        (opened, hits.into_keys().collect::<Vec<_>>())
+    };
+    let expected: Vec<String> = (0..SHARDS).map(|i| format!("a{i}")).collect();
+    let pinned = fixture.store.read_view().unwrap();
+    assert_eq!(search(&pinned, &state), (SHARDS, expected.clone()));
+
+    // Later publications merge the pinned shards away in the current tree.
+    let mut later = state.clone();
+    for i in SHARDS..SHARDS + 4 {
+        let (id, title) = (format!("a{i}"), format!("alpha{i} shared"));
+        let (following, changed) = next(&later, &[(id.as_str(), title.as_str())], &[]);
+        fixture.publish(&later, &following, &changed).unwrap();
+        later = following;
+    }
+    assert!(fixture.descriptor("docs").shards < (SHARDS + 4) as u64);
+    let current = fixture.store.read_view().unwrap();
+    let all: Vec<String> = (0..SHARDS + 4).map(|i| format!("a{i}")).collect();
+    assert_eq!(search(&current, &later).1, all);
+    current.close().unwrap();
+    // The retained generation still searches exactly its own shards.
+    assert_eq!(search(&pinned, &state), (SHARDS, expected));
+    pinned.close().unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn storage_failures_keep_their_original_error_under_a_live_request() {
+    let fixture = Fixture::new().await;
+    let state = sharded(&fixture, SHARDS);
+    let admission = &fixture.storage.admission;
+    let manifest = fixture.current();
+    let (level, seq) = {
+        let tree = TreeReader::new(
+            &*fixture.store,
+            &manifest.page_space,
+            manifest.records,
+            None,
+        )
+        .unwrap();
+        *shard_levels(&tree, "docs").unwrap().last().unwrap()
+    };
+    let file = {
+        let tree = TreeReader::new(
+            &*fixture.store,
+            &manifest.page_space,
+            manifest.records,
+            None,
+        )
+        .unwrap();
+        let descriptor: ShardDescriptor = read(&tree, &shard_key("docs", seq)).unwrap().unwrap();
+        file_key("docs", seq, &descriptor.files[0].0)
+    };
+    // Alternative roots over the same selected space: their new pages are
+    // written, the selected tree keeps every page it names.
+    let damaged = |key: &[u8]| {
+        let (root, writes, _workspace) = kasumi_store::ordered_pages::edit_tree(
+            &*fixture.store,
+            &manifest.page_space,
+            &manifest.records,
+            &[kasumi_store::ordered_pages::Edit::Delete(key)],
+        )
+        .unwrap()
+        .into_parts();
+        let puts: Vec<_> = writes
+            .into_iter()
+            .filter(|write| matches!(write, WriteOp::Put { .. }))
+            .collect();
+        fixture.store.write_batch(&puts).unwrap();
+        root
+    };
+    let token = QueryCancellation::default();
+    let missing_file = damaged(&file);
+    let missing_level = damaged(&level_key("docs", level, seq));
+    let view = fixture.store.read_view().unwrap();
+
+    // A shard whose file is gone fails with that original storage error,
+    // whatever the search closure returns.
+    let tree = TreeReader::new(&view, &manifest.page_space, missing_file, None).unwrap();
+    let error = collection_search(&tree, &view, &manifest, &state, admission, &token, |set| {
+        let _ = set.with_shard(SHARDS - 1, &mut |_| Ok(()));
+        Ok(())
+    })
+    .expect_err("a missing shard file is a storage failure");
+    assert!(
+        format!("{error:#}").contains("text shard file missing"),
+        "{error:#}"
+    );
+
+    // A level index that disagrees with its descriptor is corruption.
+    let tree = TreeReader::new(&view, &manifest.page_space, missing_level, None).unwrap();
+    let error = collection_search(&tree, &view, &manifest, &state, admission, &token, |_| {
+        Ok(())
+    })
+    .expect_err("a short level census is a storage failure");
+    assert!(
+        format!("{error:#}").contains("text directory shard count differs"),
+        "{error:#}"
+    );
+
+    // The intact selected tree still answers.
+    let tree = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
+    let hits = collection_search(&tree, &view, &manifest, &state, admission, &token, |set| {
+        search_text_shards(set, &TextSearch::new("text", "alpha3"), 100, &token)
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(hits.into_keys().collect::<Vec<_>>(), ["a3"]);
+    drop(tree);
+    view.close().unwrap();
     fixture.close().await;
 }

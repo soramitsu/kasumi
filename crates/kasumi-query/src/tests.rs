@@ -75,6 +75,53 @@ fn run(
 }
 
 #[test]
+fn plain_indexed_page_shares_only_the_ordered_ids() {
+    let rows = collection(
+        definition(&[("/n", ScalarType::Number)]),
+        vec![json!({"n": 3}), json!({"n": 1}), json!({"n": 2})],
+    );
+    let original = QueryIndexes::build_fixture(&rows).unwrap();
+    let request = request();
+    let worker = original
+        .for_query_collection_with_primary(&request, || panic!("already holds indexed IDs"))
+        .unwrap();
+    let before = &original.collections["docs"].structured;
+    let after = &worker.collections["docs"].structured;
+    assert!(!before.fields.is_empty());
+    assert!(after.fields.is_empty() && after.ids.ptr_eq(&before.ids));
+    assert_eq!(
+        worker.structured_layout_sha256(),
+        original.structured_layout_sha256()
+    );
+    let limits = Limits::default();
+    assert_eq!(
+        worker.execute_fixture(&rows, &request, &limits).unwrap(),
+        original.execute_fixture(&rows, &request, &limits).unwrap()
+    );
+    let strict = Limits {
+        max_query_candidates: 2,
+        ..limits
+    };
+    assert_eq!(
+        worker
+            .execute_fixture(&rows, &request, &strict)
+            .unwrap_err(),
+        original
+            .execute_fixture(&rows, &request, &strict)
+            .unwrap_err()
+    );
+
+    let sorted = request.sort_desc("/n");
+    let worker = original
+        .for_query_collection_with_primary(&sorted, || panic!("sorted query uses field postings"))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &worker.collections["docs"],
+        &original.collections["docs"]
+    ));
+}
+
+#[test]
 fn indexed_boolean_filters_match_independent_reference_evaluator() {
     let collections = collection(definition(&[("/n", ScalarType::Number), ("/tag", ScalarType::String), ("/tags", ScalarType::StringArray)]),
         (0..180).map(|i| json!({"n":i % 37, "tag":if i % 3 == 0 { "a" } else { "b" }, "tags":[format!("{}",i % 4)]})).collect());
@@ -2079,7 +2126,7 @@ fn selective_equality_checks_range_survivors_and_preserves_index_only_planning()
         )
         .unwrap();
     assert_eq!(
-        matched.iter().map(String::as_str).collect::<Vec<_>>(),
+        matched.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["500"]
     );
     // The one prepared range is evaluated on the one equality survivor.
@@ -2138,4 +2185,71 @@ fn selective_equality_checks_range_survivors_and_preserves_index_only_planning()
                 .is_empty()
         );
     }
+}
+
+#[test]
+fn schema_only_replacement_shares_structured_owners_and_checks_changed_rows() {
+    let mut def = definition(&[("/key", ScalarType::String), ("/n", ScalarType::Number)]);
+    let second = def.indexes[1].fields[0].clone();
+    def.indexes[0].fields.push(second);
+    def.indexes[0].unique = true;
+    let previous = collection(
+        def,
+        vec![json!({"key":"a","n":1}), json!({"key":"b","n":1})],
+    );
+    let indexes = QueryIndexes::build_fixture(&previous).unwrap();
+    let mut next = previous.clone();
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["key"]});
+    let replaced = indexes
+        .update_fixture(&previous, &next, &BTreeMap::new())
+        .unwrap();
+    let old = &indexes.collections["docs"].structured;
+    let new = &replaced.collections["docs"].structured;
+    assert!(old.ids.ptr_eq(&new.ids), "rebuilt unchanged logical IDs");
+    assert!(
+        old.fields["/key"]
+            .entries
+            .ptr_eq(&new.fields["/key"].entries)
+    );
+    assert!(
+        old.unique["i0"]
+            .entries
+            .as_ref()
+            .unwrap()
+            .ptr_eq(new.unique["i0"].entries.as_ref().unwrap())
+    );
+    assert_ne!(
+        indexes.collections["docs"].definition_sha256,
+        replaced.collections["docs"].definition_sha256
+    );
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["missing"]});
+    assert!(
+        indexes
+            .update_fixture(&previous, &next, &BTreeMap::new())
+            .is_err()
+    );
+
+    Arc::make_mut(&mut next.get_mut("docs").unwrap().definition).schema =
+        json!({"type":"object","required":["key"]});
+    change_document(&mut next, "001").body["key"] = json!("a");
+    assert_eq!(
+        indexes
+            .update_fixture(&previous, &next, &BTreeMap::new())
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    change_document(&mut next, "001").body["key"] = json!("c");
+    let moved = indexes
+        .update_fixture(&previous, &next, &BTreeMap::new())
+        .unwrap();
+    let find = request().filter(Filter::new().eq("/key", "c"));
+    assert_eq!(
+        ids(moved
+            .execute_fixture(&next, &find, &Limits::default())
+            .unwrap()),
+        ["001"]
+    );
 }

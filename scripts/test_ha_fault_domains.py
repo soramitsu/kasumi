@@ -165,7 +165,20 @@ def data(words):
                  if (STATE / ("hb-" + str(a))).exists()]
         expired = not heard or time.time() - max(heard) > registry["lease_ms"] / 1000
         if expired and not any(alive(a) for a in registry["authorities"]) and not behavior.get("ignore_lease"):
-            return 1, {"ok": False, "error": "authority lease expired"}
+            if words[0] == "put" and behavior.get("lose_first_expired_write"):
+                original = load("original-expired-write.json", None)
+                if original is None:
+                    save("original-expired-write.json", words)
+                    return 10, {"ok": False, "error": {"class": "uncertain", "code": "UNKNOWN_OUTCOME",
+                                                       "idempotency_key": words[-1]}}
+                if words != original:
+                    fail("lease probe changed the original write")
+            if words[0] == "put" and behavior.get("commit_after_expiry"):
+                documents = load("documents.json", {})
+                documents[words[2]] = json.loads(words[3])
+                save("documents.json", documents)
+            return 10, {"ok": False, "error": {"code": behavior.get("outage_code", "SEALED"),
+                                              "message": "authority lease expired"}}
         documents = load("documents.json", {})
         if words[0] == "put":
             documents[words[2]] = json.loads(words[3])
@@ -173,6 +186,8 @@ def data(words):
             cluster["applied"] += 1
             save("cluster.json", cluster)
             return 0, {"ok": True, "result": {"receipt": {"revision": cluster["applied"] + 1}}}
+        if words[2] not in documents:
+            return 0, {"ok": True, "result": {"document": None}}
         return 0, {"ok": True, "result": {"document": {"id": words[2],
                                                        "body": documents.get(words[2]),
                                                        "version": 1}}}
@@ -235,6 +250,15 @@ if args[:1] == ["--profile"]:
                         or request["previous_voters"] != registry["voters"]
                         or sorted(request["voters"]) != cluster["voters"]):
                     fail("dedicated Control did not observe the expected Data membership")
+                if behavior.get("fence_first_publication"):
+                    original = load("original-publication.json", None)
+                    if original is None:
+                        save("original-publication.json", request)
+                        print("Error: UnknownOutcome: write response release was fenced; "
+                              "resolve or retry the same idempotency key", file=sys.stderr)
+                        sys.exit(1)
+                    if request != original:
+                        fail("membership resolution changed the original publication")
                 output = {"published": True}
             else:
                 fail("unknown operation")
@@ -258,7 +282,9 @@ def phase_id(state, kind):
 
 
 def generation(target, request):
-    return Path(registry["target_roots"][str(target)]) / "generations" / request["target_incarnation"]
+    digest = hashlib.sha256(json.dumps(request["tenant"]).encode()).hexdigest()
+    return (Path(registry["target_roots"][str(target)]) / "generations"
+            / (digest + "." + request["target_incarnation"] + ".kv"))
 
 
 def complete(state):
@@ -294,8 +320,20 @@ def complete(state):
             for target in request["target_nodes"]:
                 directory = generation(target, request)
                 if directory.exists():
+                    inode = directory.stat().st_ino
                     (directory / "store.kv").unlink()
                     directory.rmdir()
+                    phase = phase_id(state, "cleanup-" + target)
+                    state["voters"][target]["cleanup"] = phase
+                    journal = directory.parents[1] / "stopped-journal.json"
+                    journal.write_text(json.dumps({
+                        "query": {"operation_id": request["operation_id"], "phase_id": phase,
+                                  "target_incarnation": request["target_incarnation"],
+                                  "node_id": int(target)},
+                        "intent_id": request["operation_id"], "attempt_id": phase,
+                        "stop_receipt_sha256": hashlib.sha256(phase.encode()).hexdigest(),
+                        "binding_sha256": hashlib.sha256(str(inode).encode()).hexdigest(),
+                        "progress": "deleted"}))
         index = stages.index(state["stage"])
         if index + 1 < len(stages):
             state["stage"] = stages[index + 1]
@@ -348,6 +386,13 @@ if args[:1] == ["control-recovery"]:
         sys.exit(0)
     if action == "phase":
         print(json.dumps(recovery_state(operation)["phases"][args[4]]))
+        sys.exit(0)
+    if action == "target-deletion-via-control":
+        target = args[6]
+        if not alive(int(target)):
+            fail("target is unavailable")
+        journal = Path(registry["target_roots"][target]) / "stopped-journal.json"
+        print(journal.read_text())
         sys.exit(0)
     if action == "stop":
         with Lock():
@@ -606,6 +651,9 @@ class HaFaultTests(FaultFixture):
         return output
 
     def test_every_fault_is_replayed_and_accepted_and_forgeries_are_rejected(self):
+        knobs = self.evidence / "target/release/behavior.json"
+        knobs.write_text(json.dumps({"fence_first_publication": True, "lose_first_expired_write": True}))
+
         self.contract(faults)
         self.adapters(faults.KIND, faults)
         custody = self.run_faults()
@@ -613,6 +661,23 @@ class HaFaultTests(FaultFixture):
         self.assertEqual(report["status"], "passed")
         self.assertEqual({item["id"] for item in report["scenarios"]},
                          acceptance.SCENARIOS["ha-faults"])
+        # Each majority write and read must address its observed surviving leader.
+        actions = [json.loads(line) for line in (custody / driver.LEDGER).read_bytes().splitlines()]
+        for observation, probe in (("leader-loss-elected", "leader-loss-write"),
+                                   ("partition-majority", "partition-write"),
+                                   ("outage-view", "outage-before"),
+                                   ("fresh-admission-view", "fresh-admission-write")):
+            sample, = (item for item in report["processes"] if item["id"].endswith("-" + observation))
+            leader = owned.read(owned.check_ref(custody, sample["log"]))["leader"]
+            for verb in ("put", "get"):
+                call, = (row for row in actions if row["kind"] == "call"
+                         and row["step"].endswith("-" + probe + "-" + verb))
+                self.assertEqual(call["argv"][2], self.plan["members"][str(leader)])
+        publication, = (row for row in actions if row.get("step", "").endswith("-replace-publish"))
+        resolved, = (row for row in actions if row.get("step", "").endswith("-replace-publish-resolve"))
+        self.assertEqual(publication["exit_code"], 1)
+        self.assertEqual(publication["argv"][-1], resolved["argv"][-1])
+        self.assertEqual(resolved["exit_code"], 0)
         # The nine originals are the topology; restarts are separate executions.
         self.assertEqual(len(report["topology"]), 9)
         dispositions = {}
@@ -631,7 +696,8 @@ class HaFaultTests(FaultFixture):
         # Every refusal the scenarios demanded is retained outside the roster.
         refused = [item for item in details["attempts"]
                    if owned.read(owned.check_ref(custody, item["receipt"]))["exit_code"] != 0]
-        self.assertTrue(any("expired-write" in item["id"] for item in refused))
+        for label in ("outage-expired-write", "outage-expired-read", "outage-expired-write-retry"):
+            self.assertTrue(any(item["id"].endswith(label) for item in refused), label)
         self.assertTrue(any("trust-old-refused" in item["id"] for item in refused))
         self.assertEqual(owned.read(custody / "outcome.json")["qualification"], "qualifying")
 
@@ -709,6 +775,16 @@ class HaFaultTests(FaultFixture):
 
         forged(relabelled, "differ from the qualifying contract")
         self.accept(record, identity, configs)
+
+    def test_uncertain_expired_write_must_stay_absent_after_readmission(self):
+        self.behave(commit_after_expiry=True)
+        with self.assertRaisesRegex(ValueError, "appeared on the recovered quorum"):
+            self.run_faults("faults-late-write")
+
+    def test_unrelated_error_cannot_establish_lease_expiry(self):
+        self.behave(outage_code="UNAUTHENTICATED")
+        with self.assertRaisesRegex(ValueError, "lacks the native serving refusal"):
+            self.run_faults("faults-unsigned")
 
     def test_serving_after_lease_expiry_fails_and_stays_journaled(self):
         self.contract(faults)
@@ -806,7 +882,9 @@ class RecoveryFixture(FaultFixture):
             node_id = 11 + index
             name = f"target-{index + 1}"
             home, config = self.node(installed, name, "data", node_id, manifest, peers)
-            config["target_recovery"] = {"enabled": True}
+            generation_root = home / "persistent/generations"
+            generation_root.mkdir()
+            config["target_recovery"] = {"generation_root": str(generation_root)}
             configs.append((home, config))
             targets.append({"id": name, "config": str(home / "config.json")})
             registry["roles"][str(node_id)] = "data"
@@ -943,6 +1021,9 @@ class RecoveryTests(RecoveryFixture):
         self.assertEqual(facts["forward"]["stop_exit"], 1)
         self.assertEqual(facts["stopped"]["remaining"], [])
         self.assertTrue(facts["stopped"]["unrelated_kept"])
+        self.assertTrue(facts["stopped"]["persisted"])
+        self.assertEqual(set(facts["stopped"]["journals"]), {"target-1", "target-2", "target-3"})
+        self.assertEqual(facts["stopped"]["journals"], facts["stopped"]["reopened_journals"])
         record, identity, configs = self.gate(custody, recovery.gate_details(
             self.root, custody / "report.json"))
         self.assertEqual(record["details"]["source_voters"], 3)
@@ -1032,6 +1113,38 @@ class RecoveryTests(RecoveryFixture):
 
 
 class DeletionObservationTests(unittest.TestCase):
+    def test_stopped_cleanup_follows_each_installed_generation(self):
+        request = {"tenant": "unit", "target_incarnation": INCARNATION}
+        name = hashlib.sha256(b'"unit"').hexdigest() + "." + INCARNATION + ".kv"
+        targets = [{"id": str(n), "generation_root": "/installed/" + str(n)} for n in range(3)]
+        snapshots = {}
+        for n, target in enumerate(targets):
+            directory = {"type": "dir", "device": 1, "inode": 10 * n + 1}
+            snapshots[target["id"]] = {target["generation_root"]: {
+                name: directory, name + "/root.kvroot": {**directory, "type": "file",
+                                                         "inode": 10 * n + 2},
+                "tenant-audit-archives": {**directory, "inode": 10 * n + 3}}}
+        def entries(materialized=False):
+            return recovery.generation_entries(snapshots, targets, request,
+                                               materialized=materialized)
+        self.assertEqual(len(entries(True)), 6)
+        last = snapshots["2"]["/installed/2"]
+        last[name]["inode"] = snapshots["1"]["/installed/1"][name]["inode"]
+        with self.assertRaisesRegex(ValueError, "share a physical generation"):
+            entries(True)
+        last.pop(name + "/root.kvroot")
+        with self.assertRaisesRegex(ValueError, "missing materialized generation on 2"):
+            entries(True)
+        for n in (0, 1):
+            root = "/installed/" + str(n)
+            snapshots[str(n)][root].pop(name)
+            snapshots[str(n)][root].pop(name + "/root.kvroot")
+        self.assertEqual(list(entries()), ["/installed/2/" + name])
+        last[name] = {"type": "other", "device": 1, "inode": 900}
+        self.assertTrue(entries())
+        last.pop(name)
+        self.assertEqual(entries(), {})
+
     def test_crash_interruption_requires_a_live_original_client_at_the_signal(self):
         receipt = {"process_group": 17, "leader_birth": "linux:123"}
         witness = {"step": "original", "group": 17, "birth": "linux:123", "live": True}
@@ -1080,6 +1193,35 @@ class DeletionObservationTests(unittest.TestCase):
         facts = {"cells": {}}
         recovery.target_deletion_fault(d, ctx, self.operation, self.phase, 0, facts)
         return d, facts
+
+    def test_distinct_target_certificate_observes_original_cleanup_via_control(self):
+        expected = self.observed(11)
+        query = expected["query"]
+        observer = Mock()
+        observer.attempt.return_value = (0, json.dumps(expected).encode())
+        ctx = SimpleNamespace(timeout=9000, recovery=Mock(return_value=["routed"]))
+        target = {"node_id": 11, "control_observer": True}
+        self.assertTrue(recovery.can_observe_deletion(target))
+        actual, _ = recovery.deletion_view(observer, ctx, query, target, "cleanup")
+        self.assertEqual(expected, actual)
+        ctx.recovery.assert_called_once_with("target-deletion-via-control", self.operation,
+                                             self.phase, self.incarnation, "11", "9000")
+        observer.attempt.assert_called_once_with("cleanup", ["routed"])
+
+    def test_materialized_terminal_requires_its_original_physical_binding(self):
+        ctx = SimpleNamespace(timeout=1000, polls=2, pause=0, recovery=Mock(return_value=["routed"]),
+                              stopped={"operation_id": self.operation,
+                                       "target_incarnation": self.incarnation})
+        target = {"id": "target-11", "node_id": 11}
+        final = {"voters": {"11": {"cleanup": self.phase}}}
+        original = self.observed(11, "deleted")
+        for reported, expected in ((original, original), ({**original, "binding_sha256": None}, None),
+                                   ({**original, "progress": "parent_synced"}, None)):
+            observer = Mock()
+            observer.attempt.side_effect = [(1, b"starting"), (0, json.dumps(reported).encode())]
+            self.assertEqual(recovery.stopped_deletion(observer, ctx, final, target, "cold"),
+                             expected)
+            self.assertEqual(observer.attempt.call_count, 2)
 
     def test_caller_disconnection_requires_unchanged_original_pending_journal(self):
         original = self.observed(11)

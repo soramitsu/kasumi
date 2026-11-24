@@ -984,18 +984,6 @@ impl RaftGroup {
             .joined_appends())
     }
 
-    /// Refuse the standalone writer's next Blank append for capacity, exactly as a
-    /// full journal store refuses an append: nothing reaches the journal and the
-    /// writer serves on. Commands are unaffected.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn fixture_local_refuse_next_blank(&self) -> Result<()> {
-        self.local
-            .as_ref()
-            .context("fixture hook requires standalone mode")?
-            .fixture_refuse_next_blank();
-        Ok(())
-    }
-
     /// Entries the standalone writer appends between periodic snapshots.
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn fixture_local_snapshot_interval(&self, entries: u64) -> Result<()> {
@@ -1004,18 +992,6 @@ impl RaftGroup {
             .context("fixture hook requires standalone mode")?
             .fixture_snapshot_interval(entries)
             .await
-    }
-
-    /// Append one Blank entry to a standalone journal. It carries no command: the
-    /// state machine applies it as metadata, advancing only the applied position.
-    pub async fn local_append_blank(&self) -> Result<()> {
-        self.check_proposal()?;
-        self.local
-            .as_ref()
-            .context("a blank append requires standalone mode")?
-            .append_blank()
-            .await?;
-        self.check_access()
     }
 
     /// Snapshot builds the standalone writer ended as published since it opened,

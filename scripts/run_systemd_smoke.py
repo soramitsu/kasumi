@@ -118,6 +118,12 @@ def manager_command(c, role, op):
     return [*c["manager"],op,sd.unit(role)]
 
 
+def check_config_command(tools, role):
+    _, account, config = sd.ROLES[role]
+    return [tools["setpriv"], "--reuid", account, "--regid", account, "--init-groups",
+            sd.program(role), "check-config", config]
+
+
 def journal_command(tools, role, invocation):
     # SD_MESSAGE_UNIT_SUCCESS, emitted by systemd PID 1 after deactivation.
     return [tools["journalctl"],"--boot","--no-pager","--output=json","_PID=1","UNIT="+sd.unit(role),
@@ -139,8 +145,11 @@ def native_command(tools, plan, c, role):
 
 
 def read_tools(run):
-    values = {name:str(Path(shutil.which(name, path=run.environment["PATH"]) or "").resolve(strict=True))
-              for name in ("systemctl","systemd-analyze","journalctl")}
+    values = {}
+    for name in ("systemctl", "systemd-analyze", "journalctl", "setpriv"):
+        path = shutil.which(name, path=run.environment["PATH"])
+        require(path is not None, "missing native systemd qualification utility " + name)
+        values[name] = str(Path(path).resolve(strict=True))
     paths = {**values, "python":str(Path(sys.executable).resolve(strict=True)), "source":str(run.source),
              "kasumictl":"/usr/local/bin/kasumictl"}
     require(os.geteuid() == 0 and Path("/proc/1/comm").read_text().strip() == "systemd"
@@ -223,7 +232,7 @@ def exercise_units(run, units, configs, clients, tools, plan, details):
             run.command("reload",c["reload"],60,scenario="install-units")
             previous = {}
             for role in sd.ROLES:
-                run.command("check-config-"+role,[sd.program(role),"check-config",sd.ROLES[role][2]],180)
+                run.command("check-config-"+role,check_config_command(tools,role),180)
                 active.add(role)
                 run.command("start-"+role,manager_command(c,role,"start"),180)
                 previous[role] = status_probes(run,role,1,configs[role],clients[role],c,tools,plan,details)
@@ -292,10 +301,10 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     owned.exact(plan,{"schema","data_client","authority_client"},"systemd smoke plan")
     require(plan["schema"] == "kasumi-systemd-smoke-v1", "systemd plan schema differs")
     tools = details["tools"]
-    owned.exact(tools,{"systemctl","systemd-analyze","journalctl","python","source","kasumictl"},"native manager utilities")
+    owned.exact(tools,{"systemctl","systemd-analyze","journalctl","setpriv","python","source","kasumictl"},"native manager utilities")
     require(tools["source"] == str(Path(report["evidence_root"]) / "source")
             and all(Path(p).is_absolute() for p in tools.values()) and tools["kasumictl"] == "/usr/local/bin/kasumictl"
-            and all(tools[k] in {"/usr/bin/"+k,"/bin/"+k} for k in ("systemctl","systemd-analyze","journalctl")),
+            and all(tools[k] in {"/usr/bin/"+k,"/bin/"+k} for k in ("systemctl","systemd-analyze","journalctl","setpriv")),
             "systemd utilities differ")
     c = cmd_map(tools,report["custody_root"],plan)
     steps = iter(report["processes"])
@@ -356,7 +365,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
         return identity,show,proc
     prev = {}
     for role in sd.ROLES:
-        raw("check-config-"+role,[sd.program(role),"check-config",sd.ROLES[role][2]])
+        raw("check-config-"+role,check_config_command(tools,role))
         raw("start-"+role,manager_command(c,role,"start"))
         prev[role] = generation(role,1)
     for role in sd.ROLES:

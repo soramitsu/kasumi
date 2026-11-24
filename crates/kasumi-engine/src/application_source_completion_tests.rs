@@ -167,6 +167,11 @@ fn put(key: &str, body: serde_json::Value, expected: Precondition) -> Operation 
         }],
     })
 }
+
+// Each ordinary publication with a current primary owns its application selection,
+// its body resolver's selection, and the primary rows for located descriptors.
+const GENERATION_HANDLES: usize = 3;
+
 fn selected(fixture: &OrdinaryFixture, input: &Input, expected_handles: usize) -> CellRef {
     let generation = fixture.engine.generation().unwrap();
     let selected = generation
@@ -194,14 +199,20 @@ async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish()
     let input = fixture.input(Operation::SetPolicy(policy()))?;
     let mut witness = None;
     let response = fixture.apply(&input, || {
-        // The backend's actual apply guard ended on this same thread. Its new
-        // Generation owns its selection and body resolver; completion owns
-        // the third handle. No individual document pins another native root.
+        // The backend guard ended on this thread. The visible generation owns
+        // the pinned primary rows, and completion retains one more selection.
         assert!(fixture.engine.application_guard_available_for_test());
-        let cell = selected(&fixture, &input, 3);
+        let rows = {
+            let generation = fixture.engine.generation().unwrap();
+            let rows = generation.located_rows().expect("serving primary rows");
+            assert!(rows.current_at(&generation.state));
+            Arc::downgrade(&rows)
+        };
+        let cell = selected(&fixture, &input, GENERATION_HANDLES + 1);
         // Remove the actual visible Generation before outer finish. The CellRef
         // witness below is metadata only and cannot keep a selected/native pin.
         fixture.engine.seal();
+        assert!(rows.upgrade().is_none());
         assert_eq!(cell.handles.load(Ordering::Acquire), 1);
         assert!(!cell.state.lock().unwrap().closed);
         assert!(cell.state.lock().unwrap().view.is_some());
@@ -244,13 +255,13 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
     let fixture = OrdinaryFixture::new().await?;
     let create = fixture.input(Operation::CreateCollection(definition()))?;
     fixture.apply(&create, || {
-        selected(&fixture, &create, 3);
+        selected(&fixture, &create, GENERATION_HANDLES + 1);
     })?;
     assert_eq!(
-        selected(&fixture, &create, 2)
+        selected(&fixture, &create, GENERATION_HANDLES)
             .handles
             .load(Ordering::Acquire),
-        2
+        GENERATION_HANDLES
     );
     let accepted = fixture.input(put(
         "completion-put",
@@ -258,7 +269,7 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Any,
     ))?;
     let response = fixture.apply(&accepted, || {
-        selected(&fixture, &accepted, 3);
+        selected(&fixture, &accepted, GENERATION_HANDLES + 1);
     })?;
     let receipt: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     let receipt = receipt?;
@@ -269,7 +280,7 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Version(0),
     ))?;
     let response = fixture.apply(&rejected, || {
-        selected(&fixture, &rejected, 3);
+        selected(&fixture, &rejected, GENERATION_HANDLES + 1);
     })?;
     let outcome: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     assert_eq!(outcome.unwrap_err().code, ErrorCode::Conflict);
@@ -285,22 +296,22 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Any,
     ))?;
     let response = fixture.apply(&replay, || {
-        selected(&fixture, &replay, 3);
+        selected(&fixture, &replay, GENERATION_HANDLES + 1);
     })?;
     let outcome: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     assert_eq!(outcome?.revision, receipt.revision);
     let current = fixture.engine.generation()?;
     assert_eq!(
         current.state.collections["docs"].documents["row"]
-            .load_owned(current.document_resolver())?
+            .load_owned_at("docs", "row", current.document_resolver())?
             .body,
         json!({"accepted":true})
     );
     assert_eq!(
-        selected(&fixture, &replay, 2)
+        selected(&fixture, &replay, GENERATION_HANDLES)
             .handles
             .load(Ordering::Acquire),
-        2
+        GENERATION_HANDLES
     );
     drop(current);
     drop(after_rejection);
@@ -734,14 +745,16 @@ async fn ordinary_completion_outer_finish_panic_retains_original_response_after_
         let row = &generation.state.collections["docs"].documents["row"];
         assert!(matches!(
             row.as_ref(),
-            kasumi_types::DocumentSlot::Stored(_)
+            kasumi_types::DocumentSlot::Stored(_) | kasumi_types::DocumentSlot::Located(_)
         ));
-        let loaded = row.load_owned(generation.document_resolver()).unwrap();
+        let loaded = row
+            .load_owned_at("docs", "row", generation.document_resolver())
+            .unwrap();
         assert_eq!(loaded.body, body);
         assert_eq!(loaded.version, generation.state.revision);
         drop(loaded);
         drop(generation);
-        let cell = selected(&fixture, &input, 3);
+        let cell = selected(&fixture, &input, GENERATION_HANDLES + 1);
         fixture.engine.seal();
         assert_eq!(cell.handles.load(Ordering::Acquire), 1);
         assert!(!cell.state.lock().unwrap().closed);
@@ -1255,10 +1268,10 @@ async fn ordinary_completion_fault_checkpoints_preserve_exact_original_and_sourc
                 assert!(!state.closed);
                 assert_eq!(
                     cell.handles.load(Ordering::Acquire),
-                    if captured {
-                        if point == C::Visible { 3 } else { 1 }
-                    } else {
-                        0
+                    match point {
+                        C::Visible => GENERATION_HANDLES + 1,
+                        C::Captured | C::Installed => 1,
+                        C::BeforeQueue | C::Queued | C::Published => 0,
                     }
                 );
             }

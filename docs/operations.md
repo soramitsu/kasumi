@@ -100,22 +100,16 @@ Sources: [systemd execution settings](https://raw.githubusercontent.com/systemd/
 --help` lists the options, which may appear in any order:
 
 - `--local-snapshot-archive reference|embedded` (default `reference`). How a
-  standalone group stores the snapshot it reopens from. `reference` (format
+  standalone group writes new snapshots. `reference` (format
   KASUMIL1) names the tenant audit archive chain the node already keeps under
   `tenant-audit-archives/`, so a snapshot holds only the tenant's logical state.
-  `embedded` (KASUMID1) copies the whole chain into every snapshot: on a tenant
-  with an 8 GB archive, every snapshot then writes 8 GB. Releases before
-  KASUMIL1 read only KASUMID1. To install one, first serve once with
-  `--local-snapshot-archive embedded` and wait until every tenant serves: each
-  by-reference snapshot is rewritten embedded (log `stored an embedded snapshot
-  in place of its by-reference snapshot`), which needs free disk for one
-  embedded snapshot per tenant. If the disk is too full for that, the tenant
-  keeps serving on its by-reference snapshot and logs
-  `embedded_snapshot_not_published`; free space and start again before
-  installing the older binary. Every other kasumid command (recovery, key
-  rotation, staging) keeps each tenant's stored form and converts nothing. With `reference`, never delete or move files in
-  `tenant-audit-archives/`: a reopen verifies the chain there and fails closed
-  if a segment is missing, until it is restored.
+  `embedded` (KASUMID1) copies the whole chain into every snapshot. For a tenant
+  with an 8 GB archive, each new snapshot includes that 8 GB. Startup reads the
+  current snapshot in its stored form. The selected writer takes effect when
+  the group next publishes a snapshot. Other kasumid commands, including
+  recovery, key rotation and staging, keep each tenant's stored form. With
+  `reference`, leave the files in `tenant-audit-archives/` in place. A reopen
+  verifies the chain there and fails closed until any missing segment is restored.
 - `--storage-compaction-growth-percent 101-200` (default 150). A compaction
   cycle starts once retained storage files reach this percentage of what the
   last cycle left. Lower values compact earlier and need less free disk at a
@@ -410,10 +404,8 @@ works in two steps and prints a JSON report:
    Control and every local tenant open as at startup. Each authenticates its
    whole archive chain in the new copy, from the head back to the stream's
    first segment, decrypting every segment. Only then does the command record
-   the verified move in security storage. Opening a tenant here writes nothing:
-   a by-reference snapshot stays by reference, as with
-   `serve --local-snapshot-archive reference`, instead of being rewritten in
-   the embedded form that would copy the archive into `node.kv`.
+   the verified move in security storage. Verification reads each tenant's
+   snapshot in its stored form.
 2. It confirms that every source object still equals its copy. It then
    rewrites each store's placement to the new directory and deletes each source
    object while it still equals its copy. It also deletes the staging names of
@@ -708,3 +700,14 @@ The replicated floor rejects later writes that depend on an older version.
 The operator controls key removal at the provider. A completed scope record
 covers only that scope. Check all other installations and scopes that use the
 same provider key before changing it.
+
+For the file provider, a format-1 keyring ordinarily retains every generation
+from one through `active`. After confirming the completed retirement in every
+scope sharing that provider, an operator can install a canonical keyring with
+the same `id`, `domain` and `active`. Keep every original key from the approved
+first retained generation through `active` and append the numeric field
+`first_retained_version` after `versions`. For example, with `active` equal to
+3 and a completed floor of 2, keep versions 2 and 3 and set
+`first_retained_version` to 2. Install using the existing private-file
+permissions and an atomic replacement. Subsequent rotations preserve this
+floor. Existing rings that retain generation 1 use their original encoding.

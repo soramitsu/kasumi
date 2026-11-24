@@ -1060,6 +1060,7 @@ impl Core {
             admission,
             group_id,
             cache,
+            crate::DEFAULT_SNAPSHOT_PINS,
             Some(format),
             true,
             false,
@@ -1076,8 +1077,17 @@ impl Core {
         group_id: [u8; 16],
         cache: CacheConfig,
     ) -> Result<Self, NativeOpenFailure<B>> {
-        opening::assemble(backend, admission, group_id, cache, None, true, false)
-            .map(|opened| opened.into_core())
+        opening::assemble(
+            backend,
+            admission,
+            group_id,
+            cache,
+            crate::DEFAULT_SNAPSHOT_PINS,
+            None,
+            true,
+            false,
+        )
+        .map(|opened| opened.into_core())
     }
     pub fn snapshot(&self) -> Result<ReadSnapshot, CoreError> {
         if self.shared.stopped.load(Ordering::Acquire) {

@@ -517,7 +517,24 @@ impl ObjectBatch {
     }
     fn flush(&mut self) -> Result<()> {
         if let Some(batch) = self.batch.take() {
-            batch.commit()?;
+            batch.commit().map_err(|error| {
+                // Only the returned commit itself proves an aborted batch. A
+                // retirement failure can carry that same rejection as its cause
+                // while still owning the scratch table and its grants.
+                let outer: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+                if outer
+                    .downcast_ref::<kasumi_kv::CommitError>()
+                    .is_some_and(|commit| commit.0.is_capacity_denied())
+                {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::ResourceExhausted,
+                        "document restore scratch transaction exceeded available capacity",
+                    )
+                    .into()
+                } else {
+                    error
+                }
+            })?;
         }
         Ok(())
     }
@@ -685,33 +702,46 @@ struct Correction<'a> {
     operations: Vec<WriteOp>,
     bytes: usize,
     // LAST: the buffer and its copies retire before their credit.
-    _grant: DiskMemoryLease,
+    grant: Option<DiskMemoryLease>,
 }
 impl<'a> Correction<'a> {
     fn new(
         store: &'a Arc<TenantStore>,
         memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
         namespace: &'static str,
-    ) -> Result<Self> {
-        // Each operation owns its namespace and key copies besides its slot.
-        let entry = std::mem::size_of::<WriteOp>() + namespace.len() + 64 + 128;
+    ) -> Self {
+        Self {
+            store,
+            memory,
+            namespace,
+            operations: Vec::new(),
+            bytes: 0,
+            grant: None,
+        }
+    }
+
+    // A snapshot that already matches the published objects needs no edit buffer.
+    // Hold the first batch's admission until its reusable allocation retires.
+    fn reserve_batch(&mut self) -> Result<()> {
+        if self.grant.is_some() {
+            return Ok(());
+        }
+        let entry = std::mem::size_of::<WriteOp>() + self.namespace.len() + 64 + 128;
         let bytes = CORRECTION_ENTRIES
             .checked_mul(entry)
             .and_then(|bytes| bytes.checked_add(CORRECTION_BYTES))
             .context("document correction workspace overflow")?;
-        let grant = memory.clone().reserve_installed(u64::try_from(bytes)?)?;
-        let mut operations = Vec::new();
-        operations.try_reserve_exact(CORRECTION_ENTRIES)?;
-        Ok(Self {
-            store,
-            memory,
-            namespace,
-            operations,
-            bytes: 0,
-            _grant: grant,
-        })
+        let grant = self
+            .memory
+            .clone()
+            .reserve_installed(u64::try_from(bytes)?)?;
+        self.operations.try_reserve_exact(CORRECTION_ENTRIES)?;
+        self.grant = Some(grant);
+        Ok(())
     }
+
     fn delete(&mut self, key: &[u8]) -> Result<()> {
+        self.reserve_batch()?;
         if self.operations.len() == CORRECTION_ENTRIES {
             self.flush()?;
         }
@@ -731,6 +761,7 @@ impl<'a> Correction<'a> {
                 .store
                 .write_batch(&[WriteOp::put(self.namespace, key, value)]);
         }
+        self.reserve_batch()?;
         if self.operations.len() == CORRECTION_ENTRIES
             || self.bytes + value.len() > CORRECTION_BYTES
         {
@@ -886,7 +917,7 @@ impl StagedDocuments {
     pub(crate) fn write_missing(&self, store: &Arc<TenantStore>) -> Result<()> {
         for (namespace, table, _) in self.namespaces() {
             if let Some(table) = table {
-                Correction::new(store, self.tables.disk.memory(), namespace)?
+                Correction::new(store, self.tables.disk.memory(), namespace)
                     .write_missing(table)?;
             }
         }
@@ -913,7 +944,7 @@ impl StagedDocuments {
         }
         let memory = self.tables.disk.memory();
         for (namespace, table, max_bytes) in self.namespaces() {
-            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut correction = Correction::new(store, memory, namespace);
             let mut kept = 0u64;
             // The view keeps its selected root while earlier batches commit.
             let view = store.read_view()?;
@@ -951,7 +982,7 @@ impl StagedDocuments {
     /// manifests again before it collects any chunk.
     fn clear_chunk_owners(&self, store: &Arc<TenantStore>) -> Result<()> {
         let mut correction =
-            Correction::new(store, self.tables.disk.memory(), crate::document_gc::LINKS)?;
+            Correction::new(store, self.tables.disk.memory(), crate::document_gc::LINKS);
         crate::document_gc::clear_links(store, |key| correction.delete(key))?;
         correction.flush()
     }
@@ -971,7 +1002,7 @@ impl StagedDocuments {
             let names = published.names(namespace == BODIES);
             let counts = names.counts();
             let table = table.context("reopened document staging table missing")?;
-            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut correction = Correction::new(store, memory, namespace);
             let mut held = 0usize;
             let view = store.read_view()?;
             view.visit(namespace, max_bytes, |key, value| {
@@ -1102,7 +1133,25 @@ impl BootstrapDocuments {
         })
     }
 }
+impl BootstrapDocuments {
+    /// Resolve located slots from `rows` through the selected generation.
+    pub(crate) fn locating(
+        mut self,
+        rows: Option<Arc<crate::document_store::LocatedRows>>,
+    ) -> Self {
+        self.selected = self.selected.locating(rows);
+        self
+    }
+}
 impl DocumentResolver for BootstrapDocuments {
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &kasumi_types::LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.selected.locate(collection, id, located)
+    }
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
         if !self.bootstrap.has_bodies {
             // The selected resolver already retains and checks its exact
@@ -1120,6 +1169,9 @@ impl DocumentResolver for BootstrapDocuments {
     }
 }
 impl GenerationDocuments for BootstrapDocuments {
+    fn located_rows(&self) -> Option<Arc<crate::document_store::LocatedRows>> {
+        self.selected.located_rows().cloned()
+    }
     fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
         let selected = self.selected.shared_reader();
         Ok(Some(if self.bootstrap.has_bodies {
@@ -1140,6 +1192,14 @@ struct BootstrapRead {
     selected: SelectedRead,
 }
 impl DocumentResolver for BootstrapRead {
+    fn locate(
+        &self,
+        collection: &str,
+        id: &str,
+        located: &kasumi_types::LocatedDocument,
+    ) -> Result<StoredDocument> {
+        self.selected.locate_shared(collection, id, located)
+    }
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
         self.selected.with_source(|| {
             if self.bootstrap.contains(descriptor)? {
@@ -1287,6 +1347,50 @@ impl StagedDocuments {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn restore_batch_capacity_refusal_returns_an_operation_error_and_drains() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 4096);
+        let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory);
+        let table = EncryptedTable::new(&disk, 64 << 20, disk.native_cache_config()).unwrap();
+        table.insert(b"original", b"committed").unwrap();
+        let value = vec![0x5a; 64 << 10];
+        let mut batch = ObjectBatch::new();
+        let mut rejected = false;
+        for generation in 0..64_u32 {
+            let key = |row: u32| {
+                let mut key = [0; 64];
+                key[..4].copy_from_slice(&generation.to_be_bytes());
+                key[4..8].copy_from_slice(&row.to_be_bytes());
+                key
+            };
+            for row in 0..EncryptedTableBatch::MAX_ENTRIES as u32 {
+                batch.put(&table, disk.memory(), key(row), &value).unwrap();
+            }
+            if let Err(error) = batch.flush() {
+                let failure = crate::SnapshotFailure::from(error);
+                assert_eq!(
+                    failure.operation_error().unwrap().code,
+                    kasumi_types::ErrorCode::ResourceExhausted
+                );
+                assert!(table.get(&key(0)).unwrap().is_none());
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected);
+        assert_eq!(
+            table.get(b"original").unwrap().unwrap().as_bytes(),
+            b"committed"
+        );
+        drop(batch);
+        table.close().unwrap();
+        let totals = disk.snapshot();
+        assert_eq!(totals.live_files, 0);
+        assert_eq!(totals.charged_bytes, 0);
+        assert_eq!(totals.filesystem_pending_bytes, 0);
+    }
 
     #[test]
     fn reopened_name_index_keeps_a_fixed_resident_prefix_across_native_batches() {

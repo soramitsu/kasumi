@@ -46,6 +46,7 @@ impl TargetRecoveryRuntime {
                 let Some(runtime) = weak.upgrade() else {
                     break;
                 };
+                runtime.call_jobs.membership_failures.export();
                 #[cfg(test)]
                 runtime.serving_monitor.after_upgrade().await;
                 if runtime.closing.load(Ordering::Acquire) {
@@ -214,14 +215,16 @@ impl TargetRecoveryRuntime {
                 self.activate_generation_cache(&g)?;
                 return Ok(());
             }
-            g.close(&self.cluster, &self.registry).await?;
+            g.close_for_replacement(&self.cluster, &self.registry)
+                .await?;
         }
         if let Some(owner) = &g.serving {
             if owner.check().is_ok() && g.registered_data.is_some() {
                 self.activate_generation_cache(&g)?;
                 return Ok(());
             }
-            g.close(&self.cluster, &self.registry).await?;
+            g.close_for_replacement(&self.cluster, &self.registry)
+                .await?;
         }
         if g.phase
             .as_ref()
@@ -232,7 +235,8 @@ impl TargetRecoveryRuntime {
         // The same original management request keeps its phase alive through
         // final reply release. Only after every operation/reply drops may this
         // independent startup close that old payload group and its phase.
-        g.close(&self.cluster, &self.registry).await?;
+        g.close_for_replacement(&self.cluster, &self.registry)
+            .await?;
         let projection = Arc::new(
             self.journal
                 .serving_projection(tenant, incarnation)?

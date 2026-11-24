@@ -335,15 +335,15 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         .insert(12, expanded.nodes[&12].clone());
     let previous = BTreeSet::from([1, 2, 12]);
     previous_topology.tenants.get_mut(f.tenant).unwrap().voters = previous.clone();
-    plane
-        .replace_topology(
+    resolve_unknown_outcome("previous route", || {
+        plane.replace_topology(
             f.topology_operator.clone(),
-            previous_topology,
+            previous_topology.clone(),
             Precondition::Version(original.version),
             "catalog-fixture-previous-route".into(),
         )
-        .await
-        .unwrap();
+    })
+    .await;
     let before = plane
         .topology(f.topology_operator)
         .await
@@ -387,29 +387,22 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         before
     );
     write_token(f.token_path, f.reader_token);
-    publish(
-        f.control,
-        f.topology_operator,
-        f.tenant,
-        f.incarnation,
-        &previous,
-        &voters,
-    )
-    .await
-    .unwrap();
+    // "membership publication requires confirmation; retry the original request"
+    let publish_original = || {
+        publish(
+            f.control,
+            f.topology_operator,
+            f.tenant,
+            f.incarnation,
+            &previous,
+            &voters,
+        )
+    };
+    resolve_unknown_outcome("voter publication", publish_original).await;
     let published = plane.topology(f.topology_operator).await.unwrap().unwrap();
     assert!(published.version > before);
     assert_eq!(published.topology.tenants[f.tenant].voters, voters);
-    publish(
-        f.control,
-        f.topology_operator,
-        f.tenant,
-        f.incarnation,
-        &previous,
-        &voters,
-    )
-    .await
-    .unwrap();
+    resolve_unknown_outcome("repeated voter publication", publish_original).await;
     assert_eq!(
         plane
             .topology(f.topology_operator)
@@ -419,15 +412,47 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
             .version,
         published.version
     );
-    plane
-        .replace_topology(
+    let restore = || {
+        plane.replace_topology(
             f.topology_operator.clone(),
-            original.topology,
+            original.topology.clone(),
             Precondition::Version(published.version),
             "catalog-fixture-original-topology".into(),
         )
+    };
+    let restored = resolve_unknown_outcome("original topology", restore).await;
+    let restored_version = plane
+        .topology(f.topology_operator)
         .await
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .version;
+    // The resolution above relies on this: the identical request returns the
+    // original receipt without a second write, and the same key with other
+    // input is refused, whether or not an earlier attempt was applied.
+    assert_eq!(
+        resolve_unknown_outcome("repeated original topology", restore).await,
+        restored
+    );
+    assert_eq!(
+        plane
+            .topology(f.topology_operator)
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        restored_version
+    );
+    let reused = resolve_refusal("reused topology key", || {
+        plane.replace_topology(
+            f.topology_operator.clone(),
+            previous_topology.clone(),
+            Precondition::Version(published.version),
+            "catalog-fixture-original-topology".into(),
+        )
+    })
+    .await;
+    assert_eq!(reused.code, ErrorCode::Conflict, "{reused:?}");
     assert_eq!(
         client
             .read_data_member_catalog(f.denied_token, &read)
@@ -495,52 +520,13 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
             .code(),
         Some(ErrorCode::Forbidden)
     );
+    assert_stale_key_cursors_expire(f.control, f.operator).await;
     for scope in [
         KeyRetentionScope::Signer {},
         KeyRetentionScope::SecurityAudit {},
         KeyRetentionScope::TargetJournal {},
     ] {
-        let mut request = ReadKeyRetentionRequest {
-            scope: scope.clone(),
-            cursor: None,
-            limit: 2,
-        };
-        let mut entries = BTreeSet::new();
-        loop {
-            let page = f
-                .control
-                .read_key_retention(f.operator, request.clone())
-                .await
-                .unwrap();
-            if matches!(scope, KeyRetentionScope::TargetJournal {}) {
-                assert!(
-                    matches!(page.coverage, KeyRetentionCoverage::Complete { .. }),
-                    "journal coverage with authentic role exclusions: {:?}",
-                    page.coverage
-                );
-            }
-            if let KeyRetentionCoverage::Incomplete { missing, .. } = &page.coverage {
-                let present = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
-                    1..=3
-                } else {
-                    1..=6
-                };
-                assert!(
-                    missing.iter().all(|m| !matches!(
-                        m,
-                        MissingKeyDependency::MemberUnreported { node_id } if present.contains(node_id)
-                    )),
-                    "missing enrolled members {missing:?}"
-                );
-            }
-            for entry in &page.entries {
-                assert!(entries.insert(entry.clone()));
-            }
-            request.cursor = page.next_cursor.clone();
-            if request.cursor.is_none() {
-                break;
-            }
-        }
+        let entries = complete_key_inventory(f.control, f.operator, &scope).await;
         let count = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
             3
         } else {
@@ -621,4 +607,204 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         assert!(missing.contains(&MissingKeyDependency::MemberUnreported { node_id: id }));
     }
     write_token(f.token_path, f.reader_token);
+}
+
+/// A Control write that is still running at its 10 s native deadline returns
+/// UnknownOutcome. The documented resolution is to repeat the identical
+/// request: an applied original returns its recorded receipt and an
+/// unapplied one is proposed again. Both writes stay bounded.
+const UNKNOWN_OUTCOME_ATTEMPTS: usize = 5;
+
+fn unknown_outcome(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<kasumi_types::Error>()
+            .is_some_and(|error| error.code == ErrorCode::UnknownOutcome)
+    })
+}
+
+async fn resolve_unknown_outcome<T, E, F, Fut>(label: &str, mut write: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+    E: Into<anyhow::Error>,
+{
+    for attempt in 1..=UNKNOWN_OUTCOME_ATTEMPTS {
+        let error: anyhow::Error = match write().await {
+            Ok(value) => return value,
+            Err(error) => error.into(),
+        };
+        assert!(
+            attempt < UNKNOWN_OUTCOME_ATTEMPTS && unknown_outcome(&error),
+            "catalog fixture {label}, attempt {attempt}: {error:?}"
+        );
+        eprintln!(
+            "catalog fixture {label}: attempt {attempt} reported {error:#}; repeating the identical request"
+        );
+    }
+    unreachable!("the final attempt either returns or fails its assertion")
+}
+
+/// The same resolution for a write that must be refused: an UnknownOutcome
+/// is repeated, and the first definite answer is returned.
+async fn resolve_refusal<T, F, Fut>(label: &str, mut write: F) -> kasumi_types::Error
+where
+    T: std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, kasumi_types::Error>>,
+{
+    for attempt in 1..=UNKNOWN_OUTCOME_ATTEMPTS {
+        match write().await {
+            Ok(value) => panic!("catalog fixture {label} was accepted: {value:?}"),
+            Err(error)
+                if error.code == ErrorCode::UnknownOutcome
+                    && attempt < UNKNOWN_OUTCOME_ATTEMPTS =>
+            {
+                eprintln!(
+                    "catalog fixture {label}: attempt {attempt} reported {error:?}; repeating the identical request"
+                );
+            }
+            Err(error) => return error,
+        }
+    }
+    unreachable!("the final attempt always returns")
+}
+
+/// Control reads each Data member through the installed reader, which gives
+/// every voter 3 s and accepts only the Data leader. When the leader misses
+/// that slice under host load, the followers refuse the read ("read quorum
+/// unavailable"), Control reports the Data nodes unreported, and a cursor
+/// issued over the earlier coverage expires ("key retention inventory
+/// changed"). Both are the product's contract. A reader restarts the scope,
+/// and only a pass whose every page covers every enrolled member is accepted.
+const KEY_INVENTORY_PASSES: usize = 6;
+
+async fn complete_key_inventory(
+    control: &Arc<Database>,
+    operator: &RequestContext,
+    scope: &KeyRetentionScope,
+) -> BTreeSet<kasumi_types::KeyRetentionEntry> {
+    let journal = matches!(scope, KeyRetentionScope::TargetJournal {});
+    let present = if journal { 1..=3 } else { 1..=6 };
+    let data = 1..=3u64;
+    let mut restarts = Vec::new();
+    'pass: for pass in 1..=KEY_INVENTORY_PASSES {
+        if pass > 1 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let mut request = ReadKeyRetentionRequest {
+            scope: scope.clone(),
+            cursor: None,
+            limit: 2,
+        };
+        let mut entries = BTreeSet::new();
+        for page_number in 1.. {
+            let page = match control.read_key_retention(operator, request.clone()).await {
+                Ok(page) => page,
+                Err(error)
+                    if error.code == ErrorCode::CursorExpired && request.cursor.is_some() =>
+                {
+                    restarts.push(format!("pass {pass} page {page_number}: {error:?}"));
+                    continue 'pass;
+                }
+                Err(error) => panic!("{scope:?} pass {pass} page {page_number}: {error:?}"),
+            };
+            if let KeyRetentionCoverage::Incomplete { missing, .. } = &page.coverage {
+                let unreported: BTreeSet<u64> = missing
+                    .iter()
+                    .filter_map(|m| match m {
+                        MissingKeyDependency::MemberUnreported { node_id }
+                            if present.contains(node_id) =>
+                        {
+                            Some(*node_id)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                // Only a Data observation may be lost this way. Control
+                // members and any other journal dependency stay strict.
+                if journal {
+                    assert!(
+                        !missing.is_empty()
+                            && missing.iter().all(|m| matches!(
+                                m,
+                                MissingKeyDependency::MemberUnreported { node_id } if data.contains(node_id)
+                            )),
+                        "journal coverage with authentic role exclusions: {:?}",
+                        page.coverage
+                    );
+                } else {
+                    assert!(
+                        unreported.iter().all(|id| data.contains(id)),
+                        "missing enrolled members {missing:?}"
+                    );
+                }
+                if journal || !unreported.is_empty() {
+                    restarts.push(format!(
+                        "pass {pass} page {page_number}: Data members {unreported:?} unreported"
+                    ));
+                    continue 'pass;
+                }
+            }
+            for entry in &page.entries {
+                assert!(entries.insert(entry.clone()));
+            }
+            request.cursor = page.next_cursor.clone();
+            if request.cursor.is_none() {
+                if !restarts.is_empty() {
+                    eprintln!("{scope:?} completed on pass {pass} after {restarts:?}");
+                }
+                return entries;
+            }
+        }
+    }
+    panic!("{scope:?} never completed a covered pass: {restarts:?}")
+}
+
+/// Each cursor field that binds the observed inventory refuses a continuation
+/// it no longer describes, independently of any transient coverage.
+async fn assert_stale_key_cursors_expire(control: &Arc<Database>, operator: &RequestContext) {
+    let request = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Signer {},
+        cursor: None,
+        limit: 2,
+    };
+    let page = control
+        .read_key_retention(operator, request.clone())
+        .await
+        .unwrap();
+    let cursor = page
+        .next_cursor
+        .clone()
+        .expect("six signer catalogs need more than one page of two");
+    let forged: [fn(&mut kasumi_types::KeyRetentionCursor); 3] = [
+        |cursor| {
+            cursor.inventory_sha256 = if cursor.inventory_sha256 == "0".repeat(64) {
+                "1".repeat(64)
+            } else {
+                "0".repeat(64)
+            }
+        },
+        |cursor| cursor.membership_epoch += 1,
+        |cursor| cursor.coverage_revision = u64::MAX,
+    ];
+    for (index, forge) in forged.into_iter().enumerate() {
+        let mut stale = cursor.clone();
+        forge(&mut stale);
+        let error = control
+            .read_key_retention(
+                operator,
+                ReadKeyRetentionRequest {
+                    cursor: Some(stale),
+                    ..request.clone()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (ErrorCode::CursorExpired, "key retention inventory changed"),
+            "stale cursor field {index}: {error:?}"
+        );
+    }
 }

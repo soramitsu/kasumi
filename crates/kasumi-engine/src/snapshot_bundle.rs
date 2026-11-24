@@ -1224,7 +1224,7 @@ mod tests {
             );
         }
         // The group that wrote it reads it on reopen, verifying its own chain in
-        // place; an embedded (pre-upgrade) snapshot still reopens too.
+        // place. The same group also reopens the embedded snapshot.
         let retention = source.generation().unwrap().state.audit_retention.clone();
         assert_eq!(
             read_bundle(source.clone(), local.clone(), true)

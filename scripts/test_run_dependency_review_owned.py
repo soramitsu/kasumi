@@ -581,6 +581,25 @@ class DependencyRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a regular file"):
                 runner.retain_archives(second, supplied)
 
+    def test_one_rustdoc_launch_reports_complete_merged_and_compile_fail_groups(self):
+        stdout = ("running 2 tests\ntest src/lib.rs - first (line 1) ... ok\n"
+                  "test src/lib.rs - second (line 8) ... ignored\n"
+                  "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.14s\n"
+                  "running 1 test\ntest src/lib.rs - third (line 16) - compile fail ... ok\n"
+                  "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s\n"
+                  "all doctests ran in 7.03s; merged doctests compilation took 6.05s\n")
+        def count(text):
+            return runner.parse_counts("rust", text, "   Doc-tests rmcp\n", [],
+                                       rust_mode="doc", launches=1)
+        actual = count(stdout)
+        self.assertTrue(actual["complete"])
+        self.assertEqual((actual["launched"], actual["suites"], actual["passed"], actual["ignored"]),
+                         (1, 2, 2, 1))
+        for incomplete in (stdout.split("all doctests")[0], stdout.replace("running 2", "running 3"),
+                           stdout.replace(" ... ignored", " ... ok"),
+                           stdout.replace("third (line 16) - compile fail", "first (line 1)")):
+            self.assertFalse(count(incomplete)["complete"])
+
     def test_machine_counts_reject_missing_summary_or_missing_package(self):
         rust = runner.parse_counts("rust", "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.1s\n"
                                    "test thing ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n",

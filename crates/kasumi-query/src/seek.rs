@@ -6,7 +6,7 @@ mod ranked;
 use crate::page::{PageBound, PageWriter};
 use crate::scalar::{Scalar, invalid, query_scalar};
 use crate::select::Selection;
-use crate::structured::{Node, Test, UniqueIndex, plan};
+use crate::structured::{Node, Test, TupleMap, UniqueIndex, plan};
 use crate::{
     DocumentSource, QueryCancellation, QueryIndexes, QueryMemory, QueryWorkspace, ReadResult,
     allocation, document_source,
@@ -28,8 +28,6 @@ pub struct SeekPage {
 const SHAPE: &str = "seek paging walks a unique index: the filter may only fix its leading \
     fields with equality and bound the next field with one range, and sort lists the \
     remaining fields in one direction";
-
-type TupleMap = imbl::OrdMap<Vec<Scalar>, String>;
 
 #[derive(Debug)]
 pub(crate) struct Projection {
@@ -85,6 +83,7 @@ impl QueryIndexes {
         let mut selected = crate::CollectionIndexes::clone(source);
         selected.text = None;
         selected.structured.ids.clear();
+        selected.logical_ids = None;
         selected.structured.fields.retain(|path, _| {
             selected
                 .structured
@@ -456,9 +455,9 @@ impl QueryIndexes {
                 };
                 let mut wide = std::iter::from_fn(|| {
                     if let Some(rows) = &mut selected {
-                        return rows.next().map(|(key, id)| (key, id));
+                        return rows.next().map(|(key, id)| (key, id.as_str()));
                     }
-                    directed_next(tree.as_mut()?, descending)
+                    directed_next(tree.as_mut()?, descending).map(|(key, id)| (key, id.as_ref()))
                 })
                 .peekable();
                 let mut entries = std::iter::from_fn(|| {
@@ -644,7 +643,7 @@ impl WideRows {
         let mut rows = Vec::with_capacity(count);
         for (key, id) in window() {
             cancel.check()?;
-            rows.push((key.clone(), id.clone()));
+            rows.push((key.clone(), id.to_string()));
         }
         Ok((Self::Page(rows), bytes))
     }

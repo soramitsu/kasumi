@@ -1375,6 +1375,15 @@ impl NodeAdmission {
         capacity: u64,
         resident: u64,
     ) -> anyhow::Result<Arc<Self>> {
+        Self::with_fixed_memory_clock(config, capacity, resident, Arc::new(SystemLeaseClock))
+    }
+    #[cfg(test)]
+    pub(crate) fn with_fixed_memory_clock(
+        config: AdmissionConfig,
+        capacity: u64,
+        resident: u64,
+        clock: Arc<dyn LeaseClock>,
+    ) -> anyhow::Result<Arc<Self>> {
         struct FixedMemory(u64);
         impl MemorySource for FixedMemory {
             fn resident_bytes(&self) -> anyhow::Result<u64> {
@@ -1382,12 +1391,7 @@ impl NodeAdmission {
             }
         }
         let high = config.resolve_high_water(capacity)?;
-        Self::create(
-            config,
-            high,
-            Arc::new(FixedMemory(resident)),
-            Arc::new(SystemLeaseClock),
-        )
+        Self::create(config, high, Arc::new(FixedMemory(resident)), clock)
     }
     pub fn snapshot_buffer_owner(
         self: &Arc<Self>,
@@ -1413,7 +1417,12 @@ impl NodeAdmission {
         let slot = owners
             .iter_mut()
             .find(|slot| slot.is_none())
-            .ok_or_else(|| anyhow::anyhow!("snapshot startup inventory exhausted"))?;
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot startup inventory exhausted",
+                )
+            })?;
         let buffers = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
         let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?
             .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
@@ -1584,8 +1593,9 @@ impl Drop for OrdinaryProtection {
     }
 }
 impl Reservation {
-    #[cfg(test)]
-    pub(crate) fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
+    /// Observe this allocation by slot and generation, including after release.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
         let core = self.core.clone();
         let slot = self.slot;
         let id = self.id;

@@ -1,6 +1,76 @@
 //! Pull-based durable change delivery. The caller controls page cadence; no
 //! unbounded server stream, subscriber queue or per-subscriber resident state.
 use super::*;
+use crate::application_sources::SnapshotBoundary;
+
+const MAX_EXAMINED: usize = 1000;
+
+/// A page holds only commits intersecting its scan window and its own resolver.
+pub(super) struct FeedPageSource {
+    next_sequence: u64,
+    event_count: usize,
+    commits: Vec<Arc<ChangeCommit>>,
+    max_result_bytes: usize,
+    resolver: Option<Arc<dyn DocumentResolver>>,
+}
+
+impl FeedPageSource {
+    pub(super) fn capture(
+        generation: &crate::Generation,
+        start: &ChangeFeedStart,
+        verified_disk_end: Option<u64>,
+        reserve: impl FnOnce(u64) -> Result<()>,
+    ) -> Result<Self> {
+        let feed = &generation.state.change_feed;
+        let first = match start {
+            ChangeFeedStart::Beginning => Some(1),
+            ChangeFeedStart::After { cursor } => cursor.after_sequence.checked_add(1),
+            ChangeFeedStart::Now => None,
+        };
+        let mut commits = Vec::new();
+        let floor = feed.next_sequence.saturating_sub(feed.event_count as u64);
+        if let Some(first) = first.filter(|&n| n >= floor && n < feed.next_sequence) {
+            let last = first.saturating_add(MAX_EXAMINED as u64 - 1);
+            let first_tail = first.max(verified_disk_end.unwrap_or(first));
+            if first_tail <= last && first_tail < feed.next_sequence {
+                // A continuation may start in the middle of one atomic commit.
+                let lower = feed
+                    .commits
+                    .range(..=first_tail)
+                    .next_back()
+                    .map_or(first_tail, |(&n, _)| n);
+                let count = feed.commits.range(lower..=last).count();
+                reserve((count * std::mem::size_of::<Arc<ChangeCommit>>()) as u64)?;
+                commits
+                    .try_reserve_exact(count)
+                    .map_err(|_| query_workspace_overflow())?;
+                commits.extend(
+                    feed.commits
+                        .range(lower..=last)
+                        .map(|(_, commit)| commit.clone()),
+                );
+            }
+        }
+
+        let resolver = generation
+            .document_sources
+            .get()
+            .map(|owner| owner.clone() as Arc<dyn DocumentResolver>)
+            .or_else(|| {
+                generation
+                    .staged_documents
+                    .as_ref()
+                    .map(|owner| Arc::new(owner.clone()) as Arc<dyn DocumentResolver>)
+            });
+        Ok(Self {
+            next_sequence: feed.next_sequence,
+            event_count: feed.event_count,
+            commits,
+            max_result_bytes: generation.state.limits.max_result_bytes,
+            resolver,
+        })
+    }
+}
 
 // Request, output and source precede every charge; the registration is last.
 // This owner retains its own Arc during all release checks, so a failed check
@@ -8,7 +78,6 @@ use super::*;
 struct FeedRead {
     request: ReadChangeFeed,
     page: Option<ChangeFeedPage>,
-    generation: Arc<crate::Generation>,
     _permit: tokio::sync::OwnedSemaphorePermit,
     memory: Option<QueryMemory<Reservation>>,
     charge: Option<Arc<Reservation>>,
@@ -17,13 +86,15 @@ struct FeedRead {
 impl FeedRead {
     fn build(
         &mut self,
+        boundary: &SnapshotBoundary<String>,
+        input: &FeedPageSource,
         actor: &RequestContext,
         token: &QueryCancellation,
         source: Option<crate::application_records::SnapshotFeed<'_, '_>>,
     ) -> Result<ChangeFeedPage> {
         build_change_feed_page(
-            &self.generation.state,
-            self.generation.document_resolver(),
+            boundary,
+            input,
             actor,
             &self.request,
             token,
@@ -117,7 +188,6 @@ impl Database {
         let mut read = FeedRead {
             request,
             page: None,
-            generation,
             _permit: permit,
             memory: Some(QueryMemory::empty(reservation)),
             charge: None,
@@ -129,20 +199,21 @@ impl Database {
             .as_mut()
             .expect("feed workspace present")
             .reserve(query_input_workspace(&read.request, 1)?)?;
-        let state = &read.generation.state;
-        for collection in &read.request.collections {
+        let mut strict = [false; 16];
+        let (revision, policy_epoch) = (state.revision, state.policy_epoch);
+        for (slot, collection) in strict.iter_mut().zip(&read.request.collections) {
             self.engine.authorize_release(
                 context,
                 Some(collection),
                 Action::Read,
                 state.policy_epoch,
             )?;
-            if !state.collections.contains_key(collection) {
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "change feed collection missing",
-                ));
-            }
+            let definition = &state
+                .collections
+                .get(collection)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "change feed collection missing"))?
+                .definition;
+            *slot = state.policy.strict_read_audit || definition.strict_read_audit;
         }
         // Resolving an after-image can enter the native store. Hold the page's
         // original workspace, source, registration and permit in the child.
@@ -151,52 +222,56 @@ impl Database {
             crate::snapshot_codec::inspect_typed_json_work(context)
                 .map_err(|e| Error::new(ErrorCode::ResourceExhausted, e.to_string()))?,
         )?;
+        memory.reserve(
+            (std::mem::size_of::<FeedPageSource>()
+                + std::mem::size_of::<SnapshotBoundary<String>>()
+                + state.tenant.len()
+                + state.incarnation.len()
+                + 128) as u64,
+        )?;
+        let boundary = SnapshotBoundary::<String>::from(state);
+        let selection = generation.application_selection.get().cloned();
+        let verified_disk_end = selection
+            .as_ref()
+            .and_then(|s| s.verified_feed_end(state.revision_base, state.revision));
+        let mut input = FeedPageSource::capture(
+            &generation,
+            &read.request.start,
+            verified_disk_end,
+            |bytes| memory.reserve(bytes),
+        )?;
+        drop(generation);
         let actor = context.clone();
         let owner = memory.workspace().blocking_owner();
         let read = tokio::select! {
             result = owner.read_child(cancellation.clone(), None, move |token| {
-                let generation = read.generation.clone();
-                let state = &generation.state;
-                let result = if let Some(selection) = generation.application_selection.get() {
-                    selection.with_base_snapshot_records(None, state, |tree, memory, _, revision| {
-                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, revision, state)?;
-                        Ok(read.build(&actor, token, disk))
+                let result = if let Some(selection) = selection {
+                    selection.with_snapshot_feed(&boundary, input.next_sequence, |disk| {
+                        input.commits.retain(|commit| commit.first_sequence.saturating_add(commit.records.len() as u64) > disk.end_sequence);
+                        Ok(read.build(&boundary, &input, &actor, token, Some(disk)))
                     }).map_err(document_load_error)?
                 } else { None };
-                read.page = Some(match result { Some(page) => page?, None => read.build(&actor, token, None)? });
+                read.page = Some(match result { Some(page) => page?, None => read.build(&boundary, &input, &actor, token, None)? });
+                drop(input);
                 read.prepare_release()?;
                 Ok(read)
             }) => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let state = &read.generation.state;
         let releases = read
             .request
             .collections
             .iter()
-            .map(|collection| {
-                let strict = state.policy.strict_read_audit
-                    || state.collections[collection].definition.strict_read_audit;
-                (collection.as_str(), strict)
-            })
+            .map(String::as_str)
+            .zip(strict)
             .collect::<Vec<_>>();
-        self.release_collections(
-            context,
-            &releases,
-            state.revision,
-            state.policy_epoch,
-            "change_feed",
-        )
-        .await?;
+        self.release_collections(context, &releases, revision, policy_epoch, "change_feed")
+            .await?;
         cancellation.check()?;
         self.admission().check_release(&cancellation)?;
         for collection in &read.request.collections {
-            self.engine.authorize_release(
-                context,
-                Some(collection),
-                Action::Read,
-                state.policy_epoch,
-            )?;
+            self.engine
+                .authorize_release(context, Some(collection), Action::Read, policy_epoch)?;
         }
         self.access()?;
         Ok(read.into_admitted())
@@ -227,8 +302,8 @@ struct BorrowedEnvelope<'a> {
 }
 
 pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
-    state: &TenantState,
-    resolver: Option<&dyn DocumentResolver>,
+    state: &SnapshotBoundary<String>,
+    input: &FeedPageSource,
     context: &RequestContext,
     request: &ReadChangeFeed,
     cancellation: &QueryCancellation,
@@ -238,8 +313,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
     memory.scope(|memory| {
         cancellation.check()?;
         let baseline = memory.live_bytes();
-        let feed = &state.change_feed;
-        let head_sequence = feed
+        let head_sequence = input
             .next_sequence
             .checked_sub(1)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "change feed sequence is invalid"))?;
@@ -266,9 +340,9 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 cursor.after_sequence
             }
         };
-        let first_available_sequence = feed
+        let first_available_sequence = input
             .next_sequence
-            .checked_sub(feed.event_count as u64)
+            .checked_sub(input.event_count as u64)
             .filter(|sequence| *sequence > 0)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "invalid change feed bounds"))?;
         if after + 1 < first_available_sequence {
@@ -284,7 +358,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         let capacity = if after == head_sequence {
             0
         } else {
-            request.limit.min(feed.event_count).min(1000)
+            request.limit.min(input.event_count).min(MAX_EXAMINED)
         };
         memory.reserve(kasumi_query::change_feed_page_workspace_bytes(
             &context.tenant,
@@ -312,7 +386,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         })?
         .checked_add(32)
         .ok_or_else(query_workspace_overflow)?;
-        if bytes > state.limits.max_result_bytes {
+        if bytes > input.max_result_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "change feed cursor exceeds result budget",
@@ -322,29 +396,29 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
         let mut append =
             |sequence, revision, ordinal, count, record: &ChangeRecord| -> Result<bool> {
                 cancellation.check()?;
-                if examined >= 1000 || events.len() >= request.limit {
+                if examined >= MAX_EXAMINED || events.len() >= request.limit {
                     return Ok(false);
                 }
                 examined += 1;
                 if !request.collections.contains(&record.collection) {
                     next.after_sequence = sequence;
-                    return Ok(examined < 1000);
+                    return Ok(examined < MAX_EXAMINED);
                 }
                 let document = record
                     .document
                     .as_ref()
                     .map(|slot| match slot.as_ref() {
                         DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
-                        DocumentSlot::Stored(document) => {
-                            let resolver = resolver.ok_or_else(|| {
+                        // A located record names its document's current
+                        // version, resolved from the selected directory.
+                        slot => {
+                            let resolver = input.resolver.as_deref().ok_or_else(|| {
                                 Error::new(
                                     ErrorCode::Unavailable,
                                     "change feed document resolver is unavailable",
                                 )
                             })?;
-                            document
-                                .load(resolver)
-                                .map(DocumentLoan::Stored)
+                            slot.load_at(&record.collection, &record.id, resolver)
                                 .map_err(document_load_error)
                         }
                     })
@@ -364,7 +438,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     .ok_or_else(query_workspace_overflow)?;
                 if bytes
                     .checked_add(event_bytes)
-                    .is_none_or(|total| total > state.limits.max_result_bytes)
+                    .is_none_or(|total| total > input.max_result_bytes)
                 {
                     if events.is_empty() {
                         return Err(Error::new(
@@ -393,7 +467,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 bytes += event_bytes;
                 next.after_sequence = sequence;
                 events.push(event);
-                Ok(examined < 1000 && events.len() < request.limit)
+                Ok(examined < MAX_EXAMINED && events.len() < request.limit)
             };
         // Appends never change an earlier commit within an incarnation.
         // The current retention floor applies to both halves. If a page ends
@@ -407,24 +481,18 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
             }
             _ => Some(first_requested),
         };
-        if let Some(tail) = tail.filter(|&start| start < feed.next_sequence) {
-            let start = feed
-                .commits
-                .range(..=tail)
-                .next_back()
-                .map_or(tail, |(&sequence, _)| sequence);
-            'commits: for (_, commit) in feed.commits.range(start..) {
-                for (ordinal, record) in commit.records.iter().enumerate() {
-                    let sequence = commit.first_sequence + ordinal as u64;
-                    if sequence >= tail
-                        && !append(
-                            sequence,
-                            commit.revision,
-                            ordinal,
-                            commit.records.len(),
-                            record,
-                        )?
-                    {
+        if let Some(tail) = tail.filter(|&start| start < input.next_sequence) {
+            'commits: for commit in &input.commits {
+                let skip = tail.saturating_sub(commit.first_sequence);
+                let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+                for (ordinal, record) in commit.records.iter().enumerate().skip(skip) {
+                    if !append(
+                        commit.first_sequence + ordinal as u64,
+                        commit.revision,
+                        ordinal,
+                        commit.records.len(),
+                        record,
+                    )? {
                         break 'commits;
                     }
                 }

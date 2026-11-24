@@ -148,10 +148,12 @@ pub(crate) fn document_slot_heap(document: &DocumentSlot, budget: usize) -> Resu
             Ok(bytes)
         }
         DocumentSlot::Stored(document) => {
-            let mut bytes = std::mem::size_of::<DocumentSlot>() + 128;
+            let mut bytes =
+                std::mem::size_of::<DocumentSlot>() + std::mem::size_of::<StoredDocument>() + 128;
             add(&mut bytes, document.id.capacity(), budget)?;
             Ok(bytes)
         }
+        DocumentSlot::Located(_) => Ok(std::mem::size_of::<DocumentSlot>() + 128),
     }
 }
 fn archive_reference_heap(document: &ArchivedDocument, budget: usize) -> Result<usize> {
@@ -314,29 +316,34 @@ impl Roots {
             let Some(original) = self.generation.state.collections.get(name) else {
                 continue;
             };
+            if original.documents.is_empty() && original.archived_documents.is_empty() {
+                continue;
+            }
             let documents = original.documents.clone();
             let archived = original.archived_documents.clone();
-            for difference in old.documents.diff(&new.documents) {
-                use imbl::ordmap::DiffItem;
-                let id = match difference {
-                    DiffItem::Add(k, _) | DiffItem::Remove(k, _) => k,
-                    DiffItem::Update { old: (k, _), .. } => k,
-                };
-                let paths = self.paths.entry(name.clone()).or_default();
-                paths.documents = paths.documents.saturating_add(1).min(documents.len());
-                if let Some(value) = documents.get(id)
-                    && new
-                        .documents
-                        .get(id)
-                        .is_none_or(|current| !Arc::ptr_eq(value, current))
-                {
-                    self.account_payload(
-                        0,
-                        name,
-                        id,
-                        |limit| document_slot_heap(value, limit),
-                        budget,
-                    )?;
+            if !documents.is_empty() {
+                for difference in old.documents.diff(&new.documents) {
+                    use imbl::ordmap::DiffItem;
+                    let id = match difference {
+                        DiffItem::Add(k, _) | DiffItem::Remove(k, _) => k,
+                        DiffItem::Update { old: (k, _), .. } => k,
+                    };
+                    let paths = self.paths.entry(name.clone()).or_default();
+                    paths.documents = paths.documents.saturating_add(1).min(documents.len());
+                    if let Some(value) = documents.get(id)
+                        && new
+                            .documents
+                            .get(id)
+                            .is_none_or(|current| !Arc::ptr_eq(value, current))
+                    {
+                        self.account_payload(
+                            0,
+                            name,
+                            id,
+                            |limit| document_slot_heap(value, limit),
+                            budget,
+                        )?;
+                    }
                 }
             }
             for difference in old.archived_documents.diff(&new.archived_documents) {
@@ -653,6 +660,8 @@ impl LeaseManager {
                 // names. The merged page moves those strings without cloning them.
                 reservation.reserve_additional(((request.limit + 1) * 768) as u64)?;
                 let metadata = crate::snapshot_codec::metadata(&root.generation.state);
+                let disk_lengths =
+                    selection.served_primary_at(metadata.revision_base, metadata.revision);
                 let selection = selection.clone();
                 scan_reader = root
                     .generation
@@ -664,37 +673,78 @@ impl LeaseManager {
                 let shared = scan_reader
                     .as_deref()
                     .map(crate::document_store::SharedRead::selected);
-                let read = selection.with_serving_primary(shared, &metadata, |tree, _, layout| {
-                    let check = || -> anyhow::Result<()> {
-                        cancellation.check()?;
-                        context.authorization.check_live()?;
-                        anyhow::ensure!(handle.live(), "snapshot expired while scanning");
-                        Ok(())
-                    };
-                    let limit = request.limit + 1;
-                    if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
-                        let mut ids = Vec::with_capacity(limit);
-                        crate::application_records::visit_snapshot_headers(
+                let read =
+                    selection.with_serving_primary(shared, &metadata, |tree, memory, layout| {
+                        let check = || -> anyhow::Result<()> {
+                            cancellation.check()?;
+                            context.authorization.check_live()?;
+                            anyhow::ensure!(handle.live(), "snapshot expired while scanning");
+                            Ok(())
+                        };
+                        let limit = request.limit + 1;
+                        if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+                            let mut headers = Vec::with_capacity(limit);
+                            crate::application_records::visit_snapshot_headers(
+                                tree,
+                                &request.collection,
+                                request.after_id.as_deref(),
+                                metadata.revision,
+                                |id, version, kind| {
+                                    check()?;
+                                    headers.push((id.to_owned(), version, kind));
+                                    Ok(headers.len() < limit)
+                                },
+                            )?;
+                            // Drop the header scan before opening each descriptor on the
+                            // same pinned tree. Only the bounded lengths leave this reader.
+                            return headers
+                                .into_iter()
+                                .map(|(id, version, kind)| {
+                                    if !disk_lengths {
+                                        return Ok((id, None));
+                                    }
+                                    check()?;
+                                    let (point, _grants, _) =
+                                        crate::application_records::admitted_snapshot_point(
+                                            tree,
+                                            memory,
+                                            &request.collection,
+                                            &id,
+                                            metadata.revision,
+                                            check,
+                                        )?;
+                                    use crate::application_records::PrimaryPoint;
+                                    use kasumi_query::RecordKind;
+                                    let bytes = match (kind, point) {
+                                        (RecordKind::Live, PrimaryPoint::Live(slot))
+                                            if slot.version() == version =>
+                                        {
+                                            usize::try_from(slot.document_bytes()?)?
+                                        }
+                                        (
+                                            RecordKind::Archived,
+                                            PrimaryPoint::Archived(reference),
+                                        ) if reference.version == version => {
+                                            reference.document_bytes
+                                        }
+                                        _ => anyhow::bail!("snapshot header and descriptor differ"),
+                                    };
+                                    Ok((id, Some(bytes)))
+                                })
+                                .collect();
+                        }
+                        anyhow::ensure!(!disk_lengths, "selected snapshot lost its header layout");
+                        Ok(crate::application_records::snapshot_ids_after(
                             tree,
                             &request.collection,
                             request.after_id.as_deref(),
-                            metadata.revision,
-                            |id, _, _| {
-                                check()?;
-                                ids.push(id.to_owned());
-                                Ok(ids.len() < limit)
-                            },
-                        )?;
-                        return Ok(ids);
-                    }
-                    crate::application_records::snapshot_ids_after(
-                        tree,
-                        &request.collection,
-                        request.after_id.as_deref(),
-                        limit,
-                        check,
-                    )
-                });
+                            limit,
+                            check,
+                        )?
+                        .into_iter()
+                        .map(|id| (id, None))
+                        .collect::<Vec<_>>())
+                    });
                 context.authorization.check_live()?;
                 cancellation.check()?;
                 entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
@@ -704,6 +754,12 @@ impl LeaseManager {
                     return Err(expired());
                 }
                 durable_ids = read.map_err(crate::service::document_load_error)?;
+                if disk_lengths && durable_ids.is_none() {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "selected snapshot lost its primary directory",
+                    ));
+                }
             }
         }
         let original = &root.generation.state;
@@ -741,6 +797,7 @@ impl LeaseManager {
                     crate::index_source::resident_ids_after(collection, request.after_id.as_deref())
                         .take(request.limit + 1)
                         .cloned()
+                        .map(|id| (id, None))
                         .collect()
                 });
                 let mut bytes = crate::accounting::encoded_len(&SnapshotScanPage {
@@ -753,9 +810,11 @@ impl LeaseManager {
                 .saturating_add(256);
                 let mut keys = Vec::new();
                 let mut ids = Vec::new();
-                for id in candidates {
+                for (id, durable_bytes) in candidates {
                     cancellation.check()?;
-                    let document_bytes = if let Some(document) = collection.documents.get(&id) {
+                    let document_bytes = if let Some(bytes) = durable_bytes {
+                        bytes
+                    } else if let Some(document) = collection.documents.get(&id) {
                         // Selection needs only the exact logical wire length.
                         // Stored slots cannot serialize without a source loan,
                         // and decoding here would do I/O under the lease lock.
@@ -778,9 +837,11 @@ impl LeaseManager {
                             })?
                             .document_bytes
                     };
+                    let next_bytes = bytes
+                        .checked_add(document_bytes)
+                        .and_then(|n| n.checked_add(1));
                     if keys.len() >= request.limit
-                        || bytes.saturating_add(document_bytes + 1)
-                            > original.limits.max_result_bytes
+                        || next_bytes.is_none_or(|n| n > original.limits.max_result_bytes)
                     {
                         if keys.is_empty() {
                             return Err(Error::new(
@@ -791,7 +852,7 @@ impl LeaseManager {
                         scan_has_more = true;
                         break;
                     }
-                    bytes += document_bytes + 1;
+                    bytes = next_bytes.expect("bounded page length");
                     keys.push(DocumentKey {
                         collection: request.collection.clone(),
                         id: id.clone(),
@@ -841,6 +902,13 @@ impl LeaseManager {
         let mut state = crate::snapshot_codec::metadata(original);
         let mut retained_bytes = root.metadata_bytes;
         let mut charged_bytes = initial;
+        let disk_primary = root
+            .generation
+            .application_selection
+            .get()
+            .is_some_and(|selection| {
+                selection.served_primary_at(original.revision_base, original.revision)
+            });
         for key in &keys {
             cancellation.check()?;
             authorize_state(&current.state, context, Some(&key.collection), Action::Read)?;
@@ -858,6 +926,11 @@ impl LeaseManager {
                     archived_documents: Default::default(),
                     archived_document_bytes: 0,
                 });
+            // The page worker reads live points from this exact pin. A collection
+            // with history still needs its selected archive manifests for hydration.
+            if disk_primary && source.archived_documents.is_empty() {
+                continue;
+            }
             if let Some(document) = source.documents.get(&key.id) {
                 add(
                     &mut retained_bytes,

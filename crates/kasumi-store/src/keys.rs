@@ -253,14 +253,23 @@ impl TransitKeyProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Transit request failed"))?;
+            .map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "Transit request failed",
+                )
+            })?;
         let status = response.status();
         // Do not copy arbitrary provider error bodies into logs: they may contain secrets.
-        ensure!(
-            status.is_success(),
-            "Transit rejected request (HTTP {})",
-            status.as_u16()
-        );
+        if !status.is_success() {
+            // The completed HTTP refusal owns only its status. The recovery
+            // owner can retry after the provider admits this version again.
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                format!("Transit rejected request (HTTP {})", status.as_u16()),
+            )
+            .into());
+        }
         ensure!(
             response.content_length().is_none_or(|n| n <= 65536),
             "Transit response too large"
@@ -913,9 +922,72 @@ mod tests {
         assert_eq!(state.requests.lock().len(), previous); // rejects binding before network
         state.response_mode.store(1, Ordering::SeqCst);
         let failure = store.refresh_lease().await.unwrap_err();
+        let outer: &(dyn std::error::Error + 'static) = failure.as_ref();
+        let refusal = outer.downcast_ref::<kasumi_types::Error>().unwrap();
+        assert_eq!(refusal.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(refusal.message, "Transit rejected request (HTTP 403)");
+        assert!(!refusal.has_physical_source());
         assert!(!format!("{failure:#}").contains("sensitive upstream"));
         assert!(store.get("docs", b"a").is_err());
         assert!(store.state.read().keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn existing_pair_reopens_after_a_completed_transit_refusal() -> Result<()> {
+        use crate::TenantStorageSet;
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let root = crate::test_utils::private_tempdir()?;
+        let scratch = crate::test_utils::private_tempdir()?;
+        let node = NodeStore::create_new_fixture(
+            root.path().join("db"),
+            crate::test_utils::NODE_STORE_ID,
+            memory.clone(),
+            crate::ScratchDisk::fixture(scratch.path(), memory),
+        )
+        .expect("bounded fixture node opens");
+        let state = Service::new();
+        let fixture = TlsFixture::spawn(router(state.clone())).await;
+        let transit = Arc::new(TransitKeyProvider::new(config(&fixture))?);
+        let custody = Arc::new(LocalKeyProvider::new([0x2f; 32]));
+        let pair = TenantStorageSet::initialize_catalogs_fixture(
+            node.clone(),
+            "tenant".into(),
+            transit.clone(),
+            custody.clone(),
+        )
+        .await?;
+        pair.application()
+            .write_batch(&[WriteOp::put("docs", b"before", b"retained")])?;
+        pair.shutdown().await?;
+        drop(pair);
+
+        let open = || {
+            TenantStorageSet::open_existing_fixture(
+                node.clone(),
+                "tenant".into(),
+                transit.clone(),
+                custody.clone(),
+            )
+        };
+        state.response_mode.store(1, Ordering::SeqCst);
+        let denied = open().await.err().expect("denied Transit unwrap");
+        let outer: &(dyn std::error::Error + 'static) = denied.as_ref();
+        let error = outer
+            .downcast_ref::<kasumi_types::Error>()
+            .expect("completed refusal");
+        assert_eq!(error.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(error.message, "Transit rejected request (HTTP 403)");
+        assert!(!error.has_physical_source());
+        state.response_mode.store(0, Ordering::SeqCst);
+        let reopened = open().await?;
+        assert_eq!(
+            reopened.application().get("docs", b"before")?.as_deref(),
+            Some(b"retained".as_slice())
+        );
+        reopened.shutdown().await?;
+        drop(reopened);
+        node.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -931,13 +1003,17 @@ mod tests {
             .cert
             .pem()
             .into_bytes();
-        assert!(
-            TransitKeyProvider::new(wrong_trust)
-                .unwrap()
-                .generate_key("tenant")
-                .await
-                .is_err()
-        );
+        let denial = TransitKeyProvider::new(wrong_trust)
+            .unwrap()
+            .generate_key("tenant")
+            .await
+            .err()
+            .expect("untrusted Transit endpoint");
+        let outer: &(dyn std::error::Error + 'static) = denial.as_ref();
+        let completed = outer.downcast_ref::<kasumi_types::Error>().unwrap();
+        assert_eq!(completed.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(completed.message, "Transit request failed");
+        assert!(!completed.has_physical_source());
         assert!(state.requests.lock().is_empty());
         let provider = TransitKeyProvider::new(config(&fixture)).unwrap();
         for response in [2, 3, 4] {

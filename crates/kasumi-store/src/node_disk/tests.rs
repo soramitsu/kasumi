@@ -51,7 +51,7 @@ fn namespace_pending(disk: &NodeDisk) -> u64 {
         .accounted
         .values()
         .filter_map(AccountedInode::directory)
-        .map(|entry| entry.pending)
+        .map(|entry| entry.pending().unwrap())
         .sum()
 }
 
@@ -3036,7 +3036,7 @@ fn reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises() 
         let expected_parent_pending = if fail {
             old_parent_pending
         } else {
-            parent_charge - config.roots["data"].metadata().unwrap().blocks() * 512
+            parent_charge - census::backed_directory_bytes(&config.roots["data"])
         };
         assert_eq!(
             *disk.device().lock(),

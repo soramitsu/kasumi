@@ -95,6 +95,29 @@ impl OriginalRecoveryFailure {
     pub(crate) fn original(&self) -> &kasumi_engine::SnapshotFailure {
         self.original.original()
     }
+    fn native_free_snapshot(&self) -> bool {
+        use kasumi_engine::SnapshotFailure;
+
+        let RecoveryOriginal::Snapshot(original) = &self.original else {
+            return false;
+        };
+        let native_free = match original {
+            SnapshotFailure::Operation(error) => !error.has_physical_source(),
+            SnapshotFailure::AdmissionRefused(_) => true,
+            SnapshotFailure::Source(error) => {
+                // The outer store gate refusal owns no resource. A wrapping
+                // cleanup or provider error still owns its native outcome.
+                let outer: &(dyn std::error::Error + 'static) = error.as_ref();
+                outer.is::<kasumi_store::KeyAccessDenied>()
+            }
+            SnapshotFailure::Creation(_) => false,
+        };
+        native_free
+            && self.route_cleanup.is_none()
+            && self.database_cleanup.is_none()
+            && self.stores_cleanup.is_none()
+            && self.retired_cleanup.is_none()
+    }
     #[cfg(test)]
     pub(crate) fn retired_source_failure(&self) -> Option<&crate::runtime::RetiredSourceFailure> {
         match &self.original {
@@ -102,6 +125,17 @@ impl OriginalRecoveryFailure {
             RecoveryOriginal::Snapshot(_) => None,
         }
     }
+}
+/// One failed initialization probe of an already registered generation, which
+/// this attempt did not open and whose probe creates no owner. Record the stage
+/// beside the original, as `AccessLease` does: a store gate sealed between
+/// `check_serving` and the probe returns its fixed `KeyAccessDenied` refusal,
+/// which stays outermost and is therefore native-free, so the seat is released
+/// and the next pass observes the closure and drains it for fresh admission.
+/// A context wrapper hides that refusal and retains the seat, and its stage,
+/// until daemon exit. Every other probe failure is still retained.
+fn previous_initialize_failure(original: anyhow::Error) -> OriginalRecoveryFailure {
+    OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::Initialize)
 }
 impl From<kasumi_engine::SnapshotFailure> for OriginalRecoveryFailure {
     fn from(original: kasumi_engine::SnapshotFailure) -> Self {
@@ -316,35 +350,26 @@ impl RecoverySeat {
             && !self.database_observation.unsettled()
             && !self.stores_observation.unsettled()
             && !self.retired_observation.unsettled()
-            && self.failure.as_ref().is_some_and(|failure| {
-                matches!(
-                    failure.original,
-                    RecoveryOriginal::Snapshot(
-                        kasumi_engine::SnapshotFailure::Operation(_)
-                            | kasumi_engine::SnapshotFailure::AdmissionRefused(_)
-                    )
-                ) && failure.route_cleanup.is_none()
-                    && failure.database_cleanup.is_none()
-                    && failure.stores_cleanup.is_none()
-                    && failure.retired_cleanup.is_none()
-            })
+            && self
+                .failure
+                .as_ref()
+                .is_some_and(OriginalRecoveryFailure::native_free_snapshot)
     }
 
-    /// Only an ordinary pre-engine memory refusal can release these original
-    /// stores. A failed, cancelled or panicking shutdown keeps the whole seat.
+    /// A pre-engine admission refusal without native custody can release the
+    /// original stores after a clean shutdown and disposal of its future.
     fn release_drained_stores_after_admission_refusal(&mut self) {
         let Some(failure) = &self.failure else {
             return;
         };
         if failure.source_stage() == Some(&RecoverStage::AdmissionReserve)
+            && failure.native_free_snapshot()
             && failure
                 .original()
                 .operation_error()
-                .is_some_and(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
-            && failure.stores_cleanup.is_none()
+                .is_none_or(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
             && self.stores_observation.entry == CleanupEntry::Returned
             && self.stores_observation.future_disposal == CleanupEntry::Returned
-            && !self.stores_observation.unsettled()
         {
             drop(self.stores.take());
             self.stores_observation = CleanupObservation::default();
@@ -1694,8 +1719,7 @@ impl Administration {
                 return self
                     .initialize_original_if_ready(tenant, previous)
                     .await
-                    .context(RecoverStage::Initialize)
-                    .map_err(Into::into);
+                    .map_err(previous_initialize_failure);
             }
             self.observe_closure(tenant, incarnation, previous)?;
             if let Some(lease) = &previous.lease {
@@ -1819,7 +1843,9 @@ impl Administration {
             kasumi_serving::LeasePurpose::Serving,
         )
         .await
-        .context(RecoverStage::AccessLease)?;
+        .map_err(|original| {
+            OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::AccessLease)
+        })?;
         let provider = configured
             .keys
             .provider(self.credential.clone())
@@ -1931,10 +1957,7 @@ impl Administration {
                 }
                 database.check_serving()?;
                 ensure!(
-                    self.committed_topology()?
-                        .tenants
-                        .get(tenant)
-                        .is_some_and(|route| route.incarnation == incarnation),
+                    self.control.routes_to(tenant, incarnation)?,
                     "Control route changed during fresh tenant admission"
                 );
                 Ok::<_, anyhow::Error>(())
@@ -2016,18 +2039,7 @@ impl Administration {
 
     fn record_drain_issues(&self, tenant: &str, incarnation: &str, failure: &DrainFailure) {
         let names = component_names(failure);
-        let raft_failure_class = failure
-            .issues()
-            .iter()
-            .find_map(|issue| kasumi_raft::raft_failure_class(issue.error()))
-            .unwrap_or("none");
-        tracing::warn!(
-            tenant,
-            event = "original_tenant_drain_completed_with_issues",
-            components = joined(&names),
-            raft_failure_class,
-            "closed original tenant drained with recorded issues"
-        );
+        crate::logging::original_tenant_drain_completed(tenant, &joined(&names), failure);
         if let Ok(mut pending) = self.pending_admission.write()
             && let Some(record) = pending.get_mut(&(tenant.to_owned(), incarnation.to_owned()))
         {
@@ -2108,6 +2120,17 @@ mod tests {
             ..Default::default()
         };
         assert!(seat.native_free_failure());
+        let typed_with_owner = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "provider returned an owner",
+        )
+        .with_physical_source(anyhow::anyhow!("original caller custody"));
+        let resource_free = seat.failure.replace(OriginalRecoveryFailure::snapshot_at(
+            typed_with_owner.into(),
+            RecoverStage::StorageOpen,
+        ));
+        assert!(!seat.native_free_failure());
+        seat.failure = resource_free;
         seat.stores_observation.entry = CleanupEntry::Entered;
         assert!(!seat.native_free_failure());
         seat.stores_observation.entry = CleanupEntry::Returned;
@@ -2131,6 +2154,168 @@ mod tests {
                 .source_error()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn local_authority_deadline_releases_only_the_completed_admission_attempt() {
+        let failure = |original: anyhow::Error| {
+            OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::AccessLease)
+        };
+        let mut seat = RecoverySeat {
+            failure: Some(failure(
+                crate::serving_runtime::lease_acquisition_deadline().into(),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(seat.stage(), "access_lease");
+        assert!(seat.native_free_failure());
+        seat.stores_observation.entry = CleanupEntry::Entered;
+        assert!(!seat.native_free_failure());
+        seat.stores_observation = CleanupObservation::default();
+
+        // A peer can send the same status text without proving local expiry.
+        let peer =
+            tonic::Status::deadline_exceeded("installed authority operation deadline elapsed");
+        seat.failure = Some(failure(kasumi_client::ClientError::Transport(peer).into()));
+        assert!(!seat.native_free_failure());
+        let held = crate::serving_runtime::lease_acquisition_deadline()
+            .with_physical_source(anyhow::anyhow!("retained physical source"));
+        seat.failure = Some(failure(held.into()));
+        assert!(!seat.native_free_failure());
+    }
+
+    #[tokio::test]
+    async fn pre_engine_admission_releases_cleanly_drained_stores_for_bare_refusals() {
+        use kasumi_store::test_utils::LocalKeyProvider;
+
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
+                .unwrap();
+        let node = physical
+            .create_new(
+                directory.path().join("persistent/admission-refusal.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let stores = TenantStorageSet::initialize_catalogs_fixture(
+            node.clone(),
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([31; 32])),
+            Arc::new(LocalKeyProvider::new([32; 32])),
+        )
+        .await
+        .unwrap();
+        stores.application().seal();
+        let refusal = || stores.application().check_access().unwrap_err();
+        let admission_failure = |original| {
+            OriginalRecoveryFailure::snapshot_at(original, RecoverStage::AdmissionReserve)
+        };
+        let mut seat = RecoverySeat {
+            stores: Some(stores.clone()),
+            failure: Some(admission_failure(refusal().into())),
+            ..Default::default()
+        };
+        seat.release_drained_stores_after_admission_refusal();
+        assert!(seat.stores.is_some());
+        observe_cleanup(
+            &mut seat.stores_observation,
+            &mut seat.failure.as_mut().unwrap().stores_cleanup,
+            stores.shutdown(),
+        )
+        .await;
+        assert!(seat.failure.as_ref().unwrap().stores_cleanup.is_none());
+
+        let retained = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::ResourceExhausted,
+            "admission failed with native custody",
+        )
+        .with_physical_source(anyhow::anyhow!("physical source"));
+        for original in [
+            refusal().context("opaque provider context").into(),
+            retained.into(),
+        ] {
+            seat.failure = Some(admission_failure(original));
+            seat.release_drained_stores_after_admission_refusal();
+            assert!(seat.stores.is_some());
+            assert!(!seat.native_free_failure());
+        }
+        seat.failure = Some(admission_failure(refusal().into()));
+        seat.release_drained_stores_after_admission_refusal();
+        assert!(seat.stores.is_none());
+        assert!(seat.native_free_failure());
+
+        drop(stores);
+        node.shutdown().await.unwrap();
+    }
+
+    /// G08 native ARM64 concurrency (31a52324): a follower's serving lease
+    /// expired while its reconciliation pass was between `check_serving` and
+    /// the registered generation's initialization probe. The probe's first gate
+    /// refused with the sealed store's exact `KeyAccessDenied`; wrapped in the
+    /// stage context it was retained as opaque custody, so every later pass
+    /// reported `initialize` without retrying, the closure was never observed
+    /// (`unobservable`) and daemon shutdown retained the seat and exited 1.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sealed_store_refusal_of_a_registered_initialize_probe_releases_the_seat() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())
+                .unwrap();
+        let node = physical
+            .create_new(
+                directory.path().join("persistent/initialize-probe.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        // The deployment's installed `kind: file` application key provider.
+        let provider = kasumi_store::FileKeyProvider::initialize(
+            &directory.path().join("application-key.json"),
+            "application",
+        )
+        .unwrap();
+        let store = kasumi_store::TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            "tenant-a".into(),
+            Arc::new(provider),
+        )
+        .await
+        .unwrap();
+        store.check_access().unwrap();
+        store.seal();
+        let refusal = || store.check_access().unwrap_err();
+        assert!(refusal().is::<kasumi_store::KeyAccessDenied>());
+
+        // The released shape: stage context outermost, the refusal hidden.
+        let mut seat = RecoverySeat {
+            failure: Some(OriginalRecoveryFailure::from(
+                refusal().context(RecoverStage::Initialize),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(seat.stage(), "initialize");
+        assert!(!seat.native_free_failure());
+
+        // Corrected: the same stage, the exact refusal outermost, no owner.
+        seat.failure = Some(previous_initialize_failure(refusal()));
+        assert_eq!(seat.stage(), "initialize");
+        assert!(seat.native_free_failure());
+        // Releasing the seat neither reopens nor unseals the closed store.
+        assert!(refusal().is::<kasumi_store::KeyAccessDenied>());
+
+        // Fail closed: any other probe failure, or a refusal beneath further
+        // context, keeps the seat and its failure.
+        seat.failure = Some(previous_initialize_failure(anyhow::anyhow!(
+            "database execution failed; recovery required"
+        )));
+        assert!(!seat.native_free_failure());
+        seat.failure = Some(previous_initialize_failure(
+            refusal().context("opaque provider context"),
+        ));
+        assert!(!seat.native_free_failure());
+
+        store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
     }
 
     #[test]

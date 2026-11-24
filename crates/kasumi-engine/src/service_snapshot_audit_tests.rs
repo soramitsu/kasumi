@@ -199,7 +199,7 @@ impl LeaseClock for SnapshotAuditExpiryClock {
 #[tokio::test]
 async fn snapshot_audit_committed_batch_does_not_release_after_original_credential_expires() {
     let fixture = snapshot_audit_fixture().await;
-    let context = fixture.credential(Arc::new(SnapshotAuditExpiryClock(Arc::downgrade(
+    let context = fixture.credential_with_command_clock(Arc::new(SnapshotAuditExpiryClock(Arc::downgrade(
         &fixture.db.engine,
     ))));
     let error = fixture

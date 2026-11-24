@@ -188,8 +188,20 @@ impl DirectoryWalker {
         &mut self,
         backend: &dyn DirectoryBackend,
         work_limit: usize,
-        mut page: impl FnMut(DirectoryPageRef) -> Result<(), CoreError>,
+        page: impl FnMut(DirectoryPageRef) -> Result<(), CoreError>,
         mut value: impl FnMut(ValueLocation) -> Result<(), CoreError>,
+    ) -> Result<DirectoryWalkProgress, CoreError> {
+        self.step_with_keys(backend, work_limit, page, |_, location| value(location))
+    }
+
+    /// Provide the validated row key while its leaf is resident, with the same
+    /// work and workspace bounds as a value-location walk.
+    pub(crate) fn step_with_keys(
+        &mut self,
+        backend: &dyn DirectoryBackend,
+        work_limit: usize,
+        mut page: impl FnMut(DirectoryPageRef) -> Result<(), CoreError>,
+        mut value: impl FnMut(DirectoryKey<'_>, ValueLocation) -> Result<(), CoreError>,
     ) -> Result<DirectoryWalkProgress, CoreError> {
         if self.failed {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
@@ -212,7 +224,7 @@ impl DirectoryWalker {
         backend: &dyn DirectoryBackend,
         work_limit: usize,
         page: &mut impl FnMut(DirectoryPageRef) -> Result<(), CoreError>,
-        value: &mut impl FnMut(ValueLocation) -> Result<(), CoreError>,
+        value: &mut impl FnMut(DirectoryKey<'_>, ValueLocation) -> Result<(), CoreError>,
     ) -> Result<DirectoryWalkProgress, CoreError> {
         self.check_owner()?;
         let mut progress = DirectoryWalkProgress::default();
@@ -278,7 +290,7 @@ impl DirectoryWalker {
                         } =
                             DirectoryValue::decode(entry.key, entry.value, frame.info.generation)?
                         {
-                            value(location)?;
+                            value(entry.key, location)?;
                         }
                     } else {
                         let lower = KeySource {

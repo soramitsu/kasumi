@@ -719,13 +719,30 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             .ok_or_else(|| {
                 Status::unauthenticated("actual mutually authenticated TLS peer required")
             })?;
+        let observe_fence = request
+            .metadata()
+            .get(kasumi_serving::DISCOVERY_FENCE_METADATA)
+            .is_some_and(|value| value == "1");
         let body: LeaseDiscovery =
             decode_json(&request.into_inner().request_json).map_err(status)?;
         let caller = AuthenticatedNode::from_verified_transport(context.clone(), hex::encode(pin))
             .map_err(status)?;
+        let result = if observe_fence {
+            self.authority.discover_state(caller, body).await
+        } else {
+            self.authority
+                .discover(caller, body)
+                .await
+                .map(|(identity, fence)| {
+                    (
+                        kasumi_serving::LeaseDiscoveryObservation::Serving(identity),
+                        fence,
+                    )
+                })
+        };
         let (identity, fence) = self
             .auth
-            .audit_result(&context, self.authority.discover(caller, body).await)
+            .audit_result(&context, result)
             .await
             .map_err(status)?;
         self.release(

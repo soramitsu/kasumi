@@ -71,6 +71,29 @@ impl<T, E: std::fmt::Debug> Native<T> for std::result::Result<T, E> {
     }
 }
 
+// The wire-facing Debug representation omits the physical cause. Preserve
+// that chain in the local qualification record when a session operation fails.
+fn snapshot_diagnostic(original: crate::SnapshotFailure) -> anyhow::Error {
+    match original {
+        crate::SnapshotFailure::Operation(error) => error.into(),
+        crate::SnapshotFailure::Source(error) => error,
+        other => anyhow::anyhow!("{other:?}"),
+    }
+}
+
+#[test]
+fn local_session_diagnostic_retains_the_storage_cause() {
+    let cause = std::io::Error::from_raw_os_error(libc::EIO);
+    let error = kasumi_types::Error::from_physical_source(cause.into());
+    let diagnostic = snapshot_diagnostic(error.into()).context("public abort");
+    assert!(diagnostic.chain().any(|source| {
+        source
+            .downcast_ref::<std::io::Error>()
+            .and_then(|e| e.raw_os_error())
+            == Some(libc::EIO)
+    }));
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
@@ -630,40 +653,71 @@ impl Original {
     }
 }
 
-fn read_originals(root: &Path) -> anyhow::Result<BTreeMap<u64, Original>> {
-    let path = root.join("original.jsonl");
+enum JournalTail {
+    Complete,
+    MissingNewline,
+    Torn { valid_bytes: u64 },
+}
+
+fn read_journal(file: &std::fs::File) -> anyhow::Result<(BTreeMap<u64, Original>, JournalTail)> {
+    let mut reader = std::io::BufReader::new(file);
     let mut originals = BTreeMap::new();
-    if !path.exists() {
-        return Ok(originals);
-    }
-    let text = std::fs::read_to_string(path)?;
-    let complete = text.ends_with('\n');
-    let lines: Vec<&str> = text.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        match serde_json::from_str::<Original>(line) {
-            Ok(original) => {
-                anyhow::ensure!(
-                    originals.insert(original.ordinal, original).is_none(),
-                    "duplicate original ordinal"
-                );
-            }
-            // A torn final line from an interrupted writer is not a result.
-            Err(_) if index + 1 == lines.len() && !complete => {}
-            Err(error) => return Err(error.into()),
+    let mut valid_bytes = 0u64;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok((originals, JournalTail::Complete));
         }
+        let terminated = line.ends_with(b"\n");
+        let original: Original = match serde_json::from_slice(&line) {
+            Ok(original) => original,
+            Err(error) if !terminated && error.is_eof() => {
+                return Ok((originals, JournalTail::Torn { valid_bytes }));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            originals.insert(original.ordinal, original).is_none(),
+            "duplicate original ordinal"
+        );
+        if !terminated {
+            return Ok((originals, JournalTail::MissingNewline));
+        }
+        valid_bytes += line.len() as u64;
     }
-    Ok(originals)
+}
+
+fn read_originals(root: &Path) -> anyhow::Result<BTreeMap<u64, Original>> {
+    match std::fs::File::open(root.join("original.jsonl")) {
+        Ok(file) => Ok(read_journal(&file)?.0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 struct Journal(std::fs::File);
 impl Journal {
-    fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(root.join("original.jsonl"))?,
-        ))
+    fn resume(root: &Path) -> anyhow::Result<(BTreeMap<u64, Original>, Self)> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(root.join("original.jsonl"))?;
+        let (originals, tail) = read_journal(&file)?;
+        match tail {
+            JournalTail::Complete => {}
+            JournalTail::MissingNewline => {
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+            JournalTail::Torn { valid_bytes } => {
+                file.set_len(valid_bytes)?;
+                file.sync_all()?;
+            }
+        }
+        std::fs::File::open(root)?.sync_all()?;
+        Ok((originals, Self(file)))
     }
     fn append(&mut self, original: &Original) -> anyhow::Result<()> {
         let mut line = serde_json::to_vec(original)?;
@@ -675,6 +729,59 @@ impl Journal {
         self.0.sync_all()?;
         Ok(())
     }
+}
+
+#[test]
+fn journal_resume_preserves_originals_across_every_last_record_cut() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let path = root.join("original.jsonl");
+    let record = |ordinal| Original {
+        ordinal,
+        session_id: uuid::Uuid::from_u128(ordinal as u128 + 1),
+        request_id: format!("請求-{ordinal}"),
+        kind: Kind::Aborted,
+        stage: "populate".into(),
+        checkpoint: None,
+        outcome: None,
+        seconds: 0.5,
+        resolution: None,
+    };
+    let (first, second, third) = (record(0), record(1), record(2));
+    let mut prefix = serde_json::to_vec(&first)?;
+    prefix.push(b'\n');
+    let encoded = serde_json::to_vec(&second)?;
+    for cut in 0..=encoded.len() {
+        let mut interrupted = prefix.clone();
+        interrupted.extend_from_slice(&encoded[..cut]);
+        std::fs::write(&path, &interrupted)?;
+        let originals = read_originals(root)?;
+        assert_eq!(std::fs::read(&path)?, interrupted);
+        let (resumed, mut journal) = Journal::resume(root)?;
+        assert_eq!(resumed, originals);
+        assert_eq!(resumed.get(&0), Some(&first));
+        if cut == encoded.len() {
+            assert_eq!(resumed.get(&1), Some(&second));
+        } else {
+            assert_eq!(resumed.len(), 1);
+            journal.append(&second)?;
+        }
+        journal.append(&third)?;
+        journal.sync()?;
+        drop(journal);
+        assert_eq!(
+            read_originals(root)?,
+            BTreeMap::from([(0, first.clone()), (1, second.clone()), (2, third.clone())]),
+            "cut at byte {cut}"
+        );
+    }
+    for tail in [b"{broken}".as_slice(), b"{\n", prefix.as_slice()] {
+        let bytes = [prefix.as_slice(), tail].concat();
+        std::fs::write(&path, &bytes)?;
+        assert!(Journal::resume(root).is_err());
+        assert_eq!(std::fs::read(&path)?, bytes);
+    }
+    Ok(())
 }
 
 fn stats(values: &mut [f64]) -> serde_json::Value {
@@ -711,7 +818,7 @@ async fn claim_and_publish(inst: &Installation, plan: &Plan, ordinal: u64) -> an
         principal: context.principal.clone(),
         request_id: context.request_id.clone(),
     };
-    let bytes = inst
+    let claim = inst
         .source
         .claim_backup_intent(
             &context,
@@ -720,12 +827,90 @@ async fn claim_and_publish(inst: &Installation, plan: &Plan, ordinal: u64) -> an
             &generation,
             Some(ALIAS),
         )
+        .await;
+    publish_claim_result(inst, &context, &intent, claim).await
+}
+
+async fn publish_claim_result(
+    inst: &Installation,
+    context: &RequestContext,
+    intent: &BackupSessionIntent,
+    claim: Result<kasumi_store::AdmittedBackupBundle>,
+) -> anyhow::Result<()> {
+    let error = match claim {
+        Ok(bytes) => {
+            return inst
+                .destination
+                .session_put(intent.session_id, BackupSessionSlot::Intent, bytes.into())
+                .await
+                .context("intent publication");
+        }
+        Err(error) if error.code == ErrorCode::UnknownOutcome => anyhow::Error::new(error),
+        Err(error) => return Err(anyhow::Error::new(error).context("Control claim")),
+    };
+    eprintln!(
+        "backup floor request {} Control claim: {error:#}",
+        intent.request_id
+    );
+    // A committed claim can exist before the intent object. Prove the selected
+    // Control input before publishing its original randomized bytes.
+    let selected = inst
+        .source
+        .selected_backup(context, inst.destination.as_ref(), intent.session_id)
         .await
-        .native("Control claim")?;
-    inst.destination
-        .session_put(id, BackupSessionSlot::Intent, bytes.into())
-        .await
-        .native("intent publication")?;
+        .context("read Control after uncertain population claim")?;
+    let Some(selected) = selected else {
+        return Err(error.context("no committed population claim to publish"));
+    };
+    let row = &selected.record;
+    if selected.terminal.is_some()
+        || row.claim.intent() != *intent
+        || row.claim.destination_alias.as_deref() != Some(ALIAS)
+        || row.claim.source_purpose_sha256
+            != kasumi_types::staged_digest(inst.source.store.storage_access().purpose())?.0
+    {
+        return Err(error.context("Control did not select the exact pending population claim"));
+    }
+    // Status can prove Control ownership even when the destination is empty.
+    // Inspect the authenticated object itself before accepting publication.
+    let published = || async {
+        let Some(session) = inst
+            .source
+            .backup_session(context, inst.destination.as_ref(), intent.session_id)
+            .await
+            .context("verify population intent readback")?
+        else {
+            return Ok(false);
+        };
+        anyhow::ensure!(
+            session.intent() == intent
+                && session.intent_ciphertext_sha256() == row.claim.intent_ciphertext_sha256
+                && session.outcome().is_none(),
+            "destination differs from the exact pending population claim"
+        );
+        anyhow::Ok(true)
+    };
+    if !published().await? {
+        let bytes = inst
+            .source
+            .original_backup_intent_for_effect(context, row)
+            .await
+            .context("verify original committed population intent")?;
+        if let Err(original) = inst
+            .destination
+            .session_put(intent.session_id, BackupSessionSlot::Intent, bytes.into())
+            .await
+        {
+            eprintln!(
+                "backup floor request {} intent publication: {original:#}",
+                intent.request_id
+            );
+        }
+        anyhow::ensure!(
+            published().await?,
+            "original committed population intent awaits destination publication"
+        );
+    }
     Ok(())
 }
 
@@ -760,7 +945,7 @@ async fn abort(
                     },
                 )
                 .await
-                .native("public abort status after unknown outcome")?;
+                .context("public abort status after unknown outcome")?;
             anyhow::ensure!(
                 observed.intent.session_id == request.session_id
                     && observed.intent.tenant == context.tenant
@@ -776,10 +961,11 @@ async fn abort(
                 inst.source
                     .abort_backup_session(context, request)
                     .await
-                    .native("same public abort after a verified pending session")?
+                    .map_err(snapshot_diagnostic)
+                    .context("same public abort after a verified pending session")?
             }
         }
-        Err(original) => return Err(anyhow::anyhow!("public abort: {original:?}")),
+        Err(original) => return Err(snapshot_diagnostic(original).context("public abort")),
     };
     anyhow::ensure!(
         matches!(&status.outcome, Some(BackupSessionOutcome::Aborted { reason, .. }) if *reason == abort_reason(ordinal)),
@@ -857,13 +1043,58 @@ async fn cleanup(
         .map_err(|error| format!("{:?}: {}", error.code, error.message))
 }
 
+/// An unjournaled abort may already own a Control claim at an older
+/// source revision. Resolve the actual session before attempting another claim.
+async fn interrupted_abort_status(
+    inst: &Installation,
+    plan: &Plan,
+    ordinal: u64,
+) -> anyhow::Result<Option<BackupSessionStatus>> {
+    let context = inst.context(ordinal);
+    let session_id = plan.session_id(ordinal);
+    let observed = match inst
+        .source
+        .backup_session_status(
+            context.clone(),
+            BackupSessionRequest {
+                destination: ALIAS.into(),
+                session_id,
+            },
+        )
+        .await
+    {
+        Ok(status) => status,
+        Err(error) if error.code == ErrorCode::NotFound && !error.has_physical_source() => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context("resolve original population session"));
+        }
+    };
+    let live = inst.source.engine.generation()?;
+    anyhow::ensure!(
+        observed.intent.session_id == session_id && observed.intent.tenant == context.tenant
+            && observed.intent.principal == context.principal
+            && observed.intent.request_id == context.request_id
+            && observed.intent.source_incarnation == live.incarnation()
+            && observed.intent.revision <= live.state.revision
+            && observed.source_purpose_sha256 == kasumi_types::staged_digest(inst.source.store.storage_access().purpose())?.0
+            && observed.outcome.as_ref().is_none_or(|outcome|
+                matches!(outcome, BackupSessionOutcome::Aborted { reason, .. } if *reason == abort_reason(ordinal))),
+        "the retained population session belongs to another original request or outcome"
+    );
+    Ok(Some(observed))
+}
+
 async fn run_session(
     inst: &Installation,
     plan: &Plan,
     ordinal: u64,
     stage: &str,
+    resume: bool,
 ) -> anyhow::Result<Original> {
     let started = Instant::now();
+    let mut resolution = None;
     let id = plan.session_id(ordinal);
     let (checkpoint, outcome) = match plan.kind(ordinal) {
         Kind::Complete => (
@@ -871,11 +1102,31 @@ async fn run_session(
             None,
         ),
         Kind::Aborted => {
-            claim_and_publish(inst, plan, ordinal).await?;
-            if ordinal == plan.cleanup_ordinal() {
-                stage_cleanup_objects(inst, plan, ordinal).await?;
+            let previous = if resume {
+                interrupted_abort_status(inst, plan, ordinal).await?
+            } else {
+                None
+            };
+            if previous.is_none() {
+                claim_and_publish(inst, plan, ordinal).await?;
+                if ordinal == plan.cleanup_ordinal() {
+                    stage_cleanup_objects(inst, plan, ordinal).await?;
+                }
             }
-            (None, abort(inst, plan, ordinal).await?.outcome)
+            let status = abort(inst, plan, ordinal).await?;
+            if let Some(original) = previous {
+                anyhow::ensure!(
+                    original.intent == status.intent
+                        && original.source_purpose_sha256 == status.source_purpose_sha256
+                        && original
+                            .outcome
+                            .as_ref()
+                            .is_none_or(|outcome| Some(outcome) == status.outcome.as_ref()),
+                    "public abort changed the original population identity or terminal result"
+                );
+                resolution = Some(serde_json::json!({"before": original, "after": status}));
+            }
+            (None, status.outcome)
         }
     };
     Ok(Original {
@@ -887,7 +1138,7 @@ async fn run_session(
         checkpoint,
         outcome,
         seconds: started.elapsed().as_secs_f64(),
-        resolution: None,
+        resolution,
     })
 }
 
@@ -1441,10 +1692,13 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
         let recorded = boundary(&inst, &plan).await?;
         write_json(&root.join("boundary.json"), &recorded)?;
     }
-    let done = read_originals(root)?;
-    let mut journal = Journal::open(root)?;
+    let (done, mut journal) = Journal::resume(root)?;
     let mut durations: BTreeMap<Kind, Vec<f64>> = BTreeMap::new();
     let reserve = plan.reserve_start();
+    // Control and the destination can durably advance several sessions between
+    // external journal syncs. Follow that original prefix across completed
+    // checkpoints until an abort has no previously published claim.
+    let mut resolve_existing = resumed;
     for ordinal in 0..reserve {
         if done.contains_key(&ordinal) {
             if ordinal == plan.cleanup_ordinal() {
@@ -1452,12 +1706,18 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
             }
             continue;
         }
-        let original = run_session(&inst, &plan, ordinal, "populate").await?;
+        let original = run_session(&inst, &plan, ordinal, "populate", resolve_existing).await?;
         durations
             .entry(original.kind)
             .or_default()
             .push(original.seconds);
         journal.append(&original)?;
+        if resolve_existing {
+            journal.sync()?;
+            if original.kind == Kind::Aborted && original.resolution.is_none() {
+                resolve_existing = false;
+            }
+        }
         if ordinal == plan.cleanup_ordinal() {
             journal.sync()?;
             record_cleanup(root, &inst, &plan).await?;
@@ -1593,8 +1853,7 @@ async fn resolve(root: &Path) -> anyhow::Result<()> {
     let started = Instant::now();
     let inst = Installation::open(root, &plan).await?;
     let opened = started.elapsed().as_secs_f64();
-    let mut done = read_originals(root)?;
-    let mut journal = Journal::open(root)?;
+    let (mut done, mut journal) = Journal::resume(root)?;
     let mut inflight: Vec<Inflight> = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let path = entry?.path();
@@ -1713,7 +1972,7 @@ async fn resolve(root: &Path) -> anyhow::Result<()> {
     }
     for ordinal in plan.reserve_start()..plan.sessions {
         if let std::collections::btree_map::Entry::Vacant(entry) = done.entry(ordinal) {
-            let original = run_session(&inst, &plan, ordinal, "resolve").await?;
+            let original = run_session(&inst, &plan, ordinal, "resolve", false).await?;
             journal.append(&original)?;
             entry.insert(original);
         }
@@ -2021,7 +2280,7 @@ async fn diagnose_next(root: &Path) -> anyhow::Result<()> {
         "diagnosis requires a contiguous interrupted population"
     );
     let installation = Installation::open(root, &plan).await?;
-    let attempt = run_session(&installation, &plan, ordinal, "diagnose").await;
+    let attempt = run_session(&installation, &plan, ordinal, "diagnose", true).await;
     let drain = installation.close().await;
     let evidence = serde_json::json!({
         "ordinal": ordinal, "session_id": plan.session_id(ordinal),
@@ -2536,6 +2795,287 @@ fn test_name(leaf: &str) -> String {
         "{}::{leaf}",
         module.split_once("::").map_or(module, |(_, rest)| rest)
     )
+}
+
+async fn prepare_interrupted_claim(root: &Path, plan: &Plan, ordinal: u64) -> anyhow::Result<()> {
+    let inst = Installation::open(root, plan).await?;
+    claim_and_publish(&inst, plan, ordinal).await?;
+    let previous = interrupted_abort_status(&inst, plan, ordinal)
+        .await?
+        .context("original claim absent")?;
+    anyhow::ensure!(
+        previous.outcome.is_none(),
+        "original claim already terminal"
+    );
+    write_json(&root.join("original-claim.json"), &previous)?;
+    advance_population_source(&inst, ordinal + 1).await?;
+    inst.close().await
+}
+
+async fn advance_population_source(inst: &Installation, ordinal: u64) -> anyhow::Result<()> {
+    inst.source
+        .administer(
+            inst.context(ordinal),
+            Operation::CreateCollection(CollectionDefinition {
+                name: "later".into(),
+                write_mode: CollectionWriteMode::Mutable,
+                retention_class: CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .native("advance source after original claim")
+        .map(|_| ())
+}
+
+fn interrupted_population_plan() -> Plan {
+    Plan {
+        schema: SCHEMA.into(),
+        cohort: "regression".into(),
+        sessions: 24,
+        failure_stride: 3,
+        profile: None,
+        kill_reserve: 2,
+        nonce: uuid::Uuid::new_v4(),
+        control_binding_budget: INSTALLED_DEFAULT_BINDING_BYTES,
+        source_hot_audit_bytes: 128 << 10,
+        control_hot_audit_bytes: 1 << 20,
+        cleanup_objects: 300,
+        page_limit: 8,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uncertain_population_claim_requires_the_exact_committed_input() -> anyhow::Result<()> {
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = interrupted_population_plan();
+    let inst = Installation::open(&root, &plan).await?;
+    let ordinal = 5;
+    assert_eq!(plan.kind(ordinal), Kind::Aborted);
+    let id = plan.session_id(ordinal);
+    let context = inst.context(ordinal);
+    let generation = inst.source.engine.generation()?;
+    let intent = BackupSessionIntent {
+        session_id: id,
+        tenant: context.tenant.clone(),
+        source_incarnation: generation.incarnation().into(),
+        revision: generation.state.revision,
+        principal: context.principal.clone(),
+        request_id: context.request_id.clone(),
+    };
+    // Replace only the response at the Control proposal boundary. Every read,
+    // permanent claim, external create and terminal decision uses real stores.
+    let lost = || {
+        Err(Error::new(
+            ErrorCode::UnknownOutcome,
+            "forced lost Control claim reply",
+        ))
+    };
+    let object = || {
+        inst.destination.session_get(
+            id,
+            BackupSessionSlot::Intent,
+            kasumi_store::MAX_ENCRYPTED_SESSION_RECORD_BYTES,
+        )
+    };
+    let before = inst.head()?;
+    let missing = publish_claim_result(&inst, &context, &intent, lost())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing.downcast_ref::<Error>().unwrap().code,
+        ErrorCode::UnknownOutcome
+    );
+    assert!(
+        missing
+            .to_string()
+            .contains("no committed population claim")
+    );
+    assert_eq!(inst.head()?, before);
+    assert!(object().await?.is_none());
+
+    let bytes = inst
+        .source
+        .claim_backup_intent(
+            &context,
+            inst.destination.as_ref(),
+            &intent,
+            &generation,
+            Some(ALIAS),
+        )
+        .await?;
+    drop(generation);
+    let claimed = inst.head()?;
+    assert_eq!(claimed.count, before.count + 1);
+    assert!(object().await?.is_none());
+    let mut other = context.clone();
+    other.request_id.push_str("-other");
+    let wrong = BackupSessionIntent {
+        request_id: other.request_id.clone(),
+        ..intent.clone()
+    };
+    let denied = publish_claim_result(&inst, &other, &wrong, lost())
+        .await
+        .unwrap_err();
+    assert!(
+        denied
+            .to_string()
+            .contains("exact pending population claim")
+    );
+    assert_eq!(inst.head()?, claimed);
+    assert!(object().await?.is_none());
+
+    // A newer source generation cannot become this session's snapshot.
+    advance_population_source(&inst, ordinal + 1).await?;
+    assert!(inst.source.engine.generation()?.state.revision > intent.revision);
+    publish_claim_result(&inst, &context, &intent, lost()).await?;
+    assert_eq!(object().await?.as_deref(), Some(bytes.as_bytes()));
+    publish_claim_result(&inst, &context, &intent, lost()).await?;
+    assert_eq!(object().await?.as_deref(), Some(bytes.as_bytes()));
+    let pending = interrupted_abort_status(&inst, &plan, ordinal)
+        .await?
+        .unwrap();
+    assert_eq!(pending.intent, intent);
+    assert!(pending.outcome.is_none());
+    assert_eq!(inst.head()?, claimed);
+    let terminal = abort(&inst, &plan, ordinal).await?;
+    assert_eq!(terminal.intent, intent);
+    assert!(
+        matches!(&terminal.outcome, Some(BackupSessionOutcome::Aborted {
+        reason, intent_ciphertext_sha256, ..
+    }) if *reason == abort_reason(ordinal) && *intent_ciphertext_sha256 == hex::encode(Sha256::digest(bytes.as_bytes())))
+    );
+    let ended = inst.head()?;
+    assert_eq!(ended.count, claimed.count + 1);
+    let replay = run_session(&inst, &plan, ordinal, "populate", true).await?;
+    assert_eq!(replay.outcome, terminal.outcome);
+    assert_eq!(inst.head()?, ended);
+    inst.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_population_reuses_a_cold_claim_after_source_revision_advances()
+-> anyhow::Result<()> {
+    let ordinal = 5;
+    if std::env::var(STAGE).as_deref() == Ok("prepare-interrupted-claim") {
+        let root = PathBuf::from(std::env::var(ROOT)?);
+        return prepare_interrupted_claim(&root, &plan_of(&root)?, ordinal).await;
+    }
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = interrupted_population_plan();
+    write_json(&root.join("plan.json"), &plan)?;
+    // The persistent disk registry owns its admission until process exit.
+    Parent {
+        root: root.clone(),
+        test: test_name(
+            "interrupted_population_reuses_a_cold_claim_after_source_revision_advances",
+        ),
+        exe: std::env::current_exe()?,
+        processes: Vec::new(),
+    }
+    .run("prepare-interrupted-claim")?;
+    let previous: BackupSessionStatus = read_json(&root.join("original-claim.json"))?;
+    let reopened = Installation::open(&root, &plan).await?;
+    anyhow::ensure!(
+        reopened.source.engine.generation()?.state.revision > previous.intent.revision,
+        "cold generation did not advance beyond the captured revision"
+    );
+    let before = reopened.head()?;
+    let result = run_session(&reopened, &plan, ordinal, "populate", true).await?;
+    anyhow::ensure!(
+        result.resolution.is_some()
+            && result.session_id == previous.intent.session_id
+            && reopened.head()?.count == before.count + 1,
+        "cold abort did not select the one original claim"
+    );
+    let after = interrupted_abort_status(&reopened, &plan, ordinal)
+        .await?
+        .context("cold terminal absent")?;
+    anyhow::ensure!(
+        after.intent == previous.intent
+            && after.source_purpose_sha256 == previous.source_purpose_sha256
+            && after.outcome == result.outcome,
+        "original cold claim changed"
+    );
+    let replay = run_session(&reopened, &plan, ordinal, "populate", true).await?;
+    anyhow::ensure!(
+        replay.outcome == result.outcome && reopened.head()?.count == before.count + 1,
+        "retained terminal replay published another Control row"
+    );
+    reopened.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_population_recovers_all_unjournaled_originals() -> anyhow::Result<()> {
+    if let Ok(stage) = std::env::var(STAGE) {
+        let root = PathBuf::from(std::env::var(ROOT)?);
+        if stage == "populate" {
+            return populate(&root).await;
+        }
+        anyhow::ensure!(stage == "original-prefix");
+        let plan = plan_of(&root)?;
+        let inst = Installation::open(&root, &plan).await?;
+        let (_, mut journal) = Journal::resume(&root)?;
+        let mut originals = Vec::new();
+        // The node and destination durably acknowledge six sessions. Only
+        // the first result reaches the external observer's durable journal.
+        for ordinal in 0..6 {
+            let original = run_session(&inst, &plan, ordinal, "original", false).await?;
+            if ordinal == 0 {
+                journal.append(&original)?;
+                journal.sync()?;
+            }
+            originals.push(original);
+        }
+        write_json(&root.join("acknowledged.json"), &originals)?;
+        advance_population_source(&inst, plan.sessions + 1).await?;
+        return inst.close().await;
+    }
+
+    let temp = kasumi_store::test_utils::private_tempdir()?;
+    let root = temp.path().join("installation");
+    std::fs::create_dir_all(root.join("logs"))?;
+    let plan = Plan {
+        sessions: 11,
+        failure_stride: 2,
+        ..interrupted_population_plan()
+    };
+    write_json(&root.join("plan.json"), &plan)?;
+    let mut parent = Parent {
+        root: root.clone(),
+        test: test_name("interrupted_population_recovers_all_unjournaled_originals"),
+        exe: std::env::current_exe()?,
+        processes: Vec::new(),
+    };
+    parent.run("original-prefix")?;
+    let prefix = std::fs::read(root.join("original.jsonl"))?;
+    let originals: Vec<Original> = read_json(&root.join("acknowledged.json"))?;
+    parent.run("populate")?;
+    let journal = std::fs::read(root.join("original.jsonl"))?;
+    anyhow::ensure!(journal.starts_with(&prefix));
+    let recovered = read_originals(&root)?;
+    anyhow::ensure!(recovered.len() as u64 == plan.reserve_start());
+    for original in originals {
+        let current = &recovered[&original.ordinal];
+        anyhow::ensure!(
+            current.session_id == original.session_id
+                && current.request_id == original.request_id
+                && current.kind == original.kind
+                && current.outcome == original.outcome
+                && current.checkpoint == original.checkpoint
+        );
+        if original.kind == Kind::Aborted {
+            anyhow::ensure!(current.resolution.is_some());
+        }
+    }
+    anyhow::ensure!(recovered[&7].resolution.is_none());
+    Ok(())
 }
 
 /// Small normal regression: every process, kill point, replay, boundary and

@@ -167,7 +167,7 @@ impl WireChangeRecord {
             document: record
                 .document
                 .as_ref()
-                .map(|slot| slot.load_owned(resolver))
+                .map(|slot| slot.load_owned_at(&record.collection, &record.id, resolver))
                 .transpose()?,
         })
     }
@@ -230,8 +230,11 @@ pub(crate) fn records_with_resolver<'a>(
                 .iter()
                 .filter(move |(name, _)| primary.as_ref().is_none_or(|p| p == *name))
                 .flat_map(move |(name, collection)| {
-                    collection.documents.values().map(move |slot| {
-                        Ok(Record::Document(name.clone(), slot.load_owned(resolver)?))
+                    collection.documents.iter().map(move |(id, slot)| {
+                        Ok(Record::Document(
+                            name.clone(),
+                            slot.load_owned_at(name, id, resolver)?,
+                        ))
                     })
                 }),
         ));
@@ -480,6 +483,21 @@ pub(crate) fn metadata_with_shared(
     policy: Arc<Policy>,
     lifecycle_control: Option<Arc<LifecycleControlState>>,
 ) -> TenantState {
+    let mut metadata = query_metadata(state, policy);
+    metadata.pending_restore = state.pending_restore.clone();
+    metadata.restored_from = state.restored_from.clone();
+    metadata.lifecycle_control = lifecycle_control;
+    metadata.audit_retention = state.audit_retention.clone();
+    metadata.key_retirements = state.key_retirements.clone();
+    metadata.target_journal_retirements = state.target_journal_retirements.clone();
+    metadata.target_journal_writers = state.target_journal_writers.clone();
+    metadata
+}
+
+/// The state fields used by a page worker and its selected source readers.
+/// Recovery records, audit manifests and key retirement histories can grow
+/// independently of a page and are read by the enclosing service.
+pub(crate) fn query_metadata(state: &TenantState, policy: Arc<Policy>) -> TenantState {
     TenantState {
         tenant: state.tenant.clone(),
         incarnation: state.incarnation.clone(),
@@ -489,10 +507,10 @@ pub(crate) fn metadata_with_shared(
         schema_epoch: state.schema_epoch,
         suspended: state.suspended,
         retired: state.retired,
-        pending_restore: state.pending_restore.clone(),
-        restored_from: state.restored_from.clone(),
+        pending_restore: None,
+        restored_from: None,
         restore_lineage: Default::default(),
-        lifecycle_control,
+        lifecycle_control: None,
         target_lifecycle: Default::default(),
         recovery_control: Default::default(),
         document_count: state.document_count,
@@ -521,10 +539,10 @@ pub(crate) fn metadata_with_shared(
         schema_activation_bytes: state.schema_activation_bytes,
         retirements: Default::default(),
         retirement_bytes: state.retirement_bytes,
-        audit_retention: state.audit_retention.clone(),
-        key_retirements: state.key_retirements.clone(),
-        target_journal_retirements: state.target_journal_retirements.clone(),
-        target_journal_writers: state.target_journal_writers.clone(),
+        audit_retention: kasumi_types::AuditRetentionState::empty(state.audit_retention.stream_id),
+        key_retirements: Default::default(),
+        target_journal_retirements: Default::default(),
+        target_journal_writers: Vec::new(),
         audits: Default::default(),
     }
 }
@@ -1342,7 +1360,7 @@ fn read_placed(
         SnapshotInput::VerifiedTarget { records, .. }
             if records.summary().kinds[4].records == 0 =>
         {
-            Some(kasumi_query::SnapshotIndexBuilder::default())
+            Some(kasumi_query::SnapshotIndexBuilder::for_installed_rows())
         }
         _ => None,
     };
@@ -1353,6 +1371,9 @@ fn read_placed(
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let mut documents: Option<crate::document_restore::Builder> = None;
     let mut document_table_limit = None;
+    // Bounded progress diagnostics for an authenticated restore decode only.
+    const DECODE_PROGRESS_DOCUMENTS: u64 = 4096;
+    let mut decoded_documents = 0u64;
     let accept = |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -1520,8 +1541,14 @@ fn read_placed(
                         .documents
                         .insert(
                             document.id.clone(),
-                            Arc::new(DocumentSlot::Stored(descriptor)),
+                            Arc::new(DocumentSlot::stored_descriptor(descriptor)),
                         );
+                    if target.is_some() {
+                        decoded_documents += 1;
+                        if decoded_documents.is_multiple_of(DECODE_PROGRESS_DOCUMENTS) {
+                            crate::backup_verify::decode_progress(decoded_documents);
+                        }
+                    }
                 }
                 Record::Archived(k, id, reference) => {
                     state
@@ -1590,7 +1617,9 @@ fn read_placed(
                                 .as_mut()
                                 .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
                                 .push(document)
-                                .map(|descriptor| Arc::new(DocumentSlot::Stored(descriptor)))
+                                .map(|descriptor| {
+                                    Arc::new(DocumentSlot::stored_descriptor(descriptor))
+                                })
                         })
                         .transpose()?;
                     let commit = state
@@ -1890,6 +1919,86 @@ mod tests {
                 .to_string()
                 .contains("materialized snapshot image changed"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn authenticated_fieldless_restore_binds_the_staged_document_headers() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
+        let mut source = state();
+        source.revision = 2;
+        source.schema_epoch = 1;
+        source.policy_epoch = 1;
+        let documents: imbl::OrdMap<String, Arc<DocumentSlot>> = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                let document = Document {
+                    id: id.into(),
+                    version: source.revision,
+                    body: serde_json::json!({"id": id}),
+                };
+                (
+                    id.to_owned(),
+                    Arc::new(DocumentSlot::Pending(Arc::new(document))),
+                )
+            })
+            .collect();
+        source.document_count = documents.len() as u64;
+        source.logical_bytes = documents
+            .values()
+            .map(|slot| slot.body_bytes().unwrap())
+            .sum();
+        source.collections.insert(
+            "docs".into(),
+            CollectionState {
+                definition: Arc::new(CollectionDefinition {
+                    name: "docs".into(),
+                    schema: serde_json::json!({"type":"object"}),
+                    indexes: vec![],
+                    strict_read_audit: false,
+                    retention_class: CollectionRetentionClass::Operational,
+                    write_mode: CollectionWriteMode::Mutable,
+                }),
+                data_epoch: source.revision,
+                documents,
+                archived_documents: Default::default(),
+                archived_document_bytes: 0,
+            },
+        );
+        let mut bytes = Vec::new();
+        write(&source, &mut bytes).unwrap();
+        let image = kasumi_store::SnapshotImage::from_bytes(&scratch.disk, &bytes).unwrap();
+        let records = crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+            image,
+            128 << 20,
+            || Ok(()),
+        )
+        .unwrap()
+        .into_records();
+        let decoded =
+            super::read_verified_target(&records, &source.tenant, "restored", &|| Ok(())).unwrap();
+        assert_eq!(decoded.state.collections["docs"].documents.len(), 3);
+        for (id, slot) in &decoded.state.collections["docs"].documents {
+            let DocumentSlot::Stored(descriptor) = slot.as_ref() else {
+                panic!("authenticated restore retained a pending body");
+            };
+            let document =
+                kasumi_types::DocumentResolver::load(&decoded.documents, descriptor).unwrap();
+            assert_eq!(document.body, serde_json::json!({"id":id}));
+        }
+        let indexes = decoded
+            .document_indexes
+            .unwrap()
+            .finish_installed(
+                kasumi_query::TextResidency::Directory,
+                &decoded.state.collections,
+                || Ok::<_, anyhow::Error>(()),
+            )
+            .unwrap();
+        assert_eq!(
+            indexes.document_ids_after("docs", Some("a"), 2).unwrap(),
+            ["b", "c"]
         );
     }
 

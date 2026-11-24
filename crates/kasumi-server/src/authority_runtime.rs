@@ -392,7 +392,7 @@ impl AuthorityRuntime {
                     config.database_id,
                     persistent_disk.clone(),
                     scratch_disk.clone(),
-                    persistent_disk.native_storage_config(),
+                    persistent_disk.native_storage_config().shared_node(),
                 )).map_err(|observed| observed.foreign_error())?
             };
             pending.owned_nodes.push(node.clone());
@@ -488,8 +488,7 @@ impl AuthorityRuntime {
                 None,
                 audit.clone(),
             );
-            let serving_registration = crate::serving_owner::Registration::new(
-                crate::serving_owner::Kind::Authority,
+            let serving_registration = crate::serving_owner::Registration::reserve(
                 config.database_id,
                 audit.admission(),
             )?;
@@ -629,6 +628,10 @@ impl AuthorityRuntime {
 
 impl crate::startup_owner::Runtime for AuthorityRuntime {
     fn handoff(&mut self) -> Result<()> {
+        self.serving_registration
+            .as_ref()
+            .expect("a prepared runtime owns its serving reservation")
+            .admit(crate::serving_owner::Kind::Authority)?;
         self.node.activate_cache_warming()?;
         self.signer_verifier.activate_cache_warming()
     }

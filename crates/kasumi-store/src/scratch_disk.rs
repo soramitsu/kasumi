@@ -295,7 +295,8 @@ impl ScratchDisk {
             directory: directory.as_ref().to_owned(),
             max_bytes: 256 << 30,
             min_free_bytes: 0,
-            file_allocation_policy: crate::FileAllocationPolicy::new(0).unwrap(),
+            // General-purpose fixture files may occupy extent metadata above rounded EOF.
+            file_allocation_policy: crate::FileAllocationPolicy::fixture(),
             native_cache_bytes: 8 << 20,
         };
         crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))

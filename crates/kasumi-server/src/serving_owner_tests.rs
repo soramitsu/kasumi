@@ -139,7 +139,7 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         report: Default::default(),
         _lock: create_lock(&disk, &disk_config, &lock),
     };
-    let registration = Registration::new(Kind::Data, uuid::Uuid::new_v4(), &admission).unwrap();
+    let registration = Registration::reserve(uuid::Uuid::new_v4(), &admission).unwrap();
     (fixture, owner, registration)
 }
 impl Fixture {
@@ -435,7 +435,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     )
     .unwrap();
     let registry = Arc::new(Registry::default());
-    let registration = Registration::new(Kind::Data, uuid::Uuid::new_v4(), &admission).unwrap();
+    let registration = Registration::reserve(uuid::Uuid::new_v4(), &admission).unwrap();
     let (_stop, shutdown) = watch::channel(false);
     drop(begin(
         registry.clone(),
@@ -498,7 +498,7 @@ fn serving_registration_retains_memory_without_an_inflight_operation_slot() {
         })
         .unwrap();
     let bookkeeping = admission.snapshot().bookkeeping_bytes;
-    let registration = Registration::new(Kind::Data, uuid::Uuid::new_v4(), &admission).unwrap();
+    let registration = Registration::reserve(uuid::Uuid::new_v4(), &admission).unwrap();
     assert_eq!(admission.snapshot().reserved_bytes, bookkeeping + 4096);
     assert_eq!(admission.snapshot().inflight_operations, 0);
     let request = admission.reserve(1, None).unwrap();

@@ -80,13 +80,14 @@ mod state;
 mod target_resolution;
 mod tenant_audit_directory;
 pub use bootstrap::{
-    ControlGenesis, ControlLifecycleGenesis, ExistingIncarnation, LocalRestoreRequest,
-    MaterializedTargetReplica, OpenedReplica, OriginalRecoveryWorkspace, ReplicaPlacement,
-    ReplicatedBootstrap, ReplicatedGenesis, RestoreSource, TargetMaterializationConfig,
-    TargetReplica, TargetReplicaConfig, TargetReplicaStartup, VerifiedTargetMaterialization,
-    initialize_replicated, materialize_target_replica, open_existing_local,
-    open_existing_replicated, open_local, open_local_with_incarnation, open_replicated,
-    open_target_replica, persisted_bootstrap_digest, persisted_bootstrap_digest_at, restore_local,
+    ControlGenesis, ControlLifecycleGenesis, ExistingIncarnation, LocalDatabaseStartup,
+    LocalRestoreRequest, MaterializedTargetReplica, OpenedReplica, OriginalRecoveryWorkspace,
+    ReplicaPlacement, ReplicatedBootstrap, ReplicatedGenesis, RestoreSource,
+    TargetMaterializationConfig, TargetReplica, TargetReplicaConfig, TargetReplicaStartup,
+    VerifiedTargetMaterialization, initialize_replicated, materialize_target_replica,
+    open_existing_local, open_existing_replicated, open_local, open_local_with_incarnation,
+    open_replicated, open_target_replica, persisted_bootstrap_digest,
+    persisted_bootstrap_digest_at, require_local_enrollment_genesis, restore_local,
     resume_target_materialization,
 };
 pub use security_audit::{

@@ -172,6 +172,41 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             Status::unknown("recovery stop may be committed; resume exact operation cleanup")
         })
     }
+    async fn read_target_deletion(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        let context = self.context(&request).await?;
+        let query: kasumi_types::TargetDeletionQuery =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let read = || async {
+            self.runtime
+                .target_deletion_status(&context, &query)
+                .await
+                .map_err(failure)
+        };
+        let observed = self
+            .auth
+            .audit_result(&context, read().await)
+            .await
+            .map_err(status)?;
+        let response = ControlJsonResponse {
+            response_json: encode(&observed).map_err(status)?,
+        };
+        let latest = self
+            .auth
+            .audit_result(&context, read().await)
+            .await
+            .map_err(status)?;
+        if latest != observed {
+            return Err(Status::unavailable(
+                "target deletion advanced before release",
+            ));
+        }
+        context.authorization.check_live().map_err(status)?;
+        Ok(Response::new(response))
+    }
+
     async fn read_issuer_stop(
         &self,
         request: Request<ControlJsonRequest>,
@@ -205,15 +240,35 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
         request: Request<ControlJsonRequest>,
     ) -> Result<Response<ControlJsonResponse>, Status> {
         let context = self.context(&request).await?;
+        let peer = callback_peer(&request)?;
         let input: RecoveryPhaseRequest =
             decode_json(&request.into_inner().request_json).map_err(status)?;
+        let callback = self
+            .auth
+            .audit_result(
+                &context,
+                phase_reader(
+                    Some(&self.runtime),
+                    &context,
+                    &peer,
+                    Observation::Phase {
+                        operation: input.operation_id,
+                        phase: input.phase_id,
+                    },
+                ),
+            )
+            .await
+            .map_err(phase_reader_status)?;
+        let original = callback
+            .as_ref()
+            .map_or(&context, |active| active.original());
         let proof = self
             .auth
             .audit_result(
                 &context,
                 self.runtime
                     .database
-                    .recovery_phase(context.clone(), input.operation_id, input.phase_id)
+                    .recovery_phase(original.clone(), input.operation_id, input.phase_id)
                     .await,
             )
             .await
@@ -226,6 +281,11 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             .await
             .map_err(status)?;
         proof.release().await.map_err(status)?;
+        if let Some(active) = callback {
+            active
+                .check(&context, &self.runtime.database)
+                .map_err(status)?;
+        }
         Ok(Response::new(response))
     }
 }

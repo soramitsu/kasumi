@@ -33,6 +33,9 @@ impl<'a> SourceIdentity<'a> {
             collection,
         }
     }
+    pub(crate) fn collection_state(self) -> Option<&'a kasumi_types::CollectionState> {
+        self.owner.downcast_ref()
+    }
     pub fn tenant(self) -> &'a str {
         self.tenant
     }
@@ -200,6 +203,18 @@ pub trait DocumentSource: crate::CollectionRecords {
         _search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
     ) -> ReadResult<Option<T>, Self::Failure> {
         Ok(None)
+    }
+    /// [`Self::with_text_shards`] bound to the request's `cancellation`: a
+    /// persisted directory checks it, with the source's own deadline, during
+    /// setup, level traversal and before each shard open, and stops with the
+    /// typed query error. The default checks the token before calling the source.
+    fn with_text_shards_until<T>(
+        &self,
+        cancellation: &QueryCancellation,
+        search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        cancellation.check()?;
+        self.with_text_shards(search)
     }
     /// Check cancellation before/after read work and immediately before lending.
     /// An expected version requires presence and an exact version match.
@@ -369,6 +384,19 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     ) -> ReadResult<Option<T>, Self::Failure> {
         self.check()?;
         let result = self.source.with_text_shards(|shards| {
+            self.check()?;
+            search(shards)
+        })?;
+        self.check()?;
+        Ok(result)
+    }
+    fn with_text_shards_until<T>(
+        &self,
+        cancellation: &QueryCancellation,
+        search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        self.check()?;
+        let result = self.source.with_text_shards_until(cancellation, |shards| {
             self.check()?;
             search(shards)
         })?;

@@ -170,6 +170,9 @@ class Live(Driver):
         self._row("attempt", step=step, argv=argv, exit_code=record["exit_code"])
         return record["exit_code"], owned.check_ref(self.run.output, item["stdout"]).read_bytes()
 
+    def last_attempt_stderr(self):
+        return owned.check_ref(self.run.output, self.details["attempts"][-1]["stderr"]).read_bytes()
+
     def count_observation(self, scenario):
         """Use the exact successful poll that established a recovery point."""
         item = self.details["attempts"][-1]
@@ -568,6 +571,9 @@ class Replay(Driver):
         require(row["exit_code"] == record["exit_code"], "attempt exit differs from its receipt")
         self.last_attempt = step
         return record["exit_code"], raw
+
+    def last_attempt_stderr(self):
+        return owned.check_ref(self.local, self.attempts[self.last_attempt]["stderr"]).read_bytes()
 
     def count_observation(self, scenario):
         step = self.last_attempt

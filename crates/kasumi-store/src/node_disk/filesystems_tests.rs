@@ -66,7 +66,8 @@ fn shared(disk: &NodeDisk, root: &str) -> u64 {
 fn census_promises(disk: &NodeDisk, root: &Path) -> u64 {
     let metadata = std::fs::symlink_metadata(root).unwrap();
     let observed = census::directory_extent(&metadata).unwrap();
-    let mut pending = disk.config.directory_policy.extent_bytes.max(observed) - observed;
+    let mut pending = disk.config.directory_policy.extent_bytes.max(observed)
+        - census::backed_directory_bytes(root);
     for entry in std::fs::read_dir(root).unwrap() {
         let entry = entry.unwrap();
         let metadata = std::fs::symlink_metadata(entry.path()).unwrap();

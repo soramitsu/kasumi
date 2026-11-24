@@ -15,9 +15,16 @@ fn prepare_publication(
     changed: &ChangedIds,
     applied: Option<PrimaryApplied>,
 ) -> Result<Option<PrimaryPublication>> {
-    prepare_publication_at(owner, store, previous, candidate, changed, applied, |_| {
-        Ok(true)
-    })
+    prepare_publication_at(
+        owner,
+        store,
+        previous,
+        candidate,
+        None,
+        changed,
+        applied,
+        |_| Ok(true),
+    )
 }
 
 struct Fixture {
@@ -80,6 +87,7 @@ impl Fixture {
             &*self.store,
             &manifest,
             state,
+            None,
             self.store.plaintext_memory_owner(),
         )
         .unwrap();
@@ -128,7 +136,7 @@ fn definition(name: &str, schema: serde_json::Value) -> Arc<CollectionDefinition
 }
 
 fn descriptor(id: &str, version: u64) -> Arc<DocumentSlot> {
-    Arc::new(DocumentSlot::Stored(StoredDocument {
+    Arc::new(DocumentSlot::stored_descriptor(StoredDocument {
         id: id.into(),
         version,
         body_bytes: 10 + version,
@@ -189,6 +197,99 @@ fn next(
         .sum();
     state.logical_bytes = state.document_count * 100;
     (state, changed)
+}
+
+#[test]
+fn changed_documents_share_their_original_records_in_an_unordered_restored_commit() {
+    let empty = genesis();
+    let (mut state, changed) = next(
+        &empty,
+        empty.revision_base + 1,
+        "docs",
+        &["a", "b", "c"],
+        &[],
+    );
+    let revision = state.collections["docs"].documents["a"].version();
+    let records = ["c", "a", "b"]
+        .into_iter()
+        .map(|id| kasumi_types::ChangeRecord {
+            collection: "docs".into(),
+            id: id.into(),
+            document: Some(state.collections["docs"].documents[id].clone()),
+        })
+        .collect();
+    state.change_feed.commits.insert(
+        12,
+        Arc::new(kasumi_types::ChangeCommit {
+            revision,
+            first_sequence: 12,
+            record_bytes: 0,
+            records,
+        }),
+    );
+    assert_eq!(
+        crate::document_store::compact_changed(&mut state, &changed),
+        3
+    );
+    for record in &state.change_feed.commits[&12].records {
+        let slot = &state.collections["docs"].documents[&record.id];
+        assert!(matches!(slot.as_ref(), DocumentSlot::Located(_)));
+        assert!(Arc::ptr_eq(record.document.as_ref().unwrap(), slot));
+    }
+}
+
+#[test]
+fn cold_compaction_only_shares_a_feed_after_image_with_the_same_complete_descriptor() {
+    let empty = genesis();
+    let names: Vec<_> = (0..145).map(|i| format!("doc-{i:03}")).collect();
+    let ids: Vec<_> = names.iter().map(String::as_str).collect();
+    let (mut state, _) = next(&empty, empty.revision_base + 1, "docs", &ids, &[]);
+    let slot = &state.collections["docs"].documents["doc-000"];
+    let mut other = slot.stored().unwrap().clone();
+    other.body_sha256 = [0xB1; 32];
+    other.body_object = [0xA2; 32];
+    let different = Arc::new(DocumentSlot::stored_descriptor(other.clone()));
+    let equal = state.collections["docs"].documents["doc-001"].clone();
+    let make_record = |id: &str, document| kasumi_types::ChangeRecord {
+        collection: "docs".into(),
+        id: id.into(),
+        document: Some(document),
+    };
+    state.change_feed.commits.insert(
+        1,
+        Arc::new(kasumi_types::ChangeCommit {
+            revision: state.revision,
+            first_sequence: 1,
+            record_bytes: 0,
+            records: vec![
+                make_record("doc-000", different.clone()),
+                make_record("doc-001", equal),
+            ],
+        }),
+    );
+    assert_eq!(
+        crate::document_store::compact_reopened(&mut state),
+        ids.len()
+    );
+    let records = &state.change_feed.commits[&1].records;
+    assert_eq!(
+        records[0].document.as_ref().unwrap().stored().unwrap(),
+        &other
+    );
+    assert!(Arc::ptr_eq(
+        records[0].document.as_ref().unwrap(),
+        &different
+    ));
+    assert!(Arc::ptr_eq(
+        records[1].document.as_ref().unwrap(),
+        &state.collections["docs"].documents["doc-001"]
+    ));
+    assert!(
+        state.collections["docs"]
+            .documents
+            .values()
+            .all(|slot| matches!(slot.as_ref(), DocumentSlot::Located(_)))
+    );
 }
 
 fn applied(state: &TenantState, term: u8) -> Option<PrimaryApplied> {
@@ -356,7 +457,7 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     // The root pinned before the edit still reads its own revision.
     let old = PrimaryManifest::load_at(&pinned).unwrap().unwrap();
     assert_eq!(old.revision, s2.revision);
-    verify_rows(&pinned, &old, &s2, store.plaintext_memory_owner()).unwrap();
+    verify_rows(&pinned, &old, &s2, None, store.plaintext_memory_owner()).unwrap();
     pinned.close().unwrap();
 
     // Replay below the directory publishes nothing; replay reaching it
@@ -410,17 +511,53 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     assert_ne!(fixture.current().page_space, primary::INITIAL_SPACE[0]);
     // Reopen keeps a current directory at or ahead of its snapshot.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
-    prepare_restore(&owner, store, &s3, &snapshot_meta(&s3), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s3,
+        None,
+        &snapshot_meta(&s3),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     // An installation always rebuilds from its snapshot.
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), false, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        false,
+        &mut writes,
+    )
+    .unwrap();
     assert!(!writes.is_empty());
     drop(writes);
     // The replaced space is reclaimed at the next restore.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s4,
+        None,
+        &snapshot_meta(&s4),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     let view = store.read_view().unwrap();
     let mut initial = 0;
@@ -439,6 +576,7 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
         &before_replacement,
         &retained,
         &s3,
+        None,
         store.plaintext_memory_owner(),
     )
     .unwrap();
@@ -484,7 +622,14 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
         PrimaryManifest::load_at(&pinned).unwrap().unwrap(),
         original
     );
-    verify_rows(&pinned, &original, &s7, store.plaintext_memory_owner()).unwrap();
+    verify_rows(
+        &pinned,
+        &original,
+        &s7,
+        None,
+        store.plaintext_memory_owner(),
+    )
+    .unwrap();
     pinned.close().unwrap();
     let (s8, changed) = next(&s7, s7.revision + 1, "docs", &["another"], &[]);
     fixture
@@ -513,7 +658,16 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     drop(owner);
     let owner = PrimaryOwner::default();
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s7, &snapshot_meta(&s7), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s7,
+        None,
+        &snapshot_meta(&s7),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     assert!(writes.is_empty());
     fixture.publish(prepare_publication(&owner, store, &s8, &s9, &delta, applied(&s9, 1)).unwrap());
     let advanced = fixture.current();
@@ -565,7 +719,7 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     // authenticated position, in independently durable, bounded transactions.
     let final_applied = applied(&state, 1).unwrap();
     for _ in 0..(MAX_REBUILD_IDS / WINDOW_IDS + 20) {
-        if maintain(&owner, store, &state, &final_applied).unwrap() {
+        if maintain(&owner, store, &state, None, &final_applied).unwrap() {
             break;
         }
     }
@@ -583,6 +737,7 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
         &owner,
         store,
         &state,
+        None,
         &snapshot_meta(&state),
         false,
         &mut writes,
@@ -653,7 +808,16 @@ async fn a_single_document_edit_rewrites_only_its_paths() {
     let (s1, changed) = next(&s0, s0.revision + 1, "docs", &ids, &[]);
     // A pristine directory's first large edit goes through restore instead.
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s1, &snapshot_meta(&s1), true, &mut writes).unwrap();
+    prepare_restore(
+        &owner,
+        store,
+        &s1,
+        None,
+        &snapshot_meta(&s1),
+        true,
+        &mut writes,
+    )
+    .unwrap();
     store.write_batch(&writes).unwrap();
     drop((writes, changed));
     fixture.verify(&s1);
@@ -704,7 +868,7 @@ async fn idle_service_rebuilds_a_directory_that_missed_its_last_log_entry() {
     let (s2, _) = next(&s1, s1.revision + 1, "docs", &["new"], &["gone"]);
     let selected = applied(&s2, 1).unwrap();
     for _ in 0..8 {
-        if maintain(&owner, store, &s2, &selected).unwrap() {
+        if maintain(&owner, store, &s2, None, &selected).unwrap() {
             break;
         }
     }

@@ -289,7 +289,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="kasumi-cleanup-") as directory:
             private = Path(directory).resolve(strict=True)
             params = {"private_root": str(private), "base_port": args.base_port,
-                      "python": str(Path(sys.executable).resolve(strict=True))}
+                      "python": os.path.abspath(sys.executable)}
             with domain_run.Run(KIND, RUNNER, MODULES, args.evidence, args.output, args.journal,
                                 args.attempt_id, params, domain_run.QUALIFYING) as run:
                 execute(run, private, args.base_port)

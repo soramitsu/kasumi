@@ -214,6 +214,59 @@ fn relocation_and_abort_stream_long_values_through_fixed_windows() {
     }
 }
 
+fn two_relocations(first: ValueLocation, second: ValueLocation) -> [MaintenanceOp<'static>; 2] {
+    [
+        operation(first),
+        MaintenanceOp::Relocate {
+            table: "accounts",
+            key: b"bob",
+            logical_batch_seq: 1,
+            source: second,
+        },
+    ]
+}
+
+#[test]
+fn relocations_fitting_one_window_write_the_once_verified_source_bytes() {
+    for lengths in [[IO_WINDOW / 2, IO_WINDOW / 2], [IO_WINDOW, 0]] {
+        let mut log = Log::new(SEGMENT_BYTES);
+        let alice = vec![13; lengths[0]];
+        let bob = vec![97; lengths[1]];
+        let original = log
+            .commit(&[
+                put("accounts", "alice", alice.clone()),
+                put("accounts", "bob", bob.clone()),
+            ])
+            .unwrap();
+        let source = original.values[0].unwrap();
+        let bound = WindowBound {
+            group: &log.group,
+            largest_read: AtomicUsize::new(0),
+            largest_write: AtomicUsize::new(0),
+            mutate_on_second_read: Some(source),
+            source_reads: AtomicUsize::new(0),
+        };
+        let operations = two_relocations(source, original.values[1].unwrap());
+        let mut roll = RootRoll::new(&bound, &mut log.root);
+        let prepared = log
+            .writer
+            .prepare_maintenance(&bound, &operations, &mut roll)
+            .unwrap();
+        assert_eq!(bound.source_reads.load(Ordering::Relaxed), 1);
+        let committed = finish(&mut log, prepared).unwrap();
+        let reopened = log.group.crash();
+        assert_eq!(reopen(&reopened).unwrap().batches.len(), 2);
+        assert_eq!(
+            read_value(&reopened, &committed.values[0].unwrap()).unwrap(),
+            alice
+        );
+        assert_eq!(
+            read_value(&reopened, &committed.values[1].unwrap()).unwrap(),
+            bob
+        );
+    }
+}
+
 #[test]
 fn source_change_during_copy_cannot_produce_a_prepared_commit() {
     let mut log = Log::new(SEGMENT_BYTES);
@@ -245,6 +298,62 @@ fn source_change_during_copy_cannot_produce_a_prepared_commit() {
             .unwrap()[source.offset as usize],
         12
     );
+}
+
+#[test]
+fn aggregate_payload_one_byte_over_the_window_rechecks_the_source_on_copy() {
+    let mut log = Log::new(SEGMENT_BYTES);
+    let original = log
+        .commit(&[
+            put("accounts", "alice", vec![13; IO_WINDOW / 2]),
+            put("accounts", "bob", vec![97; IO_WINDOW / 2 + 1]),
+        ])
+        .unwrap();
+    let first = original.values[0].unwrap();
+    let bound = WindowBound {
+        group: &log.group,
+        largest_read: AtomicUsize::new(0),
+        largest_write: AtomicUsize::new(0),
+        mutate_on_second_read: Some(first),
+        source_reads: AtomicUsize::new(0),
+    };
+    let operations = two_relocations(first, original.values[1].unwrap());
+    let mut roll = RootRoll::new(&bound, &mut log.root);
+    assert_eq!(
+        corrupt_reason(
+            log.writer
+                .prepare_maintenance(&bound, &operations, &mut roll)
+        ),
+        "relocation source checksum differs"
+    );
+    assert_eq!(bound.source_reads.load(Ordering::Relaxed), 2);
+    assert!(log.writer.is_fenced());
+    assert!(log.writer.prepared.is_none());
+}
+
+#[test]
+fn corrupt_later_source_in_one_window_prevents_the_first_destination_write() {
+    let mut log = Log::new(SEGMENT_BYTES);
+    let original = log
+        .commit(&[
+            put("accounts", "alice", vec![2; 32]),
+            put("accounts", "bob", vec![3; 32]),
+        ])
+        .unwrap();
+    let second = original.values[1].unwrap();
+    let file = GroupFile::segment(second.segment_id);
+    log.group
+        .with_durable(file, |bytes| bytes[second.offset as usize] ^= 1);
+    let evidence = log.group.durable_image(file).unwrap();
+    let position = log.writer.position();
+    let operations = two_relocations(original.values[0].unwrap(), second);
+    assert_eq!(
+        corrupt_reason(prepare_many(&mut log, &operations)),
+        "relocation source checksum differs"
+    );
+    assert!(log.writer.is_fenced());
+    assert_eq!(log.writer.position(), position);
+    assert_eq!(log.group.durable_image(file).unwrap(), evidence);
 }
 
 #[test]

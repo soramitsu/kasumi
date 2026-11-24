@@ -76,6 +76,13 @@ exclusive operator request resolving the original operation identity.
 
 ## Approve, prepare, initialize and activate
 
+Set `admission.max_snapshot_startups` to cover the local Control group and
+each tenant group that will run concurrently. An installation serving 100
+tenants needs at least 101 slots. Each live group holds its slot through drain.
+When the inventory is full, preparing a new tenant returns `ResourceExhausted`
+before it records creation or opens either catalog. After capacity is available,
+retry the same approved preparation.
+
 Restart the daemon with the updated configuration. The staged tenant stays dormant.
 Use the existing mTLS management endpoint with the private Control credential. A
 `kasumictl` client configuration takes these values from `profiles/control.json`:
@@ -104,11 +111,15 @@ following JSON to an operation file and run
 {"operation":"initialize_tenant","tenant":"tenant-b"}
 ```
 
-Preparation uses the existing installation owner's exact standalone capability,
-original administrator context and finite deadline. It records creation once,
-initializes and verifies the fresh local bootstrap, drains the new database/stores,
-and commits Prepared with its observed fingerprint. Only that permanent outcome
-permits a strict existing open. A private recipient handoff publishes the dormant
+The original standalone preparation commits a custody receipt in the same
+transaction as the fresh bootstrap manifest and Raft identity. The receipt binds
+the approved proposal, the original request and creation UUID, both catalog UUIDs
+and the immutable initial snapshot digest. If worker startup fails after this
+commit, a newly authorized PrepareTenant for the same approval can verify that
+receipt and complete the original preparation. It checks both deployment rows,
+the custody digest, the complete bootstrap and the resident policy and placement,
+drains the preparation workers, and records Prepared before serving admission.
+Earlier incomplete enrollments without this receipt stay closed. A private recipient handoff publishes the dormant
 owner under the same mutex used to close enrollment admission. Abandoned new owners
 drain; borrowed resident owners are never shut down by preparation cleanup.
 

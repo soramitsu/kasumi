@@ -497,12 +497,13 @@ def execute(run, parameters, topology_path, plan_path, pause):
                 observation = run.command(step, observe, REPLY_SECONDS, scenario=RENEWAL)
                 previous_credential = credential_observation(owned.read(observation),
                                                              profile_sha256, previous_credential)
-                events.setdefault(RENEWAL, {"id": RENEWAL, "elapsed_seconds": started,
-                                            "finished_elapsed_seconds": workload.elapsed(),
-                                            "steps": []})["steps"].append(step)
                 workload.pause()
                 stopped.append(services.end_input("workload"))
                 open_session(workload)
+                event = events.setdefault(RENEWAL, {"id": RENEWAL, "elapsed_seconds": started,
+                                                    "steps": []})
+                event["steps"].append(step)
+                event["finished_elapsed_seconds"] = workload.elapsed()
                 rotation += parameters["session_seconds"]
             else:
                 time.sleep(pause)
@@ -730,6 +731,12 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 "soak maintenance did not run its planned candidate commands in the interval: "
                 + kind)
         if kind == RENEWAL:
+            # The renewed sessions have their own process-owner timestamps.
+            # Each must have opened during the reported renewal interval.
+            for identifier in details["sessions"][1:]:
+                opened = receipts[identifier]["record"]["started_elapsed_seconds"] - phases["measured"]
+                require(event["elapsed_seconds"] <= opened <= event["finished_elapsed_seconds"],
+                        "soak renewal interval omits a rotated session")
             for step in observed:
                 previous_credential = credential_observation(
                     acceptance.json_reference(custody, logs[step]), profile_sha256,

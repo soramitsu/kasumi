@@ -299,6 +299,11 @@ def drain(process, grace_seconds=10):
     return record
 
 
+# Most gates finish within a day. The permanent backup-session cohort is one
+# owned process that measured several days on the native reference guests.
+MAX_TIMEOUT_SECONDS = 14 * 86400
+
+
 def run(command, source, environment, stream, timeout_seconds, observe, *, stderr,
         before_cleanup=None, after_cleanup=None):
     """Record original command ownership before waiting; never raise in a handler.
@@ -308,8 +313,8 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
     SIGKILL of this runner cannot execute cleanup; its running record retains
     the process group for explicit inspection by the enclosing environment.
     """
-    if not 0 < timeout_seconds <= 86400:
-        raise ValueError("gate timeout must be in (0, 86400] seconds")
+    if not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"gate timeout must be in (0, {MAX_TIMEOUT_SECONDS}] seconds")
     if stderr != subprocess.STDOUT and (not hasattr(stderr, "fileno") or not hasattr(stderr, "flush")):
         raise ValueError("gate stderr requires an explicit owned file or STDOUT")
     received = []
@@ -335,10 +340,15 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
             observe(record)
             ledger_path = os.environ.get(GROUP_LEDGER_ENV)
             ledger = None
-            prior_mask = None
             try:
                 if ledger_path is not None:
-                    prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+                    # One exclusive lock covers admission, Popen and the fsynced
+                    # group row, so an enclosing seal waits for an in-flight
+                    # spawn and can never miss its group. The handlers installed
+                    # above only record a signal and cannot interrupt this block.
+                    # Signals stay unblocked: a mask held across Popen is
+                    # inherited through exec, and the child could then only be
+                    # stopped by SIGKILL.
                     ledger = _group_ledger_open(ledger_path)
                     fcntl.flock(ledger, fcntl.LOCK_EX)
                     _, closed = _group_ledger_rows(ledger)
@@ -363,8 +373,6 @@ def run(command, source, environment, stream, timeout_seconds, observe, *, stder
                 if ledger is not None:
                     fcntl.flock(ledger, fcntl.LOCK_UN)
                     os.close(ledger)
-                if prior_mask is not None:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
             observe(record)
             while True:
                 if received:

@@ -226,6 +226,7 @@ required-features = ["client"]
 [[test]]
 name = "test_cancelled_response"
 path = "tests/test_cancelled_response.rs"
+required-features = ["server", "transport-io"]
 
 [[test]]
 name = "test_client_credentials"
@@ -534,6 +535,7 @@ required-features = [
 [[test]]
 name = "test_stdio_response_concurrency"
 path = "tests/test_stdio_response_concurrency.rs"
+required-features = ["server", "transport-io"]
 
 [[test]]
 name = "test_streamable_http_4xx_error_body"

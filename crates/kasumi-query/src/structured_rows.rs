@@ -8,7 +8,7 @@
 //! difference visits only the entries a mutation changed: no document body is
 //! opened and no collection-sized pass runs for an ordinary write.
 use crate::scalar::Scalar;
-use crate::structured::{FieldIndex, IdSet};
+use crate::structured::{FieldIndex, Posting};
 use crate::{CollectionIndexes, FieldValue, QueryIndexes};
 use imbl::{ordmap, ordset};
 use sha2::{Digest, Sha256};
@@ -47,7 +47,7 @@ pub struct StructuredField<'a> {
 impl<'a> StructuredField<'a> {
     /// Documents with a value at the path, in ID order.
     pub fn present(&self) -> impl Iterator<Item = &'a str> + use<'a> {
-        self.index.present.iter().map(String::as_str)
+        self.index.present.iter().map(AsRef::as_ref)
     }
     /// Distinct scalars in canonical scalar order with their postings.
     pub fn values(&self) -> impl Iterator<Item = StructuredPostings<'a>> + use<'a> {
@@ -64,19 +64,19 @@ impl<'a> StructuredField<'a> {
 /// One distinct scalar and the documents indexed under it.
 pub struct StructuredPostings<'a> {
     pub value: FieldValue<'a>,
-    ids: &'a IdSet,
+    ids: &'a Posting,
 }
 impl<'a> StructuredPostings<'a> {
     /// Document IDs in ID order.
     pub fn ids(&self) -> impl Iterator<Item = &'a str> + use<'a> {
-        self.ids.iter().map(String::as_str)
+        self.ids.iter().map(AsRef::as_ref)
     }
 }
 
 fn postings<E>(
     field: usize,
     key: &Scalar,
-    ids: &IdSet,
+    ids: &Posting,
     emit: &mut impl FnMut(StructuredRow<'_>) -> Result<bool, E>,
 ) -> Result<bool, E> {
     let value = FieldValue::from_scalar(key);
@@ -202,6 +202,48 @@ fn compound_changes<E>(
     Ok(true)
 }
 
+/// IDs only one of two postings holds, in ID order. Two persistent sets diff
+/// by their shared nodes; an inline owner merges against the other side.
+fn posting_changes<E>(
+    before: &Posting,
+    after: &Posting,
+    emit: &mut impl FnMut(bool, &str) -> Result<bool, E>,
+) -> Result<bool, E> {
+    if let (Posting::Many(before), Posting::Many(after)) = (before, after) {
+        for item in before.diff(after) {
+            let (added, id) = match item {
+                ordset::DiffItem::Add(id) => (true, id),
+                ordset::DiffItem::Remove(id) => (false, id),
+            };
+            if !emit(added, id.as_ref())? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    let mut old = before.iter().peekable();
+    let mut new = after.iter().peekable();
+    loop {
+        let (added, id) = match (old.peek(), new.peek()) {
+            (None, None) => return Ok(true),
+            (Some(a), Some(b)) => match a.as_ref().cmp(b.as_ref()) {
+                std::cmp::Ordering::Equal => {
+                    old.next();
+                    new.next();
+                    continue;
+                }
+                std::cmp::Ordering::Less => (false, old.next().expect("peeked")),
+                std::cmp::Ordering::Greater => (true, new.next().expect("peeked")),
+            },
+            (Some(_), None) => (false, old.next().expect("peeked")),
+            (None, Some(_)) => (true, new.next().expect("peeked")),
+        };
+        if !emit(added, id.as_ref())? {
+            return Ok(false);
+        }
+    }
+}
+
 fn field_changes<E>(
     field: usize,
     old: &FieldIndex,
@@ -235,25 +277,16 @@ fn field_changes<E>(
                 new: (_, after),
             } => {
                 let value = FieldValue::from_scalar(key);
-                let mut more = true;
-                for item in before.diff(after) {
-                    let (added, id) = match item {
-                        ordset::DiffItem::Add(id) => (true, id),
-                        ordset::DiffItem::Remove(id) => (false, id),
-                    };
-                    more = emit(
+                posting_changes(before, after, &mut |added, id| {
+                    emit(
                         added,
                         StructuredRow::Posting {
                             field,
                             value: &value,
                             id,
                         },
-                    )?;
-                    if !more {
-                        break;
-                    }
-                }
-                more
+                    )
+                })?
             }
         };
         if !more {
@@ -714,6 +747,32 @@ mod tests {
     }
 
     #[test]
+    fn query_worker_releases_other_collections_and_keeps_the_published_layout() {
+        use std::sync::Arc;
+
+        let mut docs = collection("docs", &[("/n", ScalarType::Number)]);
+        put(&mut docs, "first", 1, json!({"n": 1}));
+        let mut other = collection("other", &[("/s", ScalarType::String)]);
+        put(&mut other, "second", 1, json!({"s": "value"}));
+        let state = [("docs".to_owned(), docs), ("other".to_owned(), other)].into();
+        let indexes = QueryIndexes::build_fixture(&state).unwrap();
+        let layout = indexes.structured_layout_sha256();
+        let unselected = Arc::downgrade(&indexes.collections["other"]);
+        assert!(indexes.for_query_collection("missing").is_none());
+
+        let page = indexes.for_query_collection("docs").unwrap();
+        assert!(Arc::ptr_eq(
+            &indexes.collections["docs"],
+            &page.collections["docs"]
+        ));
+        drop(indexes);
+        assert!(unselected.upgrade().is_none());
+        assert_eq!(page.structured_field_count("docs"), Some(1));
+        assert_eq!(page.structured_field_count("other"), None);
+        assert_eq!(page.structured_layout_sha256(), layout);
+    }
+
+    #[test]
     fn the_change_set_is_exactly_the_difference_between_two_generations() {
         const PATHS: [(&str, ScalarType); 3] = [
             ("/n", ScalarType::Number),
@@ -834,5 +893,70 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(seen, 3);
+    }
+
+    #[test]
+    fn inline_sole_owners_report_exact_changes_when_postings_grow_and_shrink() {
+        const PATHS: [(&str, ScalarType); 2] = [
+            ("/k", ScalarType::Number),
+            ("/tags", ScalarType::StringArray),
+        ];
+        let mut docs = collection("docs", &PATHS);
+        for (id, k, tags) in [
+            ("d1", 1, json!(["x"])),
+            ("d2", 2, json!(["y"])),
+            ("d3", 3, json!(["z"])),
+            ("d4", 4, json!(["w", "v"])),
+            ("d5", 4, json!(["w"])),
+        ] {
+            put(&mut docs, id, 1, json!({"k": k, "tags": tags}));
+        }
+        let first = BTreeMap::from([("docs".to_owned(), docs)]);
+        let built = QueryIndexes::build_fixture(&first).unwrap();
+        let mut second = first.clone();
+        {
+            let docs = second.get_mut("docs").unwrap();
+            // One -> Many, One removed, Many -> One, One -> One, new One.
+            put(docs, "d2", 2, json!({"k": 1, "tags": ["x", "y"]}));
+            put(docs, "d3", 2, json!({"k": 30, "tags": ["z2"]}));
+            docs.documents.remove("d5");
+            put(docs, "d6", 2, json!({"k": 6, "tags": ["v"]}));
+            docs.data_epoch = 2;
+        }
+        let changed = BTreeMap::from([(
+            "docs".to_owned(),
+            BTreeSet::from(["d2", "d3", "d5", "d6"].map(String::from)),
+        )]);
+        let updated = built.update_fixture(&first, &second, &changed).unwrap();
+        let (after, _) = applied(&built, &updated);
+        assert_eq!(after, all(&updated));
+        let rebuilt = QueryIndexes::build_fixture(&second).unwrap();
+        assert_eq!(all(&updated), all(&rebuilt));
+        let kinds = |indexes: &QueryIndexes, path: &str| {
+            indexes.collections["docs"].structured.fields[path]
+                .entries
+                .values()
+                .map(|posting| matches!(posting, crate::structured::Posting::One(_)))
+                .collect::<Vec<_>>()
+        };
+        // k: 1 {d1,d2}, 4 {d4}, 6 {d6}, 30 {d3}.
+        assert_eq!(kinds(&updated, "/k"), [false, true, true, true]);
+        assert_eq!(kinds(&updated, "/k"), kinds(&rebuilt, "/k"));
+        assert_eq!(kinds(&updated, "/tags"), kinds(&rebuilt, "/tags"));
+
+        // Reverse the edit at a later version: every row is reported again.
+        let mut third = second.clone();
+        {
+            let docs = third.get_mut("docs").unwrap();
+            put(docs, "d2", 3, json!({"k": 2, "tags": ["y"]}));
+            put(docs, "d3", 3, json!({"k": 3, "tags": ["z"]}));
+            put(docs, "d5", 3, json!({"k": 4, "tags": ["w"]}));
+            docs.documents.remove("d6");
+            docs.data_epoch = 3;
+        }
+        let reverted = updated.update_fixture(&second, &third, &changed).unwrap();
+        let (back, _) = applied(&updated, &reverted);
+        assert_eq!(back, all(&built));
+        assert_eq!(kinds(&reverted, "/k"), kinds(&built, "/k"));
     }
 }

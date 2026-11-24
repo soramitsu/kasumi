@@ -1,7 +1,7 @@
 use kasumi_store::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES as CHUNK,
     APPLICATION_BOOTSTRAP_MANIFEST_BYTES as MAX_BOOTSTRAP_MANIFEST_BYTES,
-    ApplicationBootstrapManifest, EncryptedSpool, SnapshotImage,
+    ApplicationBootstrapManifest, EncryptedSpool, LOCAL_ENROLLMENT_GENESIS_KEY, SnapshotImage,
 };
 use std::io::{Read, Write};
 // Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
@@ -683,7 +683,7 @@ fn persist_new(
 fn persist_new_checked(
     stores: &TenantStorageSet,
     bytes: &SnapshotImage,
-    identity: [WriteOp; 2],
+    identity: impl IntoIterator<Item = WriteOp>,
     mut check: impl FnMut() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     check()?;
@@ -746,6 +746,140 @@ pub async fn open_local(
     .await
 }
 
+/// The audit facade and its snapshot startup slot travel together until the
+/// local group takes ownership. Enrollment can claim the slot before recording
+/// its permanent creation intent or initializing either catalog.
+pub struct LocalDatabaseStartup {
+    audit: Arc<SecurityAudit>,
+    buffers: Option<Arc<kasumi_raft::SnapshotBufferOwner>>,
+}
+
+impl LocalDatabaseStartup {
+    pub fn reserve(audit: Arc<SecurityAudit>) -> anyhow::Result<Self> {
+        let buffers = audit.admission().snapshot_buffer_owner()?;
+        Ok(Self {
+            audit,
+            buffers: Some(buffers),
+        })
+    }
+
+    fn unreserved(audit: Arc<SecurityAudit>) -> Self {
+        Self {
+            audit,
+            buffers: None,
+        }
+    }
+
+    fn construction(self, stores: Arc<TenantStorageSet>) -> anyhow::Result<DatabaseConstruction> {
+        let construction = DatabaseConstruction::new(stores, self.audit)?;
+        Ok(match self.buffers {
+            Some(buffers) => construction.with_local_buffers(buffers),
+            None => construction,
+        })
+    }
+
+    /// Open the authenticated bootstrap using this startup's snapshot buffers.
+    pub async fn reopen<'a>(
+        self,
+        stores: Arc<TenantStorageSet>,
+        expected_incarnation: impl Into<ExistingIncarnation<'a>>,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        let expected_incarnation = expected_incarnation.into();
+        let construction = self.construction(stores)?;
+        let stores = construction.stores();
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                !expected_incarnation.incarnation.is_nil(),
+                "nil local incarnation"
+            );
+            anyhow::ensure!(
+                stores
+                    .application()
+                    .storage_access()
+                    .serving_gate()
+                    .is_none(),
+                "independent serving authority requires replicated storage; local downgrade is forbidden"
+            );
+            Ok(())
+        })?;
+        let _gate = BOOTSTRAP_GATE.lock().await;
+        reject_retired_serving_open(stores)?;
+        require_deployment(stores, b"local-v1")?;
+        let bytes = load(stores.application())?
+            .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
+        start(
+            construction,
+            &bytes,
+            LocalRuntime::Production,
+            Some(expected_incarnation),
+        )
+        .await
+    }
+
+    pub async fn initialize(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        self.initialize_as(
+            stores,
+            initial_policy,
+            initial_limits,
+            incarnation,
+            LocalRuntime::Production,
+        )
+        .await
+    }
+
+    /// Commit the original standalone creation identity together with both sides
+    /// of its fresh genesis, before a fallible database constructor can run.
+    pub async fn initialize_enrollment(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+        original_dispatch: [u8; 32],
+        check_original: impl Fn() -> anyhow::Result<()> + Send + Sync,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        self.initialize_as(
+            stores,
+            initial_policy,
+            initial_limits,
+            incarnation,
+            LocalRuntime::Enrollment {
+                dispatch: original_dispatch,
+                check: &check_original,
+            },
+        )
+        .await
+    }
+
+    async fn initialize_as(
+        self,
+        stores: Arc<TenantStorageSet>,
+        initial_policy: Policy,
+        initial_limits: Limits,
+        incarnation: uuid::Uuid,
+        runtime: LocalRuntime<'_>,
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+            Ok(())
+        })?;
+        open_local_inner(
+            self.construction(stores)?,
+            initial_policy,
+            initial_limits,
+            Some(incarnation),
+            runtime,
+        )
+        .await
+    }
+}
+
 /// Reopen an initialized local deployment using only its authenticated bootstrap.
 /// Missing deployment, bootstrap or custody commitment is corruption, never a
 /// request to generate a new incarnation or install default policy and limits.
@@ -754,107 +888,9 @@ pub async fn open_existing_local<'a>(
     security_audit: Arc<SecurityAudit>,
     expected_incarnation: impl Into<ExistingIncarnation<'a>>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    let database =
-        open_existing_local_as_stored(stores, security_audit, expected_incarnation).await?;
-    // A data operation: never serialized behind the bootstrap gate.
-    store_embedded_after_reference_reopen(&database).await?;
-    Ok(database)
-}
-
-/// [`open_existing_local`] before any change of the stored snapshot's form.
-async fn open_existing_local_as_stored<'a>(
-    stores: Arc<TenantStorageSet>,
-    security_audit: Arc<SecurityAudit>,
-    expected_incarnation: impl Into<ExistingIncarnation<'a>>,
-) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    let expected_incarnation = expected_incarnation.into();
-    let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(
-            !expected_incarnation.incarnation.is_nil(),
-            "nil local incarnation"
-        );
-        Ok(())
-    })?;
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(
-            stores
-                .application()
-                .storage_access()
-                .serving_gate()
-                .is_none(),
-            "independent serving authority requires replicated storage; local downgrade is forbidden"
-        );
-        Ok(())
-    })?;
-    let _gate = BOOTSTRAP_GATE.lock().await;
-    reject_retired_serving_open(&stores)?;
-    require_deployment(&stores, b"local-v1")?;
-    let bytes = load(stores.application())?
-        .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
-    start(
-        construction,
-        &bytes,
-        LocalRuntime::Production,
-        Some(expected_incarnation),
-    )
-    .await
-}
-
-/// A group reopened from its by-reference (KASUMIL1) snapshot by a process that
-/// stores the embedded form durably publishes one embedded snapshot before it
-/// serves. Afterwards a binary that cannot read KASUMIL1 reopens this group too,
-/// so rolling back is: start `serve` once with `--local-snapshot-archive
-/// embedded`, wait for every tenant to serve, then install the older binary.
-/// Under `Preserve` (every other kasumid command) the group keeps its form.
-async fn store_embedded_after_reference_reopen(
-    database: &Database,
-) -> std::result::Result<(), crate::SnapshotFailure> {
-    let engine = database.engine();
-    if !engine.reopened_from_reference_snapshot() || engine.stores_reference_local_snapshots() {
-        return Ok(());
-    }
-    let group = database.raft_group();
-    let tenant = engine.generation()?.state.tenant.clone();
-    if !group.is_local() {
-        return Err(anyhow::anyhow!("a by-reference snapshot reopened a replicated group").into());
-    }
-    // This binary still reads the stored by-reference snapshot, so the tenant
-    // serves; a binary that cannot read KASUMIL1 refuses it and does not open.
-    let unconverted = || {
-        tracing::warn!(
-            event = "embedded_snapshot_not_published",
-            tenant = %tenant,
-            "the embedded snapshot replacing its by-reference snapshot was not published; do not install a binary that cannot read KASUMIL1"
-        );
-    };
-    let stored = |group: &kasumi_raft::RaftGroup| group.metrics().snapshot.map(|id| id.index);
-    let before = stored(group);
-    // A snapshot at the stored snapshot's own position reuses that stored image
-    // instead of writing the new capture, so one Blank entry (applied as metadata,
-    // no command) gives the embedded capture a strictly newer position first.
-    if let Err(error) = group.local_append_blank().await {
-        // Refused for capacity, nothing reached the journal and the writer serves on.
-        if kasumi_raft::is_application_write_capacity_denied(&error) {
-            unconverted();
-            return Ok(());
-        }
-        return Err(error.into());
-    }
-    group.snapshot().await?;
-    group.local_snapshot_settled().await?;
-    if stored(group) <= before {
-        unconverted();
-        return Ok(());
-    }
-    // WARN so the default daemon filter keeps it: the rollback procedure waits
-    // for this line from every tenant that reopened by reference.
-    tracing::warn!(
-        event = "embedded_snapshot_replaced_reference",
-        tenant = %tenant,
-        "stored an embedded snapshot in place of its by-reference snapshot"
-    );
-    Ok(())
+    LocalDatabaseStartup::unreserved(security_audit)
+        .reopen(stores, expected_incarnation)
+        .await
 }
 
 /// Explicit genesis identity for local control storage and local test fixtures.
@@ -867,18 +903,9 @@ pub async fn open_local_with_incarnation(
     security_audit: Arc<SecurityAudit>,
     incarnation: uuid::Uuid,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
-    crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
-        Ok(())
-    })?;
-    open_local_inner(
-        DatabaseConstruction::new(stores, security_audit)?,
-        initial_policy,
-        initial_limits,
-        Some(incarnation),
-        LocalRuntime::Production,
-    )
-    .await
+    LocalDatabaseStartup::unreserved(security_audit)
+        .initialize(stores, initial_policy, initial_limits, incarnation)
+        .await
 }
 
 /// Open only an explicit encrypted application fixture using one paired clock.
@@ -919,10 +946,68 @@ pub async fn open_fixture_with_epoch_clock(
 #[path = "bootstrap_fixtures.rs"]
 pub(crate) mod fixtures;
 
-enum LocalRuntime {
+enum LocalRuntime<'a> {
     Production,
+    Enrollment {
+        dispatch: [u8; 32],
+        check: &'a (dyn Fn() -> anyhow::Result<()> + Send + Sync),
+    },
     #[cfg(any(test, feature = "test-utils"))]
     FixtureDefault,
+}
+
+fn local_enrollment_commitment(
+    stores: &TenantStorageSet,
+    dispatch: &[u8; 32],
+    bootstrap_digest: &str,
+) -> anyhow::Result<[u8; 32]> {
+    anyhow::ensure!(
+        matches!(
+            stores.application().storage_access().purpose(),
+            kasumi_store::StoragePurpose::Standalone { .. }
+        ),
+        "local enrollment requires an installed standalone pair"
+    );
+    let pair = stores.custody().binding();
+    let mut hash = Sha256::new();
+    hash.update(b"kasumi-standalone-enrollment-genesis-v1\0");
+    hash.update(dispatch);
+    hash.update(pair.application_catalog().as_bytes());
+    hash.update(pair.custody_catalog().as_bytes());
+    hash.update(bootstrap_digest.as_bytes());
+    Ok(hash.finalize().into())
+}
+
+/// Check the immutable, original-dispatch receipt from the same read generation
+/// as the two deployment rows and the manifest. Existing data without the
+/// receipt cannot be adopted by an incomplete security enrollment.
+pub fn require_local_enrollment_genesis(
+    stores: &TenantStorageSet,
+    dispatch: &[u8; 32],
+) -> anyhow::Result<()> {
+    let view = stores.read_view()?;
+    let binding = view
+        .deployment_binding()?
+        .ok_or_else(|| anyhow::anyhow!("local enrollment deployment pair absent"))?;
+    anyhow::ensure!(
+        binding.as_bytes() == b"local-v1",
+        "local enrollment deployment differs"
+    );
+    let digest = persisted_bootstrap_digest_at(&view)?;
+    anyhow::ensure!(
+        view.custody_get("raft.meta", b"application_bootstrap_sha256", 256)?
+            .as_deref()
+            == Some(serde_json::to_vec(&digest)?.as_slice()),
+        "local enrollment custody bootstrap differs"
+    );
+    let expected = local_enrollment_commitment(stores, dispatch, &digest)?;
+    anyhow::ensure!(
+        view.custody_get("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
+            .as_deref()
+            == Some(expected.as_slice()),
+        "original local enrollment genesis receipt is missing or differs"
+    );
+    Ok(())
 }
 
 async fn open_local_inner(
@@ -930,7 +1015,7 @@ async fn open_local_inner(
     initial_policy: Policy,
     initial_limits: Limits,
     incarnation: Option<uuid::Uuid>,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores().clone();
     let store = stores.application().clone();
@@ -943,9 +1028,43 @@ async fn open_local_inner(
     })?;
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
+    let check = || -> anyhow::Result<()> {
+        stores.check_access()?;
+        if let LocalRuntime::Enrollment { check, .. } = &runtime {
+            check()?;
+        }
+        Ok(())
+    };
+    if matches!(runtime, LocalRuntime::Enrollment { .. }) {
+        check()?;
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                stores.deployment_binding()?.is_none()
+                    && store
+                        .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+                        .is_none()
+                    && stores
+                        .custody()
+                        .store()
+                        .get_bounded("raft.meta", LOCAL_ENROLLMENT_GENESIS_KEY, 32)?
+                        .is_none(),
+                "original local enrollment requires fresh catalogs"
+            );
+            Ok(())
+        })?;
+    }
     bind_deployment(&stores, b"local-v1")?;
     let bytes = match load(&store)? {
-        Some(bytes) => bytes,
+        Some(bytes) => {
+            crate::SnapshotFailure::ordinary(|| {
+                anyhow::ensure!(
+                    !matches!(runtime, LocalRuntime::Enrollment { .. }),
+                    "original local enrollment cannot adopt an existing bootstrap"
+                );
+                Ok(())
+            })?;
+            bytes
+        }
         None => {
             let engine = TenantEngine::new(
                 store.tenant().into(),
@@ -962,7 +1081,17 @@ async fn open_local_inner(
                     engine.generation()?.state.incarnation
                 ),
             )?;
-            persist_new_checked(&stores, &bytes, identity, || stores.check_access())?;
+            let receipt = if let LocalRuntime::Enrollment { dispatch, .. } = &runtime {
+                let value = local_enrollment_commitment(&stores, dispatch, bytes.sha256())?;
+                Some(WriteOp::put(
+                    "raft.meta",
+                    LOCAL_ENROLLMENT_GENESIS_KEY,
+                    value,
+                ))
+            } else {
+                None
+            };
+            persist_new_checked(&stores, &bytes, identity.into_iter().chain(receipt), check)?;
             bytes
         }
     };
@@ -972,7 +1101,7 @@ async fn open_local_inner(
 async fn start(
     construction: DatabaseConstruction,
     bytes: &SnapshotImage,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
     expected_incarnation: Option<ExistingIncarnation<'_>>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores();
@@ -1016,7 +1145,7 @@ async fn start_prepared(
     construction: DatabaseConstruction,
     engine: Arc<TenantEngine>,
     bytes: &SnapshotImage,
-    runtime: LocalRuntime,
+    runtime: LocalRuntime<'_>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let store = construction.stores().application().clone();
     engine.install_storage_access(&store)?;
@@ -1024,7 +1153,10 @@ async fn start_prepared(
     engine
         .verify_bootstrap_dependencies_owned(admission.clone())
         .await?;
-    if matches!(runtime, LocalRuntime::Production) {
+    if matches!(
+        runtime,
+        LocalRuntime::Production | LocalRuntime::Enrollment { .. }
+    ) {
         engine.install_audit_maintenance(&admission)?;
     }
     let incarnation = engine.generation()?.state.incarnation.clone();

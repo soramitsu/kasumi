@@ -589,12 +589,7 @@ impl ParentTransition {
             let metadata = parent.file().metadata()?;
             if Identity::of(&metadata) != change.identity
                 || metadata.len() != change.before.len
-                || census::directory_extent(&metadata)?
-                    != change
-                        .before
-                        .bytes
-                        .checked_sub(change.before.pending)
-                        .ok_or(io::ErrorKind::InvalidData)?
+                || !change.before.matches_allocation(&metadata)?
             {
                 disk.fail_locked(state);
                 return Err(io::ErrorKind::InvalidData.into());
@@ -654,14 +649,12 @@ impl ParentTransition {
             .ok_or(io::ErrorKind::InvalidData)?;
         if self.changes[1].is_some()
             || before.settled
-            || before.parent != Some(parent.0)
+            || before.parent(child.0) != Some(parent.0)
             || before.children != 0
             || child.1.len() != before.len
-            || census::directory_extent(&child.1)?
-                < before
-                    .bytes
-                    .checked_sub(before.pending)
-                    .ok_or(io::ErrorKind::InvalidData)?
+            || census::DirectoryAllocation::observe(&child.1, before.allocation.btrfs_sector)?
+                .backed()
+                < before.allocation.backed()
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -700,26 +693,25 @@ impl ParentTransition {
             if Identity::of(metadata) != change.identity {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            let observed = census::directory_extent(metadata)?;
+            let allocation = census::DirectoryAllocation::observe(
+                metadata,
+                change.before.allocation.btrfs_sector,
+            )?;
+            let observed = allocation.reported;
             let charged = change.before.bytes.max(observed);
-            let new_pending = charged
-                .checked_sub(observed)
-                .ok_or(io::ErrorKind::InvalidData)?;
-            let old_observed = change
-                .before
-                .bytes
-                .checked_sub(change.before.pending)
-                .ok_or(io::ErrorKind::InvalidData)?;
+            let new_pending = charged - allocation.backed();
+            let old_observed = change.before.allocation.reported;
             bytes = bytes
                 .checked_sub(change.before.bytes)
                 .and_then(|v| v.checked_add(charged))
                 .ok_or(io::ErrorKind::InvalidData)?;
+            let old_pending = change.before.pending()?;
             pending = pending
-                .checked_sub(change.before.pending)
+                .checked_sub(old_pending)
                 .and_then(|v| v.checked_add(new_pending))
                 .ok_or(io::ErrorKind::InvalidData)?;
             shared = shared
-                .checked_sub(change.before.pending)
+                .checked_sub(old_pending)
                 .and_then(|v| v.checked_add(new_pending))
                 .ok_or(io::ErrorKind::InvalidData)?;
             directory_bytes = directory_bytes
@@ -731,7 +723,7 @@ impl ParentTransition {
                 change.identity,
                 AccountedDirectory {
                     bytes: charged,
-                    pending: new_pending,
+                    allocation,
                     len: metadata.len(),
                     children: change.children,
                     settled: observed <= change.before.bytes,

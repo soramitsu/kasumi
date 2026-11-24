@@ -2,7 +2,9 @@ import copy
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_key_retention as keys
@@ -23,6 +25,19 @@ class Pages:
 
 
 class KeyRetentionDomainTests(unittest.TestCase):
+    def test_runner_preserves_the_frozen_interpreter_invocation(self):
+        with tempfile.TemporaryDirectory() as private:
+            python = Path(private) / "python3"
+            python.symlink_to(sys.executable)
+            argv = ["run_key_retention.py", "--evidence", private, "--journal", private,
+                    "--output", private, "--attempt-id", "keys", "--base-port", "21830"]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(sys, "executable", str(python)),
+                  mock.patch.object(keys.domain_run, "Run") as run,
+                  mock.patch.object(keys, "execute")):
+                keys.main()
+            self.assertEqual(run.call_args.args[7]["python"], str(python))
+
     def setUp(self):
         self.scope = {"kind": "control"}
         one = {"key": {"provider": "file", "key_ref": "control", "version": 1},

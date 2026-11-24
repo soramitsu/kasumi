@@ -8,6 +8,10 @@
 //! fields). `count` is a JSON integer; missing/null inputs are ignored, except
 //! `count` of `*` counts rows.
 
+mod logical_ids;
+use logical_ids::LogicalIds;
+#[doc(hidden)]
+pub use logical_ids::{PrimaryIdPages, ordered_union};
 mod index_input;
 pub use index_input::{CollectionRecords, DocumentChanges, DocumentDelta, IndexUpdate};
 mod document_source;
@@ -30,7 +34,7 @@ pub use ordered_tuple::{
 };
 mod page;
 use page::PageWriter;
-pub use page::{PageBound, copy_page, copy_page_from_source};
+pub use page::{PageBound, copy_page, copy_page_from_source, copy_page_with_reader};
 mod field_postings;
 mod scalar;
 pub use field_postings::{FieldPostingRow, FieldPredicate, FieldValue};
@@ -69,6 +73,7 @@ struct CollectionIndexes {
     schema_sha256: [u8; 32],
     definition_sha256: [u8; 32],
     structured: Structured,
+    logical_ids: Option<LogicalIds>,
     text: Option<Arc<TextSnapshot>>,
 }
 
@@ -80,15 +85,94 @@ impl CollectionIndexes {
             schema_sha256,
             definition_sha256: index_input::definition_sha256(definition)?,
             structured: Structured::empty(definition),
+            logical_ids: None,
             text: None,
         })
     }
 
+    /// Only the original collection owners can prove that both encrypted document
+    /// descriptors and archived references survived a definition replacement.
+    /// The candidate still validates every body through its bound source.
+    fn revalidate<R: CollectionRecords>(
+        &self,
+        previous: &CollectionState,
+        source: &index_input::CheckedRecords<'_, R>,
+    ) -> ReadResult<Option<Self>, R::Failure> {
+        let definition = source.definition();
+        let Some(current) = source.identity().collection_state() else {
+            return Ok(None);
+        };
+        if !std::ptr::eq(current.definition.as_ref(), definition)
+            || previous.definition.indexes != definition.indexes
+            || !previous.documents.ptr_eq(&current.documents)
+            || !previous
+                .archived_documents
+                .ptr_eq(&current.archived_documents)
+            || self.definition_sha256 != index_input::definition_sha256(&previous.definition)?
+        {
+            return Ok(None);
+        }
+        let (validator, schema_sha256) = validation::validate_definition_and_compile(definition)?;
+        source.visit_records(|_, record| {
+            if let Record::Live(document) = record {
+                validation::validate_document_with_validator(
+                    definition,
+                    &document.body,
+                    &validator,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(Some(Self {
+            validator,
+            schema_sha256,
+            definition_sha256: index_input::definition_sha256(definition)?,
+            structured: self.structured.clone(),
+            logical_ids: self.logical_ids.clone(),
+            text: None,
+        }))
+    }
+
     fn prepare<R: CollectionRecords>(
         source: &index_input::CheckedRecords<'_, R>,
+        installed: bool,
     ) -> ReadResult<Self, R::Failure> {
         let mut indexes = Self::empty(source.definition())?;
-        indexes.structured.build(source, &indexes.validator)?;
+        if installed
+            && indexes.structured.fields.is_empty()
+            && let Some(rows) = source.identity().collection_state()
+        {
+            if !std::ptr::eq(rows.definition.as_ref(), source.definition()) {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "installed row definition differs").into(),
+                );
+            }
+            let mut expected = ordered_union(rows.documents.keys(), rows.archived_documents.keys());
+            source.visit_records(|id, record| {
+                if expected.next().map(String::as_str) != Some(id) {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "installed document ID differs",
+                    ));
+                }
+                if let Record::Live(document) = record {
+                    validation::validate_document_with_validator(
+                        source.definition(),
+                        &document.body,
+                        &indexes.validator,
+                    )?;
+                }
+                Ok(())
+            })?;
+            if expected.next().is_some() {
+                return Err(
+                    Error::new(ErrorCode::Corruption, "installed document ID is missing").into(),
+                );
+            }
+            indexes.logical_ids = Some(LogicalIds::rows(rows));
+        } else {
+            indexes.structured.build(source, &indexes.validator)?;
+        }
         Ok(indexes)
     }
 }
@@ -118,36 +202,6 @@ pub struct QueryIndexes {
     structured_layout: std::sync::OnceLock<[u8; 32]>,
 }
 
-/// Persistent primary-ID roots for coherent point/scan leases. This intentionally
-/// retains no text or field-index generation.
-#[derive(Debug, Clone)]
-pub struct ReadIds(BTreeMap<String, IdSet>);
-impl ReadIds {
-    pub fn document_ids_after(
-        &self,
-        collection: &str,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<String>> {
-        use std::ops::Bound;
-        if limit == 0 || limit > 1001 {
-            return Err(invalid("ID page limit outside bounds"));
-        }
-        let ids = self
-            .0
-            .get(collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
-        Ok(ids
-            .range::<_, str>((
-                after.map_or(Bound::Unbounded, Bound::Excluded),
-                Bound::Unbounded,
-            ))
-            .take(limit)
-            .cloned()
-            .collect())
-    }
-}
-
 /// One collection definition's compiled document schema. Resolving it encodes
 /// and hashes the whole schema; validating a document with it does neither, so
 /// callers that check several documents of one definition, such as one batch's
@@ -159,6 +213,15 @@ pub struct SchemaValidator {
 }
 
 impl SchemaValidator {
+    /// Compile a collection definition for checking documents before its indexes exist.
+    pub fn compile(definition: &CollectionDefinition) -> Result<Self> {
+        let (validator, _) = validation::validate_definition_and_compile(definition)?;
+        Ok(Self {
+            collection: definition.name.clone(),
+            validator,
+        })
+    }
+
     /// `definition` must be the one this validator was resolved for: its schema
     /// is checked first, then its index and text constraints.
     pub fn validate_document(&self, definition: &CollectionDefinition, body: &Value) -> Result<()> {
@@ -173,6 +236,18 @@ impl SchemaValidator {
 }
 
 impl QueryIndexes {
+    /// Share the requested collection's planner and its original layout identity.
+    /// A worker reading one collection need not pin indexes for other collections.
+    pub fn for_query_collection(&self, collection: &str) -> Option<Self> {
+        let indexes = self.collections.get(collection)?;
+        Some(Self {
+            collections: BTreeMap::from([(collection.to_owned(), Arc::clone(indexes))]),
+            text_residency: self.text_residency,
+            seek_projection: None,
+            structured_layout: std::sync::OnceLock::from(self.structured_layout_sha256()),
+        })
+    }
+
     /// Reuse this generation's validator only for the exact compiled schema.
     /// A missing collection or changed schema takes the fully checked compiler
     /// path. Index and text constraints always use the supplied definition.
@@ -194,14 +269,6 @@ impl QueryIndexes {
             .validate_document(definition, body)
     }
 
-    pub fn read_ids(&self) -> ReadIds {
-        ReadIds(
-            self.collections
-                .iter()
-                .map(|(name, indexes)| (name.clone(), indexes.structured.ids.clone()))
-                .collect(),
-        )
-    }
     /// Stream the two disjoint ID sets for every indexed field. The field
     /// ordinal follows the same sorted path map used by the planner. An empty
     /// array or explicit null has a present posting; a missing path has one
@@ -276,7 +343,7 @@ impl QueryIndexes {
             let baseline = memory.live_bytes();
             let mut ids = Vec::<String>::new();
             let mut slots = 0usize;
-            let available = source.visit_primary_ids(cancellation, |id| {
+            let mut append = |id: &str| {
                 cancellation.check()?;
                 if ids.last().is_some_and(|previous| previous.as_str() >= id) {
                     return Err(Error::new(
@@ -299,7 +366,13 @@ impl QueryIndexes {
                 memory.reserve(allocation::string_clone_bytes(id)?)?;
                 ids.push(id.to_owned());
                 Ok(())
-            })?;
+            };
+            let available = if let Some(logical) = &indexes.logical_ids {
+                logical.visit_selected(source, cancellation, &mut append)?;
+                true
+            } else {
+                source.visit_primary_ids(cancellation, append)?
+            };
             if available {
                 return Ok((ids, memory.live_bytes() - baseline));
             }
@@ -315,14 +388,15 @@ impl QueryIndexes {
             memory,
         )? {
             Some(ids) => ids,
-            None => indexes.structured.candidates(
+            None => indexes.fallback_candidates(
                 source,
                 &filter,
-                &indexes.structured.ids,
+                None,
                 false,
                 false,
                 limits.max_query_candidates,
                 cancellation,
+                memory,
             )?,
         };
         let mut retained = allocation::vec_bytes::<String>(candidates.len())?;
@@ -334,7 +408,7 @@ impl QueryIndexes {
             cancellation.check()?;
             let bytes = allocation::string_clone_bytes(id)?;
             memory.reserve(bytes)?;
-            ids.push(id.clone());
+            ids.push(id.as_ref().to_owned());
             retained = allocation::add(retained, bytes)?;
         }
         memory.release(iterator_bytes)?;
@@ -356,13 +430,16 @@ impl QueryIndexes {
             .collections
             .get(collection)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
+        if let Some(ids) = &indexes.logical_ids {
+            return ids.page(after, limit);
+        }
         let start = after.map_or(Bound::Unbounded, Bound::Excluded);
         Ok(indexes
             .structured
             .ids
             .range::<_, str>((start, Bound::Unbounded))
             .take(limit)
-            .cloned()
+            .map(|id| id.as_ref().to_owned())
             .collect())
     }
     pub fn build<R: CollectionRecords>(
@@ -383,6 +460,24 @@ impl QueryIndexes {
         sources: impl IntoIterator<Item = R>,
         residency: TextResidency,
     ) -> ReadResult<Self, R::Failure> {
+        Self::prepare_sources(sources, residency, false)
+    }
+
+    /// Build an installed generation from the canonical collection owners.
+    /// Standalone inputs with independent IDs keep the normal build path.
+    #[doc(hidden)]
+    pub fn build_installed_with_residency<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure> {
+        Self::prepare_sources(sources, residency, true)
+    }
+
+    fn prepare_sources<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+        installed: bool,
+    ) -> ReadResult<Self, R::Failure> {
         let sources: Vec<_> = sources.into_iter().collect();
         let mut prepared = Vec::with_capacity(sources.len());
         let mut names = BTreeSet::new();
@@ -394,7 +489,7 @@ impl QueryIndexes {
             if !names.insert(name.clone()) {
                 return Err(invalid("duplicate index collection source").into());
             }
-            let indexes = CollectionIndexes::prepare(&source)?;
+            let indexes = CollectionIndexes::prepare(&source, installed)?;
             prepared.push((name, source, indexes));
         }
         let mut collections = BTreeMap::new();
@@ -413,7 +508,7 @@ impl QueryIndexes {
     }
 
     /// Explicit catalog actions. Omitted collections retain their captured
-    /// indexes; a changed definition requires Rebuild. No missing-delta fallback
+    /// indexes; a changed definition requires Rebuild or Replace. No missing-delta fallback
     /// can hide an incomplete mutation journal.
     pub fn update<'a, R, D>(
         &self,
@@ -484,10 +579,19 @@ impl QueryIndexes {
                         return Err(invalid("unchanged index collection absent").into());
                     }
                 }
-                IndexUpdate::Rebuild(source) => {
+                IndexUpdate::Rebuild(source) | IndexUpdate::Replace { source, .. } => {
                     let source = index_input::CheckedRecords::new(source)?;
                     let name = claim_name(&source.definition().name)?;
-                    let indexes = CollectionIndexes::prepare(&source)?;
+                    let shared = match (action, collections.get(&name)) {
+                        (IndexUpdate::Replace { previous, .. }, Some(prior)) => {
+                            prior.revalidate(previous, &source)?
+                        }
+                        _ => None,
+                    };
+                    let indexes = match shared {
+                        Some(indexes) => indexes,
+                        None => CollectionIndexes::prepare(&source, false)?,
+                    };
                     prepared.push(PreparedIndexCollection {
                         name,
                         indexes,
@@ -508,7 +612,31 @@ impl QueryIndexes {
                         }
                         Ok(())
                     })?;
-                    let structured = previous.structured.update(&source)?;
+                    let (structured, logical_ids) = match (
+                        &previous.logical_ids,
+                        source.new_identity().collection_state(),
+                    ) {
+                        (None, _) => (previous.structured.update(&source)?, None),
+                        (Some(_), Some(collection)) => {
+                            // Keep the complete checked delta replay without constructing
+                            // another ID set. The typed collection already owns every key.
+                            source.visit_changes(|_| Ok(()))?;
+                            (
+                                previous.structured.clone(),
+                                Some(LogicalIds::rows(collection)),
+                            )
+                        }
+                        (Some(ids), None) => {
+                            // A standalone adapter can update this index without lending
+                            // canonical row roots. Restore its normal resident ID owner.
+                            let mut resident = previous.structured.clone();
+                            ids.visit(|id| {
+                                resident.ids.insert(Arc::from(id));
+                                Ok(())
+                            })?;
+                            (resident.update(&source)?, None)
+                        }
+                    };
                     let text_changed = match &previous.text {
                         Some(text) if resident => text.fields_changed(&source)?,
                         _ => false,
@@ -518,6 +646,7 @@ impl QueryIndexes {
                         schema_sha256: previous.schema_sha256,
                         definition_sha256: previous.definition_sha256,
                         structured,
+                        logical_ids,
                         text: if resident {
                             previous.text.clone()
                         } else {
@@ -809,7 +938,7 @@ impl QueryIndexes {
                         .any(|index| index.text.is_some()) =>
                 {
                     source
-                        .with_text_shards(|shards| {
+                        .with_text_shards_until(cancellation, |shards| {
                             search::search_shards(
                                 shards,
                                 search,
@@ -839,12 +968,17 @@ impl QueryIndexes {
                 let mut ids = IdSet::new();
                 for id in scores.keys() {
                     cancellation.check()?;
-                    ids.insert(id.clone());
+                    ids.insert(
+                        structured
+                            .ids
+                            .get(id.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| Arc::from(id.as_str())),
+                    );
                 }
                 Ok(ids)
             })
             .transpose()?;
-        let universe = text_ids.as_ref().unwrap_or(&structured.ids);
         let disk_ids = if text_ids.is_none() {
             structured.stored_posting(
                 source,
@@ -858,14 +992,15 @@ impl QueryIndexes {
         };
         let candidates = match disk_ids {
             Some(ids) => ids,
-            None => structured.candidates(
+            None => indexes.fallback_candidates(
                 source,
                 &filter,
-                universe,
+                text_ids.as_ref(),
                 request.allow_scan,
                 true,
                 limits.max_query_candidates,
                 cancellation,
+                memory,
             )?,
         };
         if request.is_aggregate() {
@@ -1073,7 +1208,7 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
     let mut has_numeric_sort_key = false;
     for id in candidates {
         cancellation.check()?;
-        let score = scores.and_then(|scores| scores.get(id)).copied();
+        let score = scores.and_then(|scores| scores.get(id.as_ref())).copied();
         let keys = if request.sort.is_empty() {
             Vec::new()
         } else {
@@ -1110,7 +1245,7 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
                         });
                     match copy {
                         Some((_, clone)) => {
-                            held.rows.push((id.as_str(), Some(row.into_owned()), clone));
+                            held.rows.push((id.as_ref(), Some(row.into_owned()), clone));
                             held.admitted = allocation::add(held.admitted, clone)?;
                         }
                         None => abandon_copies(&mut copies, memory)?,
@@ -1177,7 +1312,7 @@ pub struct RemainingRows<'a> {
 }
 enum Remaining<'a> {
     Candidates(
-        std::iter::Peekable<imbl::ordset::Iter<'a, String, imbl::shared_ptr::DefaultSharedPtr>>,
+        std::iter::Peekable<imbl::ordset::Iter<'a, Arc<str>, imbl::shared_ptr::DefaultSharedPtr>>,
     ),
     Ordered(std::slice::Iter<'a, OrderedRow<'a>>),
 }
@@ -1193,7 +1328,7 @@ impl<'a> Iterator for RemainingRows<'a> {
     type Item = (&'a str, Option<f32>);
     fn next(&mut self) -> Option<Self::Item> {
         let row = match &mut self.rows {
-            Remaining::Candidates(ids) => ids.next().map(|id| (id.as_str(), None)),
+            Remaining::Candidates(ids) => ids.next().map(|id| (id.as_ref(), None)),
             Remaining::Ordered(rows) => rows.next().map(|row| (row.id, row.score)),
         };
         self.len = self.len.saturating_sub(usize::from(row.is_some()));

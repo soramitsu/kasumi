@@ -505,15 +505,9 @@ impl ValidatedApplicationSnapshot {
             };
             if current.as_ref().is_none_or(|(key, _, _)| key != &name) {
                 let collection = self.collection(&name)?;
-                // Only the current collection's compiled schema stays alive,
-                // resolved once for all of its documents.
-                let validator = QueryIndexes::build([crate::index_source::StateCollection::new(
-                    h,
-                    &name,
-                    &collection,
-                )])
-                .map_err(crate::index_source::into_anyhow)?
-                .schema_validator(&collection.definition)?;
+                // Snapshot documents live in the encrypted record index. This pass
+                // needs only the current definition's validator as it visits them.
+                let validator = kasumi_query::SchemaValidator::compile(&collection.definition)?;
                 current = Some((name.clone(), collection, validator));
             }
             let (_, collection, validator) =
@@ -1241,7 +1235,9 @@ mod tests {
     fn pending_document_mut(slot: &mut Arc<DocumentSlot>) -> &mut Document {
         match Arc::make_mut(slot) {
             DocumentSlot::Pending(document) => Arc::make_mut(document),
-            DocumentSlot::Stored(_) => panic!("expected pending snapshot fixture"),
+            DocumentSlot::Stored(_) | DocumentSlot::Located(_) => {
+                panic!("expected pending snapshot fixture")
+            }
         }
     }
 
@@ -1292,7 +1288,7 @@ mod tests {
             .values()
             .map(|doc| ChangeRecord {
                 collection: "rows".into(),
-                id: doc.id().to_owned(),
+                id: doc.id().unwrap().to_owned(),
                 document: Some(doc.clone()),
             })
             .collect();
@@ -1965,7 +1961,21 @@ mod tests {
         )
         .unwrap();
         let disk = &scratch.disk;
-        let state = state();
+        let mut state = state();
+        let rows = state.collections.get_mut("rows").unwrap();
+        let definition = Arc::make_mut(&mut rows.definition);
+        definition.indexes[0].fields[0].kind = ScalarType::String;
+        definition.indexes.push(IndexDefinition {
+            name: "words".into(),
+            fields: vec![IndexField {
+                path: "/v".into(),
+                kind: ScalarType::String,
+            }],
+            unique: false,
+            text: Some(TextIndex {
+                analyzer: Analyzer::UnicodeV1,
+            }),
+        });
         let valid = image(disk, &state);
         TenantEngine::verify_logical_snapshot(&valid, &state).unwrap();
         let mut wrong_state = state.clone();

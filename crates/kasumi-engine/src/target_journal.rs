@@ -1204,17 +1204,15 @@ impl TargetJournal {
     pub fn deletion_status(
         &self,
         query: &kasumi_types::TargetDeletionQuery,
-        original: &kasumi_serving::VerifiedControlIntent,
+        live_intent: Option<&kasumi_serving::VerifiedControlIntent>,
         marked: &kasumi_types::RecoveryPhaseRecord,
     ) -> Result<kasumi_types::TargetDeletionStatus> {
         use kasumi_types::{
-            RecoveryDispatch, RecoveryEffect, RecoveryPhase, TargetDeletionProgress,
-            TargetRuntimeStep,
+            RecoveryDispatch, RecoveryDispatchOutcome, RecoveryEffect, RecoveryPhase,
+            TargetDeletionProgress, TargetRuntimeOutcome, TargetRuntimeStep,
         };
         query.validate()?;
         marked.validate()?;
-        let observed = original.observation();
-        let intent = &observed.intent;
         let RecoveryDispatch::Target { node_id, request } = &marked.input else {
             anyhow::bail!("deletion phase is not a target effect");
         };
@@ -1231,12 +1229,6 @@ impl TargetJournal {
                 && marked.phase == RecoveryPhase::Cleanup
                 && *node_id == query.node_id
                 && query.node_id == self.installed.node.node_id
-                && observed.root == self.installed.root
-                && intent.control_incarnation == observed.root.control_incarnation
-                && request.command_id == intent.request.command_id
-                && request.tenant == intent.request.tenant
-                && intent.request.target_incarnation == query.target_incarnation
-                && intent.request.phase == LifecyclePhase::StopLocal
                 && attempt.input_sha256 == marked.input_sha256,
             "original Control deletion dispatch differs"
         );
@@ -1255,13 +1247,47 @@ impl TargetJournal {
             .context("local permanent stop has not been recorded")?;
         let stop: TargetJournalStop = decode_current(&bytes)?;
         self.validate_stop(&stop)?;
+        let intent = &stop.intent.intent;
         ensure!(
-            &stop.intent.intent == intent
-                && stop.intent.partition_set_sha256 == observed.partition_set_sha256
-                && stop.intent.authority_partition == observed.authority_partition
+            request.command_id == intent.request.command_id
+                && request.tenant == intent.request.tenant
+                && intent.request.target_incarnation == query.target_incarnation
                 && stop.stopped.observation.reference == *reference,
             "local signed stop differs from original Control effect"
         );
+        match (&marked.outcome, live_intent) {
+            (None, Some(original)) => {
+                let observed = original.observation();
+                ensure!(
+                    observed.root == self.installed.root
+                        && observed.intent == *intent
+                        && stop.intent.partition_set_sha256 == observed.partition_set_sha256
+                        && stop.intent.authority_partition == observed.authority_partition,
+                    "live Control intent differs from journaled stop"
+                );
+            }
+            (Some(RecoveryDispatchOutcome::Target(reply)), None) => {
+                let TargetRuntimeOutcome::Stopped(cleanup) = &reply.outcome else {
+                    anyhow::bail!("resolved target effect has no signed cleanup");
+                };
+                ensure!(
+                    reply.command_id == request.command_id
+                        && reply.node_id == *node_id
+                        && cleanup.fact.stopped.observation.stop == stop.stopped.observation.stop,
+                    "committed acknowledgement differs from journaled stop"
+                );
+                kasumi_serving::verify_local_target_cleanup_history(
+                    &stop.intent.authority_partition,
+                    intent,
+                    *node_id,
+                    reference,
+                    cleanup,
+                )?;
+            }
+            _ => {
+                anyhow::bail!("deletion observation lacks its exact live intent or signed outcome")
+            }
+        }
         let binding =
             self.materialization_file_binding(&request.tenant, query.target_incarnation)?;
         let progress = match self
@@ -1277,6 +1303,10 @@ impl TargetJournal {
             Some(TargetCleanupStage::ParentSynced) => TargetDeletionProgress::ParentSynced,
             Some(TargetCleanupStage::Deleted) => TargetDeletionProgress::Deleted,
         };
+        ensure!(
+            marked.outcome.is_none() || progress == TargetDeletionProgress::Deleted,
+            "committed cleanup lacks its terminal physical journal"
+        );
         let result = kasumi_types::TargetDeletionStatus {
             query: query.clone(),
             intent_id: request.command_id,

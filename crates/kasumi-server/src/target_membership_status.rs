@@ -70,6 +70,7 @@ impl TargetRecoveryRuntime {
         query: TargetInitialMembershipHistoryRequest,
         failure: TargetCallSeat,
     ) -> SnapshotResult<TargetInitialMembershipReply> {
+        let bearer = self.phase_observation_credential(bearer)?;
         query.validate_for_node(self.installed.node.node_id)?;
         let admission = TargetRequestAdmission::capture_until(
             context.clone(),

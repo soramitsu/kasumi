@@ -16,7 +16,7 @@ use std::{
 mod history_work;
 #[path = "backup_phase.rs"]
 mod phase;
-pub(crate) use phase::VerificationPhase;
+pub(crate) use phase::{VerificationPhase, decode_progress};
 
 pub(crate) struct VerificationWork {
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -289,6 +289,31 @@ impl VerificationDeadline {
     pub(crate) async fn blocking_with<R, T, E>(
         self,
         owner: Arc<crate::admission::MemoryCore>,
+        resources: R,
+        check: impl Fn(&R) -> Result<()> + Send + 'static,
+        work: impl FnOnce(&mut R) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<(T, R), E>
+    where
+        R: Send + 'static,
+        T: Send + 'static,
+        E: WorkerFailure,
+    {
+        self.blocking_named(
+            ("verification.blocking_wait", "verification.blocking_worker"),
+            owner,
+            resources,
+            check,
+            work,
+        )
+        .await
+    }
+
+    /// `blocking_with` under the caller's own wait and worker phase names, so
+    /// repeated bounded children stay separately attributable in timings.
+    pub(crate) async fn blocking_named<R, T, E>(
+        self,
+        (wait_phase, worker_phase): (&'static str, &'static str),
+        owner: Arc<crate::admission::MemoryCore>,
         mut resources: R,
         check: impl Fn(&R) -> Result<()> + Send + 'static,
         work: impl FnOnce(&mut R) -> std::result::Result<T, E> + Send + 'static,
@@ -298,10 +323,10 @@ impl VerificationDeadline {
         T: Send + 'static,
         E: WorkerFailure,
     {
-        let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
+        let phase = VerificationPhase::start(wait_phase, Some(self));
         self.check().map_err(E::from)?;
         let started = owner.blocking_children().start(move || {
-            let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
+            let phase = VerificationPhase::start(worker_phase, Some(self));
             let check_stop = |resources: &R| {
                 if tokio::time::Instant::now() >= self.0 {
                     Err(Self::expired_error())
@@ -471,6 +496,125 @@ impl VerifiedState {
     }
 }
 
+/// Wait and worker phases of each resident chunk's private staging child.
+const RESIDENT_STAGING_PHASES: (&str, &str) = ("verify.chunk_staging_wait", "verify.chunk_staging");
+
+/// The private resident image and digest that accept authenticated chunks in
+/// canonical order. A node-retained blocking child owns them for exactly one
+/// chunk while the caller downloads and authenticates the next object. An
+/// abandoned child keeps them, the reservation and the work registration until
+/// it returns, as every verification child does.
+struct ResidentStaging {
+    spool: Option<(
+        kasumi_store::EncryptedSpool,
+        Box<crate::snapshot_codec::StreamInspector>,
+    )>,
+    captured: Option<Sha256>,
+    _reservation: Arc<Reservation>,
+    _overlap: Option<Reservation>,
+    registration: Option<Arc<VerificationWork>>,
+    cancellation: Option<kasumi_query::QueryCancellation>,
+}
+
+/// A chunk bound to its page entry by object ID, ciphertext digest, AEAD,
+/// revision and length. Its plaintext digest is checked before any of its bytes
+/// enter the private image or the captured digest.
+struct AuthenticatedChunk {
+    snapshot: zeroize::Zeroizing<Vec<u8>>,
+    plaintext_sha256: String,
+}
+
+impl ResidentStaging {
+    fn reserve_overlap(
+        admission: &Arc<NodeAdmission>,
+        chunks: u64,
+        cancellation: Option<kasumi_query::QueryCancellation>,
+    ) -> Result<Option<Reservation>> {
+        if chunks < 2 {
+            return Ok(None);
+        }
+        // Decryption retains the 32-byte integrity prefix in the Vec's
+        // capacity. Allow a page for the prefix, digest and child bookkeeping.
+        match admission.reserve_waiting(CHUNK_BYTES as u64 + 4096, cancellation.clone()) {
+            Ok(credit) => Ok(Some(credit)),
+            Err(error) if error.code == ErrorCode::ResourceExhausted => {
+                // Cancellation and ordinary budget pressure share this code.
+                // Only a live request may fall back to sequential staging.
+                if let Some(token) = cancellation {
+                    token.check()?;
+                }
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        if let Some(work) = &self.registration {
+            work.check()?;
+        }
+        if let Some(token) = &self.cancellation {
+            token.check()?;
+        }
+        Ok(())
+    }
+
+    fn stage(
+        &mut self,
+        chunk: AuthenticatedChunk,
+        deadline: VerificationDeadline,
+    ) -> anyhow::Result<()> {
+        let snapshot = chunk.snapshot.as_slice();
+        anyhow::ensure!(
+            hex::encode(Sha256::digest(snapshot)) == chunk.plaintext_sha256,
+            "full backup chunk plaintext differs"
+        );
+        if let Some(hash) = &mut self.captured {
+            hash.update(snapshot);
+        }
+        if let Some((spool, inspector)) = &mut self.spool {
+            // Inspect the same authenticated bytes that enter the private
+            // image. The later canonical visit checks the frozen image
+            // independently against these bounds before publication.
+            for block in snapshot.chunks(64 << 10) {
+                deadline.check()?;
+                if let Some(work) = &self.registration {
+                    work.check()?;
+                }
+                if let Some(token) = &self.cancellation {
+                    token.check()?;
+                }
+                inspector.push(block)?;
+                spool.write_all(block)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stage one chunk on a retained blocking child and take the image back.
+    async fn accept(
+        staging: &mut Option<Self>,
+        owner: &Arc<crate::admission::MemoryCore>,
+        chunk: AuthenticatedChunk,
+        deadline: VerificationDeadline,
+    ) -> anyhow::Result<()> {
+        let resources = staging
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("resident staging was not returned"))?;
+        let ((), resources) = deadline
+            .blocking_named(
+                RESIDENT_STAGING_PHASES,
+                owner.clone(),
+                resources,
+                Self::check,
+                move |staging| staging.stage(chunk, deadline),
+            )
+            .await?;
+        *staging = Some(resources);
+        Ok(())
+    }
+}
+
 /// Checked, constant-space commitment to catalogs in canonical graph traversal
 /// order. Repeated catalogs remain records; no tenant-sized de-duplication set.
 struct KeyLineage {
@@ -630,8 +774,7 @@ pub(crate) async fn verify(
         );
         phase.complete();
         let phase = VerificationPhase::start("verify.resident_chunks", Some(deadline));
-        let cancellation = reader.cancellation();
-        let mut spool = if capture.is_some() {
+        let spool = if capture.is_some() {
             None
         } else {
             let mut spool =
@@ -645,10 +788,26 @@ pub(crate) async fn verify(
                 Box::new(crate::snapshot_codec::StreamInspector::new()),
             ))
         };
+        let owner = reservation.blocking_owner();
+        let overlap = ResidentStaging::reserve_overlap(
+            admission,
+            manifest.chunk_count,
+            reader.cancellation(),
+        )?;
+        let pipeline = overlap.is_some();
+        let mut staging = Some(ResidentStaging {
+            spool,
+            // The encrypted append-only spool hashes every byte it accepts. Only
+            // the captured-generation path, which has no spool, needs its own hash.
+            captured: capture.as_ref().map(|_| Sha256::new()),
+            _reservation: reservation.clone(),
+            _overlap: overlap,
+            registration: ownership.clone(),
+            cancellation: reader.cancellation(),
+        });
+        // The previous chunk, authenticated here and not yet in the private image.
+        let mut authenticated: Option<AuthenticatedChunk> = None;
         let mut resident_bytes = 0u64;
-        // The encrypted append-only spool hashes every byte it accepts. Only
-        // the captured-generation path, which has no spool, needs its own hash.
-        let mut captured_digest = capture.as_ref().map(|_| Sha256::new());
         let mut chunk_count = 0u64;
         for index in (0..manifest.page_count).rev() {
             pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
@@ -661,19 +820,29 @@ pub(crate) async fn verify(
             let page: BackupPage = serde_json::from_slice(&bytes)?;
             for chunk in &page.chunks {
                 reader.check_access().await?;
-                let contents = reader
-                    .object(
-                        chunk.object_id,
-                        chunk.plaintext_bytes,
-                        Some(&chunk.ciphertext_sha256),
-                        false,
-                    )
-                    .await?;
+                let fetch = reader.object(
+                    chunk.object_id,
+                    chunk.plaintext_bytes,
+                    Some(&chunk.ciphertext_sha256),
+                    false,
+                );
+                let contents = match authenticated.take() {
+                    // Stage the previous chunk while this one downloads and
+                    // authenticates. At most one chunk waits for the image, and
+                    // an earlier chunk's failure is reported before this one's.
+                    Some(previous) => {
+                        let (staged, fetched) = tokio::join!(
+                            ResidentStaging::accept(&mut staging, &owner, previous, deadline),
+                            fetch
+                        );
+                        staged?;
+                        fetched?
+                    }
+                    None => fetch.await?,
+                };
                 anyhow::ensure!(
                     contents.revision == manifest.revision
-                        && contents.snapshot.len() == chunk.plaintext_bytes
-                        && hex::encode(Sha256::digest(&contents.snapshot))
-                            == chunk.plaintext_sha256,
+                        && contents.snapshot.len() == chunk.plaintext_bytes,
                     "full backup chunk plaintext differs"
                 );
                 chunk_count = chunk_count
@@ -686,38 +855,34 @@ pub(crate) async fn verify(
                     "backup chunk order or size differs"
                 );
                 key_catalogs.add(&contents.key_catalog_sha256)?;
-                if let Some(hash) = &mut captured_digest {
-                    hash.update(&contents.snapshot);
-                }
                 resident_bytes = resident_bytes
                     .checked_add(contents.snapshot.len() as u64)
                     .filter(|bytes| *bytes <= manifest.resident_bytes)
                     .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
-                if let Some((spool, inspector)) = &mut spool {
-                    // Inspect the same authenticated bytes that enter the private
-                    // image. The later canonical visit checks the frozen image
-                    // independently against these bounds before publication.
-                    for block in contents.snapshot.chunks(64 << 10) {
-                        deadline.check()?;
-                        if let Some(work) = &ownership {
-                            work.check()?;
-                        }
-                        if let Some(token) = &cancellation {
-                            token.check()?;
-                        }
-                        inspector.push(block)?;
-                        spool.write_all(block)?;
-                    }
+                let next = AuthenticatedChunk {
+                    snapshot: contents.snapshot,
+                    plaintext_sha256: chunk.plaintext_sha256.clone(),
+                };
+                if pipeline {
+                    authenticated = Some(next);
+                } else {
+                    ResidentStaging::accept(&mut staging, &owner, next, deadline).await?;
                 }
             }
         }
+        if let Some(last) = authenticated.take() {
+            ResidentStaging::accept(&mut staging, &owner, last, deadline).await?;
+        }
+        let ResidentStaging {
+            spool, captured, ..
+        } = staging.ok_or_else(|| anyhow::anyhow!("resident staging was not returned"))?;
         anyhow::ensure!(
             chunk_count == manifest.chunk_count,
             "backup chunk count differs"
         );
         anyhow::ensure!(
             resident_bytes == manifest.resident_bytes
-                && captured_digest
+                && captured
                     .is_none_or(|hash| hex::encode(hash.finalize()) == manifest.resident_sha256),
             "full backup resident stream differs"
         );
@@ -1033,6 +1198,132 @@ pub(crate) async fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_chunks_require_headroom_and_a_live_request() {
+        let bytes = CHUNK_BYTES as u64 + 4096;
+        let config = crate::test_utils::admission_config_with_bookkeeping(
+            crate::admission::AdmissionConfig {
+                max_inflight_bytes: Some(bytes),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let admission = NodeAdmission::with_fixed_memory(config, 1 << 30, 0).unwrap();
+        assert!(
+            ResidentStaging::reserve_overlap(&admission, 1, None)
+                .unwrap()
+                .is_none()
+        );
+        let first = ResidentStaging::reserve_overlap(&admission, 2, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), bytes);
+        assert!(
+            ResidentStaging::reserve_overlap(&admission, 2, None)
+                .unwrap()
+                .is_none()
+        );
+        drop(first);
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        let token = kasumi_query::QueryCancellation::default();
+        token.cancel();
+        let error = ResidentStaging::reserve_overlap(&admission, 2, Some(token.clone()))
+            .err()
+            .expect("cancelled requests cannot fall back to sequential staging");
+        assert_eq!(error, token.check().unwrap_err());
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+    }
+
+    fn staged_chunk(bytes: &[u8], digest_of: &[u8]) -> AuthenticatedChunk {
+        AuthenticatedChunk {
+            snapshot: zeroize::Zeroizing::new(bytes.to_vec()),
+            plaintext_sha256: hex::encode(Sha256::digest(digest_of)),
+        }
+    }
+
+    fn captured_staging(
+        admission: &Arc<NodeAdmission>,
+    ) -> (Option<ResidentStaging>, Arc<crate::admission::MemoryCore>) {
+        let reservation = Arc::new(admission.reserve(1 << 20, None).unwrap());
+        let owner = reservation.blocking_owner();
+        (
+            Some(ResidentStaging {
+                spool: None,
+                captured: Some(Sha256::new()),
+                _reservation: reservation,
+                _overlap: None,
+                registration: None,
+                cancellation: None,
+            }),
+            owner,
+        )
+    }
+
+    #[tokio::test]
+    async fn resident_staging_returns_the_image_after_each_checked_chunk_in_order() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (mut staging, owner) = captured_staging(&admission);
+        let deadline = VerificationDeadline::new(10_000).unwrap();
+        for part in [&b"first chunk"[..], &b"second"[..], &b"third and last"[..]] {
+            ResidentStaging::accept(&mut staging, &owner, staged_chunk(part, part), deadline)
+                .await
+                .unwrap();
+        }
+        let digest = staging.take().unwrap().captured.unwrap().finalize();
+        assert_eq!(digest, Sha256::digest(b"first chunksecondthird and last"));
+        admission.drain_blocking_children().await.unwrap();
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+    }
+
+    #[tokio::test]
+    async fn resident_staging_rejects_a_plaintext_digest_before_any_byte_is_accepted() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (mut staging, owner) = captured_staging(&admission);
+        let deadline = VerificationDeadline::new(10_000).unwrap();
+        let failure = ResidentStaging::accept(
+            &mut staging,
+            &owner,
+            staged_chunk(b"substituted", b"original"),
+            deadline,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{failure:#}").contains("full backup chunk plaintext differs"));
+        // The failed child consumed the image: no later chunk can extend it.
+        assert!(staging.is_none());
+        assert!(
+            ResidentStaging::accept(&mut staging, &owner, staged_chunk(b"x", b"x"), deadline)
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+    }
+
+    #[tokio::test]
+    async fn resident_staging_honors_the_verification_deadline() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (mut staging, owner) = captured_staging(&admission);
+        let deadline = VerificationDeadline::new(1).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let failure = ResidentStaging::accept(
+            &mut staging,
+            &owner,
+            staged_chunk(b"late", b"late"),
+            deadline,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{failure:#}").contains("backup verification deadline expired"));
+        tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap();
+    }
     #[tokio::test]
     async fn expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done() {
         let admission = NodeAdmission::new(Default::default()).unwrap();

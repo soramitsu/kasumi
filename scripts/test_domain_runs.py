@@ -334,6 +334,7 @@ class SoakTests(DomainFixture):
             self.accept(record, identity, configs)
 
     def test_qualifying_run_is_accepted_and_tampering_is_rejected(self):
+        self.SHORT = dict(self.SHORT, session_seconds=6)
         self.qualifying()
         custody = self.run_short()
         details = soak.gate_details(self.root, custody / "report.json")
@@ -398,6 +399,15 @@ class SoakTests(DomainFixture):
 
         # Re-sealed forgeries: the adapter recomputes from the raw replies and
         # the daemons' own receipts, not from the report's numbers.
+        def truncate_renewal(report):
+            details = report["details"]
+            self.assertGreaterEqual(len(details["sessions"]), 3)
+            first_rotated = details["sessions"][1]
+            process = next(row for row in report["processes"] if row["id"] == first_rotated)
+            opened = owned.read(owned.check_ref(custody, process["receipt"]))["started_elapsed_seconds"]
+            event = next(row for row in details["maintenance"] if row["id"] == soak.RENEWAL)
+            event["finished_elapsed_seconds"] = opened - details["phases"]["measured"]
+
         def forged_heartbeats(report):
             rows = [json.loads(line) for line in beats.read_text().splitlines()]
             rows[1]["successful_operations"] += 1000
@@ -418,6 +428,7 @@ class SoakTests(DomainFixture):
             report["details"]["maintenance"] = report["details"]["maintenance"][:-1]
 
         for message, change in (
+                ("renewal interval omits a rotated session", truncate_renewal),
                 ("heartbeats differ from the recomputed raw workload", forged_heartbeats),
                 ("replies are not all accounted for", dropped_replies),
                 ("shorter than the contract", early_drain),

@@ -9,6 +9,13 @@ import systemd_evidence as sd
 
 
 class SystemdCustody(unittest.TestCase):
+    def test_configuration_check_uses_the_delivered_services_own_account(self):
+        for role, (binary, account, config) in sd.ROLES.items():
+            with self.subTest(role=role):
+                self.assertEqual(runner.check_config_command({"setpriv": "/usr/bin/setpriv"}, role),
+                                 ["/usr/bin/setpriv", "--reuid", account, "--regid", account,
+                                  "--init-groups", "/usr/local/bin/" + binary, "check-config", config])
+
     def test_service_inventory_checks_exact_unit_names_including_inactive_units(self):
         runner.require_units_absent("example.service enabled enabled\n")
         runner.require_units_absent("  helper.service loaded active running watches kasumid.service\n")

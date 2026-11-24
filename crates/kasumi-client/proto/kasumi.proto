@@ -245,4 +245,5 @@ service KasumiRecoveryControl {
   rpc Stop(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ReadIssuerStop(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ReadPhase(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ReadTargetDeletion(ControlJsonRequest) returns (ControlJsonResponse);
 }

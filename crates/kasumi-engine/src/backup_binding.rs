@@ -402,6 +402,78 @@ impl View {
             .get_bounded(CATALOG, sha256.as_bytes(), 64 << 10)?
             .is_some())
     }
+    /// The checkpoint and the installed namespace must contain the same canonical
+    /// points and ordinal commitments. Verify each chain edge in order through
+    /// one installed read view, including the edge to the selected final head.
+    fn verify_checkpoint_rows(&self, store: &Arc<TenantStore>, namespace: &str) -> Result<()> {
+        if self.head.count == 0 {
+            return Ok(());
+        }
+        let reader = store.read_view()?;
+        let result = (|| -> Result<()> {
+            let mut parent = BackupBindingHead::empty(&self.head.origin_incarnation)?.sha256;
+            for ordinal in 1..=self.head.count {
+                let index = self.index(ordinal)?;
+                let key = id_key(&index.key);
+                let bytes = self
+                    .bytes(&key)?
+                    .context("backup binding indexed point missing")?;
+                let row: Row = serde_json::from_slice(&bytes)?;
+                crate::current_json::require_current_writer_bytes(
+                    &bytes,
+                    &row,
+                    "backup binding point",
+                )?;
+                ensure!(
+                    row.ordinal == ordinal && row.key == index.key,
+                    "backup binding ordinal redirected"
+                );
+                ensure!(
+                    row.previous_sha256 == parent,
+                    "backup binding parent root differs"
+                );
+                row.validate_position()?;
+                ensure!(
+                    row.sha256()? == index.sha256,
+                    "backup binding point differs from ordinal commitment"
+                );
+                let point = reader
+                    .get(namespace, &key, MAX_ROW_BYTES)?
+                    .context("backup binding checkpoint row missing")?;
+                if point.as_bytes() != &*bytes {
+                    let actual: Row = serde_json::from_slice(point.as_bytes())?;
+                    crate::current_json::require_current_writer_bytes(
+                        point.as_bytes(),
+                        &actual,
+                        "backup binding point",
+                    )?;
+                    anyhow::bail!("backup binding checkpoint physical row differs");
+                }
+                drop(point);
+                let entry = reader
+                    .get(namespace, &ordinal_key(ordinal), MAX_ROW_BYTES)?
+                    .context("backup binding ordinal missing")?;
+                let actual: Ordinal = serde_json::from_slice(entry.as_bytes())?;
+                crate::current_json::require_current_writer_bytes(
+                    entry.as_bytes(),
+                    &actual,
+                    "backup binding ordinal",
+                )?;
+                ensure!(actual == index, "backup binding checkpoint ordinal differs");
+                parent = index.sha256;
+            }
+            ensure!(
+                parent == self.head.sha256,
+                "backup binding selected root differs"
+            );
+            Ok(())
+        })();
+        match (result, reader.close()) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
     pub(crate) fn prepare_install(
         &self,
         store: &Arc<TenantStore>,
@@ -459,16 +531,7 @@ impl View {
             };
             view.validate_state(state)?;
             view.verify_restored_intents(state)?;
-            for old in self.records() {
-                let old = old?;
-                let actual = view
-                    .point(&old.key)?
-                    .context("backup binding checkpoint row missing")?;
-                ensure!(
-                    actual.sha256()? == old.sha256()?,
-                    "backup binding checkpoint physical row differs"
-                );
-            }
+            self.verify_checkpoint_rows(store, &binding.namespace())?;
             return Ok(Installation {
                 rows: None,
                 staging: None,

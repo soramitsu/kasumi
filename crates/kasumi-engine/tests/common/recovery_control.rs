@@ -1833,40 +1833,7 @@ async fn complete_recovery(
         RecoveryDispatchOutcome::Authority(Box::new(signed)),
     )
     .await;
-    let (cleanup_phase, input) = prepare_next(&f, &db, id).await;
-    let RecoveryDispatch::ControlIntent(commit) = input else {
-        panic!("cleanup Control phase required")
-    };
-    let phase = db
-        .recovery_phase(f.context("owner"), id, cleanup_phase)
-        .await
-        .unwrap();
-    let mut invocation = f.context("owner");
-    invocation.authorization = invocation
-        .authorization
-        .with_expiry_limit(phase.dispatch_limit().await.unwrap())
-        .unwrap();
-    drop(phase);
-    consume_fixture_effect(&f, id, cleanup_phase, RecoveryEffect::ControlIntent).await;
-    db.lifecycle_control(invocation, LifecycleControlCommand::CommitIntent(commit))
-        .await
-        .unwrap();
-    let intent = db
-        .engine()
-        .generation()
-        .unwrap()
-        .state
-        .lifecycle_intent(cleanup_phase)
-        .unwrap()
-        .unwrap()
-        .clone();
-    resolve_phase(
-        &f,
-        id,
-        cleanup_phase,
-        RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
-    )
-    .await;
+    let intent = commit_next_intent(&f, &db, id).await;
     for node_id in 1..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
         let RecoveryDispatch::Target {
@@ -2499,14 +2466,7 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("committed Control phase required")
     };
-    // Preparation follows the current leader; the caller's cached handle can
-    // now be a follower. Pin one original read credential before reacquiring it.
-    let phase_context = f.context("owner");
-    let db = f.leader().await;
-    let prepared = db
-        .recovery_phase(phase_context, operation, phase_id)
-        .await
-        .unwrap();
+    let prepared = read_recovery_phase(f, f.context("owner"), operation, phase_id).await;
     let mut context = f.context("owner");
     context.authorization = context
         .authorization
@@ -2515,6 +2475,9 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     drop(prepared);
     let requested_phase = command.phase;
     let requested_id = command.command_id;
+    let started = std::time::Instant::now();
+    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
+    let db = f.leader().await;
     let before = {
         let receiver = db.raft_group().raft().metrics();
         let metrics = receiver.borrow();
@@ -2525,8 +2488,6 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
             metrics.state,
         )
     };
-    let started = std::time::Instant::now();
-    consume_fixture_effect(f, operation, phase_id, RecoveryEffect::ControlIntent).await;
     db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
         .await
         .unwrap_or_else(|error| {
@@ -2589,6 +2550,18 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
     .await;
     intent
 }
+// The Control read releases no observation when its audit times out. Retry
+// with the original operation, phase and credential within the fixture's window.
+fn retryable_preparation_read(error: &Error) -> bool {
+    if error.code == ErrorCode::AuditUnavailable
+        && error.message == "control commitment audit deadline elapsed"
+    {
+        eprintln!("recovery preparation read withheld: {error}");
+        return true;
+    }
+    uncertain_control_read(error.code)
+}
+
 async fn prepare_next(
     f: &Fixture,
     _db: &Arc<Database>,
@@ -2601,12 +2574,7 @@ async fn prepare_next(
             let current = f.leader().await;
             let head = match current.recovery_status(context.clone(), operation).await {
                 Ok(head) => head,
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) =>
-                {
+                Err(error) if retryable_preparation_read(&error) => {
                     continue;
                 }
                 Err(error) => panic!("recovery planning status rejected: {error:?}"),
@@ -2622,11 +2590,7 @@ async fn prepare_next(
                         input,
                     );
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
+                Err(error) if retryable_preparation_read(&error) => {}
                 other => panic!("recovery planning dispatch rejected: {other:?}"),
             }
         }
@@ -2672,12 +2636,7 @@ async fn prepare_next(
                 Err(error) if error.code == ErrorCode::NotFound => {
                     last_error = Some(format!("phase read: {error:?}"));
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) =>
-                {
+                Err(error) if retryable_preparation_read(&error) => {
                     last_error = Some(format!("phase read: {error:?}"));
                     continue;
                 }
@@ -2975,11 +2934,29 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     .await
     .unwrap();
     let (phase, input) = prepare_next(&f, &db, operation).await;
-    resolve_phase(
+    // The issuer transport gets only the time left on the original caller's
+    // credential after the marker committed, even with a 15-second phase cap.
+    let issuer = db
+        .recovery_phase(f.context_for("owner", 1_000), operation, phase)
+        .await
+        .unwrap();
+    let ticket = issuer
+        .begin_effect(RecoveryEffect::AuthorityCommand)
+        .await
+        .unwrap();
+    let attempt = ticket.attempt_id();
+    elapsed.advance(Duration::from_millis(750));
+    assert_eq!(
+        ticket.consume_remaining(&input).await.unwrap(),
+        Duration::from_millis(250)
+    );
+    drop(issuer);
+    resolve_phase_with_prior(
         &f,
         operation,
         phase,
         RecoveryDispatchOutcome::Authority(Box::new(prepare_receipt(&f, &input))),
+        Some((RecoveryEffect::AuthorityCommand, attempt)),
     )
     .await;
     let (original_id, input) = prepare_next(&f, &db, operation).await;
@@ -3432,7 +3409,9 @@ async fn resolve_expired_completion(
     let inspection = commit_next_control(f, db, operation).await;
     assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
     assert_ne!(inspection.request.command_id, old_intent.request.command_id);
-    for node in 1..=2 {
+    // The terminal resolution started voters 1 and 2. A fresh inspection first
+    // starts voter 3, which that majority missed, then the earlier startup.
+    for node in [3, 1] {
         let (id, dispatch) = prepare_next(f, db, operation).await;
         let RecoveryDispatch::Target { node_id, request } = dispatch else {
             panic!("fresh inspection startup required")
@@ -3468,7 +3447,7 @@ async fn resolve_expired_completion(
     let RecoveryDispatch::Target { node_id, request } = next else {
         panic!("inspection peer retry required")
     };
-    assert_eq!((first_node, node_id), (1, 2));
+    assert_eq!((first_node, node_id), (1, 3));
     assert_eq!(
         first, request,
         "inspection retries preserve their exact finite request"

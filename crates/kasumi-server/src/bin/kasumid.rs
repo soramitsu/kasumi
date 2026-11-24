@@ -98,11 +98,7 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
-    // Every command but `serve` keeps each tenant's stored snapshot form and
-    // converts nothing. An offline command (credential or administrator
-    // recovery, key rotation, staging) that opened its tenants embedded would
-    // copy each by-reference tenant's whole audit archive into node.kv, and one
-    // that opened them by reference would undo a rollback's embedded start.
+    // Offline commands keep each tenant's stored snapshot form when opening data.
     kasumi_engine::set_local_snapshot_archive(serve_options::process_snapshot_archive(None));
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {

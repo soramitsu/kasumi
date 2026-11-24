@@ -726,7 +726,7 @@ impl NodeDiskDirectory {
                 .get_mut(&identity)
                 .and_then(AccountedInode::directory_mut)
                 .expect("verified child");
-            if entry.binding != binding || entry.parent != Some(parent) {
+            if entry.binding != binding || entry.parent(identity) != Some(parent) {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             let handles = entry
@@ -1006,7 +1006,7 @@ pub(super) fn open_existing(
             .get_mut(&identity)
             .and_then(AccountedInode::directory_mut)
             .expect("verified directory");
-        if entry.binding != binding || entry.parent != Some(parent) {
+        if entry.binding != binding || entry.parent(identity) != Some(parent) {
             return Err(io::ErrorKind::InvalidData.into());
         }
         entry.live_handles = entry
@@ -1052,7 +1052,7 @@ fn acquire_rooted_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         let entry = accounted[&identity]
             .directory()
             .expect("verified directory");
-        if entry.binding != binding || entry.parent != Some(parent_identity) {
+        if entry.binding != binding || entry.parent(identity) != Some(parent_identity) {
             return Err(io::ErrorKind::InvalidData.into());
         }
         operation.parent.observe_ancestor(index + 1, identity);
@@ -1083,10 +1083,7 @@ fn verify_enrolled(
         .get(&identity)
         .and_then(AccountedInode::directory)
         .ok_or(io::ErrorKind::InvalidData)?;
-    if !entry.settled
-        || entry.len != metadata.len()
-        || entry.bytes.checked_sub(entry.pending) != Some(census::directory_extent(metadata)?)
-    {
+    if !entry.settled || entry.len != metadata.len() || !entry.matches_allocation(metadata)? {
         return Err(io::ErrorKind::InvalidData.into());
     }
     Ok(())
@@ -1391,14 +1388,17 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     census::directory_nonallocating(&metadata)?;
     let identity = Identity::of(&metadata);
     if identity.0 != disk.roots[&operation.root].identity.0
+        || identity.0 != operation.parent.identity().0
         || state.accounted.contains_key(&identity)
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let observed = census::directory_extent(&metadata)?;
+    let allocation =
+        census::DirectoryAllocation::observe(&metadata, disk.roots[&operation.root].btrfs_sector)?;
+    let observed = allocation.reported;
     let reserved = disk.config.directory_policy.extent_bytes;
     let charged = reserved.max(observed);
-    let pending = charged - observed;
+    let pending = charged - allocation.backed();
     let bytes = state
         .bytes
         .checked_sub(reserved)
@@ -1426,9 +1426,9 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     state.directory_bytes = directory_bytes;
     let entry = AccountedDirectory {
         binding: operation.binding,
-        parent: Some(operation.parent.identity()),
+        parent_inode: Some(operation.parent.identity().1),
         bytes: charged,
-        pending,
+        allocation,
         settled: false,
         len: metadata.len(),
         children: 0,
@@ -1543,11 +1543,11 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
         .ok_or(io::ErrorKind::InvalidData)?;
     let pending = state
         .pending
-        .checked_sub(entry.pending)
+        .checked_sub(entry.pending()?)
         .ok_or(io::ErrorKind::InvalidData)?;
     let directory_bytes = state
         .directory_bytes
-        .checked_sub(entry.bytes - entry.pending)
+        .checked_sub(entry.allocation.reported)
         .ok_or(io::ErrorKind::InvalidData)?;
     let directories = state
         .directories
@@ -1570,7 +1570,7 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
     }
     let mut promises = disk.filesystems[filesystem].promises.lock();
     let shared = promises
-        .checked_sub(entry.pending)
+        .checked_sub(entry.pending()?)
         .ok_or(io::ErrorKind::InvalidData)?;
     // Close and all fallible checks precede credit. Names, ancestor backing and
     // the prepared control allocation die before the slot becomes reusable.

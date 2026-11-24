@@ -106,7 +106,7 @@ def verify_compiler_executables(directory, gate, process):
     original_target = Path(working_directory).parent / "target"
     emitted = {}
     compiled_packages = {}
-    for message in compiler_artifact_messages(owned_file(directory, gate["log"])):
+    for message in compiler_artifact_messages(owned_file(directory, gate["log"]), gate["command"]):
         record_compiled_package(compiled_packages, message)
         raw = message.get("executable")
         if raw is None:
@@ -188,7 +188,8 @@ def verify_evidence(directory):
     for gate in gates:
         if gate["command"] != expected[gate["name"]]:
             raise ValueError("recorded gate command differs from the pinned contract")
-        if gate["exit_code"] != 0 or gate.get("fixture_feature_violation") or gate.get("missing_production_executables"):
+        if (gate["exit_code"] != 0 or "inventory_error" in gate
+                or gate.get("fixture_feature_violation") or gate.get("missing_production_executables")):
             raise ValueError("a functional gate failed")
         verify_file(directory, gate["log"], gate["log_sha256"])
         if not gate.get("resources") or not gate.get("resources_sha256"):
@@ -311,12 +312,19 @@ def license_files(package, source, supplements):
         files[str(relative)] = (path, str(relative), None)
     extra = supplements["packages"].get((package["name"], package["version"]))
     if extra:
-        vcs = package_root / ".cargo_vcs_info.json"
-        if extra.get("upstream_commit"):
+        vendored = package["source"] is None and "vendored_manifest" in extra
+        if vendored:
+            manifest = owned_file(source, extra["vendored_manifest"])
+            if manifest != package_root / "Cargo.toml":
+                raise ValueError("notice supplement belongs to another vendored package")
+        elif extra.get("upstream_commit"):
+            vcs = package_root / ".cargo_vcs_info.json"
             if not vcs.is_file() or json.loads(vcs.read_text())["git"]["sha1"] != extra["upstream_commit"]:
                 raise ValueError("supplement does not match published crate source")
         for item in extra["files"]:
             path = verify_file(source / "release/licenses", item["path"], item["sha256"])
+            if vendored:
+                verify_file(source, item["vendored_path"], item["sha256"])
             files["supplement/" + item["path"]] = (path, item["path"], item["source_url"])
     if not files:
         raise ValueError("missing upstream license text: " + package["name"] + " " + package["version"])
@@ -502,6 +510,8 @@ def capture_metadata(source, directory, target, expected_source_files, native_in
         if before != expected_source_files:
             raise ValueError("metadata source differs before dispatch")
         environment = assembly_inputs.environment(native_inputs, directory)
+        # Cargo metadata can cache its rustc probe even with --locked --offline.
+        environment["CARGO_TARGET_DIR"] = str(directory / "target")
         executable = gate_process.executable_identity([native_inputs["tools"]["cargo"]["path"]], source, environment)
         command = metadata_command(executable["path"], target)
         record["command"] = command

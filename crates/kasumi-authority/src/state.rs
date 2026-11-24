@@ -552,7 +552,7 @@ impl Backend {
         };
         Ok((view, self.meta()?.revision))
     }
-    pub fn discover(&self, request: &LeaseDiscovery) -> Result<ServingIdentity> {
+    pub fn discover(&self, request: &LeaseDiscovery) -> Result<LeaseDiscoveryObservation> {
         let _lock = self
             .mutation
             .lock()
@@ -565,6 +565,61 @@ impl Backend {
                 .is_none(),
             "target incarnation is permanently stopped"
         );
+        if request.purpose == LeasePurpose::Serving {
+            let current_fenced = record.incarnation == request.incarnation
+                && record.nodes.contains(&request.node)
+                && record.fence.as_ref().is_some_and(|receipt| matches!(
+                    receipt.outcome,
+                    AuthorityOutcome::Fenced { incarnation, authority_epoch }
+                        if incarnation == request.incarnation && authority_epoch == record.authority_epoch
+                ));
+            // An incarnation can never be activated twice. Only the exact
+            // positively enrolled former node may observe its supersession.
+            let superseded = if record.incarnation != request.incarnation {
+                match self.record(&key_incarnation(&request.tenant, request.incarnation))? {
+                    Some(Record::Incarnation(previous))
+                        if previous.tenant == request.tenant
+                            && previous.incarnation == request.incarnation
+                            && previous.authority_epoch < record.authority_epoch =>
+                    {
+                        match (&previous.receipt.command.action, &previous.receipt.outcome) {
+                            (
+                                AuthorityAction::Enroll { incarnation, nodes },
+                                AuthorityOutcome::Enrolled {
+                                    incarnation: accepted,
+                                    authority_epoch,
+                                },
+                            ) => {
+                                *incarnation == request.incarnation
+                                    && *accepted == *incarnation
+                                    && *authority_epoch == previous.authority_epoch
+                                    && nodes.contains(&request.node)
+                            }
+                            (
+                                _,
+                                AuthorityOutcome::Activated {
+                                    target,
+                                    authority_epoch,
+                                },
+                            ) => {
+                                target.incarnation == request.incarnation
+                                    && *authority_epoch == previous.authority_epoch
+                                    && target.nodes.contains(&request.node)
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if current_fenced || superseded {
+                return Ok(LeaseDiscoveryObservation::Fenced {
+                    fenced: request.clone(),
+                });
+            }
+        }
         let epoch = match request.purpose {
             LeasePurpose::Serving => {
                 ensure!(
@@ -593,12 +648,12 @@ impl Backend {
                     .context("authority epoch exhausted")?
             }
         };
-        Ok(ServingIdentity {
+        Ok(LeaseDiscoveryObservation::Serving(ServingIdentity {
             tenant: request.tenant.clone(),
             incarnation: request.incarnation,
             authority_epoch: epoch,
             node: request.node.clone(),
-        })
+        }))
     }
     fn reduce(
         &self,

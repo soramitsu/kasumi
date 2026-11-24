@@ -43,8 +43,6 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     #[cfg(any(test, feature = "test-utils"))]
     before_snapshot: FixtureHook,
     #[cfg(any(test, feature = "test-utils"))]
-    refuse_next_blank: AtomicBool,
-    #[cfg(any(test, feature = "test-utils"))]
     joined: Arc<JoinedAppends>,
 }
 
@@ -305,8 +303,6 @@ where
             #[cfg(any(test, feature = "test-utils"))]
             before_snapshot: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
-            refuse_next_blank: AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-utils"))]
             joined,
         })
     }
@@ -357,14 +353,6 @@ where
         );
         *installed = Some(hook);
         Ok(())
-    }
-
-    /// Refuse the next Blank append for capacity, as a full journal store refuses
-    /// an append: nothing reaches the journal and the writer serves on. Commands
-    /// (a background audit worker's, say) are unaffected.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn fixture_refuse_next_blank(&self) {
-        self.refuse_next_blank.store(true, Ordering::Release);
     }
 
     /// Entries appended between periodic snapshots.
@@ -461,16 +449,14 @@ where
     }
 
     pub(crate) async fn write(&self, command: RaftCommand) -> Result<Vec<u8>> {
-        self.append_payload(EntryPayload::Normal(command), false)
-            .await
+        self.append_command(command, false).await
     }
 
     /// An application command whose apply publishes through the installed
     /// ordinary completion and stages nothing durable before that
     /// publication: its journal record commits in the same transaction.
     pub(crate) async fn write_joined(&self, command: RaftCommand) -> Result<Vec<u8>> {
-        self.append_payload(EntryPayload::Normal(command), true)
-            .await
+        self.append_command(command, true).await
     }
 
     /// [`Self::write_joined`] for several commands, in order. A machine that
@@ -494,7 +480,7 @@ where
         let (response, receive) = tokio::sync::oneshot::channel();
         #[cfg(any(test, feature = "test-utils"))]
         let before_apply = self.before_apply.lock().unwrap().take();
-        // As append_payload: the retained worker owns the serialization guard.
+        // The retained worker owns the serialization guard.
         *worker = Some(tokio::spawn(async move {
             let mut fence = WorkFence {
                 failed: failed.clone(),
@@ -563,19 +549,7 @@ where
         }
     }
 
-    /// Append one Blank entry: the state machine applies it as metadata, so the
-    /// journal and the applied position advance with no application command.
-    pub(crate) async fn append_blank(&self) -> Result<()> {
-        self.append_payload(EntryPayload::Blank, false)
-            .await
-            .map(drop)
-    }
-
-    async fn append_payload(
-        &self,
-        payload: EntryPayload<TypeConfig>,
-        joined: bool,
-    ) -> Result<Vec<u8>> {
+    async fn append_command(&self, command: RaftCommand, joined: bool) -> Result<Vec<u8>> {
         self.check()?;
         let mut worker = self.worker.lock().await;
         self.finish_worker(&mut worker).await;
@@ -588,11 +562,6 @@ where
         let (response, receive) = tokio::sync::oneshot::channel();
         #[cfg(any(test, feature = "test-utils"))]
         let before_apply = self.before_apply.lock().unwrap().take();
-        #[cfg(any(test, feature = "test-utils"))]
-        let refused = matches!(payload, EntryPayload::Blank)
-            && self.refuse_next_blank.swap(false, Ordering::AcqRel);
-        #[cfg(not(any(test, feature = "test-utils")))]
-        let refused = false;
         // Move the serialization guard into the retained worker before
         // yielding. Cancellation cannot split commit and publication.
         *worker = Some(tokio::spawn(async move {
@@ -605,12 +574,7 @@ where
             if let Some(hook) = before_apply {
                 tokio::task::spawn_blocking(hook).await?;
             }
-            let appended = if refused {
-                Appended::Refused
-            } else {
-                state.append(payload, joined).await?
-            };
-            let (data, applied) = match appended {
+            let (data, applied) = match state.append(EntryPayload::Normal(command), joined).await? {
                 Appended::Applied(data, applied) => (data, applied),
                 // Nothing reached the journal, so this command is rejected
                 // and the writer, its position and its applied state go on.

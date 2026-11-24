@@ -21,7 +21,8 @@ struct SourceChunk<'a> {
     documents: SourceDocuments<'a>,
 }
 struct SourceDocuments<'a> {
-    documents: &'a [Arc<DocumentSlot>],
+    collection: &'a str,
+    documents: &'a [(&'a String, Arc<DocumentSlot>)],
     resolver: Option<&'a dyn DocumentResolver>,
     failure: &'a std::cell::RefCell<Option<anyhow::Error>>,
 }
@@ -32,11 +33,13 @@ impl serde::Serialize for SourceDocuments<'_> {
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::{Error as _, SerializeSeq};
         let mut sequence = serializer.serialize_seq(Some(self.documents.len()))?;
-        for slot in self.documents {
-            let document = slot.load_owned(self.resolver).map_err(|error| {
-                *self.failure.borrow_mut() = Some(error);
-                S::Error::custom("archive source document unavailable")
-            })?;
+        for (id, slot) in self.documents {
+            let document = slot
+                .load_owned_at(self.collection, id, self.resolver)
+                .map_err(|error| {
+                    *self.failure.borrow_mut() = Some(error);
+                    S::Error::custom("archive source document unavailable")
+                })?;
             sequence.serialize_element(document.as_ref())?;
         }
         sequence.end()
@@ -251,15 +254,15 @@ pub(crate) fn publish(
     for (index, descriptor) in manifest.chunks.iter().enumerate() {
         let documents: Vec<_> = eligible
             .range(descriptor.first_id.clone()..=descriptor.last_id.clone())
-            .map(|(_, document)| document.clone())
+            .map(|(id, document)| (id, document.clone()))
             .collect();
         if documents.len() != descriptor.document_count
             || documents
                 .first()
-                .is_none_or(|doc| doc.id() != descriptor.first_id)
+                .is_none_or(|(id, _)| **id != descriptor.first_id)
             || documents
                 .last()
-                .is_none_or(|doc| doc.id() != descriptor.last_id)
+                .is_none_or(|(id, _)| **id != descriptor.last_id)
         {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -275,6 +278,7 @@ pub(crate) fn publish(
             collection: &manifest.collection,
             index,
             documents: SourceDocuments {
+                collection: &manifest.collection,
                 documents: &documents,
                 resolver,
                 failure: &failure,
@@ -292,8 +296,10 @@ pub(crate) fn publish(
             )
             .into());
         }
-        for slot in documents {
-            let document = slot.load_owned(resolver).map_err(source_failure)?;
+        for (id, slot) in &documents {
+            let document = slot
+                .load_owned_at(&manifest.collection, id, resolver)
+                .map_err(source_failure)?;
             let reference = ArchivedDocument {
                 version: document.version,
                 archive_id: manifest.archive_id.clone(),
@@ -561,7 +567,7 @@ mod source_chunk_tests {
             })))
         }
     }
-    fn fixture(fail: bool) -> (Resolver, Vec<Arc<DocumentSlot>>) {
+    fn fixture(fail: bool) -> (Resolver, Vec<(String, Arc<DocumentSlot>)>) {
         let documents: Vec<_> = ["a", "b"]
             .into_iter()
             .map(|id| {
@@ -575,9 +581,13 @@ mod source_chunk_tests {
         let slots = documents
             .iter()
             .map(|document| {
-                Arc::new(DocumentSlot::Stored(
-                    StoredDocument::from_document(document, [17; 32], 4096, 1 << 20, 4096).unwrap(),
-                ))
+                (
+                    document.id.clone(),
+                    Arc::new(DocumentSlot::stored_descriptor(
+                        StoredDocument::from_document(document, [17; 32], 4096, 1 << 20, 4096)
+                            .unwrap(),
+                    )),
+                )
             })
             .collect();
         (
@@ -608,7 +618,11 @@ mod source_chunk_tests {
             collection: &expected.collection,
             index: expected.index,
             documents: SourceDocuments {
-                documents: &slots,
+                collection: "docs",
+                documents: &slots
+                    .iter()
+                    .map(|(id, slot)| (id, slot.clone()))
+                    .collect::<Vec<_>>(),
                 resolver: Some(&resolver),
                 failure: &failure,
             },
@@ -631,7 +645,11 @@ mod source_chunk_tests {
             collection: "docs",
             index: 0,
             documents: SourceDocuments {
-                documents: &slots,
+                collection: "docs",
+                documents: &slots
+                    .iter()
+                    .map(|(id, slot)| (id, slot.clone()))
+                    .collect::<Vec<_>>(),
                 resolver: Some(&resolver),
                 failure: &failure,
             },

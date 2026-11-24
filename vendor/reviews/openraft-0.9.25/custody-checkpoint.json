@@ -156,6 +156,66 @@
         "tests/tests/life_cycle/t14_auxiliary_custody.rs"
       ],
       "status": "The corrected fixture passed 64 repetitions per case and the 23-case lifecycle binary on native macOS ARM64 and development Linux ARM64. Full platform qualification remains pending."
+    },
+    {
+      "change": "Allow the internal bounded-apply test fixtures to implement the original sealed storage traits when storage-v2 is disabled. The crate-private re-export uses the same multithreaded unit test configuration as the two fixture modules.",
+      "development_tests": [
+        {
+          "ignored": 0,
+          "passed": 233,
+          "stderr_sha256": "91719e9d44c112e1671104e6f703b0ad72957f5ffb979c426940fcd535bedcd3",
+          "stdout_sha256": "ff9d4c3ec79fb12060a0fde84c176a62f53487fce0a1aa6c55311928da4c2a75",
+          "suite": "stable-matrix"
+        },
+        {
+          "ignored": 0,
+          "passed": 233,
+          "stderr_sha256": "0e54c4d482ccc7b58500a7ed1fbddceb69bb74fb240ecf1a2ad0d3dd9cc058fc",
+          "stdout_sha256": "d848b942106ec0d456afe5cf83b128dd409a3d6493f1e65433b5639f24e74174",
+          "suite": "explicit-no-default-features"
+        },
+        {
+          "ignored": 0,
+          "passed": 235,
+          "stderr_sha256": "55d2af93b8df75a83b28732f39b11cf5b3f078cf513c3579d8ff074ae05d08df",
+          "stdout_sha256": "231fdbbaf1cf96e2e7b7835f6aaf4a5c4b42e6f55fa88abdbd4dd3e151815de5",
+          "suite": "product-matrix"
+        },
+        {
+          "ignored": 0,
+          "passed": 243,
+          "stderr_sha256": "ba574142f0164bc6dd45f4c752a590e8616a2794f06a0609371085c318fefb62",
+          "stdout_sha256": "d95110be9c4b9abc1244fc16d20d0f3b1df7e3cf5b4f0c613fea5e41d24a04d1",
+          "suite": "reviewed-matrix"
+        }
+      ],
+      "files": [
+        "openraft/src/core/sm/bounded_apply_tests.rs",
+        "openraft/src/raft/bounded_apply_test.rs",
+        "openraft/src/storage/mod.rs"
+      ],
+      "predecessor_bounded_apply_current_sources_sha256": "e1e457ea0b84e27970dd66b65fa14252c4ec622224613bcba306f9174fc32b1d",
+      "predecessor_bounded_apply_review_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
+      "predecessor_source_inventory_sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3",
+      "stable_compiler_failure_sha256": "1d8fc41c422ce247ecb3c41448eced29656daa2009abaa2629ed5f2851cb60f1",
+      "status": "Native macOS ARM64 passed the original stable, explicit no-default-features, Kasumi product and reviewed feature sets. External implementation of the sealed storage traits remains restricted to the storage-v2 feature."
+    },
+    {
+      "change": "Hold the elected leader while counting two membership entries and the two 100-entry client batches. Enable campaigning on the removed voter after confirming replication has stopped.",
+      "development_log_sha256": {
+        "corrected_linux_delayed_observation": "699a9848be3d5fa099d8e526ffa7853c404dd940b61baba44f48aaf1502de138",
+        "corrected_linux_membership_suite": "7cdabd0c43bde9835502e7468e7eb4e625137bcf9bf9ad4a9f565415698832f2",
+        "corrected_mac_delayed_observation": "da33129cc0b9804639f3e5fbc400c1db29251399fa139a07d4f1c3747b29946b",
+        "corrected_mac_membership_suite": "d06e51c8d417a5b45864c47801ba3ef181c2a0f26d9e869329c1163150eab84c",
+        "original_linux_delayed_observation": "07b1f677a5059499a2d9e52d89728d90d6e955d8da8fd675d6680c1e1aba9281",
+        "original_linux_suite": "45125996cd5a80d316f88ce3cc3949deb21fee06cfde607d1925c2ed70bbb698",
+        "original_mac_delayed_observation": "3a434eb8bfa44b9ca493060bac53ab89df2582a476cef0d2d7e3f52e79b9017d"
+      },
+      "files": [
+        "tests/tests/membership/t31_add_remove_follower.rs"
+      ],
+      "predecessor_source_inventory_sha256": "37d479a2488bb479b4e411d0d820ee1f67f20fc578e5e62a3b5aba931947b508",
+      "status": "Native Linux ARM64 observed voter 0 at index 213 while waiting for index 209. A two-second delay before observation reproduced the same failure on native macOS ARM64. The corrected delayed case and all 41 membership tests passed on macOS ARM64. Native Linux ARM64 also reproduced the delayed failure and passed the corrected delayed case and all 41 membership tests."
     }
   ],
   "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
@@ -169,7 +229,7 @@
     "24-hour soak"
   ],
   "review_status": "focused graceful-drain delta reviewed and focused regressions passed; focused step-down replication-retirement delta reviewed (KASUMI-STEP-DOWN-REVIEW.md); complete current fork review and conformance pending",
-  "source_bytes": 2724637,
+  "source_bytes": 2724980,
   "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
   "source_change_paths": [
     "openraft/src/core/mod.rs",
@@ -191,10 +251,11 @@
     "openraft/src/raft/mod.rs",
     "openraft/src/raft/raft_inner.rs",
     "openraft/src/raft/shutdown_test.rs",
+    "openraft/src/storage/mod.rs",
     "openraft/src/storage/sm_custody_test.rs"
   ],
-  "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
+  "source_change_sha256": "f617983815010f6a9268df313975baeb07bba414c97c8f05c388d5deb493a808",
   "source_files": 607,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3"
+  "source_inventory_sha256": "9966a8fa9b7b3dfcfc7881af46066aab673d75f195ea1864ef9a74b62fcf5989"
 }

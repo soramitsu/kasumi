@@ -407,16 +407,34 @@ async fn run_case(
             if keys.is_empty() {
                 break;
             }
-            let receipt = db
+            let key = format!("{}-load-{}", cluster.attempt, report.receipts);
+            let submitted = db
                 .mutate(
                     cluster.context(i),
                     MutationBatch {
                         read_set: vec![],
-                        idempotency_key: format!("{}-load-{}", cluster.attempt, report.receipts),
+                        idempotency_key: key.clone(),
                         operations,
                     },
                 )
-                .await?;
+                .await;
+            let receipt = match submitted {
+                Ok(receipt) => receipt,
+                Err(original) => {
+                    let failure = anyhow::Error::new(original).context(format!(
+                        "installed load failed for tenant {name}, first ordinal {}, {} documents, idempotency key {key}",
+                        keys[0], keys.len(),
+                    ));
+                    // Retain only acknowledged batches. The attempted key and the
+                    // original cause identify the write a cold client can resolve.
+                    if let Err(error) = receipts.sync_all() {
+                        return Err(failure.context(format!(
+                            "syncing acknowledged load receipts failed: {error}"
+                        )));
+                    }
+                    return Err(failure);
+                }
+            };
             ensure!(
                 receipt.revision > 0
                     && receipt.versions.len() == keys.len()
@@ -534,6 +552,10 @@ pub(super) async fn run(plan_file: &Path, output: &Path) -> Result<()> {
         }
     }
     if let Err(e) = result {
+        let e = match checkpoint(output, &report) {
+            Ok(()) => e,
+            Err(error) => e.context(format!("saving partial benchmark progress failed: {error}")),
+        };
         return Err(e)
             .with_context(|| format!("embedded benchmark failed (node drain errors: {errors:?})"));
     }

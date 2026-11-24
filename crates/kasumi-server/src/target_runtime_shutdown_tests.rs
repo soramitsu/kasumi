@@ -11,6 +11,16 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     let node = physical.create_new(&path, file_id).unwrap();
     let first_id = node.registered_opening_id().unwrap();
     let retained_alias = node.clone();
+    let probe = crate::readiness_probe::ProbeSlot::default();
+    let (ready, original) = tokio::sync::oneshot::channel::<()>();
+    probe
+        .start(&physical.admission, Some(node.locator()), async move {
+            original.await?;
+            drop(retained_alias);
+            Ok(false)
+        })
+        .await
+        .unwrap();
     let mut generation = Generation {
         node: Some(node),
         ..Default::default()
@@ -46,10 +56,15 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     assert_eq!(generation.node_retirement.as_ref().unwrap().id(), first_id);
     assert!(!generation.node_retirement.as_ref().unwrap().is_retired());
 
-    drop(retained_alias);
+    ready.send(()).unwrap();
+    // Even a satisfied actor channel still owns the original physical facade
+    // until this exact retained future is polled.
     // The original diagnostic remains observable after its owner actually
     // retires; it must not authorize a second opening while still retained.
-    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    let completed = generation
+        .close_with_witness(&cluster, &registry, None, Some(&probe))
+        .await
+        .unwrap_err();
     assert_eq!(completed.completion(), DrainCompletion::Complete);
     assert_eq!(completed.issues().len(), 1);
     assert_eq!(completed.issues()[0].component(), "target physical owner");
@@ -61,13 +76,46 @@ async fn serving_reopen_consumes_prior_node_retirement_before_management_drain()
     assert_ne!(second_id, first_id);
     reopened.prepare_cache_warming().await.unwrap();
     reopened.activate_cache_warming().unwrap();
+    let other = physical
+        .create_new(
+            directory.path().join("persistent/unrelated.kv"),
+            Uuid::new_v4(),
+        )
+        .unwrap();
+    let retained_alias = reopened.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let observed_settlement = settled.clone();
+    let (ready, original) = tokio::sync::oneshot::channel::<()>();
+    probe
+        .start(&physical.admission, Some(reopened.locator()), async move {
+            original.await?;
+            drop(retained_alias);
+            observed_settlement.store(true, Ordering::Release);
+            Ok(false)
+        })
+        .await
+        .unwrap();
+    probe.observe_closed_node(&reopened.locator()).await;
+    assert!(!settled.load(Ordering::Acquire));
+    // A pending exact query and a ready different physical opening cannot settle one another.
+    ready.send(()).unwrap();
+    probe.observe_closed_node(&other.locator()).await;
+    assert!(!settled.load(Ordering::Acquire));
+    let before = physical.admission.snapshot().reserved_bytes;
     generation.node = Some(reopened);
 
     // A later management phase closes this newly accepted physical opening,
     // never borrowing the old positive receipt as proof of its retirement.
-    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    let completed = generation
+        .close_with_witness(&cluster, &registry, None, Some(&probe))
+        .await
+        .unwrap_err();
     assert_eq!(completed.completion(), DrainCompletion::Complete);
     assert_eq!(completed.issues().len(), 1);
+    assert!(physical.admission.snapshot().reserved_bytes < before);
+    assert!(settled.load(Ordering::Acquire));
+    other.shutdown().await.unwrap();
+    assert!(other.retire().is_retired());
     assert!(generation.node.is_none());
     let second = generation.node_retirement.as_ref().unwrap();
     assert_eq!(second.id(), second_id);
@@ -200,6 +248,8 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
                     certificate_pins: BTreeSet::from(["ab".repeat(32)]),
                 },
             )]),
+            writer_observation_bearer_file: None,
+            phase_observation_bearer_file: None,
             control_tls: config.native.tls.clone(),
             control_ca: directory.path().join("ca.pem"),
             node: identity.clone(),
@@ -241,6 +291,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             call_jobs: TargetCallJobs::new(&physical.admission).unwrap(),
             closing: AtomicBool::new(false),
+            status_probe_pause: Default::default(),
             marked_first_membership_reads: AtomicU64::new(0),
             fail_next_initial_start_reply: AtomicBool::new(false),
             fail_next_initialize_reply: AtomicBool::new(false),
@@ -368,7 +419,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             check_closing_activation.then(|| runtime.call_jobs.acquire_failure().unwrap());
         let mut outer = Some(runtime);
         phase.set("cancelling the first shutdown");
-        let mut first = Box::pin(shutdown_target(&mut outer));
+        let mut first = Box::pin(shutdown_target(&mut outer, None));
         std::future::poll_fn(|cx| {
             assert!(first.as_mut().poll(cx).is_pending());
             Poll::Ready(())
@@ -410,7 +461,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             drop(seat);
         }
         phase.set("joining the paused monitor");
-        let mut retry = Box::pin(shutdown_target(&mut outer));
+        let mut retry = Box::pin(shutdown_target(&mut outer, None));
         std::future::poll_fn(|cx| {
             assert!(retry.as_mut().poll(cx).is_pending());
             Poll::Ready(())
@@ -956,4 +1007,87 @@ fn retryable_journal_observation_retains_its_cause_without_poisoning_drained_wor
     );
     assert_eq!(report.issues().len(), 1);
     assert!(report.complete().is_err());
+}
+
+#[tokio::test]
+async fn completed_generation_census_permits_replacement_and_keeps_its_issue() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical =
+        crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
+    let path = directory.path().join("persistent/target-generation.kv");
+    let file_id = Uuid::new_v4();
+    let node = physical.create_new(&path, file_id).unwrap();
+    // A transient alias leaves the first physical census unproved, as a late
+    // response or probe holding the generation's node can.
+    let alias = node.clone();
+    let mut generation = Generation {
+        node: Some(node),
+        ..Default::default()
+    };
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let pem = certificate.pem().into_bytes();
+    let tls =
+        kasumi_transport::TlsIdentity::from_pem(&pem, key.serialize_pem().as_bytes()).unwrap();
+    let cluster = ClusterNetwork::new(
+        1,
+        &tls,
+        &pem,
+        vec![crate::cluster::PeerConfig {
+            node_id: 1,
+            endpoint: "https://localhost:9".into(),
+            certificate_pins: BTreeSet::from([tls.certificate_pin()]),
+        }],
+        Default::default(),
+    )
+    .unwrap();
+    let registry = Default::default();
+
+    // A retained physical owner still refuses replacement.
+    let retained = generation
+        .close_for_replacement(&cluster, &registry)
+        .await
+        .unwrap_err();
+    assert_eq!(retained.completion(), DrainCompletion::Retained);
+    assert!(!generation.node_retirement.as_ref().unwrap().is_retired());
+
+    drop(alias);
+    // The completed census keeps reporting its original issue to every close.
+    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    assert_eq!(completed.completion(), DrainCompletion::Complete);
+    assert_eq!(completed.issues().len(), 1);
+    assert_eq!(completed.issues()[0].component(), "target physical owner");
+    assert!(generation.node_retirement.as_ref().unwrap().is_retired());
+
+    // Replacing the generation needs only that completed census. Before this
+    // check, every later Execute on the node refused at this generation.
+    generation
+        .close_for_replacement(&cluster, &registry)
+        .await
+        .unwrap();
+    let repeated = generation.close(&cluster, &registry).await.unwrap_err();
+    assert_eq!(repeated.completion(), DrainCompletion::Complete);
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &completed.issues()[0],
+        &repeated.issues()[0]
+    ));
+
+    // The next phase reopens the same file under a fresh owner, as
+    // prepare_generation_node does, and can again be replaced.
+    generation.node_retirement.take();
+    let reopened = physical.open_existing(&path, file_id).unwrap();
+    let reopened_id = reopened.registered_opening_id().unwrap();
+    reopened.prepare_cache_warming().await.unwrap();
+    generation.node = Some(reopened);
+    generation
+        .close_for_replacement(&cluster, &registry)
+        .await
+        .unwrap();
+    assert!(generation.node.is_none());
+    let receipt = generation.node_retirement.as_ref().unwrap();
+    assert_eq!(receipt.id(), reopened_id);
+    assert!(receipt.is_retired());
 }

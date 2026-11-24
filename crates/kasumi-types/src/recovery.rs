@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// Attached to a pinned Control member's refusal of an enrolled phase reader
+/// when no matching target dispatch is currently active on that member.
+pub const INACTIVE_TARGET_CALLBACK_HEADER: &str = "kasumi-target-callback-inactive";
+pub const INACTIVE_TARGET_CALLBACK_REASON: &str =
+    "no matching target request on this Control member";
+
 pub const MAX_RECOVERY_RECORD_BYTES: usize = 1 << 20;
 pub const MAX_RECOVERY_START_BYTES: usize = 64 << 10;
 

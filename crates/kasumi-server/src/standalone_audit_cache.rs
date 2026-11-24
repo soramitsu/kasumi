@@ -54,11 +54,8 @@ pub struct TenantAuditCacheMove {
 /// Move the cache now installed at `from` to the configuration's
 /// `tenant_audit_cache` (or the default location when it is absent). Requires
 /// the stopped installation's exclusive operator ownership. Run it as its own
-/// process: like every offline command it opens tenants under
-/// `LocalSnapshotArchive::Preserve`, so an opened tenant keeps its stored
-/// snapshot form; an embedded reopen would first publish an embedded snapshot,
-/// copying the whole archive into the node file the move is meant to relieve.
-/// Opening for this verification appends nothing, so no snapshot is written.
+/// process so it opens tenants under `LocalSnapshotArchive::Preserve`.
+/// Verification opens each tenant's stored snapshot to authenticate the cache.
 pub async fn move_tenant_audit_cache(
     configuration: &Path,
     from: &Path,

@@ -48,6 +48,18 @@ class MetadataCustodyTests(unittest.TestCase):
     def record(self, directory):
         return json.loads((directory / "attempt.json").read_text())
 
+    def test_metadata_keeps_the_compiler_cache_outside_frozen_source(self):
+        self.install_program(
+            "import json, os\nfrom pathlib import Path\n"
+            "target = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))\n"
+            "target.mkdir(parents=True, exist_ok=True)\n"
+            "(target / '.rustc_info.json').write_text('compiler cache')\n"
+            "print(json.dumps(" + repr(self.document) + "))\n"
+        )
+        directory, _ = self.capture()
+        self.assertEqual(inventory(self.source), self.inputs)
+        self.assertEqual((directory / "target/.rustc_info.json").read_text(), "compiler cache")
+
     def rewrite_process(self, directory, change):
         record = self.record(directory)
         process = json.loads((directory / "process.json").read_text())

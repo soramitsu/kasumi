@@ -31,7 +31,7 @@ use crate::directory::{
 };
 use crate::reclaim::WALK_WORK_PER_UNIT;
 use crate::root::{CompactionCursor, CompactionPhase, CompactionRecord};
-use crate::segment::{MaintenanceOp, VALUE_RECORD_OVERHEAD_BYTES, maintenance_operation_bytes};
+use crate::segment::{MaintenanceOp, estimated_live_value_bytes, maintenance_operation_bytes};
 
 #[path = "disk_density.rs"]
 mod density;
@@ -211,17 +211,16 @@ impl Survey {
             ..
         } = self;
         let mut overflowed = false;
-        let walked = walker.step(
+        let walked = walker.step_with_keys(
             directory,
             units.saturating_mul(WALK_WORK_PER_UNIT),
             |_| Ok(()),
-            |value| {
-                // Table and key bytes are not counted: a segment of small
-                // values looks emptier and is emptied sooner, never later.
+            |key, value| {
+                let key_bytes = key.table.len() + key.row.expect("validated row").len();
                 if value.segment_id <= *cutoff
                     && !live.add(
                         value.segment_id,
-                        u64::from(value.len) + VALUE_RECORD_OVERHEAD_BYTES,
+                        estimated_live_value_bytes(value.len, key_bytes),
                     )?
                 {
                     // Stop the walk: what it would add is no longer used.
@@ -466,12 +465,31 @@ impl DiskState {
         self.compact.stats = CompactionProgress::default();
         let before = self.arena.stats()?;
         while progress.units < budget.units {
-            let record = *self.owner.lock()?.compaction();
+            let root = self.owner.lock()?;
+            let record = *root.compaction();
+            let (segment, arena) = root.compaction_cutoffs();
+            drop(root);
             let advanced = match record.phase() {
                 CompactionPhase::Idle => self.idle_step(&record, budget, progress)?,
                 CompactionPhase::Evacuating => self.evacuate_step(&record, budget, progress)?,
                 CompactionPhase::Reclaiming => self.reclaiming_step(&record, budget, progress)?,
-                CompactionPhase::Packing => self.pack_step(budget, progress)?,
+                CompactionPhase::Packing => {
+                    // Reclamation could only consider files at or below the frozen
+                    // cutoffs. When newer files alone reach the full file trigger,
+                    // let Idle measure the store before spending more work on density.
+                    let newer_files = segment
+                        .saturating_sub(record.cutoff_segment())
+                        .saturating_add(arena.saturating_sub(record.cutoff_arena()));
+                    let trigger = self
+                        .maintenance
+                        .policy
+                        .trigger_files(record.baseline_files());
+                    if newer_files >= trigger {
+                        self.finish_cycle(budget, progress)?
+                    } else {
+                        self.pack_step(budget, progress)?
+                    }
+                }
             };
             if !advanced {
                 break;

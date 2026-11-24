@@ -284,7 +284,7 @@ impl Database {
             .and_then(|c| c.documents.get("current"))
             .ok_or_else(|| unavailable("Control topology for Data inventory is missing"))?;
         let document = generation
-            .load_document(document)
+            .load_document_at("topology", "current", document)
             .map_err(document_load_error)?;
         let bytes =
             crate::service::control_topology_service::topology_workspace_bytes(&document.body)?;

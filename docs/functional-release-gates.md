@@ -10,6 +10,27 @@ python3 scripts/release_gate.py \
   --jobs 2
 ```
 
+For a release candidate, run the primary build under the native host's attempt
+journal. Set `custody` to an existing absolute evidence directory outside the
+checkout. Use the host ID from the reservation, the actual native target and
+an unused attempt ID. Preserve the same journal for subsequent attempts on
+that host.
+
+```sh
+python3 -B scripts/attempt_index.py create --root "$custody" \
+  --journal-id "$journal_id" --host "$host_id" --target "$target"
+python3 -B scripts/release_gate.py --repository "$checkout" \
+  --output "$custody/$attempt_id" --attempt-root "$custody" \
+  --attempt-id "$attempt_id" --execution-description "$execution" --jobs 2
+python3 -B scripts/attempt_index.py head --root "$custody"
+```
+
+The journal records admission before dispatch. Keep the original
+`attempts/` directory and the attempt's `evidence.json`, `outcome.json`,
+`runner/`, `tools/`, source, compiler products and gate receipts. The
+operator retains the journal head and original absolute custody path separately
+from the transferred evidence. Each retry gets a new attempt ID and directory.
+
 The runner archives the exact commit and extracts only regular files and
 directories into an exclusive source directory. Builds use a new target directory.
 It checks formatting, Python tests, vendored dependency patches and upstream

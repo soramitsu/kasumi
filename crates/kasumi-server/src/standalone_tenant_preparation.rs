@@ -58,46 +58,88 @@ impl Administration {
         let existing = node_enrollment::tenant_record(self.audit.store(), tenant)?;
         if let Some(record) = &existing {
             record.require_proposal(&proposal)?;
-            ensure!(
-                record.stage == Stage::Prepared,
-                "original local creation is incomplete; retry cannot recreate it"
-            );
-        } else {
-            let mut record = node_enrollment::dispatch_tenant(
-                self.audit.store(),
-                proposal.clone(),
-                prepared.invocation.context.request_id.clone(),
-            )?;
+        }
+        if existing
+            .as_ref()
+            .is_none_or(|record| record.stage == Stage::CreationDispatched)
+        {
+            let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, tenant)?;
+            let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+            if !constructor_seat.is_empty() {
+                return Err(constructor_seat.observation().foreign_error());
+            }
+            let startup = kasumi_engine::LocalDatabaseStartup::reserve(self.audit.clone())?;
+            let mut record = match &existing {
+                Some(original) => original.clone(),
+                None => node_enrollment::dispatch_tenant(
+                    self.audit.store(),
+                    proposal.clone(),
+                    prepared.invocation.context.request_id.clone(),
+                )?,
+            };
+            let dispatch = record.local_creation_digest()?;
             prepared.resources.borrowed_nodes.push(self.node.clone());
-            let stores = TenantStorageSet::initialize_catalogs(
-                self.node.clone(),
-                tenant.clone(),
-                configured.keys.provider(self.credential.clone())?,
-                configured.custody_keys.provider(self.credential.clone())?,
-                access.clone(),
-            )
-            .await?;
+            let application = configured.keys.provider(self.credential.clone())?;
+            let custody = configured.custody_keys.provider(self.credential.clone())?;
+            let stores = if existing.is_some() {
+                TenantStorageSet::open_existing(
+                    self.node.clone(),
+                    tenant.clone(),
+                    application,
+                    custody,
+                    access.clone(),
+                )
+                .await?
+            } else {
+                TenantStorageSet::initialize_catalogs(
+                    self.node.clone(),
+                    tenant.clone(),
+                    application,
+                    custody,
+                    access.clone(),
+                )
+                .await?
+            };
             prepared.resources.stores.push(stores.application().clone());
             prepared
                 .resources
                 .stores
                 .push(stores.custody().store().clone());
+            if existing.is_some() {
+                ensure!(
+                    !ControlPlane::local_topology(self.control.local()?)?
+                        .topology
+                        .tenants
+                        .contains_key(tenant),
+                    "routed tenant has an incomplete local enrollment"
+                );
+                kasumi_engine::require_local_enrollment_genesis(&stores, &dispatch)?;
+                if let Some(marker) =
+                    stores
+                        .application()
+                        .get_bounded("runtime.provisioning", b"prepared", 256)?
+                {
+                    ensure!(
+                        marker.as_ref() == proposal.digest()?.as_bytes(),
+                        "local preparation marker differs from the original proposal"
+                    );
+                }
+            }
             self.config.install_tenant_archives_with(
                 stores.application(),
                 None,
                 self.credential.clone(),
             )?;
             self.check_enrollment(&prepared.invocation)?;
-            let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, tenant)?;
-            let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
-            let database = constructor_seat.run_snapshot(kasumi_engine::open_local_with_incarnation(
-                stores.clone(),
-                proposal.initial_policy.clone(),
-                proposal.initial_limits.clone(),
-                self.audit.clone(),
-                incarnation,
-            )
-            ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
+            let database = constructor_seat.run_snapshot(async {
+                if existing.is_some() {
+                    startup.reopen(stores.clone(), incarnation).await
+                } else {
+                    startup.initialize_enrollment(stores.clone(), proposal.initial_policy.clone(),
+                        proposal.initial_limits.clone(), incarnation, dispatch, || self.check_enrollment(&prepared.invocation)).await
+                }
+            }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
+            drop(constructor_seat);
             prepared.resources.databases.push(database.clone());
             let resident = ManagedTenant {
                 database,
@@ -106,6 +148,11 @@ impl Administration {
                 lease: None,
             };
             self.require_resident_proposal(&resident, &proposal)?;
+            ensure!(
+                resident.database.engine().generation()?.revision() == 0,
+                "incomplete local enrollment contains post-genesis application state"
+            );
+            self.check_enrollment(&prepared.invocation)?;
             let fingerprint =
                 crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
             stores.application().write_batch(&[WriteOp::put(
@@ -125,6 +172,20 @@ impl Administration {
             prepared.resources = Default::default();
         }
         self.check_enrollment(&prepared.invocation)?;
+        // A fresh attempt has already created and verified its catalog. If
+        // final publication must wait, preserve that uncertainty for its caller.
+        let startup =
+            kasumi_engine::LocalDatabaseStartup::reserve(self.audit.clone()).map_err(|error| {
+                if existing.is_none() {
+                    anyhow::anyhow!(kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::UnknownOutcome,
+                        "tenant creation was recorded; retry the same approved preparation",
+                    ))
+                    .context(error)
+                } else {
+                    error
+                }
+            })?;
         prepared.resources.borrowed_nodes.push(self.node.clone());
         let stores = TenantStorageSet::open_existing(
             self.node.clone(),
@@ -150,7 +211,7 @@ impl Administration {
                 tenant,
             )?;
         let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
-        let database = constructor_seat.run_snapshot(kasumi_engine::open_existing_local(stores.clone(), self.audit.clone(), incarnation)
+        let database = constructor_seat.run_snapshot(startup.reopen(stores.clone(), incarnation)
                 ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
         prepared.resources.databases.push(database.clone());
         for (alias, destination) in &self.destinations {

@@ -506,9 +506,20 @@ pub struct Builder {
     group_id: [u8; 16],
     cache: CacheConfig,
     create_format: crate::DirectoryPageFormat,
+    snapshot_pins: usize,
 }
 
 impl Builder {
+    /// Size the snapshot pin registry: the independent read and write
+    /// snapshots the database holds at once (forks share their original's
+    /// pin). A database shared by many tenants keeps one pin per open
+    /// tenant Generation, so it needs more than `DEFAULT_SNAPSHOT_PINS`.
+    /// At most `MAX_SNAPSHOT_PINS`; the open refuses other values.
+    pub fn with_snapshot_pins(mut self, snapshot_pins: usize) -> Self {
+        self.snapshot_pins = snapshot_pins;
+        self
+    }
+
     /// Select the physical directory format for new groups created with this
     /// builder. Opening an existing group always reads its persisted format.
     pub fn with_directory_page_format(mut self, format: crate::DirectoryPageFormat) -> Self {
@@ -581,6 +592,7 @@ impl Builder {
             self.admission,
             self.group_id,
             self.cache,
+            self.snapshot_pins,
             create.then_some(self.create_format),
             close_on_failure,
             true,
@@ -957,6 +969,7 @@ impl Database {
             group_id,
             cache,
             create_format: crate::DirectoryPageFormat::default(),
+            snapshot_pins: crate::DEFAULT_SNAPSHOT_PINS,
         }
     }
 

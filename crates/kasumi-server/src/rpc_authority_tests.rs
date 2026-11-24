@@ -838,6 +838,36 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     absent.endpoint = absent_endpoint;
     let mut follower_config = config.clone();
     follower_config.endpoint = follower_endpoint;
+    // A pool that never receives a reply exhausts its own deadline.  The
+    // legacy API still returns the same transport status for that outcome.
+    let deadline_token = node_token.clone();
+    let mut unavailable = kasumi_client::KasumiAuthorityPool::new(
+        BTreeMap::from([(1, absent.clone())]),
+        trust.clone(),
+        Arc::new(move || Ok(zeroize::Zeroizing::new(deadline_token.clone()))),
+    )
+    .unwrap();
+    assert!(
+        unavailable
+            .discover_lease_before_deadline(&discovery, Duration::from_millis(80))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        unavailable
+            .acquire_lease_before_deadline(&attempt, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Classified by its documented gRPC code: the pool's own deadline is a
+    // typed local reason, never a transport status a peer could have sent.
+    assert!(matches!(
+        unavailable.discover_lease(&discovery, Duration::ZERO).await,
+        Err(error @ kasumi_client::ClientError::LocalDeadline(_))
+            if error.grpc_code() == tonic::Code::DeadlineExceeded
+    ));
     let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
     let source = current_credential.clone();
     let credential_loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -875,11 +905,26 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         2
     );
     *current_credential.write().unwrap() = node_token.clone();
-    let original = boot.begin_acquisition().unwrap();
-    let acquired = pool
-        .acquire_lease(&original, Duration::from_secs(1))
-        .await
-        .unwrap();
+    // The fixture lease lasts 1 s from its attempt, so the pool gets exactly
+    // that budget. When a loaded host exhausts it, the pool reports its own
+    // deadline (`None`; `acquire_lease` maps it to DeadlineExceeded) and never
+    // regenerates the attempt. The caller then begins a new attempt; any
+    // installed member's error still fails the test.
+    let mut original = boot.begin_acquisition().unwrap();
+    let mut acquired = None;
+    for attempt in 1..=5 {
+        if let Some(lease) = pool
+            .acquire_lease_before_deadline(&original, Duration::from_secs(1))
+            .await
+            .unwrap()
+        {
+            acquired = Some(lease);
+            break;
+        }
+        eprintln!("installed issuer lease attempt {attempt} exhausted its 1 s pool budget");
+        original = boot.begin_acquisition().unwrap();
+    }
+    let acquired = acquired.expect("five lease attempts each exhausted the 1 s pool budget");
     assert!(acquired.remaining().unwrap() <= Duration::from_secs(1));
     *current_credential.write().unwrap() = admin.clone();
     assert_eq!(
@@ -1753,6 +1798,51 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
+    // Fence only after every live lease and signing rotation observation.
+    let mut fence_source = command.clone();
+    fence_source.command_id = uuid::Uuid::new_v4();
+    fence_source.expected_policy_epoch = 3;
+    fence_source.not_after_ms = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .now_ms()
+        .unwrap()
+        + 60_000;
+    fence_source.action = AuthorityAction::Fence {
+        incarnation,
+        authority_epoch: 1,
+    };
+    let accepted = client.execute(&successor, &fence_source).await.unwrap();
+    assert!(matches!(
+        accepted.receipt.outcome,
+        AuthorityOutcome::Fenced { .. }
+    ));
+    assert_eq!(
+        pool.discover_state_before_deadline(&discovery, crate::runtime_storage_fixtures::LIVENESS)
+            .await
+            .unwrap(),
+        Some(kasumi_serving::LeaseDiscoveryObservation::Fenced {
+            fenced: discovery.clone()
+        })
+    );
+    // Legacy discovery still rejects the request. A different physical
+    // verifier cannot discover another node's permanent fence.
+    assert_eq!(
+        client
+            .discover_lease(&node_token, &discovery)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(kasumi_types::ErrorCode::Forbidden)
+    );
+    let mut wrong = discovery.clone();
+    wrong.node.verifier.installation_id = uuid::Uuid::new_v4();
+    assert_eq!(
+        pool.discover_state_before_deadline(&wrong, crate::runtime_storage_fixtures::LIVENESS)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(kasumi_types::ErrorCode::Forbidden)
+    );
     shadow_stop.send_replace(true);
     shadow_task.await.unwrap().unwrap();
     follower_stop.send_replace(true);

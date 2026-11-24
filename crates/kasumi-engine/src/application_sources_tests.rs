@@ -1570,7 +1570,20 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         let physical = ordinary
             .physical_seek_view("docs", |_| Ok(true))?
             .expect("physical seek worker projection");
+        assert!(!ordinary.state.collections["docs"].documents.is_empty());
+        assert!(physical.state.collections["docs"].documents.is_empty());
         compound_seek(&Arc::new(physical), &source.storage.admission)?;
+        let hydrated = ordinary.read_view(
+            ordinary.state.collections.clone(),
+            vec![source.storage.admission.reserve(4096, None)?],
+        );
+        assert!(
+            hydrated
+                .physical_seek_view("docs", |_| {
+                    panic!("a worker tried to replace the view that owns its body grants")
+                })?
+                .is_none()
+        );
         let selection = ordinary.application_selection.get().unwrap();
         assert!(
             !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
@@ -1906,6 +1919,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let physical = reopened
         .physical_seek_view("docs", |_| Ok(true))?
         .expect("reopened seek worker projection");
+    assert!(physical.state.collections["docs"].documents.is_empty());
     compound_seek(&Arc::new(physical), &target.storage.admission)?;
     {
         use kasumi_query::DocumentSource as _;
@@ -2021,6 +2035,12 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         let clock = Arc::new(kasumi_clock::SystemLeaseClock);
         let term = reopened_db.raft_group().current_term();
         let lease_id = uuid::Uuid::new_v4().to_string();
+        assert!(!reopened.state.collections["docs"].documents.is_empty());
+        assert!(
+            reopened.lease_view().state.collections["docs"]
+                .documents
+                .is_empty()
+        );
         let handle = reopened_engine.leases.open(
             &reopened_engine,
             &context,
@@ -2051,6 +2071,22 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             assert!(Arc::ptr_eq(&handle, &page.handle));
             assert_eq!(page.scan_ids, [expected]);
             assert_eq!(page.scan_has_more, more);
+            assert!(
+                page.generation.state.collections["docs"]
+                    .documents
+                    .is_empty()
+            );
+            let reads = crate::document_source::DocumentReads::from_shared(
+                &page.generation,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                page.scan_reader,
+            );
+            use kasumi_query::DocumentSource as _;
+            reads.source("docs")?.with_record(expected, None, &cancellation, |record| {
+                assert!(matches!(record, Some(kasumi_query::Record::Live(doc)) if doc.id == expected));
+                Ok(())
+            })?;
+            reads.finish()?;
         }
         reopened_engine.leases.close(&context, &lease_id)?;
     }
@@ -2097,6 +2133,13 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             }),
         );
         let detached = Arc::new(reopened.read_view(collections, vec![]));
+        let leased = detached.lease_view();
+        assert!(leased.state.collections["docs"].documents.is_empty());
+        assert!(
+            leased.state.collections["docs"]
+                .archived_documents
+                .contains_key("absent")
+        );
         let persisted = detached.document_source("docs")?;
         let mut visited = Vec::new();
         kasumi_query::CollectionRecords::visit_records(&persisted, |id, record| {
@@ -2390,6 +2433,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         }
     }
     let mut visited = Vec::new();
+    crate::document_gc::check_snapshot_feed_walk(&reopened, &target.storage.admission, false)?;
     let feed = &reopened.state.change_feed;
     selection
         .with_snapshot_records(None, &reopened.state, |tree, memory, _| {
@@ -2397,7 +2441,8 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 tree,
                 memory,
                 reopened.state.revision,
-                &reopened.state,
+                reopened.state.revision,
+                reopened.state.change_feed.next_sequence,
             )?
             .unwrap();
             snapshot_feed.visit(
@@ -2540,13 +2585,23 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 tree,
                 memory,
                 revision,
-                &latest.state,
+                latest.state.revision,
+                latest.state.change_feed.next_sequence,
             )?
             .context("older directory lost its feed prefix")?;
             Ok((revision, prefix.end_sequence))
         })?
         .context("new log entry lost its selected base snapshot")?;
     assert!(base.0 < latest.state.revision);
+    crate::document_gc::check_snapshot_feed_walk(&latest, &source.storage.admission, true)?;
+    assert_eq!(
+        latest
+            .application_selection
+            .get()
+            .unwrap()
+            .verified_feed_end(latest.state.revision_base, latest.state.revision,),
+        Some(base.1),
+    );
     assert_eq!(base.1, 3);
     drop(latest);
     let request = |start, limit| kasumi_types::ReadChangeFeed {
@@ -2949,6 +3004,15 @@ async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling(
 )]
 async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
 -> crate::test_fixture_failure::FixtureResult<()> {
+    for grant_cache in [false, true] {
+        ordinary_primary_round_trip(grant_cache).await?;
+    }
+    Ok(())
+}
+
+async fn ordinary_primary_round_trip(
+    grant_cache: bool,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::primary_manifest::{self, PrimaryManifest};
 
     async fn audit(
@@ -2978,6 +3042,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     async fn start(
         fixture: &Fixture,
         audit: &Arc<crate::SecurityAudit>,
+        clock: &Arc<kasumi_clock::EpochClock>,
         group: &str,
         initialize: bool,
     ) -> crate::test_fixture_failure::FixtureResult<(Arc<TenantEngine>, Arc<crate::Database>)> {
@@ -2987,9 +3052,10 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             &fixture.image,
         )?);
         engine.install_storage_access(fixture.stores.application())?;
-        let db = crate::service::construction::DatabaseConstruction::new(
+        let db = crate::service::construction::DatabaseConstruction::with_fixture_clock(
             fixture.stores.clone(),
             audit.clone(),
+            clock.clone(),
         )?
         .start_replicated(
             engine.clone(),
@@ -3040,6 +3106,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             &**store,
             &manifest,
             &generation.state,
+            generation.document_resolver(),
             store.plaintext_memory_owner(),
         )?;
         Ok(manifest)
@@ -3070,7 +3137,22 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
         Ok(())
     }
 
-    let mut fixture = Fixture::new().await?;
+    // Keep the cursor and its fixed RSS sample live across the storage checks.
+    // Both leases normally age while this test waits for disk I/O and Raft.
+    let elapsed = Arc::new(kasumi_store::test_utils::ManualClock::new());
+    let clock = Arc::new(kasumi_clock::EpochClock::new(
+        elapsed.clone(),
+        Arc::new(kasumi_store::test_utils::AwakeWallClock),
+    )?);
+    let mut fixture = Fixture::with_admission(1, None, |mut config| {
+        // The original 256 MiB payload budget protects required work and the
+        // installed audit ledger. Leave those protections in place in both runs.
+        if grant_cache {
+            config.max_inflight_bytes = config.max_inflight_bytes.map(|cap| cap + (256 << 20));
+        }
+        NodeAdmission::with_fixed_memory_clock(config, 2 << 30, 0, elapsed.clone())
+    })
+    .await?;
     let group = format!(
         "selected-sources/{}",
         TenantEngine::from_bootstrap("selected-sources", &fixture.image)?
@@ -3079,7 +3161,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .incarnation
     );
     let first_audit = audit(&fixture.node, &fixture.storage.admission, false).await?;
-    let (engine, db) = start(&fixture, &first_audit, &group, true).await?;
+    let (engine, db) = start(&fixture, &first_audit, &clock, &group, true).await?;
     let store = fixture.stores.application().clone();
     let context = kasumi_types::RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -3098,7 +3180,15 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
             retention_class: kasumi_types::CollectionRetentionClass::Operational,
             schema: serde_json::json!({"type": "object"}),
-            indexes: vec![],
+            indexes: vec![kasumi_types::IndexDefinition {
+                name: "value".into(),
+                fields: vec![kasumi_types::IndexField {
+                    path: "/value".into(),
+                    kind: kasumi_types::ScalarType::Number,
+                }],
+                unique: true,
+                text: None,
+            }],
             strict_read_audit: false,
         }),
     )
@@ -3114,7 +3204,97 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .upsert("docs", "b", serde_json::json!({"value": 2})),
     )
     .await?;
+    {
+        let mut seek = kasumi_types::QueryRequest::new("docs")
+            .sort_desc("/value")
+            .limit(1)
+            .paging(kasumi_types::Paging::Seek);
+        let first = db.query(&context, seek.clone()).await?;
+        assert_eq!(first.rows[0].id, "b");
+        // The first public seek authenticates the selected primary. Its
+        // continuation can now release the original descriptor maps.
+        let original = engine.generation()?;
+        let scoped = original
+            .physical_seek_view("docs", |_| Ok(true))?
+            .expect("single-field worker of a verified primary");
+        assert!(scoped.state.collections["docs"].documents.is_empty());
+        assert_eq!(original.state.collections["docs"].documents.len(), 2);
+        seek.cursor = Some(
+            first
+                .cursor
+                .clone()
+                .context("expected scalar seek continuation")?,
+        );
+        drop(first);
+        let last = db.query(&context, seek).await?;
+        assert_eq!(last.rows[0].id, "a");
+        assert!(last.cursor.is_none());
+    }
+    let limits = engine.generation()?.state.limits.clone();
+    let mut limited = limits.clone();
+    limited.max_cursor_bytes = 1;
+    db.administer(context.clone(), kasumi_types::Operation::SetLimits(limited))
+        .await?;
+    let mut limited_request = kasumi_types::QueryRequest::new("docs");
+    limited_request.limit = Some(1);
+    assert_eq!(
+        db.query(&context, limited_request).await.unwrap_err().code,
+        kasumi_types::ErrorCode::ResourceExhausted
+    );
+    db.administer(context.clone(), kasumi_types::Operation::SetLimits(limits))
+        .await?;
     let pinned = engine.generation()?;
+    let old_generation = Arc::downgrade(&pinned);
+    let mut request = kasumi_types::QueryRequest::new("docs");
+    request.limit = Some(1);
+    let first = db.query(&context, request.clone()).await?;
+    assert!(
+        pinned.cursor_primary().is_some(),
+        "ordinary apply did not verify its pinned primary"
+    );
+    assert!(
+        pinned.document_sources.get().is_some(),
+        "ordinary apply did not bind the body resolver"
+    );
+    {
+        use kasumi_query::DocumentSource;
+        let reads = crate::document_source::DocumentReads::new(&pinned, std::time::Instant::now())?;
+        let source = reads.source("docs")?;
+        let original = source
+            .visit_primary_ids(&Default::default(), |_| panic!("expired header was lent"))
+            .expect_err("deadline elapsed inside the selected header visitor");
+        match original {
+            kasumi_query::ReadFailure::Query(error) => {
+                assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted);
+                assert_eq!(error.message, "document read deadline exceeded");
+            }
+            kasumi_query::ReadFailure::Source(error) => {
+                let mapped = crate::service::document_load_error(error.0);
+                panic!("primary visitor turned the original deadline into {mapped:?}");
+            }
+        }
+        reads.finish()?;
+    }
+    let worker = pinned
+        .query_worker_view(&request, |_| Ok(true))?
+        .context("ordinary page should use the authenticated primary")?;
+    assert!(worker.state.collections["docs"].documents.is_empty());
+    assert!(
+        worker.state.collections["docs"]
+            .archived_documents
+            .is_empty()
+    );
+    assert_eq!(
+        worker.indexes.structured_layout_sha256(),
+        pinned.indexes.structured_layout_sha256()
+    );
+    assert_eq!(pinned.state.collections["docs"].documents.len(), 2);
+    assert!(pinned.query_worker_view(&request, |_| Ok(false))?.is_none());
+    drop(worker);
+    assert_eq!(first.rows[0].id, "a");
+    request.cursor = Some(first.cursor.clone().context("expected ordinary cursor")?);
+    assert_eq!(first.revision, pinned.state.revision);
+    drop(first);
     let pinned_manifest = current(&engine, &store)?;
     assert_eq!(pinned_manifest.records.tree, initial.records.tree);
     assert_eq!(pinned_manifest.document_count, 2);
@@ -3131,29 +3311,39 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     // The earlier generation reads its own rows from its pinned root, after
     // the later edit deleted the pages it uses; the current one reads its own.
     let latest = engine.generation()?;
-    let point = |generation: &crate::Generation, id: &str| -> Result<Option<u64>> {
+    let versions = |generation: &crate::Generation| -> Result<_> {
         let selection = generation
             .application_selection
             .get()
             .context("generation selection")?;
-        Ok(
-            match selection
-                .primary_point(None, &generation.state, "docs", id, |_| Ok(()))?
-                .context("selected generation has no current primary directory")?
-            {
+        let read = generation
+            .shared_document_read()?
+            .context("selected reader")?;
+        let shared = Some(read.selected());
+        let mut versions = Vec::new();
+        for id in ["a", "b", "c"] {
+            let point = selection
+                .primary_point(shared, &generation.state, "docs", id, |_| Ok(()))?
+                .context("selected generation has no current primary directory")?;
+            versions.push(match point {
                 crate::application_records::PrimaryPoint::Live(slot) => Some(slot.version()),
                 crate::application_records::PrimaryPoint::Archived(_) => {
                     anyhow::bail!("unexpected archived primary row")
                 }
                 crate::application_records::PrimaryPoint::Missing => None,
-            },
-        )
-    };
-    let versions = |generation: &crate::Generation| -> Result<Vec<Option<u64>>> {
-        ["a", "b", "c"]
-            .into_iter()
-            .map(|id| point(generation, id))
-            .collect()
+            });
+        }
+        let stats = selection
+            .with_serving_primary(shared, &generation.state, |_, memory, _| {
+                Ok(read.selected().directory_pages(memory).stats())
+            })?
+            .context("selected generation has no primary directory")?;
+        assert!(
+            stats.leased <= stats.budget && stats.charged <= stats.leased,
+            "{stats:?}"
+        );
+        read.finish()?;
+        Ok((versions, stats))
     };
     let resident = |generation: &crate::Generation| -> Vec<Option<u64>> {
         ["a", "b", "c"]
@@ -3166,11 +3356,28 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             })
             .collect()
     };
-    assert_eq!(versions(&pinned)?, resident(&pinned));
-    assert_eq!(versions(&latest)?, resident(&latest));
+    for generation in [&pinned, &latest] {
+        let (actual, stats) = versions(generation)?;
+        assert_eq!(actual, resident(generation));
+        if grant_cache {
+            assert!(stats.hits > 0 && stats.charged > 0, "{stats:?}");
+        } else {
+            assert!(stats.refusals > 0 && stats.charged == 0, "{stats:?}");
+        }
+    }
     assert!(resident(&pinned)[1].is_some());
     assert_eq!(resident(&latest)[1], None);
     drop((pinned, latest));
+    assert!(
+        old_generation.upgrade().is_none(),
+        "cursor kept the obsolete applying generation"
+    );
+    let second = db.query(&context, request).await?;
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].id, "b");
+    assert_eq!(second.rows[0].body, serde_json::json!({"value": 2}));
+    assert!(second.cursor.is_none());
+    drop(second);
 
     // Snapshot, then advance the log beyond it.
     let expected = db
@@ -3204,7 +3411,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     assert!(kept.is_current() && kept.revision >= before.revision);
     assert_eq!(kept.records.tree, before.records.tree);
     let second_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
-    let (engine, db) = start(&fixture, &second_audit, &group, false).await?;
+    let (engine, db) = start(&fixture, &second_audit, &clock, &group, false).await?;
     let reopened = current(&engine, &store)?;
     assert_eq!(reopened.records.tree, before.records.tree);
     assert_eq!(reopened.page_space, before.page_space);
@@ -3229,10 +3436,17 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     )])?;
     assert_eq!(PrimaryManifest::load(&store)?, None);
     let third_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
-    let (engine, db) = start(&fixture, &third_audit, &group, false).await?;
+    let (engine, db) = start(&fixture, &third_audit, &clock, &group, false).await?;
     let rebuilt = current(&engine, &store)?;
     assert_ne!(rebuilt.records.tree, before.records.tree);
     assert_ne!(rebuilt.page_space, before.page_space);
+    // Publish one descriptor through the rebuilt directory. This document is
+    // unchanged across the later stale-primary write and must remain reachable.
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 9})),
+    )
+    .await?;
     let generation = engine.generation()?;
     assert_eq!(
         generation.state.collections["docs"]
@@ -3245,7 +3459,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     // An old physical root claims the same revision from a different log
     // history. The serving reader and next ordinary writer must reject it.
     // The monitor recovers at the new committed position while idle.
-    let old_versions = versions(&generation)?;
+    let (old_versions, _) = versions(&generation)?;
     engine.select_wrong_primary_history_for_test()?;
     db.mutate(
         context,
@@ -3253,6 +3467,10 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
     )
     .await?;
     let incomplete = engine.generation()?;
+    crate::document_gc::check_gc_after_primary_falls_behind(
+        &incomplete,
+        &fixture.storage.admission,
+    )?;
     let idle_revision = incomplete.state.revision;
     let incomplete_selection = incomplete.application_selection.get().unwrap();
     assert!(
@@ -3275,7 +3493,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
                 .is_some()
             {
                 ensure!(
-                    versions(&now)? == resident(&now),
+                    versions(&now)?.0 == resident(&now),
                     "idle primary rows differ"
                 );
                 break Ok::<_, anyhow::Error>(());
@@ -3290,7 +3508,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .with_primary_records(None, &incomplete.state, |_, _| Ok(()))?
             .is_none()
     );
-    assert_eq!(versions(&generation)?, old_versions);
+    assert_eq!(versions(&generation)?.0, old_versions);
     drop(incomplete);
     drop(generation);
     db.shutdown().await?;
@@ -3338,6 +3556,31 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
             scores.keys().map(String::as_str).collect::<Vec<_>>(),
             expected
         );
+        // The request's token and the read's deadline stop the selected
+        // directory before it lends a shard, as typed query errors.
+        let token = kasumi_query::QueryCancellation::default();
+        token.cancel();
+        match source.with_text_shards_until(&token, |_| -> kasumi_types::Result<()> {
+            panic!("a cancelled request reached its shards")
+        }) {
+            Err(kasumi_query::ReadFailure::Query(error)) => {
+                assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted)
+            }
+            other => panic!("cancelled text read: {other:?}"),
+        }
+        let reads =
+            crate::document_source::DocumentReads::new(&detached, std::time::Instant::now())?;
+        match reads
+            .source("docs")?
+            .with_text_shards_until(&Default::default(), |_| -> kasumi_types::Result<()> {
+                panic!("an expired read reached its shards")
+            }) {
+            Err(kasumi_query::ReadFailure::Query(error)) => {
+                assert_eq!(error.message, "document read deadline exceeded")
+            }
+            other => panic!("expired text read: {other:?}"),
+        }
+        reads.finish()?;
         Ok(())
     }
 

@@ -205,6 +205,10 @@ struct Cell {
     handles: AtomicUsize,
     state: Mutex<CellState>,
     position: OnceLock<Position>,
+    // This immutable cell served primary descriptors and headers at this boundary.
+    verified_primary: OnceLock<(u64, u64)>,
+    // A snapshot feed opened on this immutable selection at the applied boundary.
+    verified_feed: OnceLock<(u64, u64, u64)>,
     replay_predecessor: OnceLock<ReplayPredecessor>,
     // Node evacuations finished before this cell's view selected its root.
     evacuations: OnceLock<u64>,
@@ -1123,11 +1127,13 @@ impl SourceRootsRef {
             )
         } else {
             let baseline = cell_bytes()?;
-            // Only a nonpublishing reader may spend the read workflow's exact
-            // source slice. Canonical selections retain their own admission.
+            // A descriptor lookup during committed apply must fund its reader
+            // cell from the original proposal, even if native traffic has
+            // since filled every slot. A scoped read uses its own grant.
             let credit = if !canonical
-                && crate::admission::DocumentReadBudget::current_for(self.admission.memory())
-                    .is_some()
+                && (crate::admission::ApplyEscrow::current_for(self.admission.memory()).is_some()
+                    || crate::admission::DocumentReadBudget::current_for(self.admission.memory())
+                        .is_some())
             {
                 SourceCredit::document_read(crate::admission::DocumentWorkspace::new(
                     &self.admission,
@@ -1191,6 +1197,8 @@ impl SourceRootsRef {
                     view: None,
                 }),
                 position: OnceLock::new(),
+                verified_primary: OnceLock::new(),
+                verified_feed: OnceLock::new(),
                 replay_predecessor: OnceLock::new(),
                 evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),
@@ -2013,3 +2021,26 @@ pub(crate) mod tests;
 #[path = "application_source_reader.rs"]
 mod reader;
 pub(crate) use reader::DocumentReader;
+/// Identity and totals needed to bind a native snapshot directory to its generation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SnapshotBoundary<S> {
+    tenant: S,
+    pub(crate) incarnation: S,
+    pub(crate) revision: u64,
+    revision_base: u64,
+    document_count: u64,
+    logical_bytes: u64,
+}
+
+impl<'a, S: From<&'a str>> From<&'a kasumi_types::TenantState> for SnapshotBoundary<S> {
+    fn from(state: &'a kasumi_types::TenantState) -> Self {
+        Self {
+            tenant: state.tenant.as_str().into(),
+            incarnation: state.incarnation.as_str().into(),
+            revision: state.revision,
+            revision_base: state.revision_base,
+            document_count: state.document_count,
+            logical_bytes: state.logical_bytes,
+        }
+    }
+}

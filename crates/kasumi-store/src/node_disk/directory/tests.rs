@@ -51,7 +51,10 @@ fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_pro
     assert_eq!(snapshot.charged_bytes, directory_charge + file_bytes);
     assert_eq!(
         snapshot.pending_bytes,
-        directory_charge - directories + file_pending
+        directory_charge
+            - census::backed_directory_bytes(directory.path())
+            - census::backed_directory_bytes(&child)
+            + file_pending
     );
     assert_eq!(snapshot.persistent_files, 1);
     let state = disk.lock_state();
@@ -59,12 +62,11 @@ fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_pro
         .directory()
         .unwrap();
     assert_eq!(root.children, 1);
-    let child = state.accounted[&Identity::of(&child.metadata().unwrap())]
-        .directory()
-        .unwrap();
+    let identity = Identity::of(&child.metadata().unwrap());
+    let child = state.accounted[&identity].directory().unwrap();
     assert_eq!(child.children, 1);
     assert_eq!(
-        child.parent,
+        child.parent(identity),
         Some(Identity::of(&directory.path().metadata().unwrap()))
     );
 }

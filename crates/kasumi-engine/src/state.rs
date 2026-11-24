@@ -30,7 +30,7 @@ pub(crate) mod snapshot_validation;
 use crate::SnapshotFailure;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
-use kasumi_query::{QueryIndexes, check_unique, validate_collection};
+use kasumi_query::{QueryIndexes, validate_collection};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 pub use snapshot_api::PreparedSnapshotRestore;
@@ -75,11 +75,64 @@ pub struct Generation {
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    /// A hydration overlay owns its body reservations. Only an unmodified
+    /// generation with a proven native primary can lend a detached cursor.
+    /// Its installed document resolver owns any staged bootstrap source.
+    pub(crate) fn cursor_primary(
+        &self,
+    ) -> Option<&crate::application_sources::SelectedApplication> {
+        self.application_selection.get().filter(|selection| {
+            self._read_reservations.is_empty()
+                && selection.served_primary_at(self.state.revision_base, self.state.revision)
+        })
+    }
+
+    /// Fixtures lend a slot of this generation without naming it. A located
+    /// slot is found by identity in this generation's maps or retained feed;
+    /// production loads always name their collection and ID.
+    #[cfg(test)]
     pub(crate) fn load_document<'a>(
         &self,
         slot: &'a DocumentSlot,
     ) -> anyhow::Result<DocumentLoan<'a>> {
+        if let DocumentSlot::Located(_) = slot {
+            for (name, collection) in &self.state.collections {
+                if let Some((id, _)) = collection
+                    .documents
+                    .iter()
+                    .find(|(_, held)| std::ptr::eq(held.as_ref(), slot))
+                {
+                    return loan_document_at(name, id, slot, self.document_resolver());
+                }
+            }
+            for commit in self.state.change_feed.commits.values() {
+                for record in &commit.records {
+                    if record
+                        .document
+                        .as_deref()
+                        .is_some_and(|held| std::ptr::eq(held, slot))
+                    {
+                        return loan_document_at(
+                            &record.collection,
+                            &record.id,
+                            slot,
+                            self.document_resolver(),
+                        );
+                    }
+                }
+            }
+        }
         loan_document(slot, self.document_resolver())
+    }
+    /// [`Self::load_document`] for a slot found under `id` in `collection`,
+    /// resolving a located slot through this generation's selected directory.
+    pub(crate) fn load_document_at<'a>(
+        &self,
+        collection: &str,
+        id: &str,
+        slot: &'a DocumentSlot,
+    ) -> anyhow::Result<DocumentLoan<'a>> {
+        loan_document_at(collection, id, slot, self.document_resolver())
     }
     pub(crate) fn document_resolver(&self) -> Option<&dyn DocumentResolver> {
         self.document_sources
@@ -115,22 +168,58 @@ impl Generation {
         &self,
         roots: crate::application_sources::SourceRootsRef,
         selected: crate::application_sources::SelectedApplication,
+        located: Option<Arc<crate::document_store::LocatedRows>>,
     ) -> anyhow::Result<Arc<dyn crate::document_store::GenerationDocuments>> {
         Ok(match &self.staged_documents {
-            Some(staged) => Arc::new(crate::document_restore::BootstrapDocuments::new(
-                staged.clone(),
-                roots,
-                selected,
-                &self.state.tenant,
-                &self.state.incarnation,
-            )?),
-            None => Arc::new(crate::document_store::SelectedDocuments::new(
-                roots,
-                selected,
-                &self.state.tenant,
-                &self.state.incarnation,
-            )?),
+            Some(staged) => Arc::new(
+                crate::document_restore::BootstrapDocuments::new(
+                    staged.clone(),
+                    roots,
+                    selected,
+                    &self.state.tenant,
+                    &self.state.incarnation,
+                )?
+                .locating(located),
+            ),
+            None => Arc::new(
+                crate::document_store::SelectedDocuments::new(
+                    roots,
+                    selected,
+                    &self.state.tenant,
+                    &self.state.incarnation,
+                )?
+                .locating(located),
+            ),
         })
+    }
+
+    /// The primary rows this generation's located slots resolve from.
+    pub(crate) fn located_rows(&self) -> Option<Arc<crate::document_store::LocatedRows>> {
+        self.document_sources
+            .get()
+            .and_then(|resolver| resolver.located_rows())
+    }
+
+    /// The rows from which this generation, once it selects `selected`, can
+    /// resolve located slots: that selection's own primary directory when it
+    /// is current at exactly this state, or the previous generation's rows
+    /// while a stale directory catches up. A continuous current directory
+    /// carries the bounded replay-compaction cursor across publications.
+    pub(crate) fn next_located_rows(
+        &self,
+        selected: &crate::application_sources::SelectedApplication,
+        previous: &Generation,
+    ) -> Option<Arc<crate::document_store::LocatedRows>> {
+        let inherited = previous.located_rows();
+        match crate::document_store::LocatedRows::serving(selected, &self.state) {
+            Ok(Some(mut rows)) => {
+                if let Some(prior) = inherited.as_ref().filter(|r| r.current_at(&previous.state)) {
+                    rows.continue_compaction_from(prior);
+                }
+                Some(Arc::new(rows))
+            }
+            Ok(None) | Err(_) => inherited,
+        }
     }
     pub(crate) fn clone_application_selection(
         &self,
@@ -144,11 +233,17 @@ impl Generation {
     /// Share persistent document roots and fixed point-history owners without
     /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
-        self.lease_with_collections(
-            self.state.collections.clone(),
-            Arc::new(QueryIndexes::default()),
-            true,
-        )
+        let mut collections = self.state.collections.clone();
+        if self.application_selection.get().is_some_and(|selection| {
+            selection.served_primary_at(self.state.revision_base, self.state.revision)
+        }) {
+            for collection in collections.values_mut() {
+                // The pinned primary owns live descriptors. Only history
+                // references and manifests are needed to hydrate archive rows.
+                collection.documents.clear();
+            }
+        }
+        self.lease_with_collections(collections, Arc::new(QueryIndexes::default()), true)
     }
 
     fn lease_with_collections(
@@ -157,7 +252,11 @@ impl Generation {
         indexes: Arc<QueryIndexes>,
         history: bool,
     ) -> Self {
-        let mut state = crate::snapshot_codec::metadata(&self.state);
+        let mut state = if history {
+            crate::snapshot_codec::metadata(&self.state)
+        } else {
+            crate::snapshot_codec::query_metadata(&self.state, self.state.policy.clone())
+        };
         state.collections = collections;
         if history {
             state.history_archives = self.state.history_archives.clone();
@@ -177,6 +276,44 @@ impl Generation {
         }
     }
 
+    /// An ordinary page needs one collection's planner and its verified primary.
+    /// Hydrated reads keep the generation that owns their private body reservations.
+    pub(crate) fn query_worker_view(
+        &self,
+        request: &QueryRequest,
+        admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
+    ) -> anyhow::Result<Option<Self>> {
+        let name = &request.collection;
+        if request.paging == Paging::Seek {
+            return self.physical_seek_view(name, admit);
+        }
+        if self.cursor_primary().is_none() || self.document_sources.get().is_none() {
+            return Ok(None);
+        }
+        let Some(collection) = self.state.collections.get(name) else {
+            return Ok(None);
+        };
+        // The definition and collection indexes are shared. Only metadata and
+        // two single-entry directory maps are allocated by this projection.
+        let bytes = 16_384 + 2 * name.len() as u64;
+        if !admit(bytes)? {
+            return Ok(None);
+        }
+        let Some(indexes) = self.indexes.for_query_collection_with_primary(request, || {
+            Arc::new(crate::document_source::NativeIdPages::new(self, name))
+        }) else {
+            return Ok(None);
+        };
+        let mut collection = collection.clone();
+        collection.documents.clear();
+        collection.archived_documents.clear();
+        Ok(Some(self.lease_with_collections(
+            BTreeMap::from([(name.clone(), collection)]),
+            Arc::new(indexes),
+            false,
+        )))
+    }
+
     /// A seek worker owns its exact selected source. Once it proves the
     /// collection's durable tuple directory it can release unrelated indexes
     /// and the generation-wide copy of its ordinary compound keys.
@@ -185,15 +322,29 @@ impl Generation {
         name: &str,
         admit: impl FnOnce(u64) -> kasumi_types::Result<bool>,
     ) -> anyhow::Result<Option<Self>> {
-        if self.application_selection.get().is_none() {
+        let Some(selection) = self.application_selection.get() else {
             return Ok(None);
-        }
-        if self.indexes.compound_count(name) == 0 {
+        };
+        // A hydrated view owns the grants for the archive bodies it lends.
+        // The worker must keep that view until its page finishes.
+        if !self._read_reservations.is_empty() {
             return Ok(None);
         }
         let Some(collection) = self.state.collections.get(name) else {
             return Ok(None);
         };
+        let disk_primary =
+            selection.served_primary_at(self.state.revision_base, self.state.revision);
+        // A scalar unique seek keeps its ordered posting fallback, but reads
+        // live rows from the same selected primary as a compound seek.
+        if !collection
+            .definition
+            .indexes
+            .iter()
+            .any(|index| index.unique && (index.fields.len() > 1 || disk_primary))
+        {
+            return Ok(None);
+        }
         // Upper bound on the scoped field/name metadata and its private map
         // slots. Document and posting roots stay shared and no body is copied.
         let mut bytes = 16_384u64;
@@ -209,8 +360,13 @@ impl Generation {
         let Some(indexes) = self.indexes.published_seek_worker_projection(name) else {
             return Ok(None);
         };
+        let mut collection = collection.clone();
+        if disk_primary {
+            collection.documents.clear();
+            collection.archived_documents.clear();
+        }
         Ok(Some(self.lease_with_collections(
-            std::iter::once((name.to_owned(), collection.clone())).collect(),
+            std::iter::once((name.to_owned(), collection)).collect(),
             Arc::new(indexes),
             false,
         )))
@@ -398,20 +554,14 @@ pub struct TenantEngine {
 /// reopen. The process default is [`LocalSnapshotArchive::Embedded`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalSnapshotArchive {
-    /// KASUMID1, the transportable bundle every earlier Kasumi binary reopens. A
-    /// group reopened from a KASUMIL1 snapshot durably publishes a KASUMID1 one
-    /// before it serves, so an earlier binary can reopen it afterwards.
+    /// Each KASUMID1 snapshot includes the audit archive chain.
     Embedded,
-    /// KASUMIL1: the logical state only; the audit archive chain stays in this
-    /// node's archive cache and every reopen verifies it there. Binaries before it
-    /// refuse this form, so it is an explicit opt-in:
-    /// `kasumid serve <config> --local-snapshot-archive reference`.
+    /// KASUMIL1 snapshots reference the audit archive chain in the node's cache.
+    /// Each reopen verifies the chain in place.
     Reference,
     /// Each group keeps the form of the snapshot it reopened from (KASUMIL1 after
-    /// a by-reference reopen, otherwise KASUMID1) and converts nothing. For
-    /// commands that open tenants offline (recovery, key rotation, staging): they
-    /// neither copy a by-reference tenant's whole archive back into its snapshot
-    /// nor start the by-reference form on a store that never opted in.
+    /// a by-reference reopen, otherwise KASUMID1). Used by offline commands such
+    /// as recovery, key rotation and staging.
     Preserve,
 }
 
@@ -435,9 +585,8 @@ impl LocalSnapshotArchive {
 static LOCAL_SNAPSHOT_ARCHIVE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(LocalSnapshotArchive::Embedded.code());
 
-/// Select the process default before any tenant opens. Engines read it once, when
-/// constructed; an `Embedded` reopen converts a group's stored by-reference
-/// snapshot before it serves (see `open_existing_local`).
+/// Select the form for future local snapshots before any tenant opens.
+/// Each engine reads the setting once when constructed.
 pub fn set_local_snapshot_archive(archive: LocalSnapshotArchive) {
     LOCAL_SNAPSHOT_ARCHIVE.store(archive.code(), std::sync::atomic::Ordering::Release);
 }
@@ -947,6 +1096,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                     &self.primary,
                     store,
                     &generation.state,
+                    generation.document_resolver(),
                     &context.meta,
                     context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
                     &mut writes,
@@ -1069,12 +1219,28 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
                 .application_sources
                 .get()
                 .ok_or_else(|| anyhow::anyhow!("restored document roots absent"))?;
+            // A restored state's descriptors are the rows of the selected
+            // snapshot or current directory. When it serves them at exactly
+            // this revision, keep only their located form resident.
+            let located = crate::document_store::LocatedRows::serving(&selected, &generation.state)
+                .ok()
+                .flatten()
+                .map(Arc::new);
+            if located.is_some()
+                && crate::document_store::compact_reopened(&mut generation.state) > 0
+                && let Some(indexes) = generation
+                    .indexes
+                    .with_collection_id_sources(&generation.state.collections)
+            {
+                generation.indexes = Arc::new(indexes);
+            }
             let resolver = crate::document_store::SelectedDocuments::new(
                 roots.clone(),
                 selected.clone(),
                 &generation.state.tenant,
                 &generation.state.incarnation,
-            )?;
+            )?
+            .locating(located);
             generation.staged_documents = None;
             generation
                 .document_sources
@@ -1148,7 +1314,9 @@ impl TenantEngine {
             kasumi_raft::ApplicationBoundaryRef::Bootstrap(image),
             generation.state.retired,
         )?;
-        let resolver = generation.resolver_for_selection(sources.clone(), selection.clone())?;
+        // Bootstrap precedes every compaction: no slot is located yet.
+        let resolver =
+            generation.resolver_for_selection(sources.clone(), selection.clone(), None)?;
         generation
             .document_sources
             .set(resolver)
@@ -1196,6 +1364,8 @@ impl TenantEngine {
             return;
         };
         self.object_gc.step(&crate::document_gc::Step {
+            selection,
+            located_rows: current.located_rows(),
             state: &current.state,
             snapshot_revision: &|| {
                 selection.with_base_snapshot_records(None, &current.state, |_, _, _, revision| {
@@ -1369,6 +1539,7 @@ impl TenantEngine {
             &self.primary,
             store,
             &current.state,
+            current.document_resolver(),
             &meta,
             false,
             &mut writes,
@@ -1431,6 +1602,7 @@ impl TenantEngine {
             &self.primary,
             sources.primary_installation().0.application(),
             &current.state,
+            current.document_resolver(),
             &applied,
         )? {
             if selection
@@ -1498,6 +1670,8 @@ impl TenantEngine {
         Ok(())
     }
     pub(crate) fn seal_application_source_consumers(&self) {
+        // An idle collector can be between pages on an older native pin.
+        self.object_gc.suspend();
         if let Some(sources) = self.application_sources.get() {
             kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
         }
@@ -1588,7 +1762,9 @@ impl TenantEngine {
         let Some(selected) = sources.rebase(selection, bootstrap)? else {
             return Ok(false);
         };
-        let resolver = previous.resolver_for_selection(sources.clone(), selected.clone())?;
+        let located = previous.next_located_rows(&selected, previous);
+        let resolver =
+            previous.resolver_for_selection(sources.clone(), selected.clone(), located)?;
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             receipts: previous.receipts.clone(),
@@ -1742,7 +1918,7 @@ impl TenantEngine {
                     .get(collection)
                     .and_then(|c| c.documents.get(id))
                 {
-                    maximum = maximum.max(crate::document_store::source_workspace(slot)?);
+                    maximum = maximum.max(crate::document_store::source_workspace(id, slot)?);
                     if matches!(mutation, Mutation::Patch { .. }) {
                         patched = patched
                             .checked_add(slot.body_bytes()?)
@@ -1765,16 +1941,15 @@ impl TenantEngine {
                 maximum = state
                     .collections
                     .values()
-                    .flat_map(|c| c.documents.values())
-                    .chain(
-                        state
-                            .change_feed
-                            .commits
-                            .values()
-                            .flat_map(|c| c.records.iter().filter_map(|r| r.document.as_ref())),
-                    )
-                    .try_fold(0_u64, |maximum, slot| -> anyhow::Result<u64> {
-                        Ok(maximum.max(crate::document_store::source_workspace(slot)?))
+                    .flat_map(|c| c.documents.iter())
+                    .map(|(id, slot)| (id.as_str(), slot))
+                    .chain(state.change_feed.commits.values().flat_map(|c| {
+                        c.records
+                            .iter()
+                            .filter_map(|r| Some((r.id.as_str(), r.document.as_ref()?)))
+                    }))
+                    .try_fold(0_u64, |maximum, (id, slot)| -> anyhow::Result<u64> {
+                        Ok(maximum.max(crate::document_store::source_workspace(id, slot)?))
                     })?;
             }
             // Two exact structural source quotes cover the simultaneously lent
@@ -1885,7 +2060,10 @@ impl TenantEngine {
                     ),
                     candidate.state.retired,
                 )?;
-            let resolver = candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+            let located = accepted.locate_published(&selection)?;
+            let candidate = accepted.candidate();
+            let resolver =
+                candidate.resolver_for_selection(sources.clone(), selection.clone(), located)?;
             candidate
                 .document_sources
                 .set(resolver)
@@ -1954,7 +2132,20 @@ impl TenantEngine {
         )
     }
 
-    fn publish_generation(&self, next: Option<Arc<Generation>>) {
+    fn publish_generation(&self, mut next: Option<Arc<Generation>>) {
+        if let Some(generation) = next.as_mut().and_then(Arc::get_mut)
+            && generation.application_selection.get().is_some()
+            && self
+                .current
+                .load()
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(&old.indexes, &generation.indexes))
+            && let Some(indexes) = generation
+                .indexes
+                .with_collection_id_sources(&generation.state.collections)
+        {
+            generation.indexes = Arc::new(indexes);
+        }
         // A newly captured selection was taken under the apply lock, after
         // every object deletion committed so far: later applies read object
         // presence through it. A generation that keeps its predecessor's
@@ -2714,6 +2905,7 @@ impl TenantEngine {
                 .unwrap_or_else(|p| p.into_inner()) =
                 Some(generation.state.pending_restore.clone());
         }
+        self.object_gc.suspend();
         self.publish_generation(None);
         self.audit_maintenance
             .lock()
@@ -3675,7 +3867,7 @@ impl TenantEngine {
             for (id, document) in &collection.documents {
                 check()?;
                 validate_name(id)?;
-                if id != document.id() || document.version() > collection.data_epoch {
+                if !document.has_id(id) || document.version() > collection.data_epoch {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "invalid document identity/version",
@@ -3917,13 +4109,21 @@ impl TenantEngine {
             .into());
         }
         check()?;
-        let indexes = Arc::new(match document_indexes {
-            Some(building) => building.finish(self.text_residency())?,
+        let mut indexes = match document_indexes {
+            Some(building) => {
+                building.finish_installed(self.text_residency(), &state.collections, check)?
+            }
             None => {
                 crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
                     .map_err(crate::index_source::into_anyhow)?
             }
-        });
+        };
+        if documents.is_some()
+            && let Some(bound) = indexes.with_collection_id_sources(&state.collections)
+        {
+            indexes = bound;
+        }
+        let indexes = Arc::new(indexes);
         check()?;
         Ok(Generation {
             receipts,
@@ -3941,15 +4141,33 @@ impl TenantEngine {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn loan_document<'a>(
     slot: &'a DocumentSlot,
     resolver: Option<&dyn DocumentResolver>,
 ) -> anyhow::Result<DocumentLoan<'a>> {
     match slot {
         DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
-        DocumentSlot::Stored(document) => Ok(DocumentLoan::Stored(document.load(
+        slot => slot
+            .load(resolver.ok_or_else(|| anyhow::anyhow!("selected document resolver missing"))?),
+    }
+}
+
+/// [`loan_document`] for a slot found under `id` in `collection`, which may be
+/// located in the resolver's selected primary directory.
+pub(crate) fn loan_document_at<'a>(
+    collection: &str,
+    id: &str,
+    slot: &'a DocumentSlot,
+    resolver: Option<&dyn DocumentResolver>,
+) -> anyhow::Result<DocumentLoan<'a>> {
+    match slot {
+        DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
+        slot => slot.load_at(
+            collection,
+            id,
             resolver.ok_or_else(|| anyhow::anyhow!("selected document resolver missing"))?,
-        )?)),
+        ),
     }
 }
 
@@ -4347,7 +4565,7 @@ fn validate_merge_patch_expansion(
             // Preserve ordinary missing-document/precondition validation below.
             continue;
         };
-        let document = loan_document(document, resolver)
+        let document = loan_document_at(collection, id, document, resolver)
             .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
         encoded = encoded
             .checked_add(encoded_len(&document.body)?)
@@ -4445,7 +4663,7 @@ fn apply_mutations(
                     )
                     .into());
                 };
-                let old = loan_document(old, resolver)
+                let old = loan_document_at(name, id, old, resolver)
                     .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
                 let mut body = old.body.clone();
                 kasumi_types::apply_merge_patch(&mut body, patch)?;

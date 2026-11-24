@@ -159,7 +159,7 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .unwrap()
         .expect("document exists");
     let stored = generation.state.collections["docs"].documents["a"]
-        .stored()
+        .descriptor("docs", "a", generation.document_resolver())
         .unwrap();
     assert_eq!(earlier.id, stored.id);
     assert_eq!(earlier.version, stored.version);
@@ -426,6 +426,7 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
         }
         let node = fixture.db.admission().clone();
         fixture.db.proposals.prepare(&node).unwrap();
+        let monitor = fixture.db.worker_test_hooks.monitor_iteration.lock().await;
         let quiescent = fixture.audit.quiescent_jobs_for_test().await;
         let baseline = node.snapshot();
         let baseline_bytes = without_cache(&fixture);
@@ -514,6 +515,7 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
         assert_eq!(event.outcome, "authorized_release");
         drop(generation);
         drop(quiescent);
+        drop(monitor);
         fixture.close().await;
     }
 }
@@ -528,6 +530,14 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
     // Loads through this wrapper, one view each, so it can pause one.
     impl crate::document_store::GenerationDocuments for PausedNativeDocument {}
     impl DocumentResolver for PausedNativeDocument {
+        fn locate(
+            &self,
+            collection: &str,
+            id: &str,
+            located: &kasumi_types::LocatedDocument,
+        ) -> anyhow::Result<StoredDocument> {
+            self.original.locate(collection, id, located)
+        }
         fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
             let document = self.original.load(descriptor)?;
             if let Some(entered) = self.entered.lock().unwrap().take() {
@@ -551,8 +561,21 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         .unwrap();
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
-    let mut selected = fixture.db.engine().generation().unwrap().lease_view();
-    let slot = selected.state.collections["docs"].documents["point"].clone();
+    let original_generation = fixture.db.engine().generation().unwrap();
+    // read_native receives the complete descriptor selected by the point lookup.
+    let crate::application_records::PrimaryPoint::Live(slot) =
+        crate::application_records::PrimaryPoint::resident(
+            &original_generation.state.collections["docs"],
+            "point",
+            original_generation.state.revision,
+            original_generation.document_resolver(),
+        )
+        .unwrap()
+    else {
+        panic!("expected the committed point document");
+    };
+    let mut selected = original_generation.lease_view();
+    drop(original_generation);
     assert!(matches!(slot.as_ref(), DocumentSlot::Stored(_)));
     let original = selected.document_sources.take().unwrap();
     assert!(
@@ -595,9 +618,15 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         .unwrap();
     let waiter = tokio::spawn(async move {
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        read.read_native(slot, tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT, permit, &cancellation, point_read::PointRead::owned)
-            .await
-            .map(|_| ())
+        read.read_native(
+            slot,
+            tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
+            permit,
+            &cancellation,
+            point_read::PointRead::owned,
+        )
+        .await
+        .map(|_| ())
     });
     tokio::time::timeout(Duration::from_secs(2), entry)
         .await

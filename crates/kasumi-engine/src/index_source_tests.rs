@@ -377,9 +377,10 @@ fn stored_headers_do_not_decode_and_missing_selected_source_is_local_failure() {
         panic!("expected pending fixture")
     };
     let descriptor = StoredDocument::from_document(document, [7; 32], 128, 1 << 20, 4096).unwrap();
-    collection
-        .documents
-        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
     let selected = &state.collections["docs"];
     let header = header(selected, "a", state.revision).unwrap().unwrap();
     assert_eq!((header.id, header.version), ("a", 1));
@@ -394,4 +395,131 @@ fn stored_headers_do_not_decode_and_missing_selected_source_is_local_failure() {
         ),
         Err(ReadFailure::Source(_))
     ));
+}
+
+#[test]
+fn schema_replacement_reads_each_stored_body_once_for_schema_and_once_for_unique_keys() {
+    use kasumi_types::{AdmittedDocumentOwner, SharedDocument};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Owner(Arc<Document>);
+    impl AdmittedDocumentOwner for Owner {
+        fn document(&self) -> &Document {
+            &self.0
+        }
+    }
+    struct CountingResolver {
+        document: SharedDocument,
+        reads: AtomicUsize,
+    }
+    impl DocumentResolver for CountingResolver {
+        fn load(&self, _: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(self.document.clone())
+        }
+    }
+
+    let mut state = state();
+    let collection = state.collections.get_mut("docs").unwrap();
+    let DocumentSlot::Pending(selected) = collection.documents["a"].as_ref() else {
+        panic!("expected pending fixture")
+    };
+    let descriptor = StoredDocument::from_document(selected, [7; 32], 128, 1 << 20, 4096).unwrap();
+    let resolver = CountingResolver {
+        document: SharedDocument::from_admitted_owner(Arc::new(Owner(selected.clone()))),
+        reads: AtomicUsize::new(0),
+    };
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
+    let prepare = |state: &TenantState| {
+        let collection = &state.collections["docs"];
+        crate::state::schema::prepare_collection(
+            state,
+            Some(collection),
+            &collection.definition,
+            false,
+            Some(&resolver),
+        )
+    };
+
+    prepare(&state).unwrap();
+    assert_eq!(resolver.reads.swap(0, Ordering::Relaxed), 2);
+    state
+        .collections
+        .get_mut("docs")
+        .unwrap()
+        .documents
+        .insert("c".into(), document("c", 3, "alpha"));
+    let failure = prepare(&state).expect_err("duplicate index value");
+    assert_eq!(query_error(failure).code, ErrorCode::Conflict);
+    assert_eq!(resolver.reads.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn schema_only_replacement_propagates_the_original_selected_body_failure() {
+    use kasumi_types::{AdmittedDocumentOwner, SharedDocument};
+
+    struct Owner(Arc<Document>);
+    impl AdmittedDocumentOwner for Owner {
+        fn document(&self) -> &Document {
+            &self.0
+        }
+    }
+    struct Resolver(SharedDocument);
+    impl DocumentResolver for Resolver {
+        fn load(&self, _: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            Ok(self.0.clone())
+        }
+    }
+    struct Unavailable;
+    impl DocumentResolver for Unavailable {
+        fn load(&self, _: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            Err(std::io::Error::other("selected encrypted body unavailable").into())
+        }
+    }
+    let mut old = state();
+    let collection = old.collections.get_mut("docs").unwrap();
+    let DocumentSlot::Pending(selected) = collection.documents["a"].as_ref() else {
+        panic!("pending seed")
+    };
+    let resolver = Resolver(SharedDocument::from_admitted_owner(Arc::new(Owner(
+        selected.clone(),
+    ))));
+    let descriptor = StoredDocument::from_document(selected, [7; 32], 128, 1 << 20, 4096).unwrap();
+    collection.documents.insert(
+        "a".into(),
+        Arc::new(DocumentSlot::stored_descriptor(descriptor)),
+    );
+    let residency = kasumi_query::TextResidency::Directory;
+    let indexes = build_with_resolver(&old, Some(&resolver), residency).unwrap();
+    let mut new = old.clone();
+    Arc::make_mut(&mut new.collections.get_mut("docs").unwrap().definition).strict_read_audit =
+        true;
+    let changed = BTreeMap::new();
+    let update = |reader: &dyn DocumentResolver| {
+        update_with_resolvers(
+            &indexes,
+            &old,
+            &new,
+            &changed,
+            Some(&resolver),
+            Some(reader),
+            residency,
+        )
+    };
+    let result = update(&resolver).unwrap();
+    assert_eq!(
+        result.document_ids_after("docs", None, 8).unwrap(),
+        ["a", "c"]
+    );
+    let err = update(&Unavailable).expect_err("selected body failure must propagate");
+    let ReadFailure::Source(DocumentSourceFailure(err)) = err else {
+        panic!("expected original local source failure")
+    };
+    assert_eq!(
+        err.downcast_ref::<std::io::Error>().unwrap().to_string(),
+        "selected encrypted body unavailable"
+    );
 }

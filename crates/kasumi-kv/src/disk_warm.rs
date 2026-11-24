@@ -166,7 +166,7 @@ impl DiskState {
                 && old
                     .roots()
                     .iter()
-                    .all(|pin| *pin == root || capture.roots().contains(pin))
+                    .all(|pin| *pin == root || capture.contains(pin))
         });
         if self.warmup.root != Some(root)
             || !same_roots

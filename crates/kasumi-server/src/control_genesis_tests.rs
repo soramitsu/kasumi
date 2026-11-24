@@ -96,9 +96,8 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
         certificate: root.join("tls.pem"),
         private_key: root.join("tls.key"),
     };
-    std::fs::write(&tls.certificate, certificate.pem())?;
-    std::fs::write(&tls.private_key, key.serialize_pem())?;
-    std::fs::set_permissions(&tls.private_key, std::fs::Permissions::from_mode(0o600))?;
+    kasumi_store::private_files::create(&tls.certificate, certificate.pem().as_bytes())?;
+    kasumi_store::private_files::create(&tls.private_key, key.serialize_pem().as_bytes())?;
     config.mcp.tls = tls.clone();
     config.native.tls = tls.clone();
     config.admin.tls = tls.clone();

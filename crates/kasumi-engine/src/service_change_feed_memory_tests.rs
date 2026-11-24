@@ -48,6 +48,122 @@ fn feed_memory_fixture() -> (Arc<crate::Generation>, RequestContext, ReadChangeF
 }
 
 #[test]
+fn feed_page_releases_commits_outside_the_cursor_window() {
+    let (mut generation, context, mut request) = feed_memory_fixture();
+    let state = &mut Arc::get_mut(&mut generation).unwrap().state;
+    state.limits.max_result_bytes = Limits::default().max_result_bytes;
+    let feed = &mut state.change_feed;
+    *feed = ChangeFeedState::empty();
+    for revision in 1..=4096 {
+        let records: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|id| ChangeRecord {
+                collection: "docs".to_owned(),
+                id: id.to_owned(),
+                document: None,
+            })
+            .collect();
+        let commit = Arc::new(ChangeCommit {
+            revision,
+            first_sequence: feed.next_sequence,
+            record_bytes: records
+                .iter()
+                .map(|r| crate::accounting::encoded_len(r).unwrap())
+                .sum(),
+            records,
+        });
+        feed.encoded_commit_bytes +=
+            crate::change_feed_state::entry_bytes(feed.next_sequence, &commit).unwrap();
+        feed.commits.insert(feed.next_sequence, commit);
+        feed.next_sequence += 2;
+        feed.event_count += 2;
+    }
+    state.revision = 4096;
+    request.start = ChangeFeedStart::After {
+        cursor: ChangeFeedCursor {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            principal: context.principal.clone(),
+            collections: request.collections.clone(),
+            after_sequence: 4001,
+        },
+    };
+    let before = Arc::downgrade(&feed.commits[&3999]);
+    let first = Arc::downgrade(&feed.commits[&4001]);
+    let last = Arc::downgrade(&feed.commits[&5001]);
+    let after = Arc::downgrade(&feed.commits[&5003]);
+    let boundary = crate::application_sources::SnapshotBoundary::<String>::from(&*state);
+    let node = query_memory_node(2 << 20);
+    let token = QueryCancellation::default();
+    let mut memory = QueryMemory::empty(node.reserve(512, Some(token.clone())).unwrap());
+    let input = change_feed::FeedPageSource::capture(&generation, &request.start, None, |bytes| {
+        assert_eq!(
+            bytes,
+            (501 * std::mem::size_of::<Arc<ChangeCommit>>()) as u64
+        );
+        memory.reserve(bytes)
+    })
+    .unwrap();
+    // Sequence 4002 starts in a two-event commit. The original page ends at
+    // 5001 irrespective of how many events its disk-backed prefix supplies.
+    let tail =
+        change_feed::FeedPageSource::capture(&generation, &request.start, Some(4999), |bytes| {
+            assert_eq!(bytes, 2 * std::mem::size_of::<Arc<ChangeCommit>>() as u64);
+            Ok(())
+        })
+        .unwrap();
+    drop(tail);
+    let disk_page =
+        change_feed::FeedPageSource::capture(&generation, &request.start, Some(5003), |_| {
+            panic!("the verified disk prefix covers this page")
+        })
+        .unwrap();
+    drop(disk_page);
+    let at_head =
+        change_feed::FeedPageSource::capture(&generation, &ChangeFeedStart::Now, None, |_| {
+            panic!("a head cursor needs no commit pointers")
+        })
+        .unwrap();
+    drop(generation);
+    assert!(before.upgrade().is_none() && after.upgrade().is_none());
+    assert!(first.upgrade().is_some() && last.upgrade().is_some());
+    request.limit = 1000;
+    let page = change_feed::build_change_feed_page(
+        &boundary,
+        &input,
+        &context,
+        &request,
+        &token,
+        &mut memory,
+        None,
+    )
+    .unwrap();
+    let ChangeFeedPage::Events {
+        events,
+        next,
+        caught_up,
+        ..
+    } = page
+    else {
+        panic!("unexpected retention gap")
+    };
+    assert!(!caught_up);
+    assert_eq!(events.len(), 1000);
+    assert_eq!((events[0].ordinal, events[0].commit_event_count), (1, 2));
+    assert!(
+        events
+            .iter()
+            .enumerate()
+            .all(|(n, event)| event.sequence == 4002 + n as u64)
+    );
+    assert_eq!(events.last().unwrap().ordinal, 0);
+    assert_eq!(next.after_sequence, 5001);
+    drop(input);
+    assert!(first.upgrade().is_none() && last.upgrade().is_none());
+    drop(at_head);
+}
+
+#[test]
 fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     let (generation, context, request) = feed_memory_fixture();
     let record = &generation.state.change_feed.commits[&1].records[0];
@@ -70,8 +186,9 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
     assert_eq!(
         change_feed::build_change_feed_page(
-            &generation.state,
-            generation.document_resolver(),
+            &crate::application_sources::SnapshotBoundary::<String>::from(&generation.state),
+            &change_feed::FeedPageSource::capture(&generation, &request.start, None, |_| Ok(()))
+                .unwrap(),
             &context,
             &request,
             &cancellation,
@@ -104,9 +221,15 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
+    let boundary = crate::application_sources::SnapshotBoundary::<String>::from(&generation.state);
+    let input = change_feed::FeedPageSource::capture(&generation, &request.start, None, |_| Ok(()))
+        .unwrap();
+    let parent = Arc::downgrade(&generation);
+    drop(generation);
+    assert!(parent.upgrade().is_none());
     let page = change_feed::build_change_feed_page(
-        &generation.state,
-        generation.document_resolver(),
+        &boundary,
+        &input,
         &context,
         &request,
         &cancellation,
@@ -118,7 +241,7 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let mut reservation = memory.into_workspace();
     reservation.retain_workspace();
     let output = AdmittedOutput::new(page, Arc::new(reservation));
-    drop(generation);
+    drop(input);
     assert!(
         source.upgrade().is_none(),
         "public after-image must not retain an internal Arc"
@@ -264,6 +387,9 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     );
     let node = fixture.db.admission().clone();
     fixture.db.proposals.prepare(&node).unwrap();
+    // Background reclamation reads the same store and holds real workspace.
+    // Keep its next iteration outside the two exact ownership measurements.
+    let monitor = fixture.db.worker_test_hooks.monitor_iteration.lock().await;
     let quiescent = fixture.audit.quiescent_jobs_for_test().await;
     let baseline = node.snapshot();
     let baseline_bytes = without_cache(&fixture);
@@ -346,5 +472,6 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     assert_eq!(event.outcome, "authorized_release");
     drop(generation);
     drop(quiescent);
+    drop(monitor);
     fixture.close().await;
 }

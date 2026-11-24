@@ -158,6 +158,10 @@ def target_member(target, config, nodes, request, leaf):
             and leaf not in {node["certificate"]["leaf_sha256"] for node in nodes},
             "recovery target TLS identity is not its own distinct pinned leaf")
     roots = list(config["persistent_disk"]["roots"].values())
+    generation_root = absolute(config["target_recovery"].get("generation_root"),
+                               "installed target generation root")
+    require(any(Path(generation_root).is_relative_to(root) for root in roots),
+            "target generation root is outside installed persistent storage")
     scratch = config["scratch_disk"]["directory"]
     for root in [*roots, scratch]:
         absolute(root, "recovery target storage root")
@@ -167,7 +171,9 @@ def target_member(target, config, nodes, request, leaf):
                         and not Path(other).is_relative_to(root),
                         "recovery target storage overlaps an HA process")
     return {"id": target["id"], "config": target["config"], "node_id": node_id,
-            "leaf_sha256": leaf, "roots": sorted(roots), "scratch": scratch}
+            "leaf_sha256": leaf, "roots": sorted(roots), "scratch": scratch,
+            "generation_root": generation_root,
+            "control_observer": bool(config["target_recovery"].get("phase_observation_bearer_file"))}
 
 
 def retained_inputs(read, leaf, plan_path, admitted):
@@ -393,10 +399,17 @@ PENDING_DELETION = {"closing_gates": "gate-closure", "draining_workers": "worker
                     "parent_synced": "durable-evidence"}
 
 
+def can_observe_deletion(target):
+    return target.get("control_observer") or "observer_profile" in target
+
+
 def deletion_view(d, ctx, query, target, label):
-    argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"],
-                       query["operation_id"], query["phase_id"], query["target_incarnation"],
-                       str(query["node_id"]), str(ctx.timeout))
+    args = (query["operation_id"], query["phase_id"], query["target_incarnation"],
+            str(query["node_id"]), str(ctx.timeout))
+    if target.get("control_observer") or "observer_profile" not in target:
+        argv = ctx.recovery("target-deletion-via-control", *args)
+    else:
+        argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"], *args)
     code, raw = d.attempt(label, argv)
     if code:
         return None, raw
@@ -415,6 +428,23 @@ def deletion_view(d, ctx, query, target, label):
             or (binding is None and status["progress"] not in {"deleting", "unlinked", "parent_synced"}),
             "target deletion lacks its bound generation")
     return status, raw
+
+
+def stopped_deletion(d, ctx, final, target, label):
+    """Read the completed cleanup from the enrolled target's durable journal."""
+    node = target["node_id"]
+    phase = (final["voters"].get(str(node)) or {}).get("cleanup")
+    if not isinstance(phase, str) or not UUID.fullmatch(phase):
+        return None
+    query = {"operation_id": ctx.stopped["operation_id"], "phase_id": phase,
+             "target_incarnation": ctx.stopped["target_incarnation"], "node_id": node}
+    for poll in range(min(ctx.polls, 16)):
+        view, _ = deletion_view(d, ctx, query, target, f"{label}-{node}-{poll}")
+        if view is not None:
+            # Every target in this experiment had a materialized generation.
+            return view if view["progress"] == "deleted" and view["binding_sha256"] else None
+        d.pause(ctx.pause)
+    return None
 
 
 def issuer_view(d, ctx, phase, query, label):
@@ -547,7 +577,7 @@ def target_deletion_fault(d, ctx, operation, phase_id, step, facts):
     packet = dispatch["input"]
     target = next((t for t in ctx.targets if t["node_id"] == packet["node_id"]), None)
     require(target is not None, "pending cleanup names an uninstalled target")
-    if "observer_profile" not in target:
+    if not can_observe_deletion(target):
         return
     request = packet["request"]
     if set(request["step"]) != {"Stop"}:
@@ -633,14 +663,14 @@ def drive(d, ctx, operation, label, terminal, facts, hooks=()):
         if value["phase"] == terminal:
             return value, phases
         if (value["phase"] in ("stop_target", "cleanup") and value.get("pending_phase")
-                and any("observer_profile" in target for target in ctx.targets)):
+                and any(map(can_observe_deletion, ctx.targets))):
             issuer_point = ("issuer-stop", value["pending_phase"])
             if issuer_point not in seen:
                 seen.add(issuer_point)
                 issuer_stop_fault(d, ctx, operation, value["pending_phase"], step, facts)
                 continue
         if (value["phase"] == "cleanup" and value.get("pending_phase")
-                and any("observer_profile" in target for target in ctx.targets)):
+                and any(map(can_observe_deletion, ctx.targets))):
             phase_id = value["pending_phase"]
             if phase_id not in seen:
                 seen.add(phase_id)
@@ -694,19 +724,31 @@ def forward(d, ctx, operation, value, facts):
 
 
 def storage(d, ctx):
-    return {target["id"]: {root: d.listing(root) for root in target["roots"]}
+    return {target["id"]: {root: d.listing(root) for root in
+                           sorted({*target["roots"], target["generation_root"]})}
             for target in ctx.targets}
 
 
-def created(before, after):
-    """Entries present now that the earlier listing did not have, by physical identity."""
-    result = {}
-    for target, roots in after.items():
-        for root, entries in roots.items():
-            for name, identity in entries.items():
-                if before[target][root].get(name) != identity:
-                    result[root + "/" + name] = identity
-    return result
+def generation_entries(snapshot, targets, request, *, materialized=False):
+    """Match the installed runner's tenant digest and target incarnation on every voter."""
+    tenant = json.dumps(request["tenant"], ensure_ascii=False).encode("utf-8")
+    name = hashlib.sha256(tenant).hexdigest() + "." + request["target_incarnation"] + ".kv"
+    found, directories = {}, set()
+    for target in targets:
+        root = target["generation_root"]
+        entries = snapshot[target["id"]][root]
+        members = {path: identity for path, identity in entries.items()
+                   if path == name or path.startswith(name + "/")}
+        if materialized:
+            directory = members.get(name, {})
+            require(directory.get("type") == "dir"
+                    and any(identity["type"] == "file" for identity in members.values()),
+                    "missing materialized generation on " + target["id"])
+            key = directory["device"], directory["inode"]
+            require(key not in directories, "recovery targets share a physical generation")
+            directories.add(key)
+        found.update({str(Path(root) / path): identity for path, identity in members.items()})
+    return found
 
 
 def surviving(before, after):
@@ -754,6 +796,8 @@ def script(d, ctx):
             path = root + "/unrelated-" + ctx.attempt_id
             planted[path] = d.plant(path, ("unrelated " + path + "\n").encode())
     before = storage(d, ctx)
+    require(not generation_entries(before, ctx.targets, ctx.stopped),
+            "stopped generation already exists before materialization")
     stopped = ctx.stopped["operation_id"]
     reply = d.json("stopped-start", ctx.recovery("start", ctx.plan["stopped_request"],
                                                   d.custody("home/recovery-stopped.json"),
@@ -768,25 +812,35 @@ def script(d, ctx):
     else:
         raise ValueError("the first recovery never materialized")
     materialized = storage(d, ctx)
-    own = created(before, materialized)
-    require(any(identity["type"] == "file" for identity in own.values()),
-            "materialization created no target storage")
+    own = generation_entries(materialized, ctx.targets, ctx.stopped, materialized=True)
     d.json("stopped-stop", ctx.recovery("stop", stopped, d.custody("home/recovery-stopped-stop.json"),
                                         str(ctx.timeout)))
     final, phases = drive(d, ctx, stopped, "stopped", "stopped", facts)
+    hot, cold = {}, {}
+    for target in ctx.targets:
+        member = target["id"]
+        hot[member] = stopped_deletion(d, ctx, final, target, "stopped-journal")
+        if hot[member] is not None:
+            d.stop(member)
+            ctx.live.discard(target["node_id"])
+            spawn(d, ctx, target["node_id"])
+            cold[member] = stopped_deletion(d, ctx, final, target, "stopped-journal-reopened")
+    persisted = len(cold) == len(ctx.targets) and hot == cold
     after = storage(d, ctx)
     kept = all(d.inspect(path) == {**identity, "sha256": hashlib.sha256(
         ("unrelated " + path + "\n").encode()).hexdigest()} for path, identity in planted.items())
-    deleted = [name for name, identity in own.items() if identity["type"] == "file"
-               and identity == created(before, after).get(name)]
-    facts["stopped"] = {"phases": phases, "created": own, "remaining": deleted,
-                        "unrelated_kept": kept, "survived": surviving(before, after)}
-    if kept and not deleted and facts["stopped"]["survived"]:
+    remaining = sorted(generation_entries(after, ctx.targets, ctx.stopped))
+    facts["stopped"] = {"phases": phases, "created": own, "remaining": remaining,
+                        "unrelated_kept": kept, "survived": surviving(before, after),
+                        "journals": hot, "reopened_journals": cold, "persisted": persisted}
+    if kept and not remaining and facts["stopped"]["survived"] and persisted:
         d.json("stopped-final", ctx.status(stopped), ["unrelated-file-isolation"])
 
     # The second recovery finishes through every fault.
     operation = ctx.finished["operation_id"]
     before = storage(d, ctx)
+    require(not generation_entries(before, ctx.targets, ctx.finished),
+            "finished generation already exists before materialization")
     reply = d.json("finished-start", ctx.recovery("start", ctx.plan["request"],
                                                    d.custody("home/recovery-finished.json"),
                                                    str(ctx.timeout)))
@@ -809,7 +863,7 @@ def script(d, ctx):
 
     # Physical bindings survive a clean restart of a target.
     bound = storage(d, ctx)
-    generation = created(before, bound)
+    generation = generation_entries(bound, ctx.targets, ctx.finished, materialized=True)
     first = ctx.targets[0]
     d.stop(first["id"])
     ctx.live.discard(first["node_id"])
@@ -883,7 +937,8 @@ def open_cells(facts):
               "forward-after-activation": facts.get("forward") is not None,
               "physical-bindings": (facts.get("bindings") or {}).get("preserved") is True,
               "unrelated-file-isolation": (facts.get("stopped") or {}).get("unrelated_kept") is True
-              and not facts["stopped"]["remaining"] and facts["stopped"]["survived"],
+              and not facts["stopped"]["remaining"] and facts["stopped"]["survived"]
+              and facts["stopped"]["persisted"],
               "independent-source-target-authorization": facts.get("authorization") is True}
     result.extend({"cell": name, "reason": "the product witness did not hold"}
                   for name, held in checks.items() if not held)

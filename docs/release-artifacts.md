@@ -35,6 +35,178 @@ later attempts and retain each new head with
 `attempt_index.py head --root /absolute/artifacts`; an existing journal must
 have the same identity.
 
+For final verification, retain each complete host directory under
+`native-attempts/<journal-id>/` in the evidence bundle. Preserve the native
+relative paths and the original bytes of the journal, outcomes and process
+records. The manifest's `attempts` array contains one object per journal with
+its `id` and a `journal` file reference to
+`native-attempts/<journal-id>/attempts/index.jsonl`. Keep the operator's
+anchor file outside the bundle. Its JSON array contains one object per native
+journal with the final `head` from `attempt_index.py head` and the absolute
+`original_root` on the producing host. The verifier checks that all three
+targets are represented and replays every admission, including failures and
+interruptions. It reads transported files from the bundle.
+
+`scripts/transport_attempt_journal.py` moves one host directory into that
+layout. Run `produce` beside the original once every admission has finished.
+Carry the journal head and the printed `producer_sha256` to the bundle host by
+a channel other than the upload.
+
+```sh
+python3 -I -S -B /frozen/source/scripts/attempt_index.py head --root /native/custody
+python3 -I -S -B /frozen/source/scripts/transport_attempt_journal.py produce \
+  --root /native/custody --archive /native/transfer/custody.tar \
+  --producer /native/transfer/custody.producer.json --max-bytes <byte cap> \
+  --omit run/tmp
+```
+
+The archive holds the journal, every receipt and every admitted output whole,
+including failed, interrupted and pre-dispatch attempts. Only compiler work
+trees are thinned: a functional run's `source` and `target` directories, an
+independent build's `source` and `target` under its recorded build root, and
+each directory named with `--omit`. From those the archive keeps the files the
+verifier opens, the directory listings it reads and the files the build's
+qualification record names. The manifest counts what stays behind. `produce`
+refuses a journal with an unfinished admission, and it publishes the producer
+record only after the archive has been restored and replayed as a relocated
+copy.
+
+Run `admit` beside the bundle with the operator's anchor file.
+
+```sh
+python3 -I -S -B /frozen/source/scripts/transport_attempt_journal.py admit \
+  --archive /incoming/custody.tar --producer-manifest /incoming/custody.producer.json \
+  --producer-sha256 <producer digest> \
+  --journal-heads /operator/native-journal-heads.json --max-bytes <byte cap> \
+  --output /evidence/native-attempts/<journal-id> \
+  --record /operator/admissions/<journal-id>-1
+```
+
+The archive is restored to `native-attempts/.<journal-id>.pending`, replayed by
+the acceptance verifier against the anchored head and original root, and then
+renamed into place. The record directory is new for every run and keeps the
+outcome in `receipt.json`:
+
+| Exit | `status` | Meaning |
+| --- | --- | --- |
+| 0 | `admitted` | The root is in place and replays. `placement` is `placed`, or `confirmed` when an earlier run had already placed the same root. |
+| 1 | `rejected` | This transfer put nothing in the namespace. An existing root is never replaced. |
+| 2 | `unconfirmed` | The verified root is in place, but a step after the rename failed. Run `admit` again with a new record directory to confirm it. |
+
+A leftover `.pending` directory means an admission was interrupted before the
+rename. It blocks a retry and fails final verification until an operator
+removes it.
+
+When finishing a selected functional or independent build, pass its original
+qualification record as the output-relative `build_evidence` argument to
+`attempt_index.finish_outcome`. The functional record is `evidence.json`.
+The independent build record uses final bundle paths for its binary references.
+The verifier compares both records with their admitted native products.
+Run the frozen verifier against the exact clean Git revision.
+
+```sh
+python3 -I -B -S /frozen/source/scripts/verify_release_acceptance.py \
+  /evidence/release-manifest.json --repository /clean/revision \
+  --journal-heads /operator/native-journal-heads.json
+```
+
+### Producing the independent build
+
+`scripts/run_independent_build.py` produces a candidate's `independent` record.
+It makes one fresh native production compilation per target, separately from
+the primary functional run, and may use the same physical host. Run it with the
+declared native Python from a frozen source that has no `__pycache__`:
+
+```sh
+python3 /frozen/source/scripts/release_host.py \
+  --output /operator/host-preflight.json --target <target>
+python3 -I -S -B /frozen/source/scripts/run_independent_build.py \
+  --journal /absolute/artifacts --attempt-id independent-001 \
+  --output /absolute/artifacts/independent-001 \
+  --identity /operator/release-identity.json \
+  --source-archive /evidence/source.tar \
+  --native-inputs /absolute/native-inputs/inputs.json \
+  --host-preflight /operator/host-preflight.json \
+  --host-attestation /operator/host-attestation.txt \
+  --host-reservation /operator/host-reservation.json --jobs 2
+```
+
+The journal is this host's existing attempt journal, and the output is a fresh
+path inside it. The identity file holds exactly the seven source identity
+fields of [the acceptance manifest](release-acceptance-manifest.md), with the
+values the final manifest will compute, including `configurations_sha256`.
+A later configuration change invalidates the record. The source archive is the
+frozen Git archive whose SHA-256 is `source_archive_sha256`. The preflight is
+the `release_host.py` output for the journal's target, and the attestation is
+the operator or hypervisor statement for the host. The reservation is a JSON
+object with `id`, `starts_at`, `ends_at`, `cpu_count`, `memory_bytes` and
+`disk_bytes`. It must cover the whole compilation.
+
+The verifier requires the exact functional `production` command, which begins
+`cargo +1.97.1`. A toolchain's own `bin/cargo` rejects `+toolchain` selectors,
+so the producer runs Rustup's `cargo` proxy from the declaration's
+`cargo_home/bin`. Declare the Rustup executable behind that proxy, such as
+`~/.cargo/bin/rustup`, in `host_files` with its SHA-256. The declared
+`rust-sysroot` must be `<RUSTUP_HOME>/toolchains/1.97.1-<target>`. Cargo
+uses the declared registry offline, the attempt's target directory, the
+pinned Rustup installation and the frozen commit's `SOURCE_DATE_EPOCH`.
+For a disconnected build, include `mecab-ipadic-2.7.0-20250920.tar.gz` in
+`host_files` with SHA-256
+`a7ba9f645ffe7094e56ae1c4a81d100df8fbb1e28bbe1792622e9728e162db3d`.
+The producer copies this archive into the attempt's empty dictionary cache.
+Lindera builds the Japanese dictionary there. Without a declared archive its
+build script needs access to its upstream dictionary server.
+
+The attempt is admitted before its output exists. Every input is copied into
+the output and read only from that copy. The archive is extracted into a fresh
+`build/source`, whose inventory, lockfile and vendor hash must match the
+identity, and the executing producer modules must equal the frozen source.
+Cargo builds into a fresh `build/target` as one owned process. Its receipt, log
+and executable bytes are kept as `production-process.json`, `production.log`
+and `tools/cargo`. After its process group drains, the producer requires
+exactly the three production executables, no fixture features, the target
+architecture and an unchanged source. It then hashes the actual binaries.
+
+The terminal outcome names those binaries as products and selects
+`independent-build.json` as its `build_evidence`. The record's references
+already use final bundle paths, `native-attempts/<journal-id>/<output>/...`.
+Copy the host directory into the bundle unchanged and point the candidate's
+`independent` reference at that record. The producer prints a JSON summary
+with the record's `bundle_record` path, the binary hashes and the new journal
+`head` to anchor. It exits 0 when the build passed, 1 when it failed or was
+interrupted, and 2 when the attempt could not be admitted or finished.
+A rejected input, failed compilation or cancellation stays in the journal with
+any partial products and cannot be selected. The verifier, not the producer,
+compares the binaries with the primary build.
+
+### Composing the release manifest
+
+Keep a selections JSON file in the bundle directory. Its `source` names the
+exact Git `commit` and the relative paths to its `archive` and `files`
+inventory. Use JSON objects mapping IDs to bundle-relative paths for
+`configurations`, `artifacts`, `gates`, `candidates` and `journals`.
+A gate path selects its original domain evidence. A candidate path selects a
+JSON object containing its native `platform`, `primary` and `independent`
+records in the acceptance schema. A journal path selects its indexed bytes.
+Once both capacity gates, concurrency, the benchmark matrix and the full HA
+soak are present, the composer derives `operating-limits.md` from their original
+measurements. The report records the reservations, elapsed time, sampled
+resource peaks, configured budgets, workload counts, latency and soak results.
+The final verifier independently recomputes its bytes. The composer generates
+`SHA256SUMS` when all 24 other deliverables are present.
+
+```sh
+python3 -B scripts/compose_release_manifest.py /evidence/selections.json \
+  --repository /clean/revision --output /evidence/manifest-draft.json --draft
+python3 -B scripts/compose_release_manifest.py /evidence/selections.json \
+  --repository /clean/revision --output /evidence/release-manifest.json \
+  --journal-heads /operator/native-journal-heads.json
+```
+
+The draft reports missing artifact IDs, gates and platforms. Use a new output
+name for revised selections to keep each draft reproducible. Final publication
+of the manifest requires the isolated frozen verifier to certify those exact bytes.
+
 The native input declaration is mandatory; there is no ambient Cargo/Rustup
 fallback. See [the assembly input contract](repeatable-assembly.md). The owned
 launcher, runner and packager require isolated Python and reject cached
@@ -44,9 +216,9 @@ terminal census at the output root. Its child produces `assembly/attempt.json`
 and the two original outputs, `assembly/assembly-a-output` and
 `assembly/assembly-b-output`; the first contains the candidate package and OCI
 build context. Both complete outputs, process transcripts, native probes and
-original failed attempts remain under the exclusive output directory. The final
-domain registry remains disabled
-until native runner validation and its acceptance integration are complete.
+original failed attempts remain under the exclusive output directory. The
+registered `repeatable-assembly` adapter checks those two outputs against the
+selected candidate on each native target.
 The assembly transport command runs only after the owned launcher verifies its
 original child graph and two outputs. It inventories every retained file and
 directory, writes a bounded raw PAX tar preserving file and directory modes,
@@ -107,11 +279,12 @@ license conclusion. Where upstream offers alternatives and this distribution
 selects one, the pinned supplement states that choice and keeps the original
 declaration.
 
-Archive order, file modes, owners, tar timestamps and gzip headers are normalized
-to the source commit's timestamp. This makes assembly reproducible for identical
-inputs. It does not prove bit-identical recompilation: compiler, linker, system
-packages and path-remapping need a separately pinned build environment and an
-actual second-build comparison.
+The packager normalizes archive order, file modes, owners, tar timestamps and
+gzip headers using the source commit's timestamp. Both native production
+builds use that timestamp and map the workspace, Cargo target directory and
+registry to stable paths in compiled code. On macOS the linker removes debug
+map entries before generating the image UUID. Qualification compares the
+SHA-256 of each delivered executable with its independent build.
 
 ## Candidate workflow
 
@@ -254,14 +427,19 @@ digest in `release/oci/base-image.json`, and the candidate package produced by
 the matching packager:
 
 ```sh
-python3 scripts/oci_image.py --base-layout /absolute/base-layout \
-  --package /absolute/artifacts/candidate-001 \
-  --target aarch64-unknown-linux-gnu \
-  --output /absolute/artifacts/kasumi-linux-arm64.oci.tar
+python3 -I -B -S scripts/run_oci_image_owned.py \
+  --journal /absolute/native-custody --attempt-id arm64-image-001 \
+  --output /absolute/native-custody/image-001 --evidence /absolute/functional \
+  --base-layout /absolute/base-layout \
+  --package /absolute/artifacts/kasumi-0.1.0-aarch64-unknown-linux-gnu.tar.gz
 ```
 
-Select `x86_64-unknown-linux-gnu` only for the independently validated Linux
-x86-64 candidate. The assembler adds one uncompressed layer: the delivered
+Run this command on each native Linux target with its own package, functional
+evidence, and initialized native journal. The producer reads the build time
+from the functional evidence, verifies the packaged provenance and binaries,
+and writes the image archive, image SBOM and `image.json` under
+`image-001/image/`. Select these original files from the transported journal.
+The assembler adds one uncompressed layer: the delivered
 package under `/opt/kasumi` (binaries, notices and Cargo SBOM) and an empty
 private `/var/lib/kasumi` owned by the numeric runtime user 65532:65532, which
 has no passwd entry. The default entrypoint serves

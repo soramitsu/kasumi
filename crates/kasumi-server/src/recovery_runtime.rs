@@ -380,7 +380,16 @@ impl RecoveryRoute {
         Ok(())
     }
 }
+#[path = "recovery_phase_callbacks.rs"]
+pub(crate) mod phase_callbacks;
+#[path = "recovery_writer_callbacks.rs"]
+pub(crate) mod writer_callbacks;
 pub(crate) struct ControlRecoveryCoordinator {
+    pub(crate) phase_callbacks: phase_callbacks::PhaseCallbacks,
+    // Cleanup observers may share the same exact phase with an executing StopLocal.
+    // Dropping an observer must never revoke the executor's return path.
+    pub(crate) deletion_observers: phase_callbacks::PhaseCallbacks,
+    pub(crate) writer_callbacks: writer_callbacks::WriterCallbacks,
     pub(crate) database: Arc<Database>,
     signer: Arc<LifecycleSigner>,
     configured: RecoveryRuntimeConfig,
@@ -445,6 +454,9 @@ impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
                         .context("missing original target CA")?,
                 )?;
                 let token = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+                let _callback =
+                    self.writer_callbacks
+                        .open(&query, &member.node, context, &self.database)?;
                 let receipt = tokio::time::timeout(Duration::from_secs(30), async {
                     let mut client = KasumiTargetClient::connect(
                         &config,
@@ -511,6 +523,9 @@ impl ControlRecoveryCoordinator {
             authorities: runtime.serving_authorities.clone(),
             trusts,
             installed_digests,
+            phase_callbacks: Default::default(),
+            deletion_observers: Default::default(),
+            writer_callbacks: Default::default(),
         }))
     }
     pub(crate) fn control_incarnation(&self) -> Uuid {
@@ -557,6 +572,82 @@ impl ControlRecoveryCoordinator {
             .recovery_control(context, RecoveryControlCommand::Start(Box::new(request)))
             .await?)
     }
+    pub(crate) async fn target_deletion_status(
+        &self,
+        context: &RequestContext,
+        query: &TargetDeletionQuery,
+    ) -> Result<TargetDeletionStatus> {
+        query.validate()?;
+        let head = self
+            .database
+            .recovery_status(context.clone(), query.operation_id)
+            .await?;
+        let phase = self
+            .database
+            .recovery_phase(context.clone(), query.operation_id, query.phase_id)
+            .await?;
+        let record = phase.record();
+        let RecoveryDispatch::Target { node_id, request } = &record.input else {
+            return Err(kasumi_types::Error::new(
+                ErrorCode::InvalidArgument,
+                "cleanup phase has no target",
+            )
+            .into());
+        };
+        ensure!(
+            record.phase == RecoveryPhase::Cleanup
+                && *node_id == query.node_id
+                && head.record().request.target_incarnation == query.target_incarnation
+                && request.tenant == head.record().request.tenant
+                && matches!(&request.step, TargetRuntimeStep::Stop(reference) if reference.tenant == request.tenant),
+            "cleanup observation differs from the original target stop"
+        );
+        let attempt = record
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .context("target stop has no original effect marker")?;
+        ensure!(
+            attempt.input_sha256 == record.input_sha256,
+            "target stop effect input differs"
+        );
+        let (route, _, _, cas) = self.route(&head.record().request)?;
+        let member = route
+            .targets
+            .get(node_id)
+            .context("original target is not installed")?;
+        let config = connection(
+            &member.client,
+            cas.target_cas
+                .get(node_id)
+                .context("original target CA absent")?,
+        )?;
+        let credential = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(head.record().request.phase_timeout_ms.min(30_000));
+        let _reader = self.deletion_observers.open(
+            &self.database,
+            context,
+            &member.node,
+            request,
+            (query.operation_id, query.phase_id),
+            deadline,
+        )?;
+        head.release().await?;
+        phase.release().await?;
+        let status = tokio::time::timeout_at(
+            deadline,
+            kasumi_client::read_target_deletion_status(&config, &credential, query),
+        )
+        .await??;
+        ensure!(
+            status.intent_id == request.command_id && status.attempt_id == attempt.attempt_id,
+            "target journal returned a different stop command or attempt"
+        );
+        head.release().await?;
+        phase.release().await?;
+        Ok(status)
+    }
+
     pub(crate) async fn issuer_stop_status(
         &self,
         context: &RequestContext,
@@ -844,8 +935,11 @@ impl ControlRecoveryCoordinator {
                                 .begin_effect(RecoveryEffect::ActivationIntentAcceptance)
                                 .await?;
                             let attempt_id = ticket.attempt_id();
-                            ticket.consume(&prepared.record().input).await?;
-                            let accepted = pool.execute_lifecycle(&acceptance, duration).await?;
+                            let remaining =
+                                ticket.consume_remaining(&prepared.record().input).await?;
+                            let accepted = pool
+                                .execute_lifecycle(&acceptance, duration.min(remaining))
+                                .await?;
                             observed.release().await?;
                             (accepted, attempt_id)
                         };
@@ -876,8 +970,8 @@ impl ControlRecoveryCoordinator {
                 let ticket = current
                     .begin_effect(RecoveryEffect::AuthorityCommand)
                     .await?;
-                ticket.consume(&prepared.record().input).await?;
-                let result = pool.execute(command, duration).await?;
+                let remaining = ticket.consume_remaining(&prepared.record().input).await?;
+                let result = pool.execute(command, duration.min(remaining)).await?;
                 prepared.release().await?;
                 Ok(RecoveryDispatchOutcome::Authority(Box::new(result)))
             }
@@ -980,6 +1074,14 @@ impl ControlRecoveryCoordinator {
                 let remaining = prepared.dispatch_remaining().await?;
                 let wait =
                     target_route_wait(head.phase, &request.step, duration, duration.min(remaining));
+                let phase_callback = self.phase_callbacks.open(
+                    &self.database,
+                    context,
+                    &target.node,
+                    request,
+                    (prepared.record().operation_id, prepared.record().phase_id),
+                    tokio::time::Instant::now() + wait,
+                )?;
                 let acknowledgement = tokio::time::timeout(wait, async {
                     let mut client =
                         KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
@@ -1071,7 +1173,10 @@ impl ControlRecoveryCoordinator {
                         request: request.as_ref().clone(),
                         initial_dispatch,
                     };
-                    let acknowledgement = client.execute(&bearer, &verified, &envelope).await;
+                    let acknowledgement = {
+                        let _sending = phase_callback.sending_target_command();
+                        client.execute(&bearer, &verified, &envelope).await
+                    };
                     let acknowledgement = if first_membership {
                         acknowledgement.map_err(|_| unknown_recovery_effect())?
                     } else {

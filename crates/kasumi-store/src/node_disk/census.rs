@@ -24,6 +24,7 @@ pub(super) struct Root {
     pub(super) identity: Identity,
     /// Index of the filesystem charged for every promise beneath this root.
     pub(super) filesystem: usize,
+    pub(super) btrfs_sector: u32,
 }
 
 impl Root {
@@ -156,6 +157,7 @@ pub(super) fn open_roots(
                     use std::os::unix::ffi::OsStrExt;
                     CString::new(path.as_os_str().as_bytes())?
                 },
+                btrfs_sector: btrfs_sector(&file)?,
                 file,
                 identity,
                 filesystem,
@@ -253,6 +255,7 @@ impl Streams {
 
 pub(super) struct Cursor<'a> {
     identity: Identity,
+    namespace_times: [i64; 4],
     binding: NamespaceBinding,
     file: File,
     entries: Option<std::ptr::NonNull<libc::DIR>>,
@@ -275,7 +278,8 @@ impl<'a> Cursor<'a> {
             streams.close_errno().is_none(),
             "uncertain census stream requires process restart"
         );
-        let identity = Identity::of(&file.metadata()?);
+        let metadata = file.metadata()?;
+        let identity = Identity::of(&metadata);
         // A dup shares offsets. This independent file description is retained
         // until exactly one closedir invocation consumes its native owner.
         let fd = open_at(&file, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.into_raw_fd();
@@ -290,6 +294,7 @@ impl<'a> Cursor<'a> {
         streams.outstanding.set(next);
         Ok(Self {
             identity,
+            namespace_times: namespace_times(&metadata),
             binding,
             file,
             entries: Some(entries),
@@ -495,8 +500,7 @@ impl<'a> CensusSession<'a> {
                     &root.file,
                     NamespaceBinding::root(root.identity),
                     None,
-                    self.config.directory_policy,
-                    root.filesystem,
+                    root.btrfs_sector,
                 )?;
                 self.stack.push(Cursor::open(
                     root.file.try_clone()?,
@@ -515,7 +519,12 @@ impl<'a> CensusSession<'a> {
             let current = self.stack.last_mut().expect("active census stack");
             let Some(name) = current.next(self.config.max_name_bytes)? else {
                 current.file.sync_all()?;
-                verify_enrolled_directory(&self.scan, current)?;
+                settle_directory(
+                    &mut self.scan,
+                    current,
+                    self.config.directory_policy,
+                    root.filesystem,
+                )?;
                 current.close()?;
                 self.stack.pop();
                 if self.stack.is_empty() {
@@ -571,8 +580,7 @@ impl<'a> CensusSession<'a> {
                     &child,
                     binding,
                     Some(parent),
-                    self.config.directory_policy,
-                    root.filesystem,
+                    root.btrfs_sector,
                 )?;
                 self.subdirectories += 1;
                 self.stack.push(Cursor::open(
@@ -700,28 +708,109 @@ pub(super) fn directory_extent(metadata: &Metadata) -> io::Result<u64> {
         .ok_or_else(|| io::ErrorKind::InvalidData.into())
 }
 
+// Btrfs can report one sector for a synchronized directory and zero after
+// inode-cache reclaim without changing its namespace. The sector cannot
+// retire any of the filesystem promise: its disappearance is asynchronous.
+#[cfg(target_os = "linux")]
+fn btrfs_sector(file: &File) -> io::Result<u32> {
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: fstatfs initializes the structure on success and borrows the FD.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.f_type != libc::BTRFS_SUPER_MAGIC {
+        return Ok(0);
+    }
+    u32::try_from(stat.f_bsize)
+        .ok()
+        .filter(|size| size.is_power_of_two())
+        .ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn btrfs_sector(_file: &File) -> io::Result<u32> {
+    Ok(0)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct DirectoryAllocation {
+    pub(super) reported: u64,
+    pub(super) btrfs_sector: u32,
+    changed_seconds: i64,
+    changed_nanos: u32,
+}
+
+impl DirectoryAllocation {
+    pub(super) fn observe(metadata: &Metadata, btrfs_sector: u32) -> io::Result<Self> {
+        let mut observation = Self {
+            reported: directory_extent(metadata)?,
+            btrfs_sector,
+            ..Self::default()
+        };
+        if btrfs_sector != 0 {
+            observation.changed_seconds = metadata.ctime();
+            observation.changed_nanos =
+                u32::try_from(metadata.ctime_nsec()).map_err(|_| io::ErrorKind::InvalidData)?;
+        }
+        Ok(observation)
+    }
+
+    pub(super) fn backed(self) -> u64 {
+        if self.reported == u64::from(self.btrfs_sector) {
+            0
+        } else {
+            self.reported
+        }
+    }
+
+    pub(super) fn matches(self, metadata: &Metadata, charged: u64) -> io::Result<bool> {
+        Ok(self.accepts(Self::observe(metadata, self.btrfs_sector)?, charged))
+    }
+
+    fn accepts(self, current: Self, charged: u64) -> bool {
+        current.btrfs_sector == self.btrfs_sector
+            && self.changed_seconds == current.changed_seconds
+            && self.changed_nanos == current.changed_nanos
+            && current.reported <= charged
+            && current.backed() == self.backed()
+    }
+}
+
+#[cfg(test)]
+pub(super) fn backed_directory_bytes(path: &std::path::Path) -> u64 {
+    let directory = File::open(path).unwrap();
+    let observed = directory.metadata().unwrap().blocks() * 512;
+    if observed == u64::from(btrfs_sector(&directory).unwrap()) {
+        0
+    } else {
+        observed
+    }
+}
+
+fn namespace_times(metadata: &Metadata) -> [i64; 4] {
+    [
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ]
+}
+
 fn enroll_directory(
     totals: &mut Scan<'_>,
     file: &File,
     binding: NamespaceBinding,
     parent: Option<Identity>,
-    policy: super::DirectoryPolicy,
-    filesystem: usize,
+    btrfs_sector: u32,
 ) -> Result<()> {
     let metadata = file.metadata()?;
     directory(&metadata)?;
     let identity = Identity::of(&metadata);
-    let observed = directory_extent(&metadata)?;
-    let bytes = policy.extent_bytes.max(observed);
-    let pending = bytes - observed;
-    let next_bytes = totals
-        .bytes
-        .checked_add(bytes)
-        .context("directory extent overflow")?;
-    let next_directories = totals
-        .directory_bytes
-        .checked_add(observed)
-        .context("directory extent overflow")?;
+    ensure!(
+        parent.is_none_or(|parent| parent.0 == identity.0),
+        "directory parent is on another filesystem"
+    );
     totals
         .accounted
         .try_reserve(1)
@@ -733,10 +822,10 @@ fn enroll_directory(
                 identity,
                 AccountedInode::Directory(AccountedDirectory {
                     binding,
-                    parent,
-                    bytes,
-                    pending,
-                    settled: true,
+                    parent_inode: parent.map(|parent| parent.1),
+                    bytes: 0,
+                    allocation: DirectoryAllocation::observe(&metadata, btrfs_sector)?,
+                    settled: false,
                     len: metadata.len(),
                     children: 0,
                     live_handles: 0,
@@ -752,6 +841,46 @@ fn enroll_directory(
         .directories
         .checked_add(1)
         .context("census directory count overflow")?;
+    Ok(())
+}
+
+// Enumeration and fsync can settle directory blocks even when no entry
+// changes (including an empty Btrfs directory). Charge the final descriptor
+// metadata once, before the scan can publish its inactive accounting bank.
+fn settle_directory(
+    totals: &mut Scan<'_>,
+    cursor: &Cursor<'_>,
+    policy: super::DirectoryPolicy,
+    filesystem: usize,
+) -> Result<()> {
+    let metadata = cursor.file.metadata()?;
+    directory(&metadata)?;
+    let enrolled = totals
+        .accounted
+        .get_mut(&cursor.identity)
+        .and_then(AccountedInode::directory_mut)
+        .context("census directory missing")?;
+    ensure!(
+        Identity::of(&metadata) == cursor.identity
+            && metadata.len() == enrolled.len
+            && namespace_times(&metadata) == cursor.namespace_times,
+        "directory changed during persistent census"
+    );
+    enrolled.allocation =
+        DirectoryAllocation::observe(&metadata, enrolled.allocation.btrfs_sector)?;
+    let observed = enrolled.allocation.reported;
+    let bytes = policy.extent_bytes.max(observed);
+    let pending = bytes - enrolled.allocation.backed();
+    enrolled.bytes = bytes;
+    enrolled.settled = true;
+    let next_bytes = totals
+        .bytes
+        .checked_add(bytes)
+        .context("directory extent overflow")?;
+    let next_directories = totals
+        .directory_bytes
+        .checked_add(observed)
+        .context("directory extent overflow")?;
     totals.pending = totals
         .pending
         .checked_add(pending)
@@ -762,27 +891,6 @@ fn enroll_directory(
         .context("directory promises overflow")?;
     totals.bytes = next_bytes;
     totals.directory_bytes = next_directories;
-    Ok(())
-}
-
-fn verify_enrolled_directory(totals: &Scan<'_>, cursor: &Cursor<'_>) -> Result<()> {
-    let metadata = cursor.file.metadata()?;
-    directory(&metadata)?;
-    let enrolled = totals
-        .accounted
-        .get(&cursor.identity)
-        .and_then(AccountedInode::directory)
-        .context("census directory missing")?;
-    ensure!(
-        Identity::of(&metadata) == cursor.identity
-            && metadata.len() == enrolled.len
-            && directory_extent(&metadata)?
-                == enrolled
-                    .bytes
-                    .checked_sub(enrolled.pending)
-                    .context("invalid directory promise")?,
-        "directory changed during persistent census"
-    );
     Ok(())
 }
 

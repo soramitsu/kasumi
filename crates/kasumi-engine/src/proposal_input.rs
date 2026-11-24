@@ -399,6 +399,18 @@ pub(super) fn retained_for_test(topology: &ControlTopology, key: &str) -> u64 {
     quote(topology, key.len()).unwrap().retained
 }
 #[cfg(test)]
+pub(super) fn observe_topology_charge_for_test(
+    input: &ProposalCommand,
+) -> impl Fn() -> Option<(u64, bool)> + use<> {
+    input
+        ._topology
+        .as_ref()
+        .expect("topology input")
+        ._reservation
+        .observe_fixture_charge()
+}
+
+#[cfg(test)]
 pub(super) fn payload_address_for_test(input: &ProposalCommand) -> usize {
     let Operation::Mutate(batch) = &input.command.operation else {
         panic!("topology input")

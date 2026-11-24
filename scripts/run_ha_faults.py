@@ -311,15 +311,15 @@ def view(d, ctx, label, node, voters, leaders=None, *, scenarios=()):
     return value
 
 
-def probe(d, ctx, label, step, scenarios):
+def probe(d, ctx, label, step, scenarios, *, profile):
     """One authenticated durable write and its exact read-back."""
     document = "fault-" + str(step)
     expected = body(ctx.attempt_id, step)
-    put = d.json(label + "-put", ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"],
-                                          document, json.dumps(expected, sort_keys=True), "--if",
-                                          "any"), scenarios)
+    put = d.json(label + "-put", ctx.ctl(profile, "put", ctx.plan["collection"],
+                                          document, json.dumps(expected, sort_keys=True),
+                                          "--if", "any"), scenarios)
     require(put.get("ok") is True, "authenticated write was not acknowledged")
-    got = d.json(label + "-get", ctx.ctl(ctx.plan["data_profile"], "get", ctx.plan["collection"],
+    got = d.json(label + "-get", ctx.ctl(profile, "get", ctx.plan["collection"],
                                           document), scenarios)
     require(got.get("ok") is True and got["result"]["document"]["body"] == expected,
             "read-back differs from the acknowledged write")
@@ -346,7 +346,7 @@ def leader_loss(d, ctx):
     survivors = [node for node in ctx.voters if node != lost]
     after = view(d, ctx, "leader-loss-elected", survivors[0], ctx.voters, survivors,
                  scenarios=scenario)
-    probe(d, ctx, "leader-loss-write", 1, scenario)
+    probe(d, ctx, "leader-loss-write", 1, scenario, profile=ctx.member(after["leader"]))
     d.spawn(ctx.name(lost), ctx.node(lost)["executable"], ctx.node(lost)["config"])
     rejoined = view(d, ctx, "leader-loss-rejoined", lost, ctx.voters, [after["leader"]],
                     scenarios=scenario)
@@ -360,7 +360,7 @@ def leader_loss(d, ctx):
     d.poll("control-loss-elected-poll", status,
            lambda value: settled(value, ctx, ctx.voters) and value["control_leader"] in others,
            limit=ctx.polls, pause=ctx.pause)
-    probe(d, ctx, "control-loss-write", 2, scenario)
+    probe(d, ctx, "control-loss-write", 2, scenario, profile=ctx.member(rejoined["leader"]))
     node = ctx.node(control)
     d.spawn(node["id"], node["executable"], node["config"])
     observed = ctx.ctl(ctx.control_member(control), "manage", ctx.status)
@@ -388,7 +388,7 @@ def partition(d, ctx):
         return value["raft_applied_index"]
 
     position = minority("partition-minority-before-write")
-    revision = probe(d, ctx, "partition-write", 3, scenario)
+    revision = probe(d, ctx, "partition-write", 3, scenario, profile=ctx.member(majority["leader"]))
     require(position < revision, "minority already applied the purported partition write")
     majority_status = ctx.ctl(ctx.member(majority["leader"]), "manage", ctx.status)
     d.poll("partition-applied-poll", majority_status,
@@ -425,18 +425,47 @@ def partition(d, ctx):
 def outage(d, ctx):
     """Every authority is down for longer than the installed serving lease."""
     scenario = ["lease-length-outage"]
-    probe(d, ctx, "outage-before", 4, scenario)
-    _, raw = raw_view(d, ctx, "outage-view", ctx.voters[0])
+    elected, raw = raw_view(d, ctx, "outage-view", ctx.voters[0])
+    profile = ctx.member(elected["leader"])
+    probe(d, ctx, "outage-before", 4, scenario, profile=profile)
+    document_read = ctx.ctl(profile, "get", ctx.plan["collection"], "fault-expired")
+    before = d.json("outage-document-before", document_read, scenario)
+    require(before.get("ok") is True and before["result"]["document"] is None,
+            "lease outage document already exists")
     started = None
     for node in ctx.authorities:
         started = d.crash(node["id"], raw, scenario)["fault"]["elapsed_seconds"]
     expires = started + ctx.lease_seconds * (1 + ctx.clock_ppm / 1_000_000) + ctx.margin
     while d.clock() < expires:
         d.pause(min(.5, ctx.pause))
-    document = ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"], "fault-expired",
-                       json.dumps(body(ctx.attempt_id, "expired"), sort_keys=True), "--if", "any")
-    code, _ = d.attempt("outage-expired-write", document)
+    document = ctx.ctl(profile, "put", ctx.plan["collection"], "fault-expired",
+                       json.dumps(body(ctx.attempt_id, "expired"), sort_keys=True),
+                       "--if", "absent", "--key", ctx.attempt_id + "/lease-expired")
+    code, output = d.attempt("outage-expired-write", document)
     require(code != 0, "data serving continued after its authority lease expired")
+    refused = driver.decode(output)
+    if (refused is not None and refused.get("ok") is False
+            and isinstance(refused.get("error"), dict)
+            and refused["error"].get("code") == "UNKNOWN_OUTCOME"
+            and refused["error"].get("class") == "uncertain"
+            and refused["error"].get("idempotency_key") == ctx.attempt_id + "/lease-expired"):
+        # The CLI can lose its first reply and exhaust its resend deadline.
+        # Observe the already-written document while every authority stays down,
+        # then demand the native write refusal for the identical request.
+        read_code, read_output = d.attempt("outage-expired-read",
+                                           ctx.ctl(profile, "get", ctx.plan["collection"], "fault-4"))
+        read_refusal = driver.decode(read_output)
+        require(read_code != 0 and read_refusal is not None and read_refusal.get("ok") is False
+                and isinstance(read_refusal.get("error"), dict)
+                and read_refusal["error"].get("code") in {"UNAVAILABLE", "SEALED"},
+                "expired read lacks the native serving refusal")
+        code, output = d.attempt("outage-expired-write-retry", document)
+        require(code != 0, "data serving resumed before authority restart")
+        refused = driver.decode(output)
+    require(refused is not None and refused.get("ok") is False
+            and isinstance(refused.get("error"), dict)
+            and refused["error"].get("code") in {"UNAVAILABLE", "SEALED"},
+            "expired write lacks the native serving refusal")
     ended = d.clock()
     for node in ctx.authorities:
         d.spawn(node["id"], node["executable"], node["config"])
@@ -445,12 +474,18 @@ def outage(d, ctx):
 
 def fresh_admission(d, ctx):
     scenario = ["fresh-admission"]
-    document = ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"], "fault-readmitted",
-                       json.dumps(body(ctx.attempt_id, "readmitted"), sort_keys=True), "--if", "any")
-    d.poll("fresh-admission-poll", document, lambda value: value.get("ok") is True,
+    elected = view(d, ctx, "fresh-admission-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    profile = ctx.member(elected["leader"])
+    document = ctx.ctl(profile, "get", ctx.plan["collection"], "fault-4")
+    expected = body(ctx.attempt_id, 4)
+    d.poll("fresh-admission-poll", document,
+           lambda value: value.get("ok") is True and value["result"]["document"]["body"] == expected,
            limit=ctx.polls, pause=ctx.pause)
-    probe(d, ctx, "fresh-admission-write", 5, scenario)
-    view(d, ctx, "fresh-admission-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    probe(d, ctx, "fresh-admission-write", 5, scenario, profile=profile)
+    expired = d.json("outage-document-after", ctx.ctl(profile, "get", ctx.plan["collection"],
+                                                       "fault-expired"), ["lease-length-outage"])
+    require(expired.get("ok") is True and expired["result"]["document"] is None,
+            "write attempted after lease expiry appeared on the recovered quorum")
 
 
 def trust_rotation(d, ctx):
@@ -482,7 +517,11 @@ def trust_rotation(d, ctx):
     d.replace(plan["restore_certificate"], rotation["certificate"], "public")
     d.signal(member["id"], "SIGHUP")
     d.json("trust-restored", through(plan["new_trust_profile"]), scenario)
-    probe(d, ctx, "trust-write", 6, scenario)
+    elected = view(d, ctx, "trust-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    leader = elected["leader"]
+    profile = (plan["new_trust_profile"] if plan["listener"] == "native"
+               and leader == member["node_id"] else ctx.member(leader))
+    probe(d, ctx, "trust-write", 6, scenario, profile=profile)
     return member["id"]
 
 
@@ -522,7 +561,25 @@ def replacement(d, ctx, load):
             "membership change was not committed")
     control = original["control_leader"]
     require(control in ctx.controls, "a dedicated Control leader is required to publish Data membership")
-    published = d.json("replace-publish", ctx.ctl(ctx.control_member(control), "manage", publish), scenario)
+    command = ctx.ctl(ctx.control_member(control), "manage", publish)
+    code, raw = d.attempt("replace-publish", command, timeout=driver.COMMAND_SECONDS)
+    if code == 0:
+        published = driver.decode(raw)
+        d.count_observation(scenario[0])
+    else:
+        # Control may commit the route and fence the write response. Retain
+        # that exact refusal. Resolve the identical request through the current
+        # Control leader after independently observing the new Data voter set.
+        require(code == 1 and not raw.strip()
+                and d.last_attempt_stderr().strip() == (
+                    b"Error: UnknownOutcome: write response release was fenced; "
+                    b"resolve or retry the same idempotency key"),
+                "Control membership publication failed without the original fenced response")
+        elected = view(d, ctx, "replace-publish-view", leader, voters)
+        control = elected["control_leader"]
+        require(control in ctx.controls, "dedicated Control leader missing after the fenced publication")
+        published = d.json("replace-publish-resolve",
+                           ctx.ctl(ctx.control_member(control), "manage", publish), scenario)
     require(published == {"published": True}, "dedicated Control did not confirm Data membership")
     window.append(d.clock())
     d.pause(ctx.load_seconds)

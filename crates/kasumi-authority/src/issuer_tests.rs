@@ -574,26 +574,16 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         (256 << 10) + 16000,
     )
     .await;
-    let service = f.leader().await;
     let t = target(Uuid::new_v4());
     let first = c.intent(&f, &t, 1_050_000);
-    service
-        .execute_lifecycle(f.context("operator"), request(&first))
-        .await
-        .unwrap();
+    accepted_on_current_leader(&f, request(&first)).await;
     let mut exhausted = false;
     for _ in 0..20 {
         let next = c.intent(&f, &t, 1_050_000);
-        match service
-            .execute_lifecycle(f.context("operator"), request(&next))
-            .await
-        {
-            Ok(_) => {}
-            Err(error) => {
-                assert_eq!(error.code, ErrorCode::ResourceExhausted);
-                exhausted = true;
-                break;
-            }
+        if let Err(code) = exact_lifecycle_outcome(&f, request(&next)).await {
+            assert_eq!(code, ErrorCode::ResourceExhausted);
+            exhausted = true;
+            break;
         }
     }
     assert!(
@@ -601,10 +591,7 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         "small byte budget must exhaust before count quota"
     );
     let stop = LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&first)));
-    service
-        .execute_lifecycle(f.context("operator"), stop.clone())
-        .await
-        .unwrap();
+    let (service, _) = accepted_on_current_leader(&f, stop.clone()).await;
     use kasumi_raft::StateMachineBackend;
     let mut snapshot = Vec::new();
     service.backend.snapshot(&mut snapshot).unwrap();
@@ -668,6 +655,8 @@ async fn accepted_on_current_leader(
     request: LifecycleAuthorityRequest,
 ) -> (Arc<IndependentAuthority>, SignedLifecycleAuthorityReceipt) {
     let context = f.context("operator");
+    let digest = request.digest().unwrap();
+    let mut unknown_replies = Vec::new();
     tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let service = f.leader().await;
@@ -677,14 +666,18 @@ async fn accepted_on_current_leader(
             {
                 Ok((receipt, fence)) => {
                     if fence.release().await.is_ok() {
+                        assert_eq!(receipt.receipt.reference, request.reference());
+                        assert_eq!(receipt.receipt.request_sha256, digest);
+                        f.record_resolved_replies(unknown_replies, &digest);
                         return (service, receipt);
                     }
                 }
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::Unavailable | ErrorCode::UnknownOutcome
-                    ) => {}
+                Err(error) if error.code == ErrorCode::UnknownOutcome => {
+                    if let Some(original) = f.original_unknown_reply(&service).await {
+                        unknown_replies.push(original);
+                    }
+                }
+                Err(error) if error.code == ErrorCode::Unavailable => {}
                 Err(error) => panic!("definitive setup rejection: {error:?}"),
             }
             // A retry uses the same exact original command. No absent/read error

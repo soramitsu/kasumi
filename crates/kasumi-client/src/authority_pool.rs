@@ -133,16 +133,33 @@ impl KasumiAuthorityPool {
         &mut self,
         exact_member: Option<u64>,
         timeout: Duration,
-        mut dispatch: F,
+        dispatch: F,
     ) -> Result<T, ClientError>
     where
         T: Send,
         F: for<'a> FnMut(&'a mut KasumiAuthorityClient, &'a str) -> Reply<'a, T>,
     {
+        self.routed_request_before_deadline(exact_member, timeout, dispatch)
+            .await?
+            .ok_or_else(deadline)
+    }
+
+    async fn routed_request_before_deadline<T, F>(
+        &mut self,
+        exact_member: Option<u64>,
+        timeout: Duration,
+        mut dispatch: F,
+    ) -> Result<Option<T>, ClientError>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut KasumiAuthorityClient, &'a str) -> Reply<'a, T>,
+    {
         if timeout.is_zero() {
-            return Err(deadline());
+            return Ok(None);
         }
-        let deadline_at = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
+        let Some(deadline_at) = Instant::now().checked_add(timeout) else {
+            return Ok(None);
+        };
         // One atomic credential snapshot belongs to this entire finite operation.
         // Renewal is observed by the next invocation, never by an endpoint retry.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
@@ -164,7 +181,7 @@ impl KasumiAuthorityPool {
             for (tried, member) in members.iter().enumerate() {
                 let remaining = deadline_at.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(deadline());
+                    return Ok(None);
                 }
                 // An unreachable first member cannot monopolize the operation.
                 let attempt_end = Instant::now() + attempt_slice(remaining, members.len() - tried);
@@ -178,7 +195,7 @@ impl KasumiAuthorityPool {
                         if exact_member.is_none() {
                             self.preferred = *member;
                         }
-                        return Ok(reply);
+                        return Ok(Some(reply));
                     }
                     // The member answered, so its connection stays.
                     Ok(Err(error)) if retryable(&error) => {}
@@ -188,7 +205,7 @@ impl KasumiAuthorityPool {
             }
             let remaining = deadline_at.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(deadline());
+                return Ok(None);
             }
             tokio::time::sleep(remaining.min(Duration::from_millis(25))).await;
         }
@@ -372,9 +389,33 @@ impl KasumiAuthorityPool {
         request: &LeaseDiscovery,
         timeout: Duration,
     ) -> Result<ServingIdentity, ClientError> {
-        self.request(timeout, |client, token| {
+        self.discover_lease_before_deadline(request, timeout)
+            .await?
+            .ok_or_else(deadline)
+    }
+    /// Returns `None` only when the installed pool exhausts its local time budget.
+    /// Errors returned by an installed member or credential source remain errors.
+    pub async fn discover_lease_before_deadline(
+        &mut self,
+        request: &LeaseDiscovery,
+        timeout: Duration,
+    ) -> Result<Option<ServingIdentity>, ClientError> {
+        self.routed_request_before_deadline(None, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.discover_lease(token, &request).await })
+        })
+        .await
+    }
+    /// Only an authenticated exact closed observation is a fenced incarnation.
+    /// A local timeout, transport failure or unrelated rejection remains separate.
+    pub async fn discover_state_before_deadline(
+        &mut self,
+        request: &LeaseDiscovery,
+        timeout: Duration,
+    ) -> Result<Option<kasumi_serving::LeaseDiscoveryObservation>, ClientError> {
+        self.routed_request_before_deadline(None, timeout, |client, token| {
+            let request = request.clone();
+            Box::pin(async move { client.discovery(token, &request, true).await })
         })
         .await
     }
@@ -383,7 +424,18 @@ impl KasumiAuthorityPool {
         attempt: &LeaseAttempt,
         timeout: Duration,
     ) -> Result<VerifiedLease, ClientError> {
-        self.request(timeout, |client, token| {
+        self.acquire_lease_before_deadline(attempt, timeout)
+            .await?
+            .ok_or_else(deadline)
+    }
+    /// Returns `None` only when the installed pool exhausts its local time budget.
+    /// Errors returned by an installed member or credential source remain errors.
+    pub async fn acquire_lease_before_deadline(
+        &mut self,
+        attempt: &LeaseAttempt,
+        timeout: Duration,
+    ) -> Result<Option<VerifiedLease>, ClientError> {
+        self.routed_request_before_deadline(None, timeout, |client, token| {
             // Clone retains the same clock anchor, boot and attempt nonce.
             let attempt = attempt.clone();
             Box::pin(async move { client.acquire_lease(token, &attempt).await })
@@ -529,12 +581,15 @@ fn unresolved_lifecycle() -> ClientError {
         "original lifecycle issuer effect remains unresolved; read exact receipt",
     )
 }
+/// The pool measured its own budget; no member reply produced this outcome.
 fn deadline() -> ClientError {
-    tonic::Status::deadline_exceeded("installed authority operation deadline elapsed").into()
+    ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_AUTHORITY)
 }
 fn retryable(error: &ClientError) -> bool {
     match error {
         ClientError::Connection(_) => false,
+        // The same classification as the `DeadlineExceeded` status it replaces.
+        ClientError::LocalDeadline(_) => true,
         ClientError::Transport(status) => matches!(
             status.code(),
             tonic::Code::Unavailable
@@ -586,5 +641,20 @@ mod tests {
         assert!(retryable(&ClientError::Transport(
             tonic::Status::unavailable("leader changed")
         )));
+    }
+
+    #[test]
+    fn the_local_deadline_keeps_its_status_code_display_and_retry_class() {
+        let local = deadline();
+        let status = ClientError::Transport(tonic::Status::deadline_exceeded(
+            "installed authority operation deadline elapsed",
+        ));
+        assert!(matches!(
+            local,
+            ClientError::LocalDeadline(reason) if reason == crate::LocalDeadline::INSTALLED_AUTHORITY
+        ));
+        assert_eq!(retryable(&local), retryable(&status));
+        assert_eq!(local.grpc_code(), tonic::Code::DeadlineExceeded);
+        assert_eq!(local.to_string(), status.to_string());
     }
 }

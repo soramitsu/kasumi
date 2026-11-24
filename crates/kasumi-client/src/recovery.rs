@@ -120,6 +120,21 @@ impl KasumiRecoveryClient {
         observed.validate_for(request)?;
         Ok(observed)
     }
+    pub async fn read_target_deletion(
+        &mut self,
+        bearer: &str,
+        query: &TargetDeletionQuery,
+    ) -> std::result::Result<TargetDeletionStatus, ClientError> {
+        query.validate()?;
+        let reply = self
+            .inner
+            .read_target_deletion(self.wire(bearer, query)?)
+            .await?
+            .into_inner();
+        let status: TargetDeletionStatus = decode(reply)?;
+        status.validate_for(query)?;
+        Ok(status)
+    }
     pub async fn read_phase(
         &mut self,
         bearer: &str,

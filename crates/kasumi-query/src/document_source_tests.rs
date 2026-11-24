@@ -33,6 +33,7 @@ struct LoanSource {
     archived: bool,
     field_postings: Vec<Vec<&'static str>>,
     primary_ids: Option<Vec<String>>,
+    fail_primary: bool,
     expected: RefCell<Vec<Option<u64>>>,
 }
 impl LoanSource {
@@ -85,6 +86,7 @@ impl LoanSource {
             archived: false,
             field_postings: Vec::new(),
             primary_ids: None,
+            fail_primary: false,
             expected: RefCell::new(vec![]),
         }
     }
@@ -172,7 +174,7 @@ fn compound_postings_use_selected_ids_and_release_partial_results() {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(ids.iter().map(String::as_str).collect::<Vec<_>>(), expected);
+        assert_eq!(ids.iter().map(AsRef::as_ref).collect::<Vec<_>>(), expected);
         assert!(memory.live_bytes() > 0);
     }
     let mut memory = query_memory();
@@ -552,6 +554,9 @@ impl DocumentSource for LoanSource {
         for id in ids {
             cancellation.check()?;
             lend(id)?;
+            if self.fail_primary {
+                return Err(ReadFailure::Source(Marker(self.failure.clone())));
+            }
         }
         Ok(true)
     }
@@ -1134,7 +1139,7 @@ fn scan_boolean_subtree_borrows_each_body_once_and_prepares_constants_once() {
         )
         .unwrap();
     assert_eq!(
-        ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        ids.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["d0", "d2"]
     );
     assert_eq!(source.calls.get(), 3);
@@ -1164,4 +1169,66 @@ fn prepared_filter_constants_are_admitted_before_any_body_loan() {
         })
     ));
     assert_eq!(source.calls.get(), 0);
+}
+
+#[test]
+fn no_field_source_keeps_context_free_pages_and_the_original_native_error() {
+    let mut source = LoanSource::new();
+    let documents = source
+        .encoded
+        .iter()
+        .map(|(id, row)| (id.clone(), pending(serde_json::from_str(row).unwrap())))
+        .collect();
+    let rows = BTreeMap::from([(
+        "docs".into(),
+        CollectionState {
+            definition: source.definition.clone().into(),
+            documents,
+            archived_documents: Default::default(),
+            archived_document_bytes: 0,
+            data_epoch: 7,
+        },
+    )]);
+    source.indexes = source.indexes.with_collection_id_sources(&rows).unwrap();
+    assert!(source.indexes.collections["docs"].structured.ids.is_empty());
+    assert_eq!(
+        source
+            .indexes
+            .document_ids_after("docs", Some("d0"), 1)
+            .unwrap(),
+        ["d1"]
+    );
+    let mut memory = crate::source_test_utils::query_memory();
+    let query = QueryRequest::new("docs");
+    let all = |s: &LoanSource, m: &mut QueryMemory<_>| {
+        s.indexes.indexed_candidate_ids(
+            s,
+            &query,
+            &Limits::default(),
+            &QueryCancellation::default(),
+            m,
+        )
+    };
+    assert_eq!(all(&source, &mut memory).unwrap(), ["d0", "d1", "d2"]);
+    source.primary_ids = Some(vec!["d0".into(), "d2".into()]);
+    assert_eq!(all(&source, &mut memory).unwrap(), ["d0", "d2"]);
+    source.fail_primary = true;
+    assert!(
+        matches!(all(&source,&mut memory),Err(ReadFailure::Source(Marker(marker))) if Arc::ptr_eq(&marker,&source.failure))
+    );
+    source.fail_primary = false;
+    let request = QueryRequest::new("docs")
+        .allow_scan()
+        .filter(Filter::new().eq("/n", 2));
+    let selected = source
+        .indexes
+        .execute_with_cancellation(
+            &source,
+            &request,
+            &Limits::default(),
+            &QueryCancellation::default(),
+            &mut memory,
+        )
+        .unwrap();
+    assert_eq!(selected.rows[0].id, "d2");
 }

@@ -71,9 +71,13 @@ pub const MAX_BATCH_OPERATIONS: usize = 65_536;
 pub(crate) const RECORD_HEADER_BYTES: usize = 36;
 const RECORD_MAGIC: [u8; 4] = *b"KVSR";
 const PUT_PREFIX_BYTES: usize = 16;
-/// A live value's segment bytes besides its own, table and key: the record
-/// header and put prefix. A relocated copy's prefix is 8 bytes longer.
-pub(crate) const VALUE_RECORD_OVERHEAD_BYTES: u64 = (RECORD_HEADER_BYTES + PUT_PREFIX_BYTES) as u64;
+/// Conservative live record estimate used by the evacuation survey. Preserve
+/// the put-prefix estimate for small identities. For longer ones the stored
+/// table and key alone occupy more space than that estimate allowed. The
+/// result undercounts a put by at most one fixed prefix regardless of key size.
+pub(crate) fn estimated_live_value_bytes(value_len: u32, identity_len: usize) -> u64 {
+    u64::from(value_len) + (RECORD_HEADER_BYTES + PUT_PREFIX_BYTES.max(identity_len)) as u64
+}
 const RELOCATE_PREFIX_BYTES: usize = PUT_PREFIX_BYTES + 8;
 const MAINTENANCE_BODY_BYTES: usize = 8;
 const DELETE_PREFIX_BYTES: usize = 4;

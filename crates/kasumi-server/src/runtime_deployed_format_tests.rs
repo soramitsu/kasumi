@@ -961,11 +961,9 @@ async fn exercise_deployed_state(
         reference == (manifest["written_by"]["commit"] == "cf9959f1"),
         "the deployed snapshot has another form than its build wrote"
     );
-    // Served embedded, a group reopened from a by-reference snapshot first
-    // publishes an embedded one over its replayed journal tail.
     let applied = metrics.last_applied.map_or(0, |applied| applied.index);
     ensure!(
-        snapshot >= interval && (applied > snapshot || reference && applied == snapshot),
+        snapshot >= interval && applied > snapshot,
         "the deployed tenant has no journal tail after its snapshot at {snapshot}"
     );
     if killed {

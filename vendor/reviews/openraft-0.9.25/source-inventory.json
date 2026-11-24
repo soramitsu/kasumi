@@ -1446,10 +1446,10 @@
     "sha256": "62ccca22ee5dee638c0d0c1746a6653d36168b14dfd747b459071271c4c6dbb3"
   },
   {
-    "bytes": 20410,
+    "bytes": 20398,
     "mode": "0o644",
     "path": "openraft/src/core/sm/bounded_apply_tests.rs",
-    "sha256": "5a603eb728d774f62c7c7ba517a831db14817052f283c495db3d3a274b36d9e5"
+    "sha256": "09feff3d4cf412e4a3595fad26cedb6ec4796125d9a277953097aefd11e1f35a"
   },
   {
     "bytes": 5065,
@@ -2442,10 +2442,10 @@
     "sha256": "65cb711eb05ebd4972b2e44d659ccc7c048e31eab8d36f61541494dcc1b6b926"
   },
   {
-    "bytes": 27026,
+    "bytes": 27002,
     "mode": "0o644",
     "path": "openraft/src/raft/bounded_apply_test.rs",
-    "sha256": "5964afd2fdb7f0cca695233d7cc10185b9d7d7528cf963f1dce6d1db6b12605c"
+    "sha256": "3c9106f1e1f37eb2143671c45b240dcc680212bf724194eb301c69dda63c62a0"
   },
   {
     "bytes": 1059,
@@ -2742,10 +2742,10 @@
     "sha256": "90348b848165c4982cbbe3eeacc063b50c57e39c585094ac94c52ebc174f41a2"
   },
   {
-    "bytes": 16456,
+    "bytes": 16571,
     "mode": "0o644",
     "path": "openraft/src/storage/mod.rs",
-    "sha256": "9bef5cf8e78774bf36f4908adf40f7ef77d43d529794ca35e2ce54f1fed1ead2"
+    "sha256": "ae3e4574be34290e2b6fee7a5ba1c6ed5c84ea0d655dda80e4f2338f5e83ea15"
   },
   {
     "bytes": 13410,
@@ -3348,10 +3348,10 @@
     "sha256": "94c05f4bac3ee29aaae1fad8d8a2631f524ac72c175437bcfcc32adb54b09f83"
   },
   {
-    "bytes": 2509,
+    "bytes": 2773,
     "mode": "0o644",
     "path": "tests/tests/membership/t31_add_remove_follower.rs",
-    "sha256": "88dda583c23b854740dff570180279bbbca7f9ed446296c897fc1639b11ba4fc"
+    "sha256": "1a727384800f58f6fb9316869742e9bf0a9283f1d4345de94dbe60d2c29834c0"
   },
   {
     "bytes": 8534,

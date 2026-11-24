@@ -43,7 +43,10 @@ pub use retirement_pool::KasumiRetirementPool;
 mod recovery;
 pub use recovery::KasumiRecoveryClient;
 mod lifecycle;
-pub use lifecycle::{CurrentControlTopology, CurrentControlTopologyRelease, KasumiLifecycleClient};
+pub use lifecycle::{
+    CurrentControlTopology, CurrentControlTopologyRelease, KasumiLifecycleClient,
+    TARGET_WRITER_REFRESH_HEADER,
+};
 mod authority;
 mod authority_pool;
 mod control_signer;
@@ -149,9 +152,52 @@ pub enum ClientError {
     Authorization,
     #[error("native request exceeds its byte limit")]
     RequestTooLarge,
+    /// An installed pool's own operation deadline elapsed before any member
+    /// returned a verified reply. It reports the same gRPC code, display and
+    /// transient classification as the `DeadlineExceeded` status it stands for.
+    #[error("{}", transport_failure(&.0.status()))]
+    LocalDeadline(LocalDeadline),
+}
+
+/// A locally generated operation deadline. Only this crate constructs one, at
+/// the pool that measured its own budget; no reply, status source, details or
+/// metadata can produce it. It owns nothing but a fixed static reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalDeadline {
+    reason: &'static str,
+}
+impl LocalDeadline {
+    /// `KasumiAuthorityPool` exhausted its installed operation deadline.
+    pub(crate) const INSTALLED_AUTHORITY: Self = Self {
+        reason: "installed authority operation deadline elapsed",
+    };
+    /// The installed recovery or lifecycle route exhausted its own budget.
+    pub(crate) const INSTALLED_RECOVERY: Self = Self {
+        reason: "installed recovery operation deadline elapsed",
+    };
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+    /// The equivalent locally generated status, with no source, details or
+    /// metadata. It is constructed on demand and is not retained.
+    pub fn status(&self) -> tonic::Status {
+        tonic::Status::deadline_exceeded(self.reason)
+    }
 }
 
 impl ClientError {
+    /// An enrolled phase reader received a typed refusal from a pinned
+    /// Control member. Such a refusal never authorizes another target effect.
+    pub fn is_inactive_target_callback(&self) -> bool {
+        matches!(self, Self::Transport(status)
+            if status.code() == tonic::Code::Unavailable
+                && std::error::Error::source(status).is_none()
+                && status.metadata().get(kasumi_types::INACTIVE_TARGET_CALLBACK_HEADER)
+                    .is_some_and(|value| value.as_bytes() == b"1")
+                && status.message() == kasumi_types::INACTIVE_TARGET_CALLBACK_REASON
+                && self.code() == Some(kasumi_types::ErrorCode::Unavailable))
+    }
+
     /// The database's own error code, when the server rejected the request.
     /// It is more specific than the gRPC status: `IndexRequired`,
     /// `CursorExpired` and `Sealed` share one gRPC code, for example, and
@@ -173,6 +219,7 @@ impl ClientError {
             Self::Json(_) | Self::InvalidResponse(_) => tonic::Code::DataLoss,
             Self::Authorization => tonic::Code::Unauthenticated,
             Self::RequestTooLarge => tonic::Code::ResourceExhausted,
+            Self::LocalDeadline(_) => tonic::Code::DeadlineExceeded,
         }
     }
 
@@ -270,6 +317,31 @@ mod classification_tests {
         assert_eq!(
             cancelled.to_string(),
             "native decode failed (Cancelled): native transport failed"
+        );
+    }
+
+    #[test]
+    fn a_local_deadline_reports_exactly_as_its_equivalent_status() {
+        let local = ClientError::LocalDeadline(LocalDeadline::INSTALLED_AUTHORITY);
+        let status = ClientError::Transport(tonic::Status::deadline_exceeded(
+            "installed authority operation deadline elapsed",
+        ));
+        assert_eq!(local.to_string(), status.to_string());
+        assert_eq!(local.grpc_code(), status.grpc_code());
+        assert_eq!(local.grpc_code(), tonic::Code::DeadlineExceeded);
+        assert_eq!(local.code(), status.code());
+        assert!(local.is_transient() && status.is_transient());
+        assert!(std::error::Error::source(&local).is_none());
+        let equivalent = LocalDeadline::INSTALLED_AUTHORITY.status();
+        assert!(
+            equivalent.details().is_empty()
+                && equivalent.metadata().is_empty()
+                && std::error::Error::source(&equivalent).is_none()
+        );
+        // A bounded read normalizes it exactly as the status it stands for.
+        assert_eq!(
+            crate::snapshot_decode::normalize(local).to_string(),
+            crate::snapshot_decode::normalize(ClientError::Transport(equivalent)).to_string()
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Process stop and reload signals for the installed data and authority daemons.
+//! Process stop and reload signals for installed services.
 use crate::tls_reload::RuntimeTlsReload;
 use anyhow::Result;
 use std::future::Future;
@@ -7,9 +7,29 @@ use tokio::{
     sync::watch,
 };
 
-pub struct DaemonSignals {
+pub(crate) struct StopSignals {
     interrupt: Signal,
     terminate: Signal,
+}
+
+impl StopSignals {
+    pub(crate) fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
+    }
+
+    pub(crate) async fn wait(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {},
+            _ = self.terminate.recv() => {},
+        }
+    }
+}
+
+pub struct DaemonSignals {
+    stop: StopSignals,
     hangup: Signal,
 }
 
@@ -17,8 +37,7 @@ impl DaemonSignals {
     /// Install handlers before announcing startup or opening any installed owner.
     pub fn install() -> std::io::Result<Self> {
         Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            stop: StopSignals::install()?,
             hangup: signal(SignalKind::hangup())?,
         })
     }
@@ -28,8 +47,7 @@ impl DaemonSignals {
     pub async fn open<T>(&mut self, opening: impl Future<Output = Result<T>>) -> Result<Option<T>> {
         tokio::select! {
             biased;
-            _ = self.interrupt.recv() => Ok(None),
-            _ = self.terminate.recv() => Ok(None),
+            _ = self.stop.wait() => Ok(None),
             result = opening => result.map(Some),
         }
     }
@@ -53,8 +71,7 @@ impl DaemonSignals {
         let termination = async {
             tokio::select! {
                 _ = serving_done.changed() => return,
-                _ = self.interrupt.recv() => {},
-                _ = self.terminate.recv() => {},
+                _ = self.stop.wait() => {},
             }
             stop.send_replace(true);
         };

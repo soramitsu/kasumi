@@ -237,8 +237,9 @@ fn admission_refuses_a_parent_charged_beyond_its_extent_policy() {
             .get_mut(&super::super::Identity(device, inode))
             .and_then(AccountedInode::directory_mut)
             .unwrap();
+        let old_pending = entry.pending().unwrap();
         entry.bytes += disk.unit;
-        entry.pending += disk.unit;
+        assert_eq!(entry.pending().unwrap(), old_pending + disk.unit);
     }
     let before = disk.snapshot();
     assert_eq!(

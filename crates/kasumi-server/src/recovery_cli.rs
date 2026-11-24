@@ -93,7 +93,12 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             incarnation,
             node,
             timeout,
-        ] if command == "control-recovery" && action == "target-deletion" => {
+        ] if command == "control-recovery"
+            && matches!(
+                action.as_str(),
+                "target-deletion" | "target-deletion-via-control"
+            ) =>
+        {
             let profile = ClientProfile::load(Path::new(profile))?;
             let query = kasumi_types::TargetDeletionQuery {
                 operation_id: Uuid::parse_str(operation)?,
@@ -101,19 +106,30 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 target_incarnation: Uuid::parse_str(incarnation)?,
                 node_id: node.parse()?,
             };
-            let connections = profile.administrative_connections()?;
-            ensure!(
-                connections.len() == 1,
-                "deletion observation requires a single pinned target"
-            );
-            let endpoint = connections
-                .get(&query.node_id)
-                .context("profile names another target")?;
-            let status = tokio::time::timeout(
-                request_timeout(timeout)?,
-                kasumi_client::read_target_deletion_status(endpoint, &profile.bearer()?, &query),
-            )
-            .await??;
+            let deadline = request_timeout(timeout)?;
+            let status = if action == "target-deletion-via-control" {
+                client(&profile)?
+                    .read_target_deletion(&query, deadline)
+                    .await?
+            } else {
+                let connections = profile.administrative_connections()?;
+                ensure!(
+                    connections.len() == 1,
+                    "deletion observation requires a single pinned target"
+                );
+                let endpoint = connections
+                    .get(&query.node_id)
+                    .context("profile names another target")?;
+                tokio::time::timeout(
+                    deadline,
+                    kasumi_client::read_target_deletion_status(
+                        endpoint,
+                        &profile.bearer()?,
+                        &query,
+                    ),
+                )
+                .await??
+            };
             println!("{}", serde_json::to_string(&status)?);
         }
         [command, action, input]
@@ -302,7 +318,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, ..] if command == "control-recovery" => anyhow::bail!(
-            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | issuer-stop CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | target-deletion TARGET_CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS"
+            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | issuer-stop CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | target-deletion TARGET_CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS | target-deletion-via-control CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS"
         ),
         _ => return Ok(false),
     }
