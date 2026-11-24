@@ -3,7 +3,7 @@
 //! Relocation keeps the row's logical version while creating a fresh physical
 //! value address. A directory-only record binds page evacuation to the same
 //! prepare/directory/commit protocol. Neither operation exposes a logical
-//! user write, and neither collects the keys or value bytes in memory.
+//! user write. The writer streams or retains value bytes in one fixed window.
 
 use super::*;
 
@@ -116,8 +116,9 @@ pub(super) fn validate_maintenance(
 
 impl SegmentWriter {
     /// Prepare a leaf's bounded physical maintenance batch. Every source is
-    /// verified in a read-only pass before any destination writes. A second
-    /// pass streams each source while checking its CRC again. Like an ordinary
+    /// verified in a read-only pass before any destination writes. Batches
+    /// fitting the read window reuse its verified bytes. Larger batches
+    /// stream each source again and recheck its CRC. Like an ordinary
     /// batch's records, the operation prefix is only ordered once; a segment
     /// rollover still fully synchronizes the file it seals. Up to
     /// MAX_BATCH_BYTES may be copied, but memory and each backend read/write
@@ -182,6 +183,16 @@ impl SegmentWriter {
     ) -> Result<PreparedBatch, CoreError> {
         let mut inline = [0; MAX_INLINE_BODY];
         let mut body_checksums = [0u32; MAX_MAINTENANCE_OPERATIONS];
+        // validate_maintenance already bounded the sum of all encoded records.
+        let payload_bytes: usize = operations
+            .iter()
+            .map(|op| match op {
+                MaintenanceOp::DirectoryOnly => 0,
+                MaintenanceOp::Relocate { source, .. } => source.len as usize,
+            })
+            .sum();
+        let retain_sources = payload_bytes <= window.len();
+        let mut retained_end = 0;
         // Preflight every source header, extent and checksum before the first
         // append/roll. A bad later source cannot leave an earlier private copy.
         for (index, &operation) in operations.iter().enumerate() {
@@ -202,13 +213,21 @@ impl SegmentWriter {
                         "relocation source exceeds its segment",
                     )));
                 }
-                read_source(backend, source, window, |chunk| {
+                let buffer = if retain_sources {
+                    let start = retained_end;
+                    retained_end += source.len as usize;
+                    &mut window[start..retained_end]
+                } else {
+                    &mut *window
+                };
+                read_source(backend, source, buffer, |chunk| {
                     body_crc.update(chunk);
                     Ok(())
                 })?;
             }
             body_checksums[index] = body_crc.finish();
         }
+        let mut retained_start = 0;
         let batch_seq = self.next_batch_seq;
         let mut ops = Sha256::new();
         for (index, &operation) in operations.iter().enumerate() {
@@ -234,10 +253,17 @@ impl SegmentWriter {
             self.stage(backend, inline)?;
             let value_at = self.end;
             if let Some(source) = source {
-                read_source(backend, source, window, |chunk| {
+                let mut stage_value = |chunk: &[u8]| {
                     ops.update(chunk);
                     self.stage(backend, chunk)
-                })?;
+                };
+                if retain_sources {
+                    let end = retained_start + source.len as usize;
+                    stage_value(&window[retained_start..end])?;
+                    retained_start = end;
+                } else {
+                    read_source(backend, source, window, stage_value)?;
+                }
             }
             values.push(source.map(|source| ValueLocation {
                 segment_id: at.segment_id,
