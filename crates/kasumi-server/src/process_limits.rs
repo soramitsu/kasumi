@@ -73,7 +73,7 @@ pub fn ensure_descriptors(
         if raw == libc::RLIM_INFINITY {
             u64::MAX
         } else {
-            u64::from(raw)
+            raw
         }
     };
     let (soft, hard) = (value(limit.rlim_cur), value(limit.rlim_max));
@@ -81,8 +81,7 @@ pub fn ensure_descriptors(
     if soft < required {
         let target = required.min(hard);
         if target > soft {
-            limit.rlim_cur = libc::rlim_t::try_from(target)
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+            limit.rlim_cur = target;
             // SAFETY: setrlimit only reads the valid limit it is given.
             if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
                 return Err(std::io::Error::last_os_error());
@@ -154,7 +153,7 @@ mod tests {
             unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
             0
         );
-        (u64::from(limit.rlim_cur), u64::from(limit.rlim_max))
+        (limit.rlim_cur, limit.rlim_max)
     }
 
     /// Lowered limits are process-wide, so a child process exercises them.
