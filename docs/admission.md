@@ -208,6 +208,16 @@ database share has 4,096 pins (`SHARED_NODE_SNAPSHOT_PINS`); every other
 database keeps 256. Each open tenant holds one for its current Generation, so
 256 would stop a standalone node at about 253 tenants.
 
+Each open group also holds one snapshot buffer owner, charged as ordinary
+resident work for the group's lifetime. A replicated group's owner admits 32
+transfer cells of 256 KiB workspace and 16 KiB metadata each, about 9.1 MB in
+all. A standalone group's own snapshots cover a capture and are never
+transferred, so its owner admits `LOCAL_SNAPSHOT_BUFFER_CELLS` (4) cells for
+custody builds, backups and restores, about 1.3 MB; both keep 32
+scratch-failure seats. Measured on native Linux ARM64 with 1,000 idle
+standalone tenants and 32 cells, the node held 12,046 reservations and
+11.09 GB reserved (about 12 and 10.6 MB per tenant) against 1.55 GB resident.
+
 The service audit applies the same proof. A write of its records refused
 for capacity with no effect, for example at begin when every snapshot pin of
 the node database is held, refuses that batch and leaves the sequence usable:

@@ -140,8 +140,8 @@ pub use openraft::{
     StoredMembership,
 };
 pub use snapshot_buffer::{
-    ApplicationSourceBinding, ApplicationSourceCustody, SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer,
-    SnapshotBufferOwner,
+    ApplicationSourceBinding, ApplicationSourceCustody, LOCAL_SNAPSHOT_BUFFER_CELLS,
+    SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer, SnapshotBufferOwner,
 };
 pub use snapshot_state::RetiredSnapshotState;
 use std::{

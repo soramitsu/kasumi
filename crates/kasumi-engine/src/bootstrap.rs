@@ -749,7 +749,7 @@ pub struct LocalDatabaseStartup {
 
 impl LocalDatabaseStartup {
     pub fn reserve(audit: Arc<SecurityAudit>) -> anyhow::Result<Self> {
-        let buffers = audit.admission().snapshot_buffer_owner()?;
+        let buffers = audit.admission().local_snapshot_buffer_owner()?;
         Ok(Self {
             audit,
             buffers: Some(buffers),

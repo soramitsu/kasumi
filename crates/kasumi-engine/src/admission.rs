@@ -1396,6 +1396,19 @@ impl NodeAdmission {
     pub fn snapshot_buffer_owner(
         self: &Arc<Self>,
     ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
+        self.snapshot_buffer_owner_for(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
+    }
+    /// A standalone (local-snapshot) group's owner: it admits only
+    /// `LOCAL_SNAPSHOT_BUFFER_CELLS` transfer cells, with the same scratch seats.
+    pub fn local_snapshot_buffer_owner(
+        self: &Arc<Self>,
+    ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
+        self.snapshot_buffer_owner_for(kasumi_raft::LOCAL_SNAPSHOT_BUFFER_CELLS)
+    }
+    fn snapshot_buffer_owner_for(
+        self: &Arc<Self>,
+        cells: usize,
+    ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
         let mut startups = self
             .snapshot_startups
             .lock()
@@ -1423,15 +1436,16 @@ impl NodeAdmission {
                     "snapshot startup inventory exhausted",
                 )
             })?;
-        let buffers = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
-        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?
+        let seats = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
+        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes_for(cells, seats)?
             .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
                 Reservation,
             >()?)
             .ok_or_else(|| anyhow::anyhow!("snapshot budget control quote overflow"))?;
         let charge = self.reserve_resident(bytes)?;
-        let owner = kasumi_raft::SnapshotBufferOwner::new(
-            buffers,
+        let owner = kasumi_raft::SnapshotBufferOwner::new_for(
+            cells,
+            seats,
             kasumi_types::SharedBudgetCharge::new(charge),
         )?;
         *slot = Some(Arc::downgrade(&owner));
@@ -2360,6 +2374,32 @@ mod tests {
         assert_eq!(payload_bytes(&node), charge);
         drop(owner);
         node.drain_snapshot_startups().await.unwrap();
+        assert_eq!(payload_bytes(&node), 0);
+    }
+
+    /// A standalone group never transfers snapshots, so its owner admits only
+    /// `LOCAL_SNAPSHOT_BUFFER_CELLS` transfer cells: about 7.6 MB less per
+    /// standalone tenant than a replicated group's 32.
+    #[test]
+    fn a_local_group_owner_admits_only_its_transfer_cells() {
+        let node =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 1 << 30, 0).unwrap();
+        let control = kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap();
+        let local = node.local_snapshot_buffer_owner().unwrap();
+        let local_charge = kasumi_raft::SnapshotBufferOwner::required_bytes_for(
+            kasumi_raft::LOCAL_SNAPSHOT_BUFFER_CELLS,
+            kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+        )
+        .unwrap()
+            + control;
+        assert_eq!(payload_bytes(&node), local_charge);
+        let replicated =
+            kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
+                .unwrap()
+                + control;
+        assert!(replicated - local_charge >= 28 * (256 << 10));
+        assert!(local_charge < 1536 << 10, "{local_charge}");
+        drop(local);
         assert_eq!(payload_bytes(&node), 0);
     }
 
