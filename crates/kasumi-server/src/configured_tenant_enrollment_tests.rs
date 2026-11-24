@@ -387,6 +387,9 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
             .expect("historical initializer creates a real, unreceipted local genesis");
         old.shutdown().await?;
         drop(old);
+        drop(stores);
+        let stores = open().await?;
+        assert_eq!(stores.custody().binding(), &original_pair);
         assert_eq!(
             kasumi_engine::require_local_enrollment_genesis(&stores, &dispatch)
                 .unwrap_err()
