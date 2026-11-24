@@ -212,6 +212,177 @@ async fn backup(
 }
 
 #[test]
+fn cold_local_restore_resolves_the_original_start_audit_before_advancing() {
+    const CHILD: &str = "KASUMI_TEST_CRASH_BEFORE_LOCAL_RESTORE_AUDIT";
+    let executable = std::env::current_exe().unwrap();
+    let test_name = std::thread::current().name().unwrap().to_owned();
+    std::thread::Builder::new()
+        .name("local restore audit crash fixture".into())
+        .stack_size(16 << 20)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            if let Some(config) = std::env::var_os(CHILD) {
+                use tracing_subscriber::prelude::*;
+                struct CrashBeforeAudit;
+                impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CrashBeforeAudit {
+                    fn on_event(
+                        &self,
+                        event: &tracing::Event<'_>,
+                        _: tracing_subscriber::layer::Context<'_, S>,
+                    ) {
+                        if event.metadata().target() != "kasumi_engine::restore_phase" {
+                            return;
+                        }
+                        #[derive(Default)]
+                        struct At {
+                            audit: bool,
+                            start: bool,
+                        }
+                        impl tracing::field::Visit for At {
+                            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                                match field.name() {
+                                    "phase" => self.audit = value == "restore.maintenance_audit",
+                                    "event" => self.start = value == "restore_phase_started",
+                                    _ => {}
+                                }
+                            }
+                            fn record_debug(
+                                &mut self,
+                                _: &tracing::field::Field,
+                                _: &dyn std::fmt::Debug,
+                            ) {
+                            }
+                        }
+                        let mut at = At::default();
+                        event.record(&mut at);
+                        if at.audit && at.start {
+                            std::process::exit(86);
+                        }
+                    }
+                }
+                tracing_subscriber::registry().with(CrashBeforeAudit).init();
+                let config = PathBuf::from(config);
+                let settings = RuntimeConfig::load(&config).unwrap();
+                let policy = settings.admission;
+                let storage = crate::runtime_memory::RuntimeStorage::fixture(
+                    policy.clone(),
+                    kasumi_engine::admission::MemoryCore::new(policy).unwrap(),
+                )
+                .unwrap();
+                let operation = std::env::var("KASUMI_TEST_LOCAL_RESTORE_OPERATION")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                runtime
+                    .block_on(Box::pin(resume_with_storage(&config, operation, storage)))
+                    .unwrap();
+                panic!("restore returned before the physical crash cut");
+            }
+            runtime.block_on(Box::pin(async {
+                let root = kasumi_store::test_utils::private_tempdir().unwrap();
+                let (configuration, request, _, storage) = backup(root.path()).await;
+                let started = start_with_storage(&configuration, request.clone(), storage.clone())
+                    .await
+                    .unwrap();
+                let child = std::process::Command::new(executable)
+                    .args(["--exact", &test_name, "--nocapture"])
+                    .env(CHILD, &configuration)
+                    .env(
+                        "KASUMI_TEST_LOCAL_RESTORE_OPERATION",
+                        request.operation_id.to_string(),
+                    )
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    child.status.code(),
+                    Some(86),
+                    "{}",
+                    String::from_utf8_lossy(&child.stderr)
+                );
+
+                let mut operator = Operator::open(&configuration, storage.clone())
+                    .await
+                    .unwrap();
+                let mut journal = record(operator.store(), request.operation_id).unwrap();
+                assert_eq!(journal.status.phase, LocalRecoveryPhase::Materialize);
+                assert_eq!(journal.status.phase_id, started.phase_id);
+                assert_eq!(
+                    journal.target_preparation,
+                    TargetPreparation::MaterializationDispatched
+                );
+                let context = operator
+                    .context(
+                        &request.tenant,
+                        &request.source_principal,
+                        CredentialResource::Database {
+                            incarnation: request.target_incarnation,
+                        },
+                        started.phase_id,
+                    )
+                    .await
+                    .unwrap();
+                let mut before = operator
+                    .target(&mut journal, TargetOpen::Existing)
+                    .await
+                    .unwrap();
+                assert!(
+                    !before
+                        .local_restore_start_recorded(&context, &request.checkpoint)
+                        .await
+                        .unwrap()
+                );
+                let sequence = before
+                    .engine()
+                    .generation()
+                    .unwrap()
+                    .audit_retention()
+                    .next_sequence;
+                before.shutdown().await.unwrap();
+                drop(before);
+
+                for _ in 0..2 {
+                    let mut recovered = operator
+                        .target(&mut journal, TargetOpen::Materialize)
+                        .await
+                        .unwrap();
+                    assert!(
+                        recovered
+                            .local_restore_start_recorded(&context, &request.checkpoint)
+                            .await
+                            .unwrap()
+                    );
+                    assert_eq!(
+                        recovered
+                            .engine()
+                            .generation()
+                            .unwrap()
+                            .audit_retention()
+                            .next_sequence,
+                        sequence + 1
+                    );
+                    recovered.shutdown().await.unwrap();
+                    drop(recovered);
+                }
+                crate::startup_owner::finish(&mut operator).await.unwrap();
+                drop(operator);
+                assert_eq!(
+                    resume_with_storage(&configuration, request.operation_id, storage)
+                        .await
+                        .unwrap()
+                        .phase,
+                    LocalRecoveryPhase::Finished
+                );
+            }));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation() {
     // This aggregate fixture retains recovery and serving futures across
     // several phases; isolate its test frame from the harness worker stack.
