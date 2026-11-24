@@ -283,6 +283,12 @@ impl<'a> ApplyPublication<'a> {
     pub(crate) fn retain_inputs(&mut self, inputs: &'a [Option<crate::ApplicationInputLoan>]) {
         self.input_retentions = inputs;
     }
+    /// After the backend returned: it never entered this publication's sink
+    /// or an ordinary completion. `finish` then hands back its own error
+    /// unchanged, and no planner, preparer or publication of this entry ran.
+    pub(crate) fn unentered(&self) -> bool {
+        matches!(self.phase, Phase::Ready) && !self.repeated && self.ordinary.is_none()
+    }
     /// Stores backend ownership before any outer callback. Ordinary failure is
     /// returned as the already admitted diagnostic, never a new composite box.
     pub(crate) fn finish_observed(

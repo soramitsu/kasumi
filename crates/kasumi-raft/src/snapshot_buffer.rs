@@ -719,7 +719,27 @@ impl SnapshotBufferOwner {
         error: anyhow::Error,
     ) -> crate::apply_failure::RetainedApplyFailure {
         self.failed.store(true, Ordering::Release);
-        match self.apply_failure.retain(error) {
+        let retained = self.apply_failure.retain(error);
+        self.occupied_apply_failure(retained)
+    }
+
+    /// The same serialized custody for a failure observed before any
+    /// publication entered its sink. Only a bare access refusal settles its
+    /// ownership; the machine stays fenced and the diagnostic stays reported.
+    pub(crate) fn retain_apply_refusal(
+        &self,
+        error: anyhow::Error,
+    ) -> crate::apply_failure::RetainedApplyFailure {
+        self.failed.store(true, Ordering::Release);
+        let retained = self.apply_failure.retain_before_publication(error);
+        self.occupied_apply_failure(retained)
+    }
+
+    fn occupied_apply_failure(
+        &self,
+        retained: Result<crate::apply_failure::RetainedApplyFailure, anyhow::Error>,
+    ) -> crate::apply_failure::RetainedApplyFailure {
+        match retained {
             Ok(retained) => retained,
             Err(independent) => {
                 // This requires a violated owner/serialization contract. Keep
@@ -1018,8 +1038,9 @@ impl SnapshotBufferOwner {
             }
             if all_ready {
                 // Arbitrary errors may own native children. Only the exact
-                // typed publication failure plus completed source/completion
-                // census can retire ownership while keeping its diagnostic.
+                // typed publication failure or a bare access refusal retained
+                // before publication, plus completed source/completion census,
+                // can retire ownership while keeping its diagnostic.
                 let unresolved = self.apply_failure.failure().and_then(|failure| {
                     let issue = report.record("Raft apply", 0, failure.into());
                     (!self.failed_apply_resources_drained())
