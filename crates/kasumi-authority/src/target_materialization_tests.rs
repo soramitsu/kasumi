@@ -327,8 +327,14 @@ impl MaterialFixture {
         .unwrap()
     }
     async fn new() -> Self {
+        Self::with_replay_observation(false).await
+    }
+    async fn with_replay_observation(observe: bool) -> Self {
         let control = ControlFixture::new();
-        let issuer = control.issuer().await;
+        let mut issuer = control.issuer().await;
+        if observe {
+            issuer.replayed_unknown_replies = Some(Mutex::default());
+        }
         let source_physical = PhysicalFixture::new().unwrap();
         let node = source_physical
             .create_new(source_physical.path("source.kv"), Uuid::new_v4())
@@ -2007,7 +2013,7 @@ async fn activated_target_keeps_operational_suspension_and_membership_across_res
 }
 
 async fn exercise_target_activation(maintenance: bool) {
-    let mut f = MaterialFixture::new().await;
+    let mut f = MaterialFixture::with_replay_observation(true).await;
     // This positive integration case opens three encrypted replicas sequentially
     // before activation and restart proof. Bound the original setup operations
     // for that work with the API maximum, so a loaded host's re-elections stay
@@ -2090,11 +2096,7 @@ async fn exercise_target_activation(maintenance: bool) {
                 break;
             }
             Err(error) if error.code == ErrorCode::UnknownOutcome => {
-                if let Some(original) = issuer
-                    .request_jobs
-                    .original_unknown_reply(&issuer.requests)
-                    .await
-                {
+                if let Some(original) = f.issuer.original_unknown_reply(&issuer).await {
                     unknown_replies.push(original);
                 }
             }
@@ -2420,7 +2422,13 @@ async fn exercise_target_activation(maintenance: bool) {
     // abandoned request can still report its own uncertainty at shutdown.
     for service in &f.issuer.services {
         if let Err(failure) = service.shutdown().await {
-            let resolved = f.issuer.replayed_unknown_replies.lock().unwrap();
+            let resolved = f
+                .issuer
+                .replayed_unknown_replies
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap();
             assert_eq!(
                 failure.completion(),
                 kasumi_types::drain::DrainCompletion::Complete,

@@ -160,7 +160,7 @@ struct Fixture {
     signing: kasumi_serving::test_utils::FixtureAuthority,
     signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
-    replayed_unknown_replies: Mutex<Vec<(String, kasumi_types::drain::DrainIssueRef)>>,
+    replayed_unknown_replies: Option<Mutex<Vec<(String, kasumi_types::drain::DrainIssueRef)>>>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -440,11 +440,7 @@ impl Fixture {
                 }
                 Ok(_) => {}
                 Err(error) if error.code == ErrorCode::UnknownOutcome => {
-                    if let Some(original) = current
-                        .request_jobs
-                        .original_unknown_reply(&current.requests)
-                        .await
-                    {
+                    if let Some(original) = self.original_unknown_reply(&current).await {
                         unknown_replies.push(original);
                     }
                 }
@@ -456,12 +452,29 @@ impl Fixture {
         self.record_resolved_replies(unknown_replies, &expected_digest);
         receipt
     }
+    async fn original_unknown_reply(
+        &self,
+        service: &IndependentAuthority,
+    ) -> Option<kasumi_types::drain::DrainIssueRef> {
+        self.replayed_unknown_replies.as_ref()?;
+        tokio::time::timeout(
+            FIXTURE_OBSERVATION_WINDOW,
+            service
+                .request_jobs
+                .original_unknown_reply(&service.requests),
+        )
+        .await
+        .expect("original issuer request did not drain")
+    }
     fn record_resolved_replies(
         &self,
         issues: Vec<kasumi_types::drain::DrainIssueRef>,
         digest: &str,
     ) {
-        let mut replies = self.replayed_unknown_replies.lock().unwrap();
+        let Some(replies) = &self.replayed_unknown_replies else {
+            return;
+        };
+        let mut replies = replies.lock().unwrap();
         replies.extend(issues.into_iter().map(|issue| (digest.to_owned(), issue)));
     }
     async fn new() -> Self {
@@ -584,7 +597,7 @@ impl Fixture {
             signing,
             signing_root,
             readiness,
-            replayed_unknown_replies: Mutex::default(),
+            replayed_unknown_replies: None,
         };
         fixture.services[0].initialize().await.unwrap();
         fixture.leader().await;

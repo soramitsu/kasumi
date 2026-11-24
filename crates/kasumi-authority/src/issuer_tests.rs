@@ -673,11 +673,7 @@ async fn accepted_on_current_leader(
                     }
                 }
                 Err(error) if error.code == ErrorCode::UnknownOutcome => {
-                    if let Some(original) = service
-                        .request_jobs
-                        .original_unknown_reply(&service.requests)
-                        .await
-                    {
+                    if let Some(original) = f.original_unknown_reply(&service).await {
                         unknown_replies.push(original);
                     }
                 }
