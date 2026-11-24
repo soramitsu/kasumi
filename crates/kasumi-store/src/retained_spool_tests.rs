@@ -369,7 +369,10 @@ fn file_key_and_each_buffer_retire_before_extent_credit_is_reusable() {
         let before = disk.snapshot().charged_bytes;
         assert!(before > 0);
         let descriptor = spool.file.as_raw_fd();
-        let metadata = spool.file.metadata().unwrap();
+        // Pin the anonymous inode until fstat checks the spool's descriptor. A
+        // concurrent open can otherwise reuse both the descriptor and the inode.
+        let inode_witness = spool.file.try_clone().unwrap();
+        let metadata = inode_witness.metadata().unwrap();
         let identity = (metadata.dev(), metadata.ino());
         let address = match resource {
             0 => spool.key.as_bytes().as_ptr(),
@@ -412,6 +415,7 @@ fn file_key_and_each_buffer_retire_before_extent_credit_is_reusable() {
         } else {
             assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
         }
+        drop(inode_witness);
         assert_eq!(disk.snapshot().charged_bytes, before);
         let (file, mut charge) = disk.file().unwrap();
         assert_eq!(
