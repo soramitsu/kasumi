@@ -237,7 +237,8 @@ mod tests {
             admission.snapshot().reserved_bytes
                 >= before_databases
                     + 2 * AuditRetentionBudget::MAINTENANCE_BYTES
-                    + 3 * kasumi_raft::SnapshotBufferOwner::required_bytes(
+                    + 3 * kasumi_raft::SnapshotBufferOwner::required_bytes_for(
+                        kasumi_raft::LOCAL_SNAPSHOT_BUFFER_CELLS,
                         kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
                     )
                     .unwrap()

@@ -766,8 +766,17 @@ mod tests {
         drop(database);
         assert_eq!(
             after_shutdown - crate::test_utils::reserved_payload_bytes(&admission),
-            kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
-                .unwrap()
+            // A standalone group's owner admits only its local transfer cells;
+            // the replicated (term-change) case keeps every transfer cell.
+            kasumi_raft::SnapshotBufferOwner::required_bytes_for(
+                if change_term {
+                    kasumi_raft::SNAPSHOT_BUFFER_SLOTS
+                } else {
+                    kasumi_raft::LOCAL_SNAPSHOT_BUFFER_CELLS
+                },
+                kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+            )
+            .unwrap()
                 + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap()
         );
         drop(store);
