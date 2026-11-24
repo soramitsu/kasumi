@@ -153,6 +153,12 @@ impl Drop for Leadership<'_> {
 }
 
 /// Every record still marked admitted takes one shared batch failure instead.
+/// No record of a refused batch was persisted. Callers keep their own
+/// semantics: an admitted mutation still reports an uncertain outcome.
+pub(crate) fn refused_for_capacity() -> anyhow::Error {
+    anyhow::anyhow!("service audit storage refused the write for capacity; nothing was persisted")
+}
+
 fn refuse_admitted(
     mut outcomes: Vec<Result<()>>,
     error: impl Fn() -> anyhow::Error,
@@ -582,6 +588,13 @@ impl SecurityAudit {
             .record_commits
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(error) = self.writer.store.write_batch(&operations) {
+            // A typed capacity refusal (a settled denial, or a native begin
+            // refused before any transaction existed) committed nothing: this
+            // batch's records are refused and the next batch reuses their
+            // sequence. A full snapshot-pin registry refuses begin this way.
+            let Err(error) = kasumi_raft::capacity_refusal::take(error) else {
+                return refuse_admitted(outcomes, refused_for_capacity);
+            };
             // Unknown fsync outcomes fence every queued writer until reopen.
             // Each writer in this batch reports the same retained issue.
             sequence.failed = true;
@@ -746,6 +759,80 @@ mod tests {
             request_id: "cancelled-denial".into(),
             outcome: SecurityOutcome::Denied,
         }
+    }
+
+    /// Tenants, Control and the service audit share the node database's
+    /// snapshot pins. When every pin is held the audit's write is refused at
+    /// begin; nothing was committed, so the batch is refused and the sequence
+    /// stays usable. The first record after a pin is released persists.
+    #[tokio::test]
+    async fn a_write_refused_at_begin_for_capacity_leaves_the_sequence_usable() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let (persistent_config, scratch_config) =
+            crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
+        let storage = crate::test_utils::FixtureStorage::open(
+            &persistent_config,
+            &scratch_config,
+            Default::default(),
+        )
+        .unwrap();
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/pinned-security.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            Arc::new(LocalKeyProvider::new([91; 32])),
+        )
+        .await
+        .unwrap();
+        let audit = SecurityAudit::initialize(
+            store.clone(),
+            AuditRetentionBudget::default(),
+            storage.admission.clone(),
+        )
+        .unwrap();
+        audit.record_sync(event()).unwrap();
+        // Hold every free pin. The refused reader is retired by its proof.
+        let mut views = Vec::new();
+        loop {
+            match store.read_view() {
+                Ok(view) => views.push(view),
+                Err(error) => {
+                    assert!(kasumi_raft::capacity_refusal::refused(&error), "{error:#}");
+                    break;
+                }
+            }
+            assert!(views.len() <= kasumi_kv::DEFAULT_SNAPSHOT_PINS);
+        }
+        assert!(!views.is_empty());
+        let refused = audit.record_sync(event()).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("refused the write for capacity"),
+            "{refused:#}"
+        );
+        assert!(
+            refused
+                .downcast_ref::<kasumi_types::drain::DrainFailure>()
+                .is_none()
+        );
+        assert!(!audit.status().unwrap().persistence_failed);
+        // Reading needs a pin too: release one before checking what persisted.
+        views.pop();
+        assert_eq!(store.scan("security.audit").unwrap().len(), 1);
+        audit.record_sync(event()).unwrap();
+        drop(views);
+        audit.record_sync(event()).unwrap();
+        assert_eq!(store.scan("security.audit").unwrap().len(), 3);
+        assert!(!audit.status().unwrap().persistence_failed);
+        audit.shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
     }
 
     #[tokio::test]

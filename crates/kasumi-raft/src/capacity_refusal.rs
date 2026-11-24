@@ -48,7 +48,7 @@ fn read_refused(failure: &NodeScopedReadFailure) -> bool {
 
 /// `error` proves its operation was refused for capacity with no effect. A
 /// refused reader's census entry is retired here.
-pub(crate) fn refused(error: &anyhow::Error) -> bool {
+pub fn refused(error: &anyhow::Error) -> bool {
     if let Some(original) = error.downcast_ref::<io::Error>() {
         return admission_kind(original.kind());
     }
@@ -73,7 +73,7 @@ pub(crate) fn refused(error: &anyhow::Error) -> bool {
 /// `Ok` when `error` is a proven refusal. A refused writer keeps its original
 /// observations in its census entry; its outcome is proved, so it is retired
 /// as Store retires a settled capacity denial. Any other error is returned.
-pub(crate) fn take(error: anyhow::Error) -> Result<(), anyhow::Error> {
+pub fn take(error: anyhow::Error) -> Result<(), anyhow::Error> {
     if !refused(&error) {
         return Err(error);
     }

@@ -715,6 +715,10 @@ impl SecurityAudit {
             b"pending-ciphertext",
             &segment,
         ) {
+            let Err(error) = kasumi_raft::capacity_refusal::take(error) else {
+                // Nothing was written: maintenance reports it and retries.
+                return Err(super::refused_for_capacity());
+            };
             state.failed = true;
             return Err(
                 kasumi_types::drain::DrainFailure::retained(self.record_terminal(
@@ -844,6 +848,10 @@ impl SecurityAudit {
                     WriteOp::delete(META, b"pending-ciphertext"),
                 ]);
                 if let Err(error) = worker.writer.store.write_batch(&operations) {
+                    let Err(error) = kasumi_raft::capacity_refusal::take(error) else {
+                        // Nothing was written: maintenance reports it and retries.
+                        return Err(super::refused_for_capacity());
+                    };
                     state.failed = true;
                     return Err(kasumi_types::drain::DrainFailure::retained(
                         worker.record_terminal("audit persistence", 0, error),
@@ -1301,6 +1309,10 @@ impl SecurityAudit {
                     worker.admit_record(&mut updated, event, None, RecordClass::Prune)?;
                 let operations = [record, retirement.write()?, updated.write()?];
                 if let Err(error) = worker.writer.store.write_batch(&operations) {
+                    let Err(error) = kasumi_raft::capacity_refusal::take(error) else {
+                        // Nothing was written: maintenance reports it and retries.
+                        return Err(super::refused_for_capacity());
+                    };
                     state.failed = true;
                     return Err(kasumi_types::drain::DrainFailure::retained(
                         worker.record_terminal("audit persistence", 0, error),
@@ -1427,6 +1439,10 @@ impl SecurityAudit {
                     .store
                     .write_batch(&[updated.write()?, head.write()?])
                 {
+                    let Err(error) = kasumi_raft::capacity_refusal::take(error) else {
+                        // Nothing was written: maintenance reports it and retries.
+                        return Err(super::refused_for_capacity());
+                    };
                     state.failed = true;
                     return Err(kasumi_types::drain::DrainFailure::retained(
                         worker.record_terminal("audit persistence", 0, error),

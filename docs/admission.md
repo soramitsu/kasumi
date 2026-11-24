@@ -208,6 +208,15 @@ database share has 4,096 pins (`SHARED_NODE_SNAPSHOT_PINS`); every other
 database keeps 256. Each open tenant holds one for its current Generation, so
 256 would stop a standalone node at about 253 tenants.
 
+The service audit applies the same proof. A write of its records refused
+for capacity with no effect, for example at begin when every snapshot pin of
+the node database is held, refuses that batch and leaves the sequence usable:
+the next batch reuses its sequence numbers. The refused records were not
+persisted, so an admitted mutation waiting on one still reports an uncertain
+outcome. A refused archive, index or prune write is an ordinary maintenance
+failure that retries. Any other write error still fences the audit until
+reopen.
+
 The standalone writer's own storage work runs outside any committed apply and
 spends no escrow: the journal append (or, for a write that joins its journal
 entry to its publication, preparing that entry) before an entry commits, and

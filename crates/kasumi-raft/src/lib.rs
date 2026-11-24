@@ -68,7 +68,7 @@ pub use apply_publication::{
     TestPublicationState, with_application_publisher_bound_for_test,
     with_application_publisher_bound_observed_for_test, with_application_publisher_for_test,
 };
-mod capacity_refusal;
+pub mod capacity_refusal;
 mod control;
 mod entry;
 pub use entry::Entry;
