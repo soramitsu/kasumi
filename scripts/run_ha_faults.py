@@ -311,9 +311,8 @@ def view(d, ctx, label, node, voters, leaders=None, *, scenarios=()):
     return value
 
 
-def probe(d, ctx, label, step, scenarios, *, profile=None):
+def probe(d, ctx, label, step, scenarios, *, profile):
     """One authenticated durable write and its exact read-back."""
-    profile = profile or ctx.plan["data_profile"]
     document = "fault-" + str(step)
     expected = body(ctx.attempt_id, step)
     put = d.json(label + "-put", ctx.ctl(profile, "put", ctx.plan["collection"],
@@ -426,18 +425,29 @@ def partition(d, ctx):
 def outage(d, ctx):
     """Every authority is down for longer than the installed serving lease."""
     scenario = ["lease-length-outage"]
-    probe(d, ctx, "outage-before", 4, scenario)
-    _, raw = raw_view(d, ctx, "outage-view", ctx.voters[0])
+    elected, raw = raw_view(d, ctx, "outage-view", ctx.voters[0])
+    profile = ctx.member(elected["leader"])
+    probe(d, ctx, "outage-before", 4, scenario, profile=profile)
+    document_read = ctx.ctl(profile, "get", ctx.plan["collection"], "fault-expired")
+    before = d.json("outage-document-before", document_read, scenario)
+    require(before.get("ok") is True and before["result"]["document"] is None,
+            "lease outage document already exists")
     started = None
     for node in ctx.authorities:
         started = d.crash(node["id"], raw, scenario)["fault"]["elapsed_seconds"]
     expires = started + ctx.lease_seconds * (1 + ctx.clock_ppm / 1_000_000) + ctx.margin
     while d.clock() < expires:
         d.pause(min(.5, ctx.pause))
-    document = ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"], "fault-expired",
-                       json.dumps(body(ctx.attempt_id, "expired"), sort_keys=True), "--if", "any")
-    code, _ = d.attempt("outage-expired-write", document)
+    document = ctx.ctl(profile, "put", ctx.plan["collection"], "fault-expired",
+                       json.dumps(body(ctx.attempt_id, "expired"), sort_keys=True),
+                       "--if", "absent", "--key", ctx.attempt_id + "/lease-expired")
+    code, output = d.attempt("outage-expired-write", document)
     require(code != 0, "data serving continued after its authority lease expired")
+    refused = driver.decode(output)
+    require(refused is not None and refused.get("ok") is False
+            and isinstance(refused.get("error"), dict)
+            and refused["error"].get("code") in {"UNAVAILABLE", "SEALED"},
+            "expired write lacks the native serving refusal")
     ended = d.clock()
     for node in ctx.authorities:
         d.spawn(node["id"], node["executable"], node["config"])
@@ -446,12 +456,18 @@ def outage(d, ctx):
 
 def fresh_admission(d, ctx):
     scenario = ["fresh-admission"]
-    document = ctx.ctl(ctx.plan["data_profile"], "put", ctx.plan["collection"], "fault-readmitted",
-                       json.dumps(body(ctx.attempt_id, "readmitted"), sort_keys=True), "--if", "any")
-    d.poll("fresh-admission-poll", document, lambda value: value.get("ok") is True,
+    elected = view(d, ctx, "fresh-admission-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    profile = ctx.member(elected["leader"])
+    document = ctx.ctl(profile, "get", ctx.plan["collection"], "fault-4")
+    expected = body(ctx.attempt_id, 4)
+    d.poll("fresh-admission-poll", document,
+           lambda value: value.get("ok") is True and value["result"]["document"]["body"] == expected,
            limit=ctx.polls, pause=ctx.pause)
-    probe(d, ctx, "fresh-admission-write", 5, scenario)
-    view(d, ctx, "fresh-admission-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    probe(d, ctx, "fresh-admission-write", 5, scenario, profile=profile)
+    expired = d.json("outage-document-after", ctx.ctl(profile, "get", ctx.plan["collection"],
+                                                       "fault-expired"), ["lease-length-outage"])
+    require(expired.get("ok") is True and expired["result"]["document"] is None,
+            "write attempted after lease expiry appeared on the recovered quorum")
 
 
 def trust_rotation(d, ctx):
@@ -483,7 +499,11 @@ def trust_rotation(d, ctx):
     d.replace(plan["restore_certificate"], rotation["certificate"], "public")
     d.signal(member["id"], "SIGHUP")
     d.json("trust-restored", through(plan["new_trust_profile"]), scenario)
-    probe(d, ctx, "trust-write", 6, scenario)
+    elected = view(d, ctx, "trust-view", ctx.voters[0], ctx.voters, scenarios=scenario)
+    leader = elected["leader"]
+    profile = (plan["new_trust_profile"] if plan["listener"] == "native"
+               and leader == member["node_id"] else ctx.member(leader))
+    probe(d, ctx, "trust-write", 6, scenario, profile=profile)
     return member["id"]
 
 

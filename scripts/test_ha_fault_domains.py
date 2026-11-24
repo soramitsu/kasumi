@@ -165,7 +165,12 @@ def data(words):
                  if (STATE / ("hb-" + str(a))).exists()]
         expired = not heard or time.time() - max(heard) > registry["lease_ms"] / 1000
         if expired and not any(alive(a) for a in registry["authorities"]) and not behavior.get("ignore_lease"):
-            return 1, {"ok": False, "error": "authority lease expired"}
+            if words[0] == "put" and behavior.get("commit_after_expiry"):
+                documents = load("documents.json", {})
+                documents[words[2]] = json.loads(words[3])
+                save("documents.json", documents)
+            return 10, {"ok": False, "error": {"code": behavior.get("outage_code", "SEALED"),
+                                              "message": "authority lease expired"}}
         documents = load("documents.json", {})
         if words[0] == "put":
             documents[words[2]] = json.loads(words[3])
@@ -173,6 +178,8 @@ def data(words):
             cluster["applied"] += 1
             save("cluster.json", cluster)
             return 0, {"ok": True, "result": {"receipt": {"revision": cluster["applied"] + 1}}}
+        if words[2] not in documents:
+            return 0, {"ok": True, "result": {"document": None}}
         return 0, {"ok": True, "result": {"document": {"id": words[2],
                                                        "body": documents.get(words[2]),
                                                        "version": 1}}}
@@ -637,7 +644,9 @@ class HaFaultTests(FaultFixture):
         # Each majority write and read must address its observed surviving leader.
         actions = [json.loads(line) for line in (custody / driver.LEDGER).read_bytes().splitlines()]
         for observation, probe in (("leader-loss-elected", "leader-loss-write"),
-                                   ("partition-majority", "partition-write")):
+                                   ("partition-majority", "partition-write"),
+                                   ("outage-view", "outage-before"),
+                                   ("fresh-admission-view", "fresh-admission-write")):
             sample, = (item for item in report["processes"] if item["id"].endswith("-" + observation))
             leader = owned.read(owned.check_ref(custody, sample["log"]))["leader"]
             for verb in ("put", "get"):
@@ -740,6 +749,16 @@ class HaFaultTests(FaultFixture):
 
         forged(relabelled, "differ from the qualifying contract")
         self.accept(record, identity, configs)
+
+    def test_uncertain_expired_write_must_stay_absent_after_readmission(self):
+        self.behave(commit_after_expiry=True)
+        with self.assertRaisesRegex(ValueError, "appeared on the recovered quorum"):
+            self.run_faults("faults-late-write")
+
+    def test_unrelated_error_cannot_establish_lease_expiry(self):
+        self.behave(outage_code="UNAUTHENTICATED")
+        with self.assertRaisesRegex(ValueError, "lacks the native serving refusal"):
+            self.run_faults("faults-unsigned")
 
     def test_serving_after_lease_expiry_fails_and_stays_journaled(self):
         self.contract(faults)
