@@ -1612,6 +1612,52 @@ impl Fixture {
         let refused_audit = refused_audit.unwrap();
         assert!(matches!(&refused_audit.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
     }
+    // Keep the real Control callback open while direct wire probes check the
+    // same marked attempt. The coordinator then consumes its own status reply.
+    async fn probe_status_during_resume(
+        &self,
+        control: &mut kasumi_client::KasumiRecoveryPool,
+        receiver: &TargetRecoveryRuntime,
+        probes: impl std::future::Future<Output = ()>,
+    ) {
+        let (entered, release) = receiver.test_pause_next_status();
+        let resume = self.step(control);
+        tokio::pin!(resume);
+        tokio::select! {
+            result = &mut resume => panic!("coordinator ended before requesting target status: {result:?}"),
+            result = entered => result.expect("target must receive the coordinator status request"),
+        }
+        tokio::select! {
+            result = &mut resume => panic!("coordinator ended during the status probes: {result:?}"),
+            () = probes => (),
+        }
+        release.send(()).expect("original status request must still be waiting");
+        resume.await.expect("coordinator must resolve the retained status without re-execution");
+    }
+
+    async fn assert_phase_reader_closed(
+        &self,
+        voter: usize,
+        identity: &TargetInitialDispatchIdentity,
+        original_cap_ms: u64,
+    ) {
+        use kasumi_transport::credentials::{CredentialSource, FileCredentialSource};
+        let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
+        let credential = FileCredentialSource::new(target.phase_observation_bearer_file.as_ref().unwrap()).unwrap();
+        let connections = target.control_connections().unwrap();
+        let request = RecoveryPhaseRequest { operation_id: identity.operation_id, phase_id: identity.phase_id };
+        let response = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut client = kasumi_client::KasumiRecoveryClient::connect(&connections[&self.control_dispatch_node]).await.unwrap();
+            client.read_phase(&credential.load().unwrap(), &request).await
+        }).await.expect("the original Control member must answer its enrolled reader");
+        let error = response.expect_err("resolved phase still admitted its reader");
+        assert!(matches!(error, kasumi_client::ClientError::Transport(ref status)
+            if status.code() == tonic::Code::Unavailable
+                && error.is_inactive_target_callback()), "{error:?}");
+        assert!(kasumi_clock::EpochClock::system().unwrap().now_ms().unwrap() < original_cap_ms,
+            "closed callback must be observed before the original command expires");
+    }
+
     /// Drive installed Control/issuer/target services through Start and the
     /// distinct Initialize, discard each actual reply, and resolve their
     /// original accepted markers while retaining the same owned children.
@@ -1626,6 +1672,7 @@ impl Fixture {
             self.status(&mut control, "initial Start operation readback")
                 .await;
         }
+        let (mut start_client, start_query, mut initialize_client, initialize_query) =
         tokio::time::timeout(Duration::from_secs(180), fixture_operation(|| async {
             for _ in 0..64 {
                 let before = self.status(&mut control, "initial Start progress").await;
@@ -1670,43 +1717,41 @@ impl Fixture {
                             kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
                             kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(), *node_id,
                         ).await.unwrap();
-                        let before_reads = receiver.test_marked_first_membership_reads();
-                        let status = target.read_initial_start(&self.control_token, &query).await
-                            .expect("lost Start reply must resolve over pinned mTLS while original child is live");
-                        status.validate_for(&query, *node_id).unwrap();
-                        assert!(receiver.test_marked_first_membership_reads() >= before_reads + 3,
-                            "Start RPC must refresh Control at admission and both release fences");
-                        let unauthorized_reads = receiver.test_marked_first_membership_reads();
-                        assert!(target.read_initial_start(&self.source_token, &query).await.is_err());
-                        assert_eq!(receiver.test_marked_first_membership_reads(), unauthorized_reads,
-                            "source token must fail before Control reads");
-                        let mut substituted = query.clone();
-                        substituted.identity.attempt_id = Uuid::new_v4();
-                        assert!(target.read_initial_start(&self.control_token, &substituted).await.is_err());
-                        let history = TargetInitialMembershipHistoryRequest {
-                            target_incarnation: self.target, request: (**original).clone(), identity: identity.clone(),
-                        };
-                        let missing = target.read_initial_membership_history(&self.control_token, &history)
-                            .await.expect_err("owned Start is not committed/applied first membership");
-                        assert_eq!(missing.code(), Some(kasumi_types::ErrorCode::Unavailable));
-                        let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
-                        let context = authenticator.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
-                        let retry = fixture_operation(|| receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
-                            TargetExecuteRequest { request: (**original).clone(), initial_dispatch: Some(identity.clone()) },
-                        )).await;
-                        let error = retry.err().expect("replayed Execute must not issue another child");
-                        assert!(format!("{error:#}").contains("status-only"), "{error:#}");
-                        error.with_original(|original| {
-                            let operation = original.expect("original replay rejection")
-                                .operation_error().expect("typed status-only rejection");
-                            assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
-                        });
-                        assert!(!error.unresolved_custody(), "status-only rejection owns no native failure");
-                        drop(error);
-
-                        // The next coordinator attempt consumes the protected
-                        // status. The committed attempt ID remains unchanged.
-                        self.step(&mut control).await.expect("coordinator must resolve retained Start without Execute");
+                        self.probe_status_during_resume(&mut control, receiver, async {
+                            let before_reads = receiver.test_marked_first_membership_reads();
+                            let status = target.read_initial_start(&self.control_token, &query).await
+                                .expect("lost Start reply must resolve over pinned mTLS while original child is live");
+                            status.validate_for(&query, *node_id).unwrap();
+                            assert!(receiver.test_marked_first_membership_reads() >= before_reads + 3,
+                                "Start RPC must refresh Control at admission and both release fences");
+                            let unauthorized_reads = receiver.test_marked_first_membership_reads();
+                            assert!(target.read_initial_start(&self.source_token, &query).await.is_err());
+                            assert_eq!(receiver.test_marked_first_membership_reads(), unauthorized_reads,
+                                "source token must fail before Control reads");
+                            let mut substituted = query.clone();
+                            substituted.identity.attempt_id = Uuid::new_v4();
+                            assert!(target.read_initial_start(&self.control_token, &substituted).await.is_err());
+                            let history = TargetInitialMembershipHistoryRequest {
+                                target_incarnation: self.target, request: (**original).clone(), identity: identity.clone(),
+                            };
+                            let missing = target.read_initial_membership_history(&self.control_token, &history)
+                                .await.expect_err("owned Start is not committed/applied first membership");
+                            assert_eq!(missing.code(), Some(kasumi_types::ErrorCode::Unavailable));
+                            let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
+                            let context = authenticator.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
+                            let retry = fixture_operation(|| receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
+                                TargetExecuteRequest { request: (**original).clone(), initial_dispatch: Some(identity.clone()) },
+                            )).await;
+                            let error = retry.err().expect("replayed Execute must not issue another child");
+                            assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+                            error.with_original(|original| {
+                                let operation = original.expect("original replay rejection")
+                                    .operation_error().expect("typed status-only rejection");
+                                assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
+                            });
+                            assert!(!error.unresolved_custody(), "status-only rejection owns no native failure");
+                            drop(error);
+                        }).await;
                         let resolved = control.read_phase(&RecoveryPhaseRequest {
                             operation_id: request.operation_id, phase_id,
                         }, Duration::from_secs(5)).await.unwrap();
@@ -1714,8 +1759,7 @@ impl Fixture {
                         assert!(matches!(resolved.outcome, Some(RecoveryDispatchOutcome::Target(ref response))
                             if matches!(response.outcome, TargetRuntimeOutcome::Started { .. })));
                         assert!(resolved.resolved_revision.is_some());
-                        assert!(target.read_initial_start(&self.control_token, &query).await.is_err(),
-                            "resolved Control phase cannot be normalized into current Start authority");
+                        self.assert_phase_reader_closed(index, &identity, original.not_after_ms).await;
                         assert!(receiver.test_has_replica("acme", self.target).await);
                         assert!(original_child.ptr_eq(&receiver.test_replica_identity("acme", self.target).await.unwrap()),
                             "Start status continuation must keep the same actual child");
@@ -1725,14 +1769,28 @@ impl Fixture {
                         }
                         // Each phase owns a separate future; do not embed the
                         // full Initialize state machine in Start's poll frame.
-                        fixture_operation(|| self.assert_initialize_lost_reply_status(&mut control)).await;
-                        return;
+                        let (initialize_client, initialize_query) =
+                            fixture_operation(|| self.assert_initialize_lost_reply_status(&mut control)).await;
+                        return (target, query, initialize_client, initialize_query);
                     }
                 }
                 let _ = self.step(&mut control).await;
             }
             panic!("initial Start was not reached in 64 exact phases");
         })).await.expect("installed lost-Start fixture exceeded its deadline");
+        // Exercise the original pinned targets again after both real
+        // continuations finished. Each must withhold status before expiry.
+        let (start, initialize) = tokio::join!(
+            start_client.read_initial_start(&self.control_token, &start_query),
+            initialize_client.read_initial_membership_history(&self.control_token, &initialize_query),
+        );
+        let error = start.expect_err("resolved Control phase cannot authorize another Start");
+        assert_eq!(error.code(), Some(kasumi_types::ErrorCode::Unavailable), "{error:?}");
+        let error = initialize.expect_err("resolved Initialize phase is not new authority");
+        assert_eq!(error.code(), Some(kasumi_types::ErrorCode::Unavailable), "{error:?}");
+        let now = kasumi_clock::EpochClock::system().unwrap().now_ms().unwrap();
+        assert!(now < start_query.request.not_after_ms && now < initialize_query.request.not_after_ms,
+            "closed reads must finish before the original dispatch caps");
     }
     async fn assert_initialization_snapshot_retention(
         &self,
@@ -1826,7 +1884,7 @@ impl Fixture {
     async fn assert_initialize_lost_reply_status(
         &self,
         control: &mut kasumi_client::KasumiRecoveryPool,
-    ) {
+    ) -> (kasumi_client::KasumiTargetClient, TargetInitialMembershipHistoryRequest) {
         let operation = self.request.as_ref().unwrap().operation_id;
         for _ in 0..16 {
             let before = self.status(control, "Initialize progress").await;
@@ -1956,77 +2014,76 @@ impl Fixture {
                         request: (**request).clone(),
                         identity: identity.clone(),
                     };
-                    let reads = receiver.test_marked_first_membership_reads();
-                    let status = target
-                        .read_initial_membership_history(&self.control_token, &query)
-                        .await
-                        .expect(
-                            "lost Initialize reply must prove real committed/applied membership",
+                    self.probe_status_during_resume(control, receiver, async {
+                        let reads = receiver.test_marked_first_membership_reads();
+                        let status = target
+                            .read_initial_membership_history(&self.control_token, &query)
+                            .await
+                            .expect(
+                                "lost Initialize reply must prove real committed/applied membership",
+                            );
+                        status.validate_for(&query).unwrap();
+                        assert!(receiver.test_marked_first_membership_reads() >= reads + 3);
+                        assert!(
+                            target
+                                .read_initial_membership_history(&self.source_token, &query)
+                                .await
+                                .is_err()
                         );
-                    status.validate_for(&query).unwrap();
-                    assert!(receiver.test_marked_first_membership_reads() >= reads + 3);
-                    assert!(
-                        target
-                            .read_initial_membership_history(&self.source_token, &query)
+                        let mut substituted = query.clone();
+                        substituted.identity.attempt_id = Uuid::new_v4();
+                        let substituted_error = target
+                            .read_initial_membership_history(&self.control_token, &substituted)
                             .await
-                            .is_err()
-                    );
-                    let mut substituted = query.clone();
-                    substituted.identity.attempt_id = Uuid::new_v4();
-                    let substituted_error = target
-                        .read_initial_membership_history(&self.control_token, &substituted)
-                        .await
-                        .expect_err("substituted membership attempt must be unavailable");
-                    assert_eq!(
-                        substituted_error.code(),
-                        Some(kasumi_types::ErrorCode::Unavailable)
-                    );
-                    let start_query = TargetInitialStartRequest {
-                        target_incarnation: self.target,
-                        request: (**request).clone(),
-                        identity: identity.clone(),
-                    };
-                    assert!(
-                        target
-                            .read_initial_start(&self.control_token, &start_query)
+                            .expect_err("substituted membership attempt must be unavailable");
+                        assert_eq!(
+                            substituted_error.code(),
+                            Some(kasumi_types::ErrorCode::Unavailable)
+                        );
+                        let start_query = TargetInitialStartRequest {
+                            target_incarnation: self.target,
+                            request: (**request).clone(),
+                            identity: identity.clone(),
+                        };
+                        assert!(
+                            target
+                                .read_initial_start(&self.control_token, &start_query)
+                                .await
+                                .is_err()
+                        );
+                        let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
+                        let context = authenticator
+                            .authenticate(&format!("Bearer {}", self.control_token))
                             .await
-                            .is_err()
-                    );
-                    let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
-                    let context = authenticator
-                        .authenticate(&format!("Bearer {}", self.control_token))
-                        .await
-                        .unwrap();
-                    let retry = fixture_operation(|| {
-                        receiver.execute(
-                            context,
-                            zeroize::Zeroizing::new(self.control_token.clone()),
-                            TargetExecuteRequest {
-                                request: (**request).clone(),
-                                initial_dispatch: Some(identity.clone()),
-                            },
-                        )
-                    })
-                    .await;
-                    let error = retry
-                        .err()
-                        .expect("accepted Initialize Execute must remain one use");
-                    assert!(format!("{error:#}").contains("status-only"), "{error:#}");
-                    error.with_original(|original| {
-                        let operation = original
-                            .expect("original replay rejection")
-                            .operation_error()
-                            .expect("typed status-only rejection");
-                        assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
-                    });
-                    assert!(
-                        !error.unresolved_custody(),
-                        "status-only rejection owns no native failure"
-                    );
-                    drop(error);
-                    self.step(control).await.expect(
-                        "coordinator must resolve Initialize from exact retained membership",
-                    );
+                            .unwrap();
+                        let retry = fixture_operation(|| {
+                            receiver.execute(
+                                context,
+                                zeroize::Zeroizing::new(self.control_token.clone()),
+                                TargetExecuteRequest {
+                                    request: (**request).clone(),
+                                    initial_dispatch: Some(identity.clone()),
+                                },
+                            )
+                        })
+                        .await;
+                        let error = retry
+                            .err()
+                            .expect("accepted Initialize Execute must remain one use");
+                        assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+                        error.with_original(|original| {
+                            let operation = original
+                                .expect("original replay rejection")
+                                .operation_error()
+                                .expect("typed status-only rejection");
+                            assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
+                        });
+                        assert!(
+                            !error.unresolved_custody(),
+                            "status-only rejection owns no native failure"
+                        );
+                        drop(error);
+                    }).await;
                     let resolved = control
                         .read_phase(
                             &RecoveryPhaseRequest {
@@ -2043,6 +2100,7 @@ impl Fixture {
                         if matches!(response.outcome, TargetRuntimeOutcome::Initialized { .. }))
                     );
                     assert!(resolved.resolved_revision.is_some());
+                    self.assert_phase_reader_closed(index, &identity, request.not_after_ms).await;
                     fixture_operation(|| self.assert_initialization_snapshot_retention(&cause))
                         .await;
                     for (receiver, original) in self.targets.iter().zip(&original_children) {
@@ -2056,15 +2114,7 @@ impl Fixture {
                             "Initialize and status continuation must keep all original children"
                         );
                     }
-                    let resolved_error = target
-                        .read_initial_membership_history(&self.control_token, &query)
-                        .await
-                        .expect_err("resolved Initialize phase is not new authority");
-                    assert_eq!(
-                        resolved_error.code(),
-                        Some(kasumi_types::ErrorCode::Unavailable)
-                    );
-                    return;
+                    return (target, query);
                 }
             }
             let _ = self.step(control).await;

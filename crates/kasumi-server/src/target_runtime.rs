@@ -608,6 +608,12 @@ impl TargetRuntimeReply {
         Ok(())
     }
 }
+#[cfg(test)]
+struct StatusProbePause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
 pub struct TargetRecoveryRuntime {
     recovery_health: std::sync::Mutex<serving::RecoveryHealth>,
     registry: crate::api::DatabaseRegistry,
@@ -634,6 +640,8 @@ pub struct TargetRecoveryRuntime {
     calls: Arc<Semaphore>,
     call_jobs: TargetCallJobs,
     closing: AtomicBool,
+    #[cfg(test)]
+    status_probe_pause: std::sync::Mutex<Option<StatusProbePause>>,
     #[cfg(test)]
     marked_first_membership_reads: AtomicU64,
     #[cfg(test)]
@@ -752,6 +760,34 @@ impl TargetRecoveryRuntime {
         kasumi_raft::read_target_first_membership_prebind(stores, &prebind)?;
         Ok(prebind.dispatch)
     }
+    #[cfg(test)]
+    pub(crate) fn test_pause_next_status(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, arrival) = tokio::sync::oneshot::channel();
+        let (resume, release) = tokio::sync::oneshot::channel();
+        let previous = self
+            .status_probe_pause
+            .lock()
+            .unwrap()
+            .replace(StatusProbePause { entered, release });
+        assert!(previous.is_none());
+        (arrival, resume)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_status_arrived(&self) {
+        let pause = self.status_probe_pause.lock().unwrap().take();
+        if let Some(pause) = pause
+            && pause.entered.send(()).is_ok()
+        {
+            let _ = pause.release.await;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn test_lose_next_initialize_reply(&self) {
         self.fail_next_initialize_reply
@@ -1030,6 +1066,8 @@ impl TargetRecoveryRuntime {
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             call_jobs,
             closing: AtomicBool::new(false),
+            #[cfg(test)]
+            status_probe_pause: Default::default(),
             #[cfg(test)]
             marked_first_membership_reads: AtomicU64::new(0),
             #[cfg(test)]

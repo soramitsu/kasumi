@@ -130,7 +130,7 @@ impl KasumiRecoveryPool {
         timeout: Duration,
     ) -> std::result::Result<RecoveryPhaseRecord, ClientError> {
         self.inner
-            .request(timeout, true, |client, bearer| {
+            .observe_phase(timeout, |client, bearer| {
                 let request = request.clone();
                 Box::pin(async move { client.read_phase(bearer, &request).await })
             })

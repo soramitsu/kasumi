@@ -186,6 +186,18 @@ impl LocalDeadline {
 }
 
 impl ClientError {
+    /// An enrolled phase reader received a typed refusal from a pinned
+    /// Control member. Such a refusal never authorizes another target effect.
+    pub fn is_inactive_target_callback(&self) -> bool {
+        matches!(self, Self::Transport(status)
+            if status.code() == tonic::Code::Unavailable
+                && std::error::Error::source(status).is_none()
+                && status.metadata().get(kasumi_types::INACTIVE_TARGET_CALLBACK_HEADER)
+                    .is_some_and(|value| value.as_bytes() == b"1")
+                && status.message() == kasumi_types::INACTIVE_TARGET_CALLBACK_REASON
+                && self.code() == Some(kasumi_types::ErrorCode::Unavailable))
+    }
+
     /// The database's own error code, when the server rejected the request.
     /// It is more specific than the gRPC status: `IndexRequired`,
     /// `CursorExpired` and `Sealed` share one gRPC code, for example, and

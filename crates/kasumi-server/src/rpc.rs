@@ -68,8 +68,23 @@ fn phase_reader(
     }
     Err(kasumi_types::Error::new(
         kasumi_types::ErrorCode::Unavailable,
-        "no matching target request on this Control member",
+        kasumi_types::INACTIVE_TARGET_CALLBACK_REASON,
     ))
+}
+
+// Only an explicit absence from the local dispatch registry carries this
+// marker. A quorum, network, credential or service failure has no such proof.
+fn phase_reader_status(error: kasumi_types::Error) -> tonic::Status {
+    let inactive = error.code == kasumi_types::ErrorCode::Unavailable
+        && error.message == kasumi_types::INACTIVE_TARGET_CALLBACK_REASON;
+    let mut reply = status(error);
+    if inactive {
+        reply.metadata_mut().insert(
+            kasumi_types::INACTIVE_TARGET_CALLBACK_HEADER,
+            tonic::metadata::MetadataValue::from_static("1"),
+        );
+    }
+    reply
 }
 
 #[path = "rpc_lifecycle.rs"]

@@ -107,7 +107,7 @@ impl KasumiLifecyclePool {
         timeout: Duration,
     ) -> std::result::Result<VerifiedControlIntent, ClientError> {
         self.inner
-            .request(timeout, true, |client, bearer| {
+            .observe_phase(timeout, |client, bearer| {
                 Box::pin(async move { client.observe_intent(bearer, id).await })
             })
             .await

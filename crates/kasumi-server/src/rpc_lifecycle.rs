@@ -277,7 +277,7 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
                 ),
             )
             .await
-            .map_err(status)?;
+            .map_err(phase_reader_status)?;
         let original = callback
             .as_ref()
             .map_or(&context, |active| active.original());

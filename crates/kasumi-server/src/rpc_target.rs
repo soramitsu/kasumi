@@ -196,6 +196,8 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
         query
             .validate_for_node(self.runtime.node_id())
             .map_err(|cause| status(error(cause)))?;
+        #[cfg(test)]
+        self.runtime.test_status_arrived().await;
         let reply = match self
             .runtime
             .read_initial_start(context.clone(), bearer, query)
@@ -263,6 +265,8 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
         query
             .validate_for_node(self.runtime.node_id())
             .map_err(|cause| status(error(cause)))?;
+        #[cfg(test)]
+        self.runtime.test_status_arrived().await;
         let result = self
             .runtime
             .read_initial_membership_history(context.clone(), bearer, query)

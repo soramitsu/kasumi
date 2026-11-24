@@ -32,6 +32,20 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+fn phase_observation_error(error: kasumi_client::ClientError) -> anyhow::Error {
+    if error.is_inactive_target_callback() {
+        // Every installed member answered this read. No target effect was
+        // issued and this response establishes no historical authority.
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "no active Control dispatch for this target status",
+        )
+        .into()
+    } else {
+        error.into()
+    }
+}
+
 /// Fresh installed-Control authorization for one still-unresolved exact
 /// initial packet. Retained rows and caller-supplied originals are not inputs.
 #[allow(clippy::too_many_arguments)]
@@ -67,11 +81,10 @@ pub(crate) async fn observe_initial_dispatch_from_control(
     )?;
     let original = admission
         .run(async {
-            Ok::<_, anyhow::Error>(
-                control
-                    .observe_intent(request.command_id, admission.remaining_response()?)
-                    .await?,
-            )
+            control
+                .observe_intent(request.command_id, admission.remaining_response()?)
+                .await
+                .map_err(phase_observation_error)
         })
         .await?;
     let intent = &original.observation().intent;
@@ -98,17 +111,16 @@ pub(crate) async fn observe_initial_dispatch_from_control(
         KasumiRecoveryPool::new(connections, Arc::new(move || Ok(credential.clone())))?;
     let marked = admission
         .run(async {
-            Ok::<_, anyhow::Error>(
-                recovery
-                    .read_phase(
-                        &RecoveryPhaseRequest {
-                            operation_id: identity.operation_id,
-                            phase_id: identity.phase_id,
-                        },
-                        admission.remaining_response()?,
-                    )
-                    .await?,
-            )
+            recovery
+                .read_phase(
+                    &RecoveryPhaseRequest {
+                        operation_id: identity.operation_id,
+                        phase_id: identity.phase_id,
+                    },
+                    admission.remaining_response()?,
+                )
+                .await
+                .map_err(phase_observation_error)
         })
         .await?;
     identity.validate_marked_phase(

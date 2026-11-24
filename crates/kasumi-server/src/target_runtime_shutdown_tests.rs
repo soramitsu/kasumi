@@ -291,6 +291,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             call_jobs: TargetCallJobs::new(&physical.admission).unwrap(),
             closing: AtomicBool::new(false),
+            status_probe_pause: Default::default(),
             marked_first_membership_reads: AtomicU64::new(0),
             fail_next_initial_start_reply: AtomicBool::new(false),
             fail_next_initialize_reply: AtomicBool::new(false),
