@@ -25,20 +25,42 @@ pub(crate) enum Observation {
 #[derive(Default)]
 pub(crate) struct PhaseCallbacks(Mutex<BTreeMap<(u64, Uuid), Arc<PhaseCallback>>>);
 
+#[derive(Clone, Copy)]
+enum ReplicaDispatch {
+    Initialize((Uuid, Uuid)),
+    Activate((Uuid, Uuid)),
+}
+
 pub(crate) struct PhaseCallback {
     node: LifecycleNode,
     command: Uuid,
     historical_intent: Option<Uuid>,
-    initial_dispatch: Option<(Uuid, Uuid)>,
+    replica_dispatch: Option<ReplicaDispatch>,
     phases: Vec<(Uuid, Uuid)>,
     original: RequestContext,
     fence: ResponseFence<'static>,
     deadline: Instant,
     active: AtomicBool,
+    sending_target_command: AtomicBool,
 }
 pub(crate) struct OpenPhase<'a> {
     callbacks: &'a PhaseCallbacks,
     callback: Arc<PhaseCallback>,
+}
+pub(crate) struct SendingTargetCommand<'a>(&'a AtomicBool);
+
+impl Drop for SendingTargetCommand<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl OpenPhase<'_> {
+    pub(crate) fn sending_target_command(&self) -> SendingTargetCommand<'_> {
+        let sending = &self.callback.sending_target_command;
+        sending.store(true, Ordering::Release);
+        SendingTargetCommand(sending)
+    }
 }
 impl Drop for OpenPhase<'_> {
     fn drop(&mut self) {
@@ -99,17 +121,20 @@ impl PhaseCallbacks {
             node: node.clone(),
             command: request.command_id,
             historical_intent,
-            initial_dispatch: matches!(
-                &request.step,
+            replica_dispatch: match &request.step {
                 TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
-                    | TargetRuntimeStep::Initialize(_)
-            )
-            .then_some(phase),
+                | TargetRuntimeStep::Initialize(_) => Some(ReplicaDispatch::Initialize(phase)),
+                TargetRuntimeStep::StartActivation { .. } | TargetRuntimeStep::Activate { .. } => {
+                    Some(ReplicaDispatch::Activate(phase))
+                }
+                _ => None,
+            },
             phases,
             original: original.clone(),
             fence,
             deadline,
             active: AtomicBool::new(true),
+            sending_target_command: AtomicBool::new(false),
         });
         slot.insert(callback.clone());
         Ok(OpenPhase {
@@ -118,7 +143,7 @@ impl PhaseCallbacks {
         })
     }
 
-    pub(crate) fn find_initial_start_reader(
+    pub(crate) fn find_replica_start_reader(
         &self,
         reader: &RequestContext,
         peer: &[u8; 32],
@@ -129,7 +154,7 @@ impl PhaseCallbacks {
             let live = self.0.lock().unwrap_or_else(|e| e.into_inner());
             let mut active = live
                 .values()
-                .filter(|c| c.initial_dispatch.is_some() && c.command == command);
+                .filter(|c| c.replica_dispatch.is_some() && c.command == command);
             let Some(callback) = active.next().cloned() else {
                 return Ok(None);
             };
@@ -141,8 +166,9 @@ impl PhaseCallbacks {
             }
             callback
         };
-        if callback.current_initial_intent_reader(reader, peer, command, database)? {
+        if callback.current_replica_intent_reader(reader, peer, command, database)? {
             callback.check(reader, database)?;
+            callback.check_replica_release()?;
             Ok(Some(callback))
         } else {
             Ok(None)
@@ -188,20 +214,27 @@ impl PhaseCallbacks {
     }
 }
 impl PhaseCallback {
-    fn current_initial_intent_reader(
+    fn current_replica_intent_reader(
         &self,
         reader: &RequestContext,
         peer: &[u8; 32],
         command: Uuid,
         database: &Database,
     ) -> Result<bool> {
-        let Some((operation, pending)) = self.initial_dispatch else {
+        let Some(
+            ReplicaDispatch::Initialize((operation, pending))
+            | ReplicaDispatch::Activate((operation, pending)),
+        ) = self.replica_dispatch
+        else {
             return Ok(false);
         };
-        if self.command != command {
+        // Initialize has durable BeginEffect rows. StartActivation and Activate
+        // are retryable and use the live outbound call plus the committed issuer
+        // winner and the sibling's resolved StartActivation.
+        if self.command != command || !self.replica_dispatch_open() {
             return Ok(false);
         }
-        database.is_current_initial_intent_reader(
+        database.is_current_replica_intent_reader(
             operation,
             pending,
             command,
@@ -219,22 +252,34 @@ impl PhaseCallback {
         database: &Database,
     ) -> Result<()> {
         self.check(reader, database)?;
-        if self.initial_dispatch.is_some() {
-            if self.current_initial_intent_reader(reader, peer, command, database)? {
-                // The ledger checks the applicable original caps after loading
-                // the rows. Recheck the live dispatch guard last.
-                return self.check_active();
-            }
-        } else if self.node.principal == reader.principal
+        if !matches!(self.replica_dispatch, Some(ReplicaDispatch::Initialize(_)))
+            && self.node.principal == reader.principal
             && self.node.certificate_sha256 == hex::encode(peer)
             && (self.command == command || self.historical_intent == Some(command))
         {
             return Ok(());
         }
+        if self.current_replica_intent_reader(reader, peer, command, database)? {
+            // Reading the ledger checks the original caps. Check the live
+            // callback again before releasing the response.
+            return self.check_replica_release();
+        }
         Err(Error::new(
             ErrorCode::Unavailable,
             "original Start observation is no longer current",
         ))
+    }
+
+    fn replica_dispatch_open(&self) -> bool {
+        !matches!(self.replica_dispatch, Some(ReplicaDispatch::Activate(_)))
+            || self.sending_target_command.load(Ordering::Acquire)
+    }
+
+    fn check_replica_release(&self) -> Result<()> {
+        if !self.replica_dispatch_open() {
+            return Err(Error::new(ErrorCode::Unavailable, "target command closed"));
+        }
+        self.check_active()
     }
 
     fn check_active(&self) -> Result<()> {

@@ -1074,7 +1074,7 @@ impl ControlRecoveryCoordinator {
                 let remaining = prepared.dispatch_remaining().await?;
                 let wait =
                     target_route_wait(head.phase, &request.step, duration, duration.min(remaining));
-                let _phase_callback = self.phase_callbacks.open(
+                let phase_callback = self.phase_callbacks.open(
                     &self.database,
                     context,
                     &target.node,
@@ -1173,7 +1173,10 @@ impl ControlRecoveryCoordinator {
                         request: request.as_ref().clone(),
                         initial_dispatch,
                     };
-                    let acknowledgement = client.execute(&bearer, &verified, &envelope).await;
+                    let acknowledgement = {
+                        let _sending = phase_callback.sending_target_command();
+                        client.execute(&bearer, &verified, &envelope).await
+                    };
                     let acknowledgement = if first_membership {
                         acknowledgement.map_err(|_| unknown_recovery_effect())?
                     } else {

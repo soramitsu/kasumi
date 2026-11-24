@@ -46,7 +46,14 @@ pub(crate) fn started_for(
         (RecoveryDispatch::Target {node_id,request},Some(RecoveryDispatchOutcome::Target(response)))
         if *node_id==node && request.command_id==intent_id && response.node_id==node && matches!(response.outcome,TargetRuntimeOutcome::Started{..})))
 }
-pub(crate) fn current_initial_intent_reader(
+fn marked_target_command(phase: &RecoveryPhaseRecord) -> bool {
+    phase
+        .effect_attempts
+        .get(&RecoveryEffect::TargetCommand)
+        .is_some_and(|attempt| attempt.input_sha256 == phase.input_sha256)
+}
+
+pub(crate) fn current_replica_intent_reader(
     state: &TenantState,
     operation: &RecoveryRecord,
     pending: Uuid,
@@ -55,10 +62,11 @@ pub(crate) fn current_initial_intent_reader(
     sender: (&str, &str),
     now: impl FnOnce() -> Result<u64>,
 ) -> Result<bool> {
-    if operation.phase != RecoveryPhase::Initialize
-        || operation.pending_phase != Some(pending)
+    if !matches!(
+        operation.phase,
+        RecoveryPhase::Initialize | RecoveryPhase::Confirm
+    ) || operation.pending_phase != Some(pending)
         || operation.current_intent != Some(command)
-        || operation.initialization.is_some()
         || operation.stop_request.is_some()
     {
         return Ok(false);
@@ -71,10 +79,31 @@ pub(crate) fn current_initial_intent_reader(
     else {
         return Ok(false);
     };
-    let (TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum))
-    | TargetRuntimeStep::Initialize(quorum)) = &request.step
-    else {
-        return Ok(false);
+    let (quorum, issuer_command, starting) = match (&operation.phase, &request.step) {
+        (
+            RecoveryPhase::Initialize,
+            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(input)),
+        ) if operation.initialization.is_none() => (input, None, true),
+        (RecoveryPhase::Initialize, TargetRuntimeStep::Initialize(input))
+            if operation.initialization.is_none() =>
+        {
+            (input, None, false)
+        }
+        (
+            RecoveryPhase::Confirm,
+            TargetRuntimeStep::StartActivation {
+                quorum,
+                issuer_command_id,
+            },
+        ) if operation.activation.is_some() => (quorum, Some(*issuer_command_id), true),
+        (
+            RecoveryPhase::Confirm,
+            TargetRuntimeStep::Activate {
+                quorum,
+                issuer_command_id,
+            },
+        ) if operation.activation.is_some() => (quorum, Some(*issuer_command_id), false),
+        _ => return Ok(false),
     };
     let current = intent(state, operation, command)?;
     let Some(control) = &state.lifecycle_control else {
@@ -87,19 +116,15 @@ pub(crate) fn current_initial_intent_reader(
         || state.policy_epoch != current.request.expected_policy_epoch
         || active.principal != dispatch_principal
         || active.principal != current.original_principal
-        || active.phase != RecoveryPhase::Initialize
+        || active.phase != operation.phase
         || active.outcome.is_some()
-        || active
-            .effect_attempts
-            .get(&RecoveryEffect::TargetCommand)
-            .is_none_or(|attempt| attempt.input_sha256 != active.input_sha256)
+        || active.resolved_revision.is_some()
+        || (issuer_command.is_none() && !marked_target_command(active))
         || request.command_id != command
         || request.tenant != operation.request.tenant
-        || current.request.phase != LifecyclePhase::Initialize
         || current.request.target_incarnation != operation.request.target_incarnation
         || current.request.tenant != request.tenant
         || current.request.target_nodes != operation.request.target_nodes
-        || current.request.phase_input_sha256 != quorum.digest()?
     {
         return Ok(false);
     }
@@ -111,14 +136,26 @@ pub(crate) fn current_initial_intent_reader(
     else {
         return Ok(false);
     };
+    if issuer_command.is_some() {
+        // Confirm names the committed issuer winner and binds the Activate
+        // intent to the completed target and the source fence. Its input hash
+        // is different from the Initialize quorum hash.
+        activation::validate_step(
+            state,
+            operation,
+            current,
+            *receiving_node,
+            &request.step,
+            false,
+        )?;
+    } else if current.request.phase != LifecyclePhase::Initialize
+        || current.request.phase_input_sha256 != quorum.digest()?
+    {
+        return Ok(false);
+    }
     let dispatch_cap =
         effect_dispatch_limit(operation, active)?.min(current.original_credential_expires_at_ms);
-    if reader.node_id == *receiving_node
-        && matches!(
-            &request.step,
-            TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
-        )
-    {
+    if reader.node_id == *receiving_node && starting && issuer_command.is_none() {
         return Ok(now()? < dispatch_cap);
     }
     let Some(started) = operation
@@ -140,17 +177,27 @@ pub(crate) fn current_initial_intent_reader(
         return Ok(false);
     };
     let cap = effect_dispatch_limit(operation, start)?.min(dispatch_cap);
-    Ok(start.phase == RecoveryPhase::Initialize
+    let original_start_matches = match (&original.step, issuer_command) {
+        (TargetRuntimeStep::Start(TargetReplicaInput::Quorum(input)), None) => input == quorum,
+        (
+            TargetRuntimeStep::StartActivation {
+                quorum: input,
+                issuer_command_id,
+            },
+            Some(winner),
+        ) => input == quorum && *issuer_command_id == winner,
+        _ => false,
+    };
+    Ok(start.phase == operation.phase
         && start.principal == current.original_principal
-        && start.resolved_revision.is_some()
-        && start
-            .effect_attempts
-            .get(&RecoveryEffect::TargetCommand)
-            .is_some_and(|attempt| attempt.input_sha256 == start.input_sha256)
+        && start.resolved_revision.is_some_and(|revision| {
+            issuer_command.is_none() || revision <= active.prepared_revision
+        })
+        && (issuer_command.is_some() || marked_target_command(start))
         && *node_id == reader.node_id
         && original.command_id == command
         && original.tenant == request.tenant
-        && matches!(&original.step, TargetRuntimeStep::Start(TargetReplicaInput::Quorum(input)) if input == quorum)
+        && original_start_matches
         && reply.command_id == command
         && reply.node_id == reader.node_id
         && matches!(&reply.outcome, TargetRuntimeOutcome::Started {origin_sha256} if origin_sha256 == &quorum.origin_sha256)

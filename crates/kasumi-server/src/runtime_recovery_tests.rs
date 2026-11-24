@@ -276,6 +276,7 @@ pub(super) struct Fixture {
     control_stops: Vec<watch::Sender<bool>>,
     control_tasks: Vec<tokio::task::JoinHandle<Result<()>>>,
     control_observers: Vec<std::sync::Weak<kasumi_engine::Database>>,
+    observed_sibling_activation: [Arc<std::sync::OnceLock<Uuid>>; 3],
     source_observer: std::sync::Weak<kasumi_engine::Database>,
     control_dispatch_node: u64,
     request: Option<RecoveryStart>,
@@ -728,6 +729,7 @@ impl Fixture {
                 control_stops: Vec::new(),
                 control_tasks: Vec::new(),
                 control_observers: Vec::new(),
+                observed_sibling_activation: Default::default(),
                 source_observer: std::sync::Weak::new(),
                 control_dispatch_node: 0,
                 request: None,
@@ -819,6 +821,14 @@ impl Fixture {
     }
     pub async fn configure(&self, config: &mut RuntimeConfig, index: usize) {
         config.auth = self.auth.clone();
+        let grants = &mut config.hosted_control_mut().unwrap().initial_policy.grants;
+        for member in 0..self.verifier_ids.len() {
+            grants.push(Grant {
+                principal: self.node(member).principal,
+                collection: Some("target_recovery_observations".into()),
+                actions: BTreeSet::from([Action::Read]),
+            });
+        }
         config.hosted_control_mut().unwrap().lifecycle =
             Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
                 command_id: self.install_command,
@@ -999,6 +1009,16 @@ impl Fixture {
                 let attestation = self.directory.join(format!("target-{}.pk8", index + 1));
                 private_files::publish(&attestation, &key.serialize_der()).unwrap();
                 let node = self.node(index);
+                let reader_path = self.path(&format!("phase-reader-{}.jwt", node.node_id));
+                let reader = self.credentials.token_with_scope(
+                    &node.principal,
+                    CONTROL_TENANT,
+                    CredentialResource::Control {
+                        incarnation: self.root.control_incarnation,
+                    },
+                    "kasumi:read",
+                );
+                private_files::publish(Path::new(&reader_path), reader.as_bytes()).unwrap();
                 nodes.insert(
                     node.node_id,
                     LifecycleNode {
@@ -1021,7 +1041,7 @@ impl Fixture {
                     control_root: self.root.clone(),
                     control_endpoints: control_endpoints.clone(),
                     writer_observation_bearer_file: None,
-            phase_observation_bearer_file: None,
+                    phase_observation_bearer_file: Some(reader_path),
                     control_tls: self.files[index].clone(),
                     control_ca: self.ca.clone(),
                     node,
@@ -1262,6 +1282,7 @@ impl Fixture {
                 .unwrap();
         let writers:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
         control.install_target_writer_network(Arc::downgrade(&writers)).unwrap();
+        let lifecycle = lifecycle.with_writer_callbacks(coordinator.clone());
         let router = tonic::service::Routes::new(lifecycle.service())
             .add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth).service())
             .into_axum_router();
@@ -1322,14 +1343,16 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let router = tonic::service::Routes::new(
-            crate::rpc::NativeTargetRecovery::new(
-                target.clone(),
-                self.authenticator(handles[index].audit.clone()).await,
-            )
-            .service(),
-        )
-        .into_axum_router();
+        let mut service = crate::rpc::NativeTargetRecovery::new(
+            target.clone(),
+            self.authenticator(handles[index].audit.clone()).await,
+        );
+        let sibling = (index + 1) % self.target_configs.len();
+        service.activation_reader = Some((
+            self.phase_reader(sibling),
+            self.observed_sibling_activation[sibling].clone(),
+        ));
+        let router = tonic::service::Routes::new(service.service()).into_axum_router();
         let (stop, stopped) = watch::channel(false);
         self.target_tasks.push(tokio::spawn(tls::serve_tls(
             socket,
@@ -1347,6 +1370,19 @@ impl Fixture {
         )));
         self.target_stops.push(stop);
         target
+    }
+    fn phase_reader(&self, voter: usize) -> kasumi_client::KasumiLifecyclePool {
+        let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
+        let credential = kasumi_transport::credentials::FileCredentialSource::new(
+            target.phase_observation_bearer_file.as_ref().unwrap(),
+        )
+        .unwrap();
+        kasumi_client::KasumiLifecyclePool::new(
+            target.control_connections().unwrap(),
+            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+            Arc::new(credential),
+        )
+        .unwrap()
     }
     async fn client(&self) -> kasumi_client::KasumiRecoveryPool {
         self.client_with_credential(&self.control_token)
@@ -2534,6 +2570,34 @@ impl Fixture {
                 self.control_failure_context()
             );
         }
+        let (voter, command) = self.observed_sibling_activation.iter().enumerate()
+            .find_map(|(voter, observation)| observation.get().map(|command| (voter, *command)))
+            .expect("the signed Activate intent must reach a read-only sibling during the original RPC");
+        use kasumi_transport::credentials::{CredentialSource, FileCredentialSource};
+        let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
+        let bearer = FileCredentialSource::new(target.phase_observation_bearer_file.as_ref().unwrap())
+            .unwrap()
+            .load()
+            .unwrap();
+        // Query the original Control member directly. Pool failover or an
+        // elapsed client deadline cannot establish that the callback closed.
+        let connections = target.control_connections().unwrap();
+        let refusal = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut client = kasumi_client::KasumiLifecycleClient::connect(
+                &connections[&self.control_dispatch_node],
+                kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+            )
+            .await
+            .expect("connect to the original Control member");
+            client.observe_intent(&bearer, command).await
+        })
+        .await
+        .expect("Control must answer the post-recovery observation")
+        .err()
+        .expect("Finished recovery still admitted its sibling");
+        assert_eq!(refusal.code(), Some(ErrorCode::Unavailable));
+        assert!(matches!(refusal, kasumi_client::ClientError::Transport(ref status)
+            if status.message() == "no matching target request on this Control member"), "{refusal:?}");
         assert!(
             (resumed_initial_inspection || observed_one_materialization) && isolated && restored
         );
