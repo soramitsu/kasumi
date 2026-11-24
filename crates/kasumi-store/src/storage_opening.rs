@@ -82,6 +82,25 @@ pub struct NodeStorageConfig {
 pub struct NodeStorageCreateOptions {
     storage: NodeStorageConfig,
     directory_format: kasumi_kv::DirectoryPageFormat,
+    snapshot_pins: usize,
+}
+
+/// Snapshot pins of a node database that Control, the service audit and
+/// every tenant without its own database share. Each open application
+/// database keeps one for its live selected Generation, so the 256-slot
+/// default would leave a node with about 253 tenants one slot for every
+/// other read and write. This covers the largest roster the 2 MiB
+/// configuration holds (about 1,164 tenants) with room for requests,
+/// snapshot leases, cursors and the node's own readers and writers.
+pub const SHARED_NODE_SNAPSHOT_PINS: usize = 4096;
+const _: () = assert!(SHARED_NODE_SNAPSHOT_PINS <= kasumi_kv::MAX_SNAPSHOT_PINS);
+
+impl NodeStorageCreateOptions {
+    /// Size the database's snapshot pin registry; see `SHARED_NODE_SNAPSHOT_PINS`.
+    pub fn with_snapshot_pins(mut self, snapshot_pins: usize) -> Self {
+        self.snapshot_pins = snapshot_pins;
+        self
+    }
 }
 
 impl From<NodeStorageConfig> for NodeStorageCreateOptions {
@@ -123,7 +142,14 @@ impl NodeStorageConfig {
         NodeStorageCreateOptions {
             storage: self,
             directory_format,
+            snapshot_pins: kasumi_kv::DEFAULT_SNAPSHOT_PINS,
         }
+    }
+
+    /// Options for the node database shared by Control, the service audit
+    /// and tenants without their own database.
+    pub fn shared_node(self) -> NodeStorageCreateOptions {
+        NodeStorageCreateOptions::from(self).with_snapshot_pins(SHARED_NODE_SNAPSHOT_PINS)
     }
 
     pub const fn new(byte_limit: u64, cached_files: usize) -> Self {
@@ -706,6 +732,7 @@ impl RegisteredNodeOpening {
                 let engine =
                     kasumi_kv::Database::builder(file.clone(), *id.as_bytes(), config.cache)
                         .with_directory_page_format(create_options.directory_format)
+                        .with_snapshot_pins(create_options.snapshot_pins)
                         .retain_backend(Box::new(file.clone()), engine_mode);
                 let owner = DatabaseOwner {
                     node,

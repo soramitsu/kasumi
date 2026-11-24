@@ -41,8 +41,9 @@ pub use core::{
     background_work,
 };
 pub use disk_state::{
-    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
-    MaintenanceStep, StorageCompactionPhase, StorageMaintenanceStatus,
+    DEFAULT_SNAPSHOT_PINS, MAX_SNAPSHOT_PINS, MaintenanceBudget, MaintenanceDeferral,
+    MaintenancePolicy, MaintenanceProgress, MaintenanceStep, StorageCompactionPhase,
+    StorageMaintenanceStatus,
 };
 pub use group::{
     ExistingFileSpace, FileKind, FileSpaceRange, GroupFile, ROOT_FILE_NAME, SegmentGroupBackend,

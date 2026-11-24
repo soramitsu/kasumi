@@ -83,7 +83,7 @@ pub use storage_opening::{
     NodeStartupPhase, NodeStorageConfig, NodeStorageCreateOptions, NodeTablesBodyError,
     NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow, RegisteredBindingPut,
     RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead, RegisteredNodeStartup,
-    RegisteredNodeTables,
+    RegisteredNodeTables, SHARED_NODE_SNAPSHOT_PINS,
 };
 pub use storage_opening::{NodeWriteReport, RegisteredNodeWrite};
 #[cfg(any(test, feature = "test-utils"))]
@@ -1410,7 +1410,7 @@ impl NodeStore {
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),

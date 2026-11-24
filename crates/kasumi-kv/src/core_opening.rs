@@ -756,6 +756,7 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
     admission: Arc<dyn StorageAdmission>,
     group_id: [u8; 16],
     cache: CacheConfig,
+    snapshot_pins: usize,
     create_format: Option<crate::DirectoryPageFormat>,
     close_on_failure: bool,
     facade: bool,
@@ -784,6 +785,11 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
             .as_ref()
             .expect("admitted original backend")
             .original();
+        custody
+            .admitted
+            .core
+            .disk
+            .set_snapshot_pins(snapshot_pins)?;
         if let Some(format) = create_format {
             custody.admitted.core.disk.create_with_format(
                 original,

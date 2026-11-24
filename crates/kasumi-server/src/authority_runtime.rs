@@ -392,7 +392,7 @@ impl AuthorityRuntime {
                     config.database_id,
                     persistent_disk.clone(),
                     scratch_disk.clone(),
-                    persistent_disk.native_storage_config(),
+                    persistent_disk.native_storage_config().shared_node(),
                 )).map_err(|observed| observed.foreign_error())?
             };
             pending.owned_nodes.push(node.clone());
