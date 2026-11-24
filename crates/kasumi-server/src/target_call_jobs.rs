@@ -1701,7 +1701,7 @@ mod tests {
     /// A real installed authority pool. A zero budget exhausts locally before
     /// any credential read or connection attempt, exactly as StopLocal's
     /// lifecycle lease acquisition did when no member replied in time.
-    fn authority_pool() -> kasumi_client::KasumiAuthorityPool {
+    fn installed_endpoint() -> std::collections::BTreeMap<u64, kasumi_client::KasumiClientConfig> {
         let key = rcgen::KeyPair::generate().unwrap();
         let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
             .unwrap()
@@ -1712,6 +1712,25 @@ mod tests {
             key.serialize_pem().as_bytes(),
         )
         .unwrap();
+        let pin = identity.certificate_pin();
+        std::collections::BTreeMap::from([(
+            1,
+            kasumi_client::KasumiClientConfig {
+                endpoint: "https://localhost:1".into(),
+                identity,
+                trusted_ca_pem: certificate.pem().into_bytes(),
+                server_certificate_pins: std::collections::BTreeSet::from([pin]),
+            },
+        )])
+    }
+
+    fn unused_credential() -> Arc<dyn kasumi_transport::credentials::CredentialSource> {
+        Arc::new(|| -> anyhow::Result<zeroize::Zeroizing<String>> {
+            anyhow::bail!("a zero budget reads no credential")
+        })
+    }
+
+    fn authority_pool() -> kasumi_client::KasumiAuthorityPool {
         let root_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
         let root =
             kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(&root_key.serialize_der())
@@ -1730,25 +1749,8 @@ mod tests {
             clock_rate_error_ppm: 0,
         })
         .unwrap();
-        let pin = identity.certificate_pin();
-        let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> =
-            Arc::new(|| -> anyhow::Result<zeroize::Zeroizing<String>> {
-                anyhow::bail!("a zero budget reads no credential")
-            });
-        kasumi_client::KasumiAuthorityPool::new(
-            std::collections::BTreeMap::from([(
-                1,
-                kasumi_client::KasumiClientConfig {
-                    endpoint: "https://localhost:1".into(),
-                    identity,
-                    trusted_ca_pem: certificate.pem().into_bytes(),
-                    server_certificate_pins: std::collections::BTreeSet::from([pin]),
-                },
-            )]),
-            trust,
-            credential,
-        )
-        .unwrap()
+        kasumi_client::KasumiAuthorityPool::new(installed_endpoint(), trust, unused_credential())
+            .unwrap()
     }
 
     async fn local_deadline(pool: &mut kasumi_client::KasumiAuthorityPool) -> anyhow::Error {
@@ -1806,10 +1808,30 @@ mod tests {
 
     #[tokio::test]
     async fn genuine_local_authority_deadline_settles_its_cell_and_lets_shutdown_drain() {
+        assert_deadline_releases_cell(local_deadline(&mut authority_pool()).await).await;
+    }
+
+    #[tokio::test]
+    async fn genuine_local_recovery_deadline_settles_its_cell_and_lets_shutdown_drain() {
+        let mut pool =
+            kasumi_client::KasumiRecoveryPool::new(installed_endpoint(), unused_credential())
+                .unwrap();
+        let request = kasumi_types::RecoveryStatusRequest {
+            operation_id: uuid::Uuid::new_v4(),
+        };
+        let error = pool.status(&request, Duration::ZERO).await.unwrap_err();
+        assert!(
+            matches!(&error, kasumi_client::ClientError::LocalDeadline(deadline)
+            if deadline.reason() == "installed recovery operation deadline elapsed")
+        );
+        assert_eq!(error.grpc_code(), tonic::Code::DeadlineExceeded);
+        assert_deadline_releases_cell(error.into()).await;
+    }
+
+    async fn assert_deadline_releases_cell(original: anyhow::Error) {
         let admission = NodeAdmission::new(Default::default()).unwrap();
         let baseline = admission.snapshot().reserved_bytes;
         let jobs = TargetCallJobs::new(&admission).unwrap();
-        let original = local_deadline(&mut authority_pool()).await;
         let address = {
             let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
             outer as *const _ as *const () as usize
@@ -1860,7 +1882,7 @@ mod tests {
         owned.set_source(Arc::new(Owner(drops.clone())));
         // A peer can send the same code and text without any local expiry.
         let peer =
-            tonic::Status::deadline_exceeded("installed authority operation deadline elapsed");
+            tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed");
         let originals = [
             anyhow::Error::from(kasumi_client::ClientError::Transport(owned)),
             anyhow::Error::from(kasumi_client::ClientError::Transport(peer)),

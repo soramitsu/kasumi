@@ -171,6 +171,10 @@ impl LocalDeadline {
     pub(crate) const INSTALLED_AUTHORITY: Self = Self {
         reason: "installed authority operation deadline elapsed",
     };
+    /// The installed recovery or lifecycle route exhausted its own budget.
+    pub(crate) const INSTALLED_RECOVERY: Self = Self {
+        reason: "installed recovery operation deadline elapsed",
+    };
     pub fn reason(&self) -> &'static str {
         self.reason
     }

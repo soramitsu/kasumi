@@ -7280,11 +7280,25 @@ mod lifecycle_tests {
                 .downcast_ref::<crate::target_runtime::TargetCallFailure>()
                 .expect("joined diagnostic retains its admitted cell")
                 .with_original(|original| {
-                    let operation = original
-                        .and_then(kasumi_engine::SnapshotFailure::operation_error)
-                        .expect("joined target deadline holds its original typed error");
-                    assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
-                    assert_eq!(operation.message, "backup verification deadline expired");
+                    match original.expect("joined target call retains its original error") {
+                        kasumi_engine::SnapshotFailure::Operation(operation) => {
+                            assert_eq!(operation.code, kasumi_types::ErrorCode::Unavailable);
+                            assert_eq!(operation.message, "backup verification deadline expired");
+                        }
+                        kasumi_engine::SnapshotFailure::Source(source) => {
+                            let outer: &(dyn std::error::Error + Send + Sync) = source.as_ref();
+                            let Some(kasumi_client::ClientError::LocalDeadline(deadline)) =
+                                outer.downcast_ref::<kasumi_client::ClientError>()
+                            else {
+                                panic!("expected a locally measured recovery deadline: {source:?}");
+                            };
+                            assert_eq!(
+                                deadline.reason(),
+                                "installed recovery operation deadline elapsed"
+                            );
+                        }
+                        other => panic!("unexpected joined target call error: {other:?}"),
+                    }
                 });
         }
         for stop in &stops {

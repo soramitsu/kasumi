@@ -382,10 +382,11 @@ impl RequestDeadline {
     }
 }
 fn deadline() -> ClientError {
-    tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed").into()
+    ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_RECOVERY)
 }
 fn retryable(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport(status) if matches!(status.code(),
+    matches!(error, ClientError::LocalDeadline(_))
+        || matches!(error, ClientError::Transport(status) if matches!(status.code(),
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown | tonic::Code::Cancelled))
 }
 
@@ -595,9 +596,12 @@ mod tests {
         )
         .await
         .expect("original invocation must finish");
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
@@ -667,9 +671,12 @@ mod tests {
                 },
             )
             .await;
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         assert!(reads.load(Ordering::SeqCst) >= 3);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
@@ -689,9 +696,12 @@ mod tests {
                 |_, _| Box::pin(async { Err(tonic::Status::unknown("outcome lost").into()) }),
             )
             .await;
-        assert!(
-            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
-        );
+        assert!(matches!(
+            result,
+            Err(ClientError::LocalDeadline(
+                crate::LocalDeadline::INSTALLED_RECOVERY
+            ))
+        ));
         // Every member reported the absence several times over one connection
         // each, rather than reconnecting after every 25 ms pass.
         assert!(reads.load(Ordering::SeqCst) >= 6);
@@ -817,6 +827,25 @@ mod tests {
         clock.0.store(100, Ordering::SeqCst);
         assert!(deadline.remaining().is_err());
     }
+    #[test]
+    fn only_local_expiration_carries_pool_provenance() {
+        let error = RequestDeadline::new(Duration::ZERO, Arc::new(SystemLeaseClock))
+            .err()
+            .expect("zero budget expires immediately");
+        let peer: ClientError =
+            tonic::Status::deadline_exceeded("installed recovery operation deadline elapsed")
+                .into();
+        assert!(matches!(
+            error,
+            ClientError::LocalDeadline(crate::LocalDeadline::INSTALLED_RECOVERY)
+        ));
+        assert!(matches!(peer, ClientError::Transport(_)));
+        assert_eq!(error.grpc_code(), peer.grpc_code());
+        assert_eq!(error.to_string(), peer.to_string());
+        assert!(retryable(&error) && retryable(&peer));
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
     #[test]
     fn authority_and_response_failures_do_not_change_routes() {
         for code in [
