@@ -1066,12 +1066,10 @@ impl QueryIndexes {
                 if page.is_full() {
                     break;
                 }
-                // Copies are in candidate order, which is ascending by ID.
+                // Kept copies are in candidate order, one for each candidate.
                 let copy = copies
-                    .binary_search_by(|(id, ..)| (*id).cmp(row.id))
-                    .ok()
-                    .map(|at| &mut copies[at])
-                    .filter(|(_, row, _)| row.is_some());
+                    .get_mut(row.position)
+                    .filter(|(id, copied, _)| *id == row.id && copied.is_some());
                 let pushed = match copy {
                     Some((_, row, bytes)) => {
                         let taken = page.push_owned(row, *bytes)?;
@@ -1206,11 +1204,11 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
     };
     let mut keys_bytes = 0u64;
     let mut has_numeric_sort_key = false;
-    for id in candidates {
+    for (position, id) in candidates.iter().enumerate() {
         cancellation.check()?;
         let score = scores.and_then(|scores| scores.get(id.as_ref())).copied();
         let keys = if request.sort.is_empty() {
-            Vec::new()
+            Box::default()
         } else {
             document_source::with_live(source, id, None, cancellation, |document| {
                 let mut bytes = allocation::vec_bytes::<Scalar>(request.sort.len())?;
@@ -1251,10 +1249,16 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
                         None => abandon_copies(&mut copies, memory)?,
                     }
                 }
-                Ok(keys)
+                // Built at its exact capacity, so boxing does not reallocate.
+                Ok(keys.into_boxed_slice())
             })?
         };
-        ordered.push(OrderedRow { id, score, keys });
+        ordered.push(OrderedRow {
+            id,
+            score,
+            keys,
+            position,
+        });
     }
     let decimal_scratch = if has_numeric_sort_key {
         scalar::PROVISIONAL_DECIMAL_SCRATCH_BYTES
@@ -1300,8 +1304,16 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
 struct OrderedRow<'a> {
     id: &'a str,
     score: Option<f32>,
-    keys: Vec<Scalar>,
+    keys: Box<[Scalar]>,
+    /// Where `id` is among the candidates, so that a row copied while its
+    /// keys were read is found without a search.
+    position: usize,
 }
+
+// Each candidate's row is admitted at this size: the position takes the
+// space that boxing the keys gave up.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<OrderedRow<'static>>() == 48);
 
 /// The rows after a page, in result order: each item is a document ID and its
 /// search score. Borrowed from the query's candidates, so nothing is copied

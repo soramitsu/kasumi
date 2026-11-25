@@ -104,7 +104,7 @@ fn inspect(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
             }
         }
         Value::Number(n) => {
-            decimal(&n.to_string())?;
+            decimal(n.as_str())?;
         }
         _ => {}
     }

@@ -182,6 +182,18 @@ fn bench_query_planner_and_materialization() {
         json!({"collection":"invoices","filter":{"/status":"open"},"sort":["-/amount"],"limit":20}),
     );
     measure(
+        "all sort -amount limit 20",
+        &indexes,
+        &small,
+        json!({"collection":"invoices","sort":["-/amount"],"limit":20}),
+    );
+    measure(
+        "status=open sort region limit 20",
+        &indexes,
+        &small,
+        json!({"collection":"invoices","filter":{"/status":"open"},"sort":["/region"],"limit":20}),
+    );
+    measure(
         "status!=open (not eq) limit 20",
         &indexes,
         &small,
@@ -243,6 +255,21 @@ fn bench_per_row_costs() {
             budget.account(&pending_document(row).body).unwrap();
         }
         std::hint::black_box(budget.bytes);
+    });
+    let numbers: Vec<String> = (0..10_000)
+        .map(|i| match i % 4 {
+            0 => ((i * 7919) % 10_000).to_string(),
+            1 => format!("{}.{:02}", i, i % 100),
+            2 => format!("-{}", i * 1000),
+            _ => (1_700_000_000_000u64 + i as u64).to_string(),
+        })
+        .collect();
+    time("decimal parse", &mut || {
+        let parsed: Vec<_> = numbers
+            .iter()
+            .map(|text| crate::scalar::decimal(text).unwrap())
+            .collect();
+        std::hint::black_box(parsed);
     });
     time("deep clone of body", &mut || {
         let cloned: Vec<_> = rows

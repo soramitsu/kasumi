@@ -45,15 +45,18 @@ impl<'a> FieldValue<'a> {
     }
     fn number(n: &crate::BigDecimal) -> Self {
         use bigdecimal::num_bigint::Sign;
-        let (coefficient, scale) = n.normalized().as_bigint_and_exponent();
+        let (coefficient, scale) = n.as_bigint_and_scale();
         let sign = coefficient.sign();
         let bytes = if sign == Sign::NoSign {
             vec![1]
         } else {
             // Inputs have at most 100 digits and a bounded exponent. Compare
             // exponent first, then significand digits with a low terminator.
+            // Trailing zeros are dropped as normalizing would drop them; that
+            // lowers the scale by as much as the digits, so the exponent holds.
             let digits = coefficient.magnitude().to_str_radix(10);
             let exponent = digits.len() as i64 - scale;
+            let digits = digits.trim_end_matches('0');
             let mut bytes = Vec::with_capacity(10 + digits.len());
             bytes.push(if sign == Sign::Minus { 0 } else { 2 });
             bytes.extend_from_slice(&((exponent as u64) ^ (1 << 63)).to_be_bytes());
@@ -160,6 +163,13 @@ mod tests {
             .map(|s| FieldValue::number(&crate::scalar::decimal(s).unwrap()).bytes)
             .collect();
         assert!(representations.windows(2).all(|pair| pair[0] < pair[1]));
+        for (coefficient, scale) in [(12000, 2), (-12000, 2), (5, -3), (-50, 0), (0, 4)] {
+            let unnormalized = crate::BigDecimal::new(coefficient.into(), scale);
+            assert_eq!(
+                FieldValue::number(&unnormalized).bytes,
+                FieldValue::number(&unnormalized.normalized()).bytes
+            );
+        }
         for (a, b) in [("-0.0", "0"), ("1.2000", "12e-1"), ("-55", "-0.55e2")] {
             assert_eq!(
                 FieldValue::number(&crate::scalar::decimal(a).unwrap()).bytes,

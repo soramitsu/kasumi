@@ -1,5 +1,6 @@
 use crate::{QueryMemory, QueryWorkspace, allocation};
 use bigdecimal::BigDecimal;
+use bigdecimal::num_bigint::BigInt;
 use kasumi_types::{Error, ErrorCode, Result, ScalarType};
 use serde_json::Value;
 use std::str::FromStr;
@@ -82,6 +83,61 @@ pub(crate) fn exhausted(message: impl Into<String>) -> Error {
 }
 
 pub(crate) fn decimal(text: &str) -> Result<BigDecimal> {
+    match short_decimal(text) {
+        Some(number) => Ok(number),
+        None => parse_decimal(text),
+    }
+}
+
+/// The value `parse_decimal` returns for plain decimal text,
+/// `-?digits[.digits]` with at most 18 digits in all, which covers almost
+/// every stored number. Its coefficient fits an `i64`, so it is built and
+/// normalized directly: the same value and representation as parsing and
+/// then calling `normalized`, without the base-10 digit vector round trip
+/// that `normalized` makes. Other text, including a `+` sign, an exponent or
+/// digit separators, returns `None` for the general parser and its limits.
+fn short_decimal(text: &str) -> Option<BigDecimal> {
+    let (negative, unsigned) = match text.as_bytes() {
+        [b'-', rest @ ..] => (true, rest),
+        bytes => (false, bytes),
+    };
+    let mut coefficient = 0i64;
+    let mut digits = 0;
+    let mut whole_digits = 0;
+    let mut scale = 0i64;
+    let mut point = false;
+    for &byte in unsigned {
+        match byte {
+            b'0'..=b'9' if digits < 18 => {
+                coefficient = coefficient * 10 + i64::from(byte - b'0');
+                digits += 1;
+                if point {
+                    scale += 1;
+                } else {
+                    whole_digits += 1;
+                }
+            }
+            b'.' if !point => point = true,
+            _ => return None,
+        }
+    }
+    if whole_digits == 0 || (point && scale == 0) {
+        return None;
+    }
+    if coefficient == 0 {
+        return Some(BigDecimal::new(BigInt::from(0), 0));
+    }
+    while coefficient % 10 == 0 {
+        coefficient /= 10;
+        scale -= 1;
+    }
+    if negative {
+        coefficient = -coefficient;
+    }
+    Some(BigDecimal::new(BigInt::from(coefficient), scale))
+}
+
+fn parse_decimal(text: &str) -> Result<BigDecimal> {
     if text.len() > 256 {
         return Err(invalid("number exceeds 256-byte limit"));
     }
@@ -238,4 +294,156 @@ pub(crate) fn numeric_value(n: &BigDecimal, kind: Option<ScalarType>) -> Result<
         return Ok(Value::String(text));
     }
     serde_json::from_str(&text).map_err(|_| invalid("cannot encode exact number"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(number: BigDecimal) -> (BigInt, i64) {
+        number.into_bigint_and_scale()
+    }
+
+    type Outcome = std::result::Result<(BigInt, i64), (ErrorCode, String)>;
+
+    fn outcome(parsed: Result<BigDecimal>) -> Outcome {
+        parsed
+            .map(parts)
+            .map_err(|error| (error.code, error.message))
+    }
+
+    /// Deterministic digit strings: every length up to 19 digits, with and
+    /// without a sign, leading zeros, trailing zeros and a decimal point.
+    fn generated() -> Vec<String> {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut inputs = Vec::new();
+        for length in 1..=19usize {
+            for _ in 0..400 {
+                let mut digits: Vec<u8> = (0..length).map(|_| b'0' + (next() % 10) as u8).collect();
+                match next() % 4 {
+                    0 => digits[0] = b'0',
+                    1 => *digits.last_mut().unwrap() = b'0',
+                    2 => {
+                        let zeros = (next() as usize % length) + 1;
+                        for digit in &mut digits[length - zeros..] {
+                            *digit = b'0';
+                        }
+                    }
+                    _ => {}
+                }
+                let mut text = String::from_utf8(digits).unwrap();
+                if length > 1 && next() % 2 == 0 {
+                    text.insert(1 + next() as usize % (length - 1), '.');
+                }
+                if next() % 2 == 0 {
+                    text.insert(0, '-');
+                }
+                inputs.push(text);
+            }
+        }
+        inputs
+    }
+
+    #[test]
+    fn short_decimals_equal_the_general_parser_in_value_and_representation() {
+        let mut inputs: Vec<String> = [
+            "0",
+            "-0",
+            "00",
+            "0.0",
+            "-0.000",
+            "1",
+            "-1",
+            "10",
+            "-10",
+            "100",
+            "5000",
+            "-5000",
+            "1.50",
+            "-1.50",
+            "0.001",
+            "-0.001",
+            "0012.3400",
+            "7919",
+            "120.000",
+            "999999999999999999",
+            "-999999999999999999",
+            "100000000000000000",
+            "0.00000000000000001",
+            "-99999999.9999999999",
+            "123456789012345678",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        inputs.extend(generated());
+        let mut short = 0;
+        for text in &inputs {
+            let general = outcome(parse_decimal(text));
+            match short_decimal(text) {
+                Some(number) => {
+                    short += 1;
+                    assert_eq!(Ok(parts(number)), general, "{text}");
+                }
+                // Too many digits for the short form.
+                None => assert!(
+                    text.bytes().filter(u8::is_ascii_digit).count() > 18,
+                    "{text}"
+                ),
+            }
+            assert_eq!(outcome(decimal(text)), general, "{text}");
+        }
+        assert!(short > inputs.len() / 2);
+    }
+
+    #[test]
+    fn other_decimal_text_keeps_the_general_parser_and_its_limits() {
+        for text in [
+            "",
+            "-",
+            ".",
+            "-.",
+            ".5",
+            "5.",
+            "-5.",
+            "1.2.3",
+            "+5",
+            "--5",
+            "1_000",
+            "1e3",
+            "1E-3",
+            "-2.5e+10",
+            " 1",
+            "1 ",
+            "0x10",
+            "1,5",
+            "١",
+            "NaN",
+            "inf",
+            "1234567890123456789",
+            "-0.000000000000000001",
+            "1e1001",
+        ] {
+            assert!(short_decimal(text).is_none(), "{text}");
+            assert_eq!(
+                outcome(decimal(text)),
+                outcome(parse_decimal(text)),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            parts(decimal("1e3").unwrap()),
+            parts(decimal("1000").unwrap())
+        );
+        assert_eq!(
+            decimal(&"9".repeat(101)).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+    }
 }
