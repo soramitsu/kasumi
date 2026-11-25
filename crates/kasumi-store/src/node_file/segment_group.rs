@@ -60,6 +60,8 @@ use uuid::Uuid;
 
 #[cfg(test)]
 mod indexer_benchmark;
+#[cfg(test)]
+mod maintenance_step_benchmark;
 mod transaction;
 #[cfg(test)]
 #[path = "segment_group/transaction_tests.rs"]
