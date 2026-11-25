@@ -72,6 +72,31 @@ pub(crate) fn effective_admission(
     );
 }
 
+/// The open-file limit the daemon serves with, against what its persistent
+/// budgets need. A raised limit says so: the service manager's was lower.
+pub fn descriptor_limit(limit: &crate::process_limits::DescriptorLimit) {
+    match limit.raised_from {
+        Some(previous) => tracing::info!(
+            event = "descriptor_limit",
+            soft = limit.soft,
+            hard = limit.hard,
+            required = limit.required,
+            raised_from = previous,
+            "raised the open-file limit from {previous} to {} for the persistent budgets",
+            limit.soft
+        ),
+        None => tracing::info!(
+            event = "descriptor_limit",
+            soft = limit.soft,
+            hard = limit.hard,
+            required = limit.required,
+            "open-file limit {} covers the {} descriptors the persistent budgets need",
+            limit.soft,
+            limit.required
+        ),
+    }
+}
+
 /// Free space where the node writes, once both disks are open. Scratch spools
 /// snapshot builds and restores, so on the persistent filesystem a large build
 /// can consume the margin every durable write needs.

@@ -168,7 +168,7 @@ impl RetiredCustody {
             group,
             custody,
             config,
-            admission.snapshot_buffer_owner()?,
+            admission.local_snapshot_buffer_owner()?,
         )
         .await?;
         Ok(Self::with_closed_group(group, admission, audit))

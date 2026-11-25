@@ -68,7 +68,7 @@ pub use apply_publication::{
     TestPublicationState, with_application_publisher_bound_for_test,
     with_application_publisher_bound_observed_for_test, with_application_publisher_for_test,
 };
-mod capacity_refusal;
+pub mod capacity_refusal;
 mod control;
 mod entry;
 pub use entry::Entry;
@@ -140,8 +140,8 @@ pub use openraft::{
     StoredMembership,
 };
 pub use snapshot_buffer::{
-    ApplicationSourceBinding, ApplicationSourceCustody, SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer,
-    SnapshotBufferOwner,
+    ApplicationSourceBinding, ApplicationSourceCustody, LOCAL_SNAPSHOT_BUFFER_CELLS,
+    SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer, SnapshotBufferOwner,
 };
 pub use snapshot_state::RetiredSnapshotState;
 use std::{

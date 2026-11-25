@@ -557,8 +557,14 @@ fn policy() -> Policy {
         strict_read_audit: false,
     }
 }
+/// The restored database is a standalone group: its owner admits only the
+/// local transfer cells.
 fn snapshot_owner_bytes() -> u64 {
-    kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS).unwrap()
+    kasumi_raft::SnapshotBufferOwner::required_bytes_for(
+        kasumi_raft::LOCAL_SNAPSHOT_BUFFER_CELLS,
+        kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+    )
+    .unwrap()
 }
 
 /// Each unpublished bootstrap document source owns two full encrypted native

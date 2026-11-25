@@ -632,6 +632,13 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     );
     assert_eq!(storage["compaction_trigger_bytes"], expected.trigger_bytes);
     assert_eq!(storage["garbage_files"], 0);
+    // The shared node database reports its pins against the shared registry.
+    assert_eq!(storage["snapshot_pin_limit"], expected.snapshot_pin_limit);
+    assert_eq!(
+        expected.snapshot_pin_limit,
+        kasumi_store::SHARED_NODE_SNAPSHOT_PINS as u64
+    );
+    assert!(storage["snapshot_pins"].as_u64().is_some(), "{storage}");
     assert_eq!(storage["reclaim_invalidations_total"], 0);
     assert_eq!(storage["rejected_deferrals_total"], 0);
     assert!(storage["status_age_seconds"].as_f64().unwrap() >= 0.0);

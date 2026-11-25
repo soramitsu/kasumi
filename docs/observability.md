@@ -453,7 +453,12 @@ is still current: a compaction cycle clears it until it measures again.
 `segment_files`, `segment_bytes`, `arena_files` and `arena_bytes` are that
 census's result, kept with `census_age_seconds` while a cycle runs (`null`
 before the first census in this process lifetime), and can lag files created
-since. `garbage_files` counts files recorded for unlink. `compaction_phase` is
+since. `garbage_files` counts files recorded for unlink. `snapshot_pins` is the
+number of snapshot pins the database held when the status was published and
+`snapshot_pin_limit` its registry size (4,096 for the node database that Control,
+the service audit and tenants without their own database share, 256 elsewhere).
+Each open tenant keeps one; a full registry refuses new reads and writes for
+capacity. `compaction_phase` is
 `idle`, `evacuating`, `reclaiming` or `packing`, with `compaction_cycle`,
 `compaction_requested`, the baseline measured when the last cycle finished
 reclaiming (`compaction_baseline_bytes`/`_files`) and the thresholds that begin
@@ -515,7 +520,8 @@ label, and a dedicated database as `kasumi_local_group_storage_*` labeled
 says which applies to each group. Node-wide figures are never repeated under
 tenant labels. The families are `measured`, `segment_files`, `segment_bytes`,
 `arena_files`, `arena_bytes`, `census_age_seconds`, `status_age_seconds`,
-`garbage_files`, `compaction_phase{phase="..."}` (1 for the current phase, 0 for
+`garbage_files`, `snapshot_pins`, `snapshot_pin_limit`,
+`compaction_phase{phase="..."}` (1 for the current phase, 0 for
 the other three), `compaction_cycle`, `compaction_requested`,
 `compaction_baseline_bytes`, `compaction_trigger_bytes`,
 `snapshot_retained_files`, `snapshot_retained_bytes`,

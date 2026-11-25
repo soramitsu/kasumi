@@ -119,7 +119,7 @@ impl DatabaseConstruction {
     ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = match self.local_buffers.take() {
             Some(buffers) => buffers,
-            None => self.admission().snapshot_buffer_owner()?,
+            None => self.admission().local_snapshot_buffer_owner()?,
         };
         let (sources, binding) = crate::application_sources::SourceRoots::new(
             self.stores.clone(),

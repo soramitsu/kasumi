@@ -522,6 +522,16 @@ impl SnapshotPins {
         Ok(epoch)
     }
 
+    /// Occupied slots and the registry size, for status reporting only.
+    pub(crate) fn occupancy(&self) -> Result<(u64, u64), CoreError> {
+        self.inner.check()?;
+        let state = self.inner.lock()?;
+        let used = state.slots.iter().filter(|entry| !entry.is_empty()).count();
+        drop(state);
+        self.inner.check()?;
+        Ok((used as u64, self.inner.max_pins as u64))
+    }
+
     /// Cheap scheduling observation only, never an unlink proof: whether any
     /// live pin holds a root older than `generation`. Acquisition pins only
     /// the current root, so once no pin is older than a past current root,

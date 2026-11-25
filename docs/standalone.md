@@ -82,6 +82,16 @@ configuration never derives a persistent root from a database path. Install ever
 root explicitly before opening it and use the same root map and budgets when
 initializing auxiliary stores. Unsupported or missing configuration is rejected.
 
+`kasumid serve` needs an open-file limit of at least
+2 x `max_open_files` + 2 x `max_open_directories` + 1,024: a file owner keeps up
+to two descriptors, a directory owner can keep its parent's, and listeners,
+connections, logs and scratch files share the margin. It raises its soft limit
+to that when the hard limit allows and otherwise refuses to start, naming both
+limits. The packaged units set `LimitNOFILE=65536`. A daemon started through
+`runuser`, `su` or a login session often has a soft limit of 1,024, and each
+standalone tenant keeps about two directory descriptors (2,165 descriptors in
+all with 1,000 tenants).
+
 `persistent_disk.native_storage` is also required. The generated profile sets
 `byte_limit: 1073741824` (1 GiB) and `cached_files: 64`. These are per-group
 ceilings for the native page/value cache and cached file descriptors; retained

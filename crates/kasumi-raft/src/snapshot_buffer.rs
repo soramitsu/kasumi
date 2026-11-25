@@ -47,6 +47,13 @@ const CELL_METADATA: u64 = 16 << 10;
 // acquire invokes the constructor; child custody retains the same owner charge.
 const RECEIVING_BACKING: u64 = std::mem::size_of::<EncryptedSpool>() as u64;
 pub const SNAPSHOT_BUFFER_SLOTS: usize = 32;
+/// Transfer cells of a standalone (local-snapshot) group. Its own snapshots
+/// cover a capture instead of an encoded image, so only custody builds,
+/// backups and restores take a cell, each briefly. Each cell admits 256 KiB of
+/// workspace plus metadata, so a node with many standalone tenants would
+/// otherwise reserve about 9 MB per tenant for transfers that never happen.
+/// Scratch-failure seats stay at `SNAPSHOT_BUFFER_SLOTS`.
+pub const LOCAL_SNAPSHOT_BUFFER_CELLS: usize = 4;
 
 #[derive(Debug)]
 enum Backing {
@@ -272,16 +279,23 @@ fn retained() -> &'static Mutex<BTreeMap<uuid::Uuid, Arc<SnapshotBufferOwner>>> 
 }
 impl SnapshotBufferOwner {
     pub fn required_bytes(max_buffers: usize) -> anyhow::Result<u64> {
+        Self::required_bytes_for(max_buffers, max_buffers)
+    }
+    /// `cells` transfer cells and `scratch_seats` scratch-failure seats.
+    pub fn required_bytes_for(cells: usize, scratch_seats: usize) -> anyhow::Result<u64> {
         anyhow::ensure!(
-            max_buffers > 0 && max_buffers <= 4096,
+            cells > 0 && cells <= 4096 && scratch_seats > 0 && scratch_seats <= 4096,
             "snapshot buffer inventory outside supported bounds"
         );
+        let max_buffers = cells;
         let scratch_failures =
-            crate::scratch_failure_inventory::ScratchFailureInventory::required_bytes(max_buffers)?
-                .checked_add(std::mem::size_of::<
-                    crate::scratch_failure_inventory::ScratchFailureInventory,
-                >() as u64)
-                .ok_or_else(|| anyhow::anyhow!("scratch failure inventory quote overflow"))?;
+            crate::scratch_failure_inventory::ScratchFailureInventory::required_bytes(
+                scratch_seats,
+            )?
+            .checked_add(std::mem::size_of::<
+                crate::scratch_failure_inventory::ScratchFailureInventory,
+            >() as u64)
+            .ok_or_else(|| anyhow::anyhow!("scratch failure inventory quote overflow"))?;
         u64::try_from(max_buffers)?
             .checked_mul(BUFFER_WORKSPACE + CELL_METADATA + RECEIVING_BACKING)
             .and_then(|bytes| {
@@ -299,14 +313,22 @@ impl SnapshotBufferOwner {
             .ok_or_else(|| anyhow::anyhow!("snapshot buffer inventory overflow"))
     }
     pub fn new(max_buffers: usize, charge: SharedBudgetCharge) -> anyhow::Result<Arc<Self>> {
-        Self::required_bytes(max_buffers)?;
+        Self::new_for(max_buffers, max_buffers, charge)
+    }
+    /// `charge` must cover `required_bytes_for(cells, scratch_seats)`.
+    pub fn new_for(
+        cells: usize,
+        scratch_seats: usize,
+        charge: SharedBudgetCharge,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::required_bytes_for(cells, scratch_seats)?;
         let scratch_failures = crate::scratch_failure_inventory::ScratchFailureInventory::new(
-            max_buffers,
+            scratch_seats,
             charge.clone(),
         )?;
         let owner = Arc::new(Self {
             id: uuid::Uuid::new_v4(),
-            cells: Mutex::new((0..max_buffers).map(|_| None).collect()),
+            cells: Mutex::new((0..cells).map(|_| None).collect()),
             closed: AtomicBool::new(false),
             startup_closing: AtomicBool::new(false),
             delivered_group_released: AtomicBool::new(false),

@@ -202,6 +202,11 @@ pub struct StorageMaintenanceStatus {
     pub cycles_completed: u64,
     pub requested: bool,
     pub last_deferral: Option<MaintenanceDeferral>,
+    /// Snapshot pins held when this status was published, and the registry
+    /// size. A database shared by tenants keeps one per open tenant; a full
+    /// registry refuses new reads and writes for capacity.
+    pub snapshot_pins: u64,
+    pub snapshot_pin_limit: u64,
 }
 
 /// The status the maintenance owner published at the end of its last step,
@@ -484,6 +489,7 @@ impl DiskState {
         let record = *root.compaction();
         let garbage = root.garbage().len() as u64;
         drop(root);
+        let (snapshot_pins, snapshot_pin_limit) = self.pins.occupancy()?;
         let measurement = self.compact.measurement;
         let policy = &self.maintenance.policy;
         let totals = &self.reclaim.totals;
@@ -512,6 +518,8 @@ impl DiskState {
             evacuation_survey_fallbacks_total: evacuation.survey_fallbacks,
             reclaim_invalidations_total: totals.invalidations,
             capacity_deferrals_total: self.maintenance.capacity_deferrals,
+            snapshot_pins,
+            snapshot_pin_limit,
             rejected_deferrals_total: self.maintenance.rejected_deferrals,
             cycles_completed: self.maintenance.cycles_completed,
             requested: self.compact.requested,

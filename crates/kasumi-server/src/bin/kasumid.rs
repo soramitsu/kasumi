@@ -171,6 +171,16 @@ async fn serve(options: ServeOptions) -> Result<()> {
     )));
     kasumi_server::logging::serve_options(&options);
     let config = RuntimeConfig::load(&options.configuration)?;
+    // Before any store opens: every budgeted owner must be able to hold its
+    // descriptors, or a refused open() surfaces as an uncertain write.
+    let descriptors = kasumi_server::process_limits::ensure_descriptors(
+        kasumi_server::process_limits::required_descriptors(
+            config.persistent_disk.max_open_files,
+            config.persistent_disk.max_open_directories,
+        ),
+    )
+    .context("reading the open-file limit")??;
+    startup_progress::descriptor_limit(&descriptors);
     let opening = NodeRuntime::open_with_storage_maintenance(config, options.storage_maintenance);
     let runtime = tokio::select! {
         result = signals.open(opening) => result.context("opening encrypted node runtime")?,
