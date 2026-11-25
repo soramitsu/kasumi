@@ -37,6 +37,23 @@ struct Phase {
     units: usize,
     nanos: Vec<u128>,
     verifications: Vec<u64>,
+    /// Process CPU (user, system) in microseconds; the step runs on this
+    /// thread and the harness runs one test, so this is the step's CPU and
+    /// is far less sensitive to host load than wall time.
+    cpu: Vec<(u64, u64)>,
+}
+
+fn cpu_micros() -> (u64, u64) {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage writes the complete structure when it returns zero.
+    assert_eq!(
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+        0
+    );
+    // SAFETY: initialized by the successful call above.
+    let usage = unsafe { usage.assume_init() };
+    let micros = |time: libc::timeval| time.tv_sec as u64 * 1_000_000 + time.tv_usec as u64;
+    (micros(usage.ru_utime), micros(usage.ru_stime))
 }
 
 #[test]
@@ -78,13 +95,18 @@ fn maintenance_step_benchmark() {
     let reason = loop {
         let phase = core.maintenance_status().unwrap().phase.as_str();
         let verified = NodeDiskFile::descriptor_verifications_for_test();
+        let cpu_before = cpu_micros();
         let started = Instant::now();
         let progress = core.run_maintenance(WORKER_BUDGET).unwrap();
         let nanos = started.elapsed().as_nanos();
+        let cpu_after = cpu_micros();
         let entry = phases.entry(phase).or_default();
         entry.steps += 1;
         entry.units += progress.units;
         entry.nanos.push(nanos);
+        entry
+            .cpu
+            .push((cpu_after.0 - cpu_before.0, cpu_after.1 - cpu_before.1));
         entry
             .verifications
             .push(NodeDiskFile::descriptor_verifications_for_test() - verified);
@@ -98,7 +120,7 @@ fn maintenance_step_benchmark() {
         {
             break "cycle_completed".to_owned();
         }
-        if cycle.elapsed().as_secs() >= 300 {
+        if cycle.elapsed().as_secs() >= 1_800 {
             break "time_limit".to_owned();
         }
     };
@@ -119,6 +141,9 @@ fn maintenance_step_benchmark() {
                 "p50_ms": at(0.5),
                 "p99_ms": at(0.99),
                 "max_ms": at(1.0),
+                "cpu_max_ms": phase.cpu.iter().map(|(user, sys)| user + sys).max().unwrap_or(0) as f64 / 1e3,
+                "cpu_total_ms": phase.cpu.iter().map(|(user, sys)| user + sys).sum::<u64>() as f64 / 1e3,
+                "sys_total_ms": phase.cpu.iter().map(|(_, sys)| sys).sum::<u64>() as f64 / 1e3,
                 "verifications_total": phase.verifications.iter().sum::<u64>(),
                 "verifications_max_step": phase.verifications.iter().max().copied().unwrap_or(0),
             }),

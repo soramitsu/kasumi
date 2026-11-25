@@ -219,6 +219,25 @@ impl DirectoryWalker {
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 
+    fn check_owner_live(&self) -> Result<(), CoreError> {
+        self.admission
+            .check_owner_live()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
+    }
+
+    /// The full owner check brackets every step and every physical page
+    /// load: before it, after a load the backend did not check itself (in
+    /// the reader), after each page callback, and around each separator
+    /// reread. Decoding the entries of the page already loaded and validated
+    /// into the walker's own buffer performs no I/O, so each entry checks
+    /// only the owner's in-memory state (`check_owner_live`), as the
+    /// admission contract prescribes for directory traversal. A full check
+    /// per entry re-verified the retained descriptor twice per entry (up to
+    /// 2 * `MAX_DIRECTORY_LEAF_RECORDS` per leaf) while the maintenance step
+    /// running the walk excluded every tenant. An owner that fails during a
+    /// step still fails that step by its next full check, at the latest its
+    /// final one, so the caller discards its partial proof as before.
+    /// Callbacks must not perform physical I/O of their own.
     fn step_inner(
         &mut self,
         backend: &dyn DirectoryBackend,
@@ -229,10 +248,11 @@ impl DirectoryWalker {
         self.check_owner()?;
         let mut progress = DirectoryWalkProgress::default();
         while progress.work < work_limit {
-            self.check_owner()?;
+            self.check_owner_live()?;
             match self.action {
                 Action::Complete => break,
                 Action::Enter(pending) => {
+                    self.check_owner()?;
                     let reader = DirectoryReader::new(backend, self.admission.clone());
                     let info = reader.load(
                         self.buffer.as_mut().expect("nonempty root"),
@@ -325,7 +345,7 @@ impl DirectoryWalker {
                     let parent = self.frames[self.depth - 1].as_mut().expect("loaded page");
                     parent.next_at = end;
                     parent.next_index += 1;
-                    self.check_owner()?;
+                    self.check_owner_live()?;
                     progress.work += 1;
                     progress.entries += 1;
                 }
@@ -344,6 +364,7 @@ impl DirectoryWalker {
                     self.action = Action::RestorePage;
                 }
                 Action::RestorePage => {
+                    self.check_owner()?;
                     let frame = self.frames[self.depth - 1].expect("parent");
                     let reader = DirectoryReader::new(backend, self.admission.clone());
                     let info = reader.load(

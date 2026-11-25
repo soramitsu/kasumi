@@ -3341,6 +3341,172 @@ mod tests {
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     }
 
+    /// Counts full and in-memory owner checks separately; everything else is
+    /// the shared test admission.
+    struct SplitChecks {
+        inner: Arc<Admission>,
+        full: AtomicUsize,
+        live: AtomicUsize,
+    }
+
+    impl SplitChecks {
+        fn new(inner: Arc<Admission>) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                full: AtomicUsize::new(0),
+                live: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl StorageAdmission for SplitChecks {
+        fn check_owner(&self) -> Result<(), OwnerFailed> {
+            self.full.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.check_owner()
+        }
+        fn check_owner_live(&self) -> Result<(), OwnerFailed> {
+            self.live.fetch_add(1, AtomicOrdering::Relaxed);
+            if self.inner.0.failed.load(AtomicOrdering::Relaxed) {
+                Err(OwnerFailed)
+            } else {
+                Ok(())
+            }
+        }
+        fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
+            self.inner.reserve_workspace(bytes)
+        }
+        fn quote_cache_memory(
+            &self,
+            bytes: u64,
+        ) -> Result<crate::CacheMemoryQuote, crate::AdmissionError> {
+            self.inner.quote_cache_memory(bytes)
+        }
+        fn reserve_cache_memory(
+            self: Arc<Self>,
+            bytes: u64,
+        ) -> Result<crate::CacheMemoryLease, crate::AdmissionError> {
+            self.inner.clone().reserve_cache_memory(bytes)
+        }
+        fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), AdmissionError> {
+            self.inner.reserve_growth(current, requested)
+        }
+        fn settle_growth(&self, actual: u64) -> Result<(), OwnerFailed> {
+            self.inner.settle_growth(actual)
+        }
+        fn owner_failed(&self) {
+            self.inner.owner_failed()
+        }
+    }
+
+    fn dense_root(backend: &MemoryPages, admission: &Arc<Admission>, rows: u64) -> DirectoryRoot {
+        let mut builder = DirectoryBuilder::new(backend, admission.clone(), GROUP, 1).unwrap();
+        builder
+            .push(
+                DirectoryKey::table("t"),
+                DirectoryValue::Table { birth_seq: 1 },
+            )
+            .unwrap();
+        for index in 0..rows {
+            builder
+                .push(
+                    DirectoryKey::row("t", &index.to_be_bytes()),
+                    value(1, index),
+                )
+                .unwrap();
+        }
+        builder.finish().unwrap()
+    }
+
+    /// Full owner checks follow page loads and steps, not entries: decoding
+    /// a loaded page's entries checks only the owner's in-memory state.
+    #[test]
+    fn walker_fully_checks_the_owner_per_page_load_not_per_entry() {
+        let backend = MemoryPages::default();
+        let admission = Admission::new(160 << 10);
+        let rows = 4_000;
+        let root = dense_root(&backend, &admission, rows);
+        assert!(root.height >= 2);
+        let split = SplitChecks::new(admission.clone());
+        let mut walker = DirectoryWalker::new(root, split.clone()).unwrap();
+        let full_before = split.full.load(AtomicOrdering::Relaxed);
+        let reads_before = backend.reads.load(AtomicOrdering::Relaxed);
+        let (mut values, mut steps, mut entries) = (0, 0, 0);
+        loop {
+            let progress = walker
+                .step(
+                    &backend,
+                    64,
+                    |_| Ok(()),
+                    |_| {
+                        values += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            steps += 1;
+            entries += progress.entries;
+            if progress.complete {
+                break;
+            }
+        }
+        assert_eq!(values, rows as usize);
+        let loads = backend.reads.load(AtomicOrdering::Relaxed) - reads_before;
+        let full = split.full.load(AtomicOrdering::Relaxed) - full_before;
+        let live = split.live.load(AtomicOrdering::Relaxed);
+        // Two per step; around each load at most the walker's own check
+        // before it, the reader's two for this unchecked backend and the
+        // check after the page callback; separator rereads check at most
+        // three times for one load and twice for none.
+        assert!(
+            full <= 2 * steps + 4 * loads,
+            "{full} full checks for {loads} loads in {steps} steps"
+        );
+        assert!(
+            full * 8 < entries,
+            "{full} full checks for {entries} entries"
+        );
+        assert!(live >= entries, "{live} live checks for {entries} entries");
+        drop(walker);
+        assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    /// An owner that fails while a loaded page's entries are decoded stops
+    /// the walk at the next entry and poisons the walker.
+    #[test]
+    fn walker_owner_failure_between_page_loads_fails_the_step() {
+        let backend = MemoryPages::default();
+        let admission = Admission::new(160 << 10);
+        let root = dense_root(&backend, &admission, 4_000);
+        let mut walker = DirectoryWalker::new(root, admission.clone()).unwrap();
+        let mut after_failure = 0;
+        let error = walker
+            .step(
+                &backend,
+                1_000_000,
+                |_| Ok(()),
+                |_| {
+                    if admission.0.failed.swap(true, AtomicOrdering::Relaxed) {
+                        after_failure += 1;
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.rejected_cause(),
+            Some(crate::CoreErrorCause::OwnerFailed)
+        ));
+        assert_eq!(after_failure, 0);
+        assert!(matches!(&(walker.step(
+                &backend,
+                1,
+                |_| panic!("poisoned page"),
+                |_| panic!("poisoned value")
+            )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed))));
+        drop(walker);
+        assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
+    }
+
     #[test]
     fn walker_operational_failures_poison_after_partial_callbacks() {
         struct Fault<'a> {
