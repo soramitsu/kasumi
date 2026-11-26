@@ -207,6 +207,10 @@ pub struct StorageMaintenanceStatus {
     /// registry refuses new reads and writes for capacity.
     pub snapshot_pins: u64,
     pub snapshot_pin_limit: u64,
+    /// Slots kept from ordinary credits for critical work, and the ordinary
+    /// credits (snapshot leases, cursors) charged when this was published.
+    pub snapshot_pin_reserve: u64,
+    pub ordinary_snapshot_pins: u64,
 }
 
 /// The status the maintenance owner published at the end of its last step,
@@ -489,7 +493,7 @@ impl DiskState {
         let record = *root.compaction();
         let garbage = root.garbage().len() as u64;
         drop(root);
-        let (snapshot_pins, snapshot_pin_limit) = self.pins.occupancy()?;
+        let pins = self.pins.usage()?;
         let measurement = self.compact.measurement;
         let policy = &self.maintenance.policy;
         let totals = &self.reclaim.totals;
@@ -518,8 +522,10 @@ impl DiskState {
             evacuation_survey_fallbacks_total: evacuation.survey_fallbacks,
             reclaim_invalidations_total: totals.invalidations,
             capacity_deferrals_total: self.maintenance.capacity_deferrals,
-            snapshot_pins,
-            snapshot_pin_limit,
+            snapshot_pins: pins.held,
+            snapshot_pin_limit: pins.limit,
+            snapshot_pin_reserve: pins.reserve,
+            ordinary_snapshot_pins: pins.ordinary,
             rejected_deferrals_total: self.maintenance.rejected_deferrals,
             cycles_completed: self.maintenance.cycles_completed,
             requested: self.compact.requested,

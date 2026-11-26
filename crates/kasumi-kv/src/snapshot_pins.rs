@@ -14,6 +14,18 @@
 //! accepts a pinned slot only at the current root, at a captured (walked)
 //! root, or when it carries the cohort's stamp. Clones share the slot and
 //! its stamp. Stamps and nonces are volatile.
+//!
+//! Acquisitions come in two classes. Critical ones (writes, applies, their
+//! successor captures and every other acquisition by default) may take any
+//! free slot. Ordinary ones, which clients can hold across publications
+//! (snapshot leases, cursors, queries), are charged against the registry less
+//! its configured reserve: `ordinary + requested <= max_pins - reserve`. An
+//! ordinary credit may stand for a slot the holder will retain later (a
+//! lease keeps its selection alive once it becomes historical), so credits
+//! are counted apart from occupied slots. A refused ordinary acquisition is a
+//! no-effect `CapacityDenied`. A promise reserves a free slot and its backing
+//! before an irreversible step, and binds the root current after it: binding
+//! never fails for capacity.
 //! This module never closes the group or notifies admission of owner failure.
 
 #[cfg(test)]
@@ -44,6 +56,8 @@ struct Slot {
 #[derive(Clone, Copy)]
 enum Entry {
     Empty,
+    /// Reserved by the promise with this token; no root is pinned yet.
+    Promised(u64),
     Pinned(Slot),
 }
 impl Entry {
@@ -63,9 +77,26 @@ struct RegistryState {
     epoch: u64,
     /// The active reclamation cohort and the root it currently certifies.
     coverage: Option<(u64, DirectoryRoot)>,
+    /// Slots not empty: pinned or promised.
+    held: usize,
+    /// Ordinary credits charged: ordinary pins and retention credits.
+    ordinary: usize,
+    /// Slots ordinary credits may never use.
+    reserve: usize,
+    /// Last promise token; promise tokens are distinct from pin epochs.
+    promises: u64,
 }
 
 impl RegistryState {
+    /// Whether `credits` more ordinary credits stay out of the reserve. A
+    /// registry without a reserve counts credits but never refuses them: an
+    /// ordinary pin there still needs a free slot, as every pin always has.
+    fn admits_ordinary(&self, max_pins: usize, credits: usize) -> bool {
+        self.ordinary.checked_add(credits).is_some_and(|charged| {
+            self.reserve == 0 || charged <= max_pins.saturating_sub(self.reserve)
+        })
+    }
+
     /// The stamp for a pin installed at `root` under this lock.
     fn stamp(&self, root: DirectoryRoot) -> u64 {
         self.coverage
@@ -148,6 +179,8 @@ struct PinIdentity {
 struct PinInner {
     registry: RegistryRef,
     identity: OnceLock<PinIdentity>,
+    /// Charged one ordinary credit, returned with the slot.
+    ordinary: bool,
     _lease: LeaseCharge,
 }
 
@@ -155,6 +188,33 @@ struct PinInner {
 #[derive(Clone)]
 pub(crate) struct SnapshotPin {
     inner: RetiredArc<PinInner>,
+}
+
+/// Ordinary credits held without a slot: what a retained selection may
+/// occupy once it becomes historical. Returned when dropped.
+pub(crate) struct OrdinaryPinCredits {
+    registry: RegistryRef,
+    credits: usize,
+}
+
+/// A free slot and its pin backing reserved for one later critical pin. The
+/// slot returns to the registry if the promise is dropped unbound.
+pub(crate) struct SnapshotPinPromise {
+    pin: Option<SnapshotPin>,
+    slot: usize,
+    token: u64,
+}
+
+/// Occupancy of one registry, for admission decisions and status.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotPinUse {
+    /// Occupied slots: pinned or promised.
+    pub held: u64,
+    pub limit: u64,
+    /// Slots ordinary credits may never use.
+    pub reserve: u64,
+    /// Ordinary credits charged.
+    pub ordinary: u64,
 }
 
 /// A bounded root capture requiring epoch or coverage validation before use.
@@ -221,25 +281,50 @@ impl SnapshotPins {
         opening::fixture_new(admission, group_id, max_pins)
     }
 
-    /// The enclosing owner supplies only its current, published root.
+    /// The enclosing owner supplies only its current, published root. A
+    /// critical pin may take any free slot.
     pub(crate) fn acquire(&self, root: DirectoryRoot) -> Result<SnapshotPin, CoreError> {
-        self.inner.check()?;
+        self.acquire_class(root, false)
+    }
+
+    /// An ordinary pin also takes one ordinary credit; it is refused for
+    /// capacity once ordinary credits would reach into the reserve.
+    pub(crate) fn acquire_ordinary(&self, root: DirectoryRoot) -> Result<SnapshotPin, CoreError> {
+        self.acquire_class(root, true)
+    }
+
+    fn check_root(&self, root: DirectoryRoot) -> Result<(), CoreError> {
         if root.group_id != self.inner.group_id {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot root belongs to another group",
             )));
         }
-        root.validate()?;
+        root.validate()
+    }
+
+    /// The pin owner, allocated with its admitted backing before any slot
+    /// is selected.
+    fn unbound_pin(&self, ordinary: bool) -> Result<SnapshotPin, CoreError> {
         let lease = self.inner.reserve(Self::pin_backing_request_bytes())?;
-        // Allocate the actual PinInner before locking or selecting its slot.
-        let pin = SnapshotPin {
+        Ok(SnapshotPin {
             inner: RetiredArc::new(PinInner {
                 registry: self.inner.clone(),
                 identity: OnceLock::new(),
+                ordinary,
                 _lease: lease,
             }),
-        };
+        })
+    }
+
+    fn acquire_class(&self, root: DirectoryRoot, ordinary: bool) -> Result<SnapshotPin, CoreError> {
+        self.inner.check()?;
+        self.check_root(root)?;
+        // Allocate the actual PinInner before locking or selecting its slot.
+        let pin = self.unbound_pin(ordinary)?;
         let mut state = self.inner.lock()?;
+        if ordinary && !state.admits_ordinary(self.inner.max_pins, 1) {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
         let slot = state
             .slots
             .iter()
@@ -257,9 +342,128 @@ impl SnapshotPins {
             coverage,
         });
         state.epoch = token;
+        state.held += 1;
+        state.ordinary += usize::from(ordinary);
         drop(state);
         self.inner.check()?;
         Ok(pin)
+    }
+
+    /// Reserve a free slot and the pin backing for one later critical pin.
+    /// This is the only fallible step: `bind` cannot fail for capacity.
+    pub(crate) fn promise(&self) -> Result<SnapshotPinPromise, CoreError> {
+        self.inner.check()?;
+        let pin = self.unbound_pin(false)?;
+        let mut state = self.inner.lock()?;
+        let slot = state
+            .slots
+            .iter()
+            .position(Entry::is_empty)
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        let token = state.promises.checked_add(1).ok_or_else(|| {
+            self.inner.failed.store(true, Ordering::Release);
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
+        })?;
+        state.promises = token;
+        state.slots[slot] = Entry::Promised(token);
+        state.held += 1;
+        drop(state);
+        let promise = SnapshotPinPromise {
+            pin: Some(pin),
+            slot,
+            token,
+        };
+        self.inner.check()?;
+        Ok(promise)
+    }
+
+    /// Pin `root` in the slot `promise` reserved. Capacity was taken by the
+    /// promise; only an owner failure or a foreign root can refuse this.
+    pub(crate) fn bind(
+        &self,
+        mut promise: SnapshotPinPromise,
+        root: DirectoryRoot,
+    ) -> Result<SnapshotPin, CoreError> {
+        self.inner.check()?;
+        self.check_root(root)?;
+        let pin = promise.pin.as_ref().expect("unbound promise");
+        if !RetiredArc::ptr_eq(&self.inner, &pin.inner.registry) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot pin promise belongs to another owner",
+            )));
+        }
+        let mut state = self.inner.lock()?;
+        if !matches!(state.slots[promise.slot], Entry::Promised(token) if token == promise.token) {
+            drop(state);
+            self.inner.failed.store(true, Ordering::Release);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        let token = self.inner.next_epoch(&state)?;
+        pin.inner
+            .identity
+            .set(PinIdentity {
+                slot: promise.slot,
+                token,
+                root,
+            })
+            .expect("unbound promise");
+        let coverage = state.stamp(root);
+        state.slots[promise.slot] = Entry::Pinned(Slot {
+            root,
+            token,
+            coverage,
+        });
+        state.epoch = token;
+        drop(state);
+        let pin = promise.pin.take().expect("bound promise");
+        self.inner.check()?;
+        Ok(pin)
+    }
+
+    /// Charge `credits` ordinary credits without occupying a slot, refused
+    /// for capacity once they would reach into the reserve.
+    pub(crate) fn admit_ordinary(&self, credits: usize) -> Result<OrdinaryPinCredits, CoreError> {
+        self.inner.check()?;
+        let mut state = self.inner.lock()?;
+        if !state.admits_ordinary(self.inner.max_pins, credits) {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        state.ordinary += credits;
+        drop(state);
+        Ok(OrdinaryPinCredits {
+            registry: self.inner.clone(),
+            credits,
+        })
+    }
+
+    /// Keep `reserve` slots from ordinary credits. Refused if it would leave
+    /// no slot, or if ordinary credits already charged reach into it.
+    pub(crate) fn set_reserve(&self, reserve: usize) -> Result<(), CoreError> {
+        self.inner.check()?;
+        let mut state = self.inner.lock()?;
+        if reserve >= self.inner.max_pins || state.ordinary > self.inner.max_pins - reserve {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot pin reserve exceeds the registry or its ordinary credits",
+            )));
+        }
+        state.reserve = reserve;
+        drop(state);
+        self.inner.check()
+    }
+
+    /// Occupancy without scanning the registry.
+    pub(crate) fn usage(&self) -> Result<SnapshotPinUse, CoreError> {
+        self.inner.check()?;
+        let state = self.inner.lock()?;
+        let usage = SnapshotPinUse {
+            held: state.held as u64,
+            limit: self.inner.max_pins as u64,
+            reserve: state.reserve as u64,
+            ordinary: state.ordinary as u64,
+        };
+        drop(state);
+        self.inner.check()?;
+        Ok(usage)
     }
 
     pub(crate) fn validate(&self, pin: &SnapshotPin) -> Result<DirectoryRoot, CoreError> {
@@ -522,16 +726,6 @@ impl SnapshotPins {
         Ok(epoch)
     }
 
-    /// Occupied slots and the registry size, for status reporting only.
-    pub(crate) fn occupancy(&self) -> Result<(u64, u64), CoreError> {
-        self.inner.check()?;
-        let state = self.inner.lock()?;
-        let used = state.slots.iter().filter(|entry| !entry.is_empty()).count();
-        drop(state);
-        self.inner.check()?;
-        Ok((used as u64, self.inner.max_pins as u64))
-    }
-
     /// Cheap scheduling observation only, never an unlink proof: whether any
     /// live pin holds a root older than `generation`. Acquisition pins only
     /// the current root, so once no pin is older than a past current root,
@@ -729,6 +923,16 @@ impl Drop for PinInner {
         match entry.pinned().copied() {
             Some(slot) if slot.token == identity.token && slot.root == identity.root => {
                 *entry = Entry::Empty;
+                match (
+                    state.held.checked_sub(1),
+                    state.ordinary.checked_sub(usize::from(self.ordinary)),
+                ) {
+                    (Some(held), Some(ordinary)) => {
+                        state.held = held;
+                        state.ordinary = ordinary;
+                    }
+                    _ => self.registry.failed.store(true, Ordering::Release),
+                }
                 match state.epoch.checked_add(1) {
                     Some(epoch) => state.epoch = epoch,
                     None => self.registry.failed.store(true, Ordering::Release),
@@ -738,6 +942,44 @@ impl Drop for PinInner {
         }
         // Payload/credit destructors run after unlock.
         drop(state);
+    }
+}
+
+impl Drop for OrdinaryPinCredits {
+    fn drop(&mut self) {
+        let mut state = self.registry.state.lock().unwrap_or_else(|poisoned| {
+            self.registry.failed.store(true, Ordering::Release);
+            poisoned.into_inner()
+        });
+        match state.ordinary.checked_sub(self.credits) {
+            Some(ordinary) => state.ordinary = ordinary,
+            None => self.registry.failed.store(true, Ordering::Release),
+        }
+        drop(state);
+    }
+}
+
+impl Drop for SnapshotPinPromise {
+    fn drop(&mut self) {
+        // A bound promise moved its pin out; its slot belongs to that pin.
+        let Some(pin) = self.pin.take() else {
+            return;
+        };
+        let registry = &pin.inner.registry;
+        let mut state = registry.state.lock().unwrap_or_else(|poisoned| {
+            registry.failed.store(true, Ordering::Release);
+            poisoned.into_inner()
+        });
+        match (state.slots[self.slot], state.held.checked_sub(1)) {
+            (Entry::Promised(token), Some(held)) if token == self.token => {
+                state.slots[self.slot] = Entry::Empty;
+                state.held = held;
+            }
+            _ => registry.failed.store(true, Ordering::Release),
+        }
+        drop(state);
+        // The unbound pin has no identity; its backing retires after unlock.
+        drop(pin);
     }
 }
 
@@ -1003,6 +1245,107 @@ mod tests {
         assert_eq!(pins.epoch().unwrap(), epoch + 1);
         let retried = pins.acquire(root(2)).unwrap();
         assert_eq!(pins.validate(&retried).unwrap(), root(2));
+    }
+
+    fn capacity_denied<T>(result: &Result<T, CoreError>) -> bool {
+        matches!(result, Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    }
+
+    /// Ordinary credits (client-held pins and retention credits) stop at the
+    /// registry less its reserve; critical pins still take every other slot.
+    #[test]
+    fn ordinary_credits_stop_at_the_reserve_while_critical_pins_take_any_slot() {
+        let (_, pins) = setup(8);
+        pins.set_reserve(3).unwrap();
+        let first = pins.acquire_ordinary(root(1)).unwrap();
+        let second = pins.acquire_ordinary(root(1)).unwrap();
+        let credits = pins.admit_ordinary(3).unwrap();
+        let usage = pins.usage().unwrap();
+        assert_eq!(
+            (usage.held, usage.ordinary, usage.reserve, usage.limit),
+            (2, 5, 3, 8)
+        );
+        // Refused with no effect: no slot and no credit was taken.
+        assert!(capacity_denied(&pins.acquire_ordinary(root(1))));
+        assert!(capacity_denied(&pins.admit_ordinary(1)));
+        assert_eq!(pins.usage().unwrap(), usage);
+        // A larger reserve would reach into credits already charged.
+        assert!(pins.set_reserve(4).is_err());
+        // Critical pins take every free slot, the reserve included.
+        let critical = (0..6)
+            .map(|_| pins.acquire(root(1)).unwrap())
+            .collect::<Vec<_>>();
+        assert!(capacity_denied(&pins.acquire(root(1))));
+        assert_eq!(pins.usage().unwrap().held, 8);
+        drop(critical);
+        drop(credits);
+        assert_eq!(pins.usage().unwrap().ordinary, 2);
+        let third = pins.acquire_ordinary(root(2)).unwrap();
+        drop((first, second, third));
+        assert_eq!(
+            pins.usage().unwrap(),
+            SnapshotPinUse {
+                held: 0,
+                limit: 8,
+                reserve: 3,
+                ordinary: 0,
+            }
+        );
+        assert!(pins.set_reserve(8).is_err());
+        // Without a reserve, credits are counted but never refused; an
+        // ordinary pin still needs a free slot.
+        pins.set_reserve(0).unwrap();
+        let credits = pins.admit_ordinary(9).unwrap();
+        assert_eq!(credits.credits, 9);
+        let all = (0..8)
+            .map(|_| pins.acquire_ordinary(root(1)).unwrap())
+            .collect::<Vec<_>>();
+        assert!(capacity_denied(&pins.acquire_ordinary(root(1))));
+        assert_eq!(pins.usage().unwrap().ordinary, 17);
+        drop((all, credits));
+        assert_eq!(pins.usage().unwrap().ordinary, 0);
+    }
+
+    /// A promise takes its slot and backing before an irreversible step;
+    /// binding the then-current root succeeds even with every other slot
+    /// held, and an unbound promise returns its slot.
+    #[test]
+    fn a_promised_slot_binds_after_every_other_slot_is_taken() {
+        let (admission, pins) = setup(3);
+        let backing = admission.used.load(Ordering::Acquire);
+        let promise = pins.promise().unwrap();
+        assert!(admission.used.load(Ordering::Acquire) > backing);
+        let others = [
+            pins.acquire(root(1)).unwrap(),
+            pins.acquire(root(1)).unwrap(),
+        ];
+        assert!(capacity_denied(&pins.acquire(root(2))));
+        assert!(capacity_denied(&pins.promise()));
+        assert!(
+            pins.capture()
+                .unwrap()
+                .roots()
+                .iter()
+                .all(|held| *held == root(1))
+        );
+        let epoch = pins.epoch().unwrap();
+        let bound = pins.bind(promise, root(2)).unwrap();
+        assert_eq!(pins.validate(&bound).unwrap(), root(2));
+        assert!(pins.epoch().unwrap() > epoch);
+        assert_eq!(pins.usage().unwrap().held, 3);
+        drop(bound);
+        drop(others);
+        assert_eq!(pins.usage().unwrap().held, 0);
+        let unused = pins.promise().unwrap();
+        assert_eq!(pins.usage().unwrap().held, 1);
+        drop(unused);
+        assert_eq!(pins.usage().unwrap().held, 0);
+        assert_eq!(admission.used.load(Ordering::Acquire), backing);
+        // A promise binds only in its own registry.
+        let (_, other) = setup(1);
+        let foreign = other.promise().unwrap();
+        assert!(pins.bind(foreign, root(1)).is_err());
+        assert_eq!(other.usage().unwrap().held, 0);
     }
 
     #[test]

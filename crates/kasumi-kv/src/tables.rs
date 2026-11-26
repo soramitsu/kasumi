@@ -711,6 +711,49 @@ impl DatabaseTransactionAdmission {
         .begin_read()
     }
 
+    /// See [`Database::prepare_read`].
+    pub fn prepare_read(&self) -> Result<PreparedRead, TransactionError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .prepare_read()
+    }
+
+    /// See [`Database::begin_prepared_read`].
+    pub fn begin_prepared_read(
+        &self,
+        prepared: PreparedRead,
+    ) -> Result<ReadTransaction, TransactionError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .begin_prepared_read(prepared)
+    }
+
+    /// See [`Database::admit_ordinary_pins`].
+    pub fn admit_ordinary_pins(&self, credits: usize) -> Result<OrdinaryPinCredits, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .admit_ordinary_pins(credits)
+    }
+
+    /// See [`Database::snapshot_pin_use`].
+    pub fn snapshot_pin_use(&self) -> Result<crate::SnapshotPinUse, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .snapshot_pin_use()
+    }
+
+    /// See [`Database::reserve_snapshot_pins`].
+    pub fn reserve_snapshot_pins(&self, reserve: usize) -> Result<(), StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .reserve_snapshot_pins(reserve)
+    }
+
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
         Database {
             inner: self.inner.clone(),
@@ -1155,6 +1198,83 @@ impl Database {
         })
     }
 
+    /// A read whose capacity a client holder may keep: charged one ordinary
+    /// pin credit, and refused with a no-effect capacity denial once
+    /// ordinary credits would reach into the reserved slots.
+    pub fn begin_ordinary_read(&self) -> Result<ReadTransaction, TransactionError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        self.inner.core.note_foreground();
+        let snapshot = SnapshotHandle::capture_ordinary(&self.inner.core)?;
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        Ok(ReadTransaction {
+            inner: self.inner.clone(),
+            snapshot,
+        })
+    }
+
+    /// Reserve a later read's snapshot workspace and pin slot now. A
+    /// refusal here is a no-effect capacity denial; `begin_prepared_read`
+    /// then selects the root current at its own call and cannot be refused
+    /// for capacity.
+    pub fn prepare_read(&self) -> Result<PreparedRead, TransactionError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        let charge = SnapshotCharge(Some(
+            self.inner
+                .core
+                .reserve_workspace(SnapshotHandle::CHARGE_BYTES)?,
+        ));
+        let promise = self.inner.core.promise_snapshot()?;
+        Ok(PreparedRead {
+            charge: PreparedReadCharge { charge, promise },
+        })
+    }
+
+    /// Begin the read `prepared` reserved on this database.
+    pub fn begin_prepared_read(
+        &self,
+        prepared: PreparedRead,
+    ) -> Result<ReadTransaction, TransactionError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        self.inner.core.note_foreground();
+        let snapshot = SnapshotHandle::bind(&self.inner.core, prepared.charge)?;
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        Ok(ReadTransaction {
+            inner: self.inner.clone(),
+            snapshot,
+        })
+    }
+
+    /// Charge `credits` ordinary pin credits for a holder that may keep a
+    /// selection alive across publication. Refused with a capacity denial,
+    /// with no effect, once they would reach into the reserved slots.
+    pub fn admit_ordinary_pins(&self, credits: usize) -> Result<OrdinaryPinCredits, StorageError> {
+        Ok(OrdinaryPinCredits {
+            _credits: self.inner.core.admit_ordinary_pins(credits)?,
+        })
+    }
+
+    /// Occupied pin slots, the registry size, its reserve and the ordinary
+    /// credits charged.
+    pub fn snapshot_pin_use(&self) -> Result<crate::SnapshotPinUse, StorageError> {
+        Ok(self.inner.core.snapshot_pin_use()?)
+    }
+
+    /// Keep `reserve` pin slots for critical acquisitions: ordinary credits
+    /// are refused once they would reach into them.
+    pub fn reserve_snapshot_pins(&self, reserve: usize) -> Result<(), StorageError> {
+        Ok(self.inner.core.set_snapshot_pin_reserve(reserve)?)
+    }
+
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
         // Counted before the wait for the write gate, which a maintenance
         // step holds: the driver sees the writer it is delaying.
@@ -1275,6 +1395,38 @@ impl Drop for SnapshotCharge {
 
 struct SnapshotHandle(Option<Arc<SnapshotBacking>>);
 
+/// The snapshot workspace and pin slot of one prepared read.
+struct PreparedReadCharge {
+    charge: SnapshotCharge,
+    promise: crate::snapshot_pins::SnapshotPinPromise,
+}
+
+/// A read whose snapshot workspace and pin slot are reserved before an
+/// irreversible step (a commit whose successor selection must be captured):
+/// beginning it later never fails for capacity. Dropping it returns both. It
+/// is not a transaction: only its pin slot belongs to the database's
+/// registry, and binding verifies that registry.
+pub struct PreparedRead {
+    charge: PreparedReadCharge,
+}
+impl fmt::Debug for PreparedRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedRead").finish_non_exhaustive()
+    }
+}
+
+/// Ordinary pin credits a caller holds while it may keep a selection alive
+/// across publication (a snapshot lease or a cursor), charged against the
+/// registry less its reserve. Dropping them returns the credits.
+pub struct OrdinaryPinCredits {
+    _credits: crate::snapshot_pins::OrdinaryPinCredits,
+}
+impl fmt::Debug for OrdinaryPinCredits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OrdinaryPinCredits").finish_non_exhaustive()
+    }
+}
+
 pub(crate) const fn snapshot_backing_request_bytes() -> u64 {
     SnapshotHandle::CHARGE_BYTES
 }
@@ -1384,6 +1536,24 @@ impl SnapshotHandle {
 
     fn capture(core: &Core) -> Result<Self, CoreError> {
         Self::create(core, || core.snapshot())
+    }
+
+    fn capture_ordinary(core: &Core) -> Result<Self, CoreError> {
+        Self::create(core, || {
+            core.snapshot_as(crate::disk_state::PinRequest::Ordinary)
+        })
+    }
+
+    /// Bind a prepared read: its workspace charge and pin slot were taken
+    /// when it was prepared, so only an owner failure can refuse it.
+    fn bind(core: &Core, prepared: PreparedReadCharge) -> Result<Self, CoreError> {
+        let PreparedReadCharge { charge, promise } = prepared;
+        let snapshot = core.snapshot_as(crate::disk_state::PinRequest::Promised(promise))?;
+        core.check_read_owner()?;
+        Ok(Self(Some(Arc::new(SnapshotBacking {
+            snapshot: OnceLock::from(snapshot),
+            charge,
+        }))))
     }
 
     fn fork(&self, core: &Core) -> Result<Self, CoreError> {

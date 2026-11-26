@@ -102,6 +102,7 @@ mod tests {
         ReaderState {
             phase: NodeReadPhase::Queued,
             transaction: None,
+            prepared: None,
             begin: Observation::NotEntered,
             tables: Observation::NotEntered,
             outer: Observation::NotEntered,

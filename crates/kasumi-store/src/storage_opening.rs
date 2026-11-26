@@ -1144,6 +1144,24 @@ impl RegisteredNodeOpening {
         Ok(self.admit_call()?.foreground_activity())
     }
 
+    /// Occupancy of the open database's snapshot pin registry.
+    pub fn snapshot_pin_use(&self) -> Result<kasumi_kv::SnapshotPinUse, kasumi_kv::StorageError> {
+        self.admit_call()?.snapshot_pin_use()
+    }
+
+    /// Keep `reserve` pin slots of the open database from ordinary credits.
+    pub fn reserve_snapshot_pins(&self, reserve: usize) -> Result<(), kasumi_kv::StorageError> {
+        self.admit_call()?.reserve_snapshot_pins(reserve)
+    }
+
+    /// Charge ordinary pin credits on the open database.
+    pub fn admit_ordinary_pins(
+        &self,
+        credits: usize,
+    ) -> Result<kasumi_kv::OrdinaryPinCredits, kasumi_kv::StorageError> {
+        self.admit_call()?.admit_ordinary_pins(credits)
+    }
+
     /// `kasumi_kv::Database::defer_inline_maintenance` of the open database:
     /// the driver's steps stand in for every write's inline maintenance step
     /// for `duration`. Takes the opening's state briefly and no database lock.

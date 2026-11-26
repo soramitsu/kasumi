@@ -739,7 +739,40 @@ impl PublicationPreparation<'_> {
             .context("application publisher omitted or failed source preparation")
     }
 }
+/// Ordinary snapshot pin credits a client holder of one selection charges: a
+/// snapshot lease or a cursor can strand its generation's own selection and
+/// the older one its located rows may still read through.
+pub(crate) const RETAINED_SELECTION_PIN_CREDITS: usize = 2;
+
 impl SourceRoots {
+    /// Charge the ordinary pin credits of one client holder that may keep
+    /// this tenant's selection alive across publication, on the database that
+    /// holds its selections. Refused with no effect (`ResourceExhausted`)
+    /// once ordinary credits would reach into the pins reserved for writes,
+    /// applies and their successor captures, the service audit, Control
+    /// and activation.
+    pub(crate) fn admit_retained_selection(
+        &self,
+    ) -> kasumi_types::Result<kasumi_kv::OrdinaryPinCredits> {
+        self.stores
+            .application()
+            .node_store()
+            .admit_ordinary_snapshot_pins(RETAINED_SELECTION_PIN_CREDITS)
+            .map_err(|error| {
+                if error.is_capacity_denied() {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::ResourceExhausted,
+                        "snapshot pins for leases and cursors are exhausted; retry after some close",
+                    )
+                } else {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        "snapshot pin admission unavailable",
+                    )
+                }
+            })
+    }
+
     /// The exact admission core already bound to this installed source root.
     /// This borrows no primary graph or test-only publication capability.
     pub(crate) fn memory_owner(&self) -> &Arc<MemoryCore> {
@@ -1754,7 +1787,11 @@ impl SourceRootsRef {
         add_quote(&mut bytes, allocated(context.meta.snapshot_id.len())?)?;
         add_quote(&mut bytes, membership_bytes(&context.meta.last_membership)?)?;
         let reservation = self.admission.reserve_application_source(bytes)?;
-        let preparation = self.prepare()?;
+        // The capture follows an installed snapshot, which cannot be undone:
+        // queue its reader now, with its pin slot reserved, so that capture
+        // cannot be refused for pin capacity.
+        let mut preparation = self.prepare()?;
+        preparation.queued = Some(self.stores.prepare_read_view()?);
         let context = kasumi_raft::SnapshotRestoreContext {
             mode: context.mode,
             backend_sha256: context.backend_sha256.clone(),

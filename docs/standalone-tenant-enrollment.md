@@ -78,10 +78,17 @@ exclusive operator request resolving the original operation identity.
 
 Set `admission.max_snapshot_startups` to cover the local Control group and
 each tenant group that will run concurrently. An installation serving 100
-tenants needs at least 101 slots. Each live group holds its slot through drain.
-When the inventory is full, preparing a new tenant returns `ResourceExhausted`
-before it records creation or opens either catalog. After capacity is available,
-retry the same approved preparation.
+tenants needs at least 101 slots; the generated 64 hold 63 tenants. Each live
+group holds its slot through drain. Staging refuses a tenant that the
+configuration cannot host, before it creates keys or changes the
+configuration, with `RosterExceedsCapacity` naming the setting (startup slots,
+admission reservations, directory owners or the shared node database's pins)
+and the value the roster needs; so does every load of a configuration whose
+roster was edited past them. [Roster capacity](standalone.md#roster-capacity-and-the-1000-tenant-profile)
+lists the checks and a validated 1,000-tenant profile. When the inventory is
+still full at run time, preparing a new tenant returns `ResourceExhausted`
+before it records creation or opens either catalog. After capacity is
+available, retry the same approved preparation.
 
 Restart the daemon with the updated configuration. The staged tenant stays dormant.
 Use the existing mTLS management endpoint with the private Control credential. A

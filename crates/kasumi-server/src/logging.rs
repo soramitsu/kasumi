@@ -299,6 +299,8 @@ pub fn failure_classes(error: &anyhow::Error) -> Vec<&'static str> {
             .is_some()
         {
             Some("admission_exceeds_high_water")
+        } else if cause.is::<crate::standalone_capacity::RosterExceedsCapacity>() {
+            Some("roster_exceeds_capacity")
         } else if let Some(error) = cause.downcast_ref::<serde_json::Error>() {
             Some(match error.classify() {
                 serde_json::error::Category::Io => "json_io",
@@ -347,6 +349,20 @@ pub fn admission_exceeds_high_water(refusal: &kasumi_engine::admission::TotalExc
         max_inflight_bytes = refusal.max_inflight_bytes,
         high_water_bytes = refusal.high_water_bytes,
         "admission.max_inflight_bytes exceeds the RSS high-water mark, which defaults to half of host or container memory; lower it together with the persistent_disk file and handle caps whose metadata it covers, set high_water_bytes up to the detected memory, or add memory"
+    );
+}
+
+/// The configured roster exceeds a limit every open group draws on. Every
+/// field is a configuration-derived number or a setting name.
+pub fn roster_exceeds_capacity(refusal: &crate::standalone_capacity::RosterExceedsCapacity) {
+    tracing::error!(
+        event = "roster_exceeds_capacity",
+        tenants = refusal.tenants,
+        setting = refusal.setting,
+        configured = refusal.configured,
+        required = refusal.required,
+        holds = refusal.holds,
+        "the configured roster exceeds what its configuration can host; raise the named setting with the installation stopped or stage fewer tenants"
     );
 }
 

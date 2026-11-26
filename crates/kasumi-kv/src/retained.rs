@@ -412,6 +412,27 @@ impl Database {
             .map(ReadTransaction::retain)
             .map_err(ReadAcquisitionFailure::after_native_return)
     }
+
+    /// `begin_read_retained` for a read prepared on this database. Its
+    /// capacity was reserved when it was prepared.
+    pub fn begin_prepared_read_retained(
+        &self,
+        prepared: crate::PreparedRead,
+    ) -> Result<RetainedReadTransaction, ReadAcquisitionFailure> {
+        self.begin_prepared_read(prepared)
+            .map(ReadTransaction::retain)
+            .map_err(ReadAcquisitionFailure::after_native_return)
+    }
+
+    /// `begin_read_retained` for an ordinary read, refused with a no-effect
+    /// capacity denial within the reserved pin slots.
+    pub fn begin_ordinary_read_retained(
+        &self,
+    ) -> Result<RetainedReadTransaction, ReadAcquisitionFailure> {
+        self.begin_ordinary_read()
+            .map(ReadTransaction::retain)
+            .map_err(ReadAcquisitionFailure::after_native_return)
+    }
 }
 
 impl RetainedReadTransaction {
@@ -1518,6 +1539,64 @@ mod tests {
                 "{failure:?}"
             );
         }
+    }
+
+    /// With ordinary readers holding every slot outside the reserve, the next
+    /// ordinary read is refused with no effect while a write still commits,
+    /// and a read prepared before the write binds its successor root after
+    /// critical readers took every other slot.
+    #[test]
+    fn ordinary_readers_never_take_the_reserved_pins() {
+        let database = builder()
+            .with_snapshot_pins(16)
+            .create_with_backend(InMemoryGroup::new())
+            .unwrap();
+        database.reserve_snapshot_pins(4).unwrap();
+        let held: Vec<_> = (0..12)
+            .map(|_| database.begin_ordinary_read().unwrap())
+            .collect();
+        let refused = database.begin_ordinary_read().err().unwrap();
+        assert!(refused.0.is_capacity_denied(), "{refused:?}");
+        assert!(
+            database
+                .begin_ordinary_read_retained()
+                .err()
+                .unwrap()
+                .is_clean_capacity_refusal()
+        );
+        assert!(
+            database
+                .admit_ordinary_pins(1)
+                .unwrap_err()
+                .is_capacity_denied()
+        );
+        let usage = database.snapshot_pin_use().unwrap();
+        assert_eq!((usage.held, usage.ordinary, usage.reserve), (12, 12, 4));
+        // Critical work proceeds while every ordinary holder stays alive.
+        let prepared = database.prepare_read().unwrap();
+        let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("reserve-rows");
+        let writer = database.begin_write().unwrap();
+        writer
+            .open_table(rows)
+            .unwrap()
+            .insert(b"after".as_slice(), b"commit".as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let critical: Vec<_> = std::iter::from_fn(|| database.begin_read().ok()).collect();
+        assert_eq!(critical.len(), 3);
+        let successor = database.begin_prepared_read(prepared).unwrap();
+        let table = successor.open_table(rows).unwrap();
+        assert_eq!(
+            table.get(b"after".as_slice()).unwrap().unwrap().value(),
+            b"commit"
+        );
+        drop(table);
+        assert_eq!(database.snapshot_pin_use().unwrap().held, 16);
+        drop((held, critical, successor));
+        let usage = database.snapshot_pin_use().unwrap();
+        assert_eq!((usage.held, usage.ordinary), (0, 0));
+        // A reserve that leaves no slot is refused.
+        assert!(database.reserve_snapshot_pins(16).is_err());
     }
 
     #[test]

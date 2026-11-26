@@ -41,7 +41,17 @@ use crate::segment::{
     self, LogBounds, MAX_BATCH_OPERATIONS, ReplayStart, SealedSegment, SegmentRoll, SegmentWriter,
     ValueLocation, crc32c, replay_roots, validate_directory_anchor,
 };
-use crate::snapshot_pins::{SnapshotPin, SnapshotPins};
+use crate::snapshot_pins::{SnapshotPin, SnapshotPinPromise, SnapshotPins};
+
+/// How a new snapshot pins the selected root.
+pub(crate) enum PinRequest {
+    /// May take any free slot.
+    Critical,
+    /// Charged one ordinary credit; refused within the reserve.
+    Ordinary,
+    /// Binds the slot this promise reserved; never refused for capacity.
+    Promised(SnapshotPinPromise),
+}
 
 #[path = "disk_public.rs"]
 mod public;
@@ -461,18 +471,36 @@ impl DiskState {
         result
     }
 
+    /// A critical pin of the selected root, as `Core::snapshot` takes.
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Result<SnapshotPin, CoreError> {
+        self.snapshot_as(PinRequest::Critical)
+    }
+
+    /// Pin the selected root as `request` says: a critical pin, an ordinary
+    /// one refused within the reserve, or the slot a promise reserved.
+    pub(crate) fn snapshot_as(&self, request: PinRequest) -> Result<SnapshotPin, CoreError> {
         self.owner.check()?;
-        let result = catch_unwind(AssertUnwindSafe(|| self.pins.acquire(self.selected)))
-            .unwrap_or_else(|panic| {
-                Err(CoreError::new(crate::CoreErrorCause::Panicked(
-                    CorePanic::new(panic),
-                )))
-            });
+        let result = catch_unwind(AssertUnwindSafe(|| match request {
+            PinRequest::Critical => self.pins.acquire(self.selected),
+            PinRequest::Ordinary => self.pins.acquire_ordinary(self.selected),
+            PinRequest::Promised(promise) => self.pins.bind(promise, self.selected),
+        }))
+        .unwrap_or_else(|panic| {
+            Err(CoreError::new(crate::CoreErrorCause::Panicked(
+                CorePanic::new(panic),
+            )))
+        });
         if result.as_ref().is_err_and(CoreError::fences_owner) {
             self.owner.failed.store(true, Ordering::Release);
         }
         result
+    }
+
+    /// This database's pin registry, for promises, ordinary credits, the
+    /// reserve and occupancy. None of these pins a root.
+    pub(crate) fn pins(&self) -> &SnapshotPins {
+        &self.pins
     }
 
     #[cfg(test)]

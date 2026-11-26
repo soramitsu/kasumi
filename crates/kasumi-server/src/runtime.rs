@@ -415,6 +415,8 @@ impl RuntimeConfig {
         let config: Self =
             serde_json::from_slice(&bytes).context("invalid runtime configuration JSON")?;
         config.validate()?;
+        // Refuse a roster the configuration cannot host before anything opens.
+        crate::standalone_capacity::check(&config)?;
         Ok(config)
     }
 
@@ -1622,6 +1624,10 @@ impl NodeRuntime {
         };
         pending.owned_nodes.push(node.clone());
         if let Some(policy) = maintenance { node.configure_storage_maintenance(policy)?; }
+        // Before any client can hold a selection: snapshot leases and cursors
+        // never take the pins writes, applies, the audit, Control and
+        // activation need.
+        node.reserve_snapshot_pins(crate::standalone_capacity::configured_pin_reserve(&config))?;
         node.prepare_cache_warming().await?;
         let security_store = TenantStore::open_existing(
             node.clone(),

@@ -1288,6 +1288,18 @@ impl TenantEngine {
     ) -> Option<&crate::application_sources::SourceRootsRef> {
         self.application_sources.get()
     }
+    /// Ordinary snapshot pin credits for one client holder (a snapshot lease
+    /// or a cursor) of this tenant's selections, refused with no effect once
+    /// they would reach the reserved pins. None when the tenant reads no
+    /// native selections.
+    pub(crate) fn admit_retained_selection(
+        &self,
+    ) -> kasumi_types::Result<Option<kasumi_kv::OrdinaryPinCredits>> {
+        self.application_sources
+            .get()
+            .map(|sources| sources.admit_retained_selection())
+            .transpose()
+    }
     pub(crate) fn install_application_sources(
         &self,
         sources: crate::application_sources::SourceRootsRef,

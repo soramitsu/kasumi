@@ -65,6 +65,8 @@ struct Roots {
     metadata_bytes: usize,
     bytes: usize,
     reservation: Reservation,
+    /// Ordinary pin credits for the selections this lease can strand.
+    _pins: Option<kasumi_kv::OrdinaryPinCredits>,
 }
 impl Drop for Roots {
     fn drop(&mut self) {
@@ -533,6 +535,9 @@ impl LeaseManager {
         if total > budget || entries.len() >= state.limits.atomic.max_snapshot_leases {
             return Err(quota());
         }
+        // Before any effect: a lease keeps its selection alive across later
+        // publications, so it takes ordinary pin credits or is refused.
+        let pins = engine.admit_retained_selection()?;
         let mut reservation = node.reserve(bytes as u64, None)?;
         reservation.retain_workspace();
         let mut header_reservation = node.reserve(LEASE_HANDLE_BYTES as u64, None)?;
@@ -569,6 +574,7 @@ impl LeaseManager {
                 metadata_bytes: bytes,
                 bytes,
                 reservation,
+                _pins: pins,
             },
         );
         Ok(handle)

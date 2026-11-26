@@ -34,7 +34,10 @@ the applicable cgroup hierarchy for automatic ceiling discovery; an explicit
 The byte budget includes governor bookkeeping, resident reservations and active
 workspaces. A fixed ledger holds at most `max_reservations` charges (4096 in newly
 generated default policy), including zero-byte charges. Each runtime facade has
-`max_snapshot_startups` inventory slots (64 by default). The core also has
+`max_snapshot_startups` inventory slots (64 by default). Every open group holds
+one, so a standalone node's 64 hold Control and 63 tenants; each idle group
+also holds about 12 ledger charges. Staging and configuration loads refuse a
+standalone roster these cannot hold ([roster capacity](standalone.md#roster-capacity-and-the-1000-tenant-profile)). The core also has
 `max_startup_scopes` prepaid startup-terminal slots (64 by default). These numeric policy
 fields and the enclosing runtime admission object are required in serialized
 configuration; missing fields and unknown aliases are rejected. Programmatic
@@ -207,6 +210,31 @@ node database that Control, the service audit and tenants without their own
 database share has 4,096 pins (`SHARED_NODE_SNAPSHOT_PINS`); every other
 database keeps 256. Each open tenant holds one for its current Generation, so
 256 would stop a standalone node at about 253 tenants.
+
+The shared node database keeps a reserve of its pins for critical work:
+writes, applies and their successor captures, the service audit, Control and
+activation or reopen. Ordinary holders, which a client can keep across
+publications, take ordinary credits instead: each snapshot lease and each
+cursor takes two (its selection and the older one its located rows may still
+read through) before it exists. Ordinary credits stop at the registry less
+the reserve, so the next lease or cursor is refused with `ResourceExhausted`
+and no effect, while critical work still finds the reserved pins. The reserve
+for T tenants sharing the database (Control counts once more) and C admitted
+operations (`max_inflight_operations`) is R = 2(T + 1) + 8(min(T, C) + 4):
+two standing pins per application and eight per critical job, four of them
+node jobs. With 1,000 tenants and the default 64 operations that is 2,546
+pins, which leaves 1,550 ordinary credits (775 leases or cursors across the
+node); a generated installation's 63 tenants leave 3,432. Readiness `storage`
+and the metrics endpoint report `snapshot_pin_reserve` and
+`ordinary_snapshot_pins` beside `snapshot_pins` and `snapshot_pin_limit`.
+Databases without a reserve (every other database) count ordinary credits but
+never refuse them. A committed apply captures its successor selection after
+the commit, so its read reserves a pin slot and the snapshot workspace when it
+is queued, before the publication: the capture binds that slot and cannot be
+refused for capacity, including a capture after an installed snapshot. In-flight
+queries and native forks still use the generation or view they started with
+and are not charged; they are bounded by the operation and request admission
+around them.
 
 Each open group also holds one snapshot buffer owner, charged as ordinary
 resident work for the group's lifetime. A replicated group's owner admits 32

@@ -107,6 +107,7 @@ fn pagination_cursor(owner: &mut QueryResultOwner, offset: usize) -> Cursor {
         reservation: owner.cursor_reservation().unwrap(),
         offset,
         term: 1,
+        pins: None,
     }
 }
 

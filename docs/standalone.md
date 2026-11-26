@@ -70,10 +70,12 @@ cannot overlap each other or `scratch`. An installed node may add roots on other
 filesystems; see [more than one filesystem](operations.md#persistent-storage-on-more-than-one-filesystem). The initial
 limits are `max_bytes: 137438953472` (128 GiB),
 `maintenance_reserve_bytes: 1073741824` (1 GiB),
-`min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
-`max_open_directories: 4096`, `max_persistent_files: 1000000`,
-`max_persistent_subdirectories: 1000000`, `census_work_per_step: 1000000`,
-`max_depth: 64`, and `max_name_bytes: 255`. The subdirectory count excludes the
+`min_free_bytes: 268435456` (256 MiB), `max_open_files: 1024`,
+`max_open_directories: 256`, `max_persistent_files: 100000`,
+`max_persistent_subdirectories: 10000`, `census_work_per_step: 1000000`,
+`max_depth: 64`, and `max_name_bytes: 255`. Admission charges the installed
+metadata of these caps up front, and the generated admission total includes it;
+see [node memory admission](admission.md). The subdirectory count excludes the
 explicitly configured roots. Census work is limited per step; it is not the
 full-job file or directory count. All three namespace/work fields are required.
 The bounded startup census must finish before storage admission opens. Database,
@@ -88,9 +90,60 @@ to two descriptors, a directory owner can keep its parent's, and listeners,
 connections, logs and scratch files share the margin. It raises its soft limit
 to that when the hard limit allows and otherwise refuses to start, naming both
 limits. The packaged units set `LimitNOFILE=65536`. A daemon started through
-`runuser`, `su` or a login session often has a soft limit of 1,024, and each
-standalone tenant keeps about two directory descriptors (2,165 descriptors in
-all with 1,000 tenants).
+`runuser`, `su` or a login session often has a soft limit of 1,024. The
+generated configuration needs 3,584 descriptors. Every local tenant audit cache
+shares the node's one `tenant-audit-archives` directory owner, so tenants add
+no directory descriptors of their own; readiness reports `open_directories`
+(owners) and `directory_descriptors` (physical descriptors) apart.
+
+### Roster capacity and the 1,000-tenant profile
+
+Control and every standalone tenant run as groups on one memory core and in
+the shared node database, and each open group holds a startup-inventory slot,
+about 12 admission ledger charges and snapshot pins for as long as it is open.
+The generated configuration is sized for small installations: its 64
+`admission.max_snapshot_startups` slots hold Control and **63 tenants**, the
+first limit a growing roster reaches. Staging refuses a tenant the
+configuration cannot host, and so does every configuration load (`kasumid
+serve`, `kasumid check-config` and operator commands), with
+`RosterExceedsCapacity`, which names the setting, the value the roster needs
+and how many tenants the configured value holds; the daemon logs it as
+`roster_exceeds_capacity`. The check covers, in this order:
+
+| Setting | A roster of T tenants needs |
+|---|---|
+| `admission.max_snapshot_startups` | T + 1 (Control) |
+| `admission.max_reservations` | 12(T + 1) + 64 + 1,024 + the cache work reserve slots |
+| `persistent_disk.max_open_directories` | 32 + one per distinct external filesystem audit destination |
+| Shared node database pins (4,096) | the critical reserve 2(T + 1) + 8(min(T, C) + 4), plus 256 |
+
+C is `admission.max_inflight_operations`. Memory is not part of the check:
+idle tenants' reservations come out of the payload, and a request that does
+not fit is refused with `ResourceExhausted`.
+
+For up to 1,000 tenants on a 2-CPU, 16-GiB node, stop the installation and set
+this profile before staging past 63 tenants:
+
+| Setting | Generated | 1,000-tenant profile |
+|---|---:|---:|
+| `persistent_disk.max_open_files` | 1,024 | 1,024 |
+| `persistent_disk.max_open_directories` | 256 | 1,536 |
+| `persistent_disk.max_persistent_files` | 100,000 | 100,000 |
+| `persistent_disk.max_persistent_subdirectories` | 10,000 | 10,000 |
+| `admission.max_reservations` | 4,096 | 16,384 |
+| `admission.max_inflight_bytes` | derived from the disks (about 2.6 GB) | 6,442,450,944 (6 GiB) |
+| `admission.high_water_bytes` | `null` (half of memory) | `null` (half of memory) |
+| `admission.max_snapshot_startups` | 64 | 1,001 |
+| Required open-file limit | 3,584 | 6,144 |
+
+`kasumid serve` raises its soft open-file limit to the required value when the
+hard limit allows. The 6-GiB budget fits below the default high-water mark of
+a 16-GiB node (8 GiB); a budget above half of memory needs an explicit
+`high_water_bytes` and refuses to start otherwise. At 1,000 idle tenants an
+installed run on the previous profile held 12,052 reservations and 3.27 GB
+reserved, leaving about 3.0 GB of the 6-GiB budget and 4,332 ledger slots for
+work. The roster check refuses more than about 1,270 tenants at 16,384
+reservations; the 2-MiB configuration itself holds about 1,164.
 
 `persistent_disk.native_storage` is also required. The generated profile sets
 `byte_limit: 1073741824` (1 GiB) and `cached_files: 64`. These are per-group
@@ -506,7 +559,8 @@ recovery request.
 
 The first-release directory owner requires `persistent_disk.max_open_directories`
 explicitly; the generated installed policy uses 256 directory owners alongside
-1,024 file owners. There is no default or legacy field alias. The inode ledger
+1,024 file owners (the 1,000-tenant profile uses 1,536 directory owners). There
+is no default or legacy field alias. The inode ledger
 uses one physical-identity key space for files and directories. The generated
 100,000-file and 10,000-subdirectory limits bound census work and the separately
 retained regular-file and subdirectory counts; they are not a combined

@@ -408,6 +408,9 @@ async fn stage_owned(
                 "staged tenant already has an audit placement"
             );
             after.validate()?;
+            // A roster the configuration cannot host is refused here, before
+            // any key or configuration is written, not at its Nth activation.
+            crate::standalone_capacity::check(&after)?;
             let after_json = encode_staged_configuration(&after)?;
             let mut record = Record {
                 format: 1,

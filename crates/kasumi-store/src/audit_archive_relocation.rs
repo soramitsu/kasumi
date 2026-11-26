@@ -182,7 +182,7 @@ impl FilesystemAuditArchive {
             self.root.display()
         );
         let Self { directory, .. } = self;
-        directory.remove_if_empty()?;
+        directory.into_sole_owner()?.remove_if_empty()?;
         Ok(())
     }
 }

@@ -155,6 +155,11 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
             }) {
                 kasumi_server::logging::admission_exceeds_high_water(refusal);
             }
+            if let Some(refusal) = error.chain().find_map(|cause| {
+                cause.downcast_ref::<kasumi_server::standalone_capacity::RosterExceedsCapacity>()
+            }) {
+                kasumi_server::logging::roster_exceeds_capacity(refusal);
+            }
             kasumi_server::logging::daemon_failed(&error);
             std::process::ExitCode::FAILURE
         }

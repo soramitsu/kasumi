@@ -166,6 +166,9 @@ enum RoutineReadFailure {
 struct ReaderState {
     phase: NodeReadPhase,
     transaction: Option<RetainedReadTransaction>,
+    /// The pin slot and snapshot workspace a prepaid queued read reserved;
+    /// its begin binds them and cannot be refused for capacity.
+    prepared: Option<kasumi_kv::PreparedRead>,
     begin: Observation<ReadBeginFailure>,
     tables: Observation<NodeReadTablesError>,
     outer: Observation<std::convert::Infallible>,
@@ -307,7 +310,11 @@ impl ReaderRequest {
             state.phase = NodeReadPhase::Failed;
             return;
         };
-        state.begin = match database.begin_read_retained() {
+        let begun = match state.prepared.take() {
+            Some(prepared) => database.begin_prepared_read_retained(prepared),
+            None => database.begin_read_retained(),
+        };
+        state.begin = match begun {
             Ok(transaction) => {
                 state.transaction = Some(transaction);
                 Observation::Returned(Ok(()))
@@ -413,6 +420,8 @@ impl ReaderRequest {
             NodeReadPhase::Queued | NodeReadPhase::ForkQueued
         ) {
             state.phase = NodeReadPhase::Cancelled;
+            // An unbegun read returns its reserved pin slot now.
+            drop(state.prepared.take());
             return state.phase;
         }
         if matches!(
@@ -625,10 +634,19 @@ impl RegisteredNodeOpening {
     /// After registration, concurrent close yields the exact cancelled reader
     /// so the caller retains its ID, report, and retirement responsibility.
     pub fn queue_read(&self) -> io::Result<RegisteredNodeRead> {
-        self.queue_reader(NodeReadPhase::Queued)
+        self.queue_reader(NodeReadPhase::Queued, false)
     }
 
-    fn queue_reader(&self, phase: NodeReadPhase) -> io::Result<RegisteredNodeRead> {
+    /// `queue_read` that also reserves the read's pin slot and snapshot
+    /// workspace, for a read that must begin after an irreversible step
+    /// (the successor capture of a commit). A workspace or pin capacity
+    /// refusal here is a no-effect `OutOfMemory`; the later begin cannot be
+    /// refused for capacity.
+    pub fn queue_prepaid_read(&self) -> io::Result<RegisteredNodeRead> {
+        self.queue_reader(NodeReadPhase::Queued, true)
+    }
+
+    fn queue_reader(&self, phase: NodeReadPhase, prepay: bool) -> io::Result<RegisteredNodeRead> {
         debug_assert!(matches!(
             phase,
             NodeReadPhase::Queued | NodeReadPhase::ForkQueued
@@ -646,12 +664,31 @@ impl RegisteredNodeOpening {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let provider = owner.provider.clone();
+        let prepared = if prepay {
+            let database = opening.engine.database().ok_or(io::ErrorKind::BrokenPipe)?;
+            Some(database.prepare_read().map_err(|error| {
+                // Its workspace or its pin slot was refused: a no-effect
+                // admission refusal like the report's own, before any
+                // census registration.
+                if error.0.is_capacity_denied() {
+                    io::Error::new(
+                        io::ErrorKind::OutOfMemory,
+                        "snapshot workspace or pin capacity exhausted",
+                    )
+                } else {
+                    io::Error::new(io::ErrorKind::BrokenPipe, error)
+                }
+            })?)
+        } else {
+            None
+        };
         drop(opening);
         let report = AdmittedReadReport::new(
             &provider,
             ReaderState {
                 phase,
                 transaction: None,
+                prepared,
                 begin: Observation::NotEntered,
                 tables: Observation::NotEntered,
                 outer: Observation::NotEntered,
@@ -734,6 +771,7 @@ impl RegisteredNodeOpening {
                     ReaderState {
                         phase: NodeReadPhase::Queued,
                         transaction: None,
+                        prepared: None,
                         begin: Observation::NotEntered,
                         tables: Observation::NotEntered,
                         outer: Observation::NotEntered,
@@ -799,7 +837,7 @@ impl RegisteredNodeRead {
         let opening = RegisteredNodeOpening {
             registration: self.registration.owner().database.clone(),
         };
-        opening.queue_reader(NodeReadPhase::ForkQueued)
+        opening.queue_reader(NodeReadPhase::ForkQueued, false)
     }
 
     /// Register an independent reader before forking this exact selected pin.
@@ -1264,6 +1302,7 @@ impl RegisteredNodeRead {
                     NodeReadPhase::Queued | NodeReadPhase::ForkQueued
                 ) {
                     state.phase = NodeReadPhase::Cancelled;
+                    drop(state.prepared.take());
                 }
                 state.outcomes_released = true;
                 state.phase == NodeReadPhase::Finished && !state.has_failures()

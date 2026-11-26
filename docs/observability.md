@@ -350,11 +350,18 @@ protected routes. They are node-wide and exported once, without a tenant label.
 Health JSON includes `persistent_disk`, with its owner phase,
 charged extents, pending growth, file counts, maintenance reserve, current
 filesystem observation, `capacity_refusals` and `last_capacity_refusal`.
+`open_directories` counts directory owners, the units `max_open_directories`
+budgets; `directory_descriptors` counts the physical directory descriptors
+owners hold, each owner's own and every parent a directory or file owner
+retains. Owners of one directory share them: every local tenant audit cache
+uses the node's one `tenant-audit-archives` owner.
 Prometheus exposes `kasumi_persistent_disk_admission_ready`,
 `kasumi_persistent_disk_max_bytes`, `kasumi_persistent_disk_maintenance_reserve_bytes`,
 `kasumi_persistent_disk_charged_bytes`, `kasumi_persistent_disk_pending_bytes`
 (this owner's promises on all its filesystems),
 `kasumi_persistent_disk_files`, `kasumi_persistent_disk_open_files`,
+`kasumi_persistent_disk_open_directories`,
+`kasumi_persistent_disk_directory_descriptors`,
 `kasumi_persistent_disk_filesystem_pending_bytes` (every owner's promises on the
 filesystem), `kasumi_persistent_disk_filesystem_min_free_bytes`,
 `kasumi_persistent_disk_filesystem_available_bytes` (the `f_bavail` sample),
@@ -458,7 +465,11 @@ number of snapshot pins the database held when the status was published and
 `snapshot_pin_limit` its registry size (4,096 for the node database that Control,
 the service audit and tenants without their own database share, 256 elsewhere).
 Each open tenant keeps one; a full registry refuses new reads and writes for
-capacity. `compaction_phase` is
+capacity. `snapshot_pin_reserve` is the number of pins kept for critical work
+(zero except on the shared node database) and `ordinary_snapshot_pins` the
+ordinary credits snapshot leases and cursors hold; a new lease or cursor is
+refused with `ResourceExhausted` once these would reach into the reserve (see
+[admission](admission.md)). `compaction_phase` is
 `idle`, `evacuating`, `reclaiming` or `packing`, with `compaction_cycle`,
 `compaction_requested`, the baseline measured when the last cycle finished
 reclaiming (`compaction_baseline_bytes`/`_files`) and the thresholds that begin
@@ -520,7 +531,8 @@ label, and a dedicated database as `kasumi_local_group_storage_*` labeled
 says which applies to each group. Node-wide figures are never repeated under
 tenant labels. The families are `measured`, `segment_files`, `segment_bytes`,
 `arena_files`, `arena_bytes`, `census_age_seconds`, `status_age_seconds`,
-`garbage_files`, `snapshot_pins`, `snapshot_pin_limit`,
+`garbage_files`, `snapshot_pins`, `snapshot_pin_limit`, `snapshot_pin_reserve`,
+`ordinary_snapshot_pins`,
 `compaction_phase{phase="..."}` (1 for the current phase, 0 for
 the other three), `compaction_cycle`, `compaction_requested`,
 `compaction_baseline_bytes`, `compaction_trigger_bytes`,

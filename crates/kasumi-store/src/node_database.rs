@@ -442,6 +442,7 @@ impl NodeDatabase {
 
     /// A fixed read has a census child before its transaction begins. No raw
     /// transaction can escape through this installed-node path.
+    #[cfg(test)]
     pub(crate) fn queue_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {
         self.queue_registered_read_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)
     }
@@ -451,6 +452,46 @@ impl NodeDatabase {
     ) -> std::io::Result<RegisteredNodeRead> {
         let opening = self.admit_opening_until(deadline)?;
         opening.queue_read()
+    }
+
+    /// A queued read whose pin slot and snapshot workspace are reserved now,
+    /// so that its later begin cannot be refused for capacity.
+    pub(crate) fn queue_prepaid_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)?;
+        opening.queue_prepaid_read()
+    }
+
+    /// Occupancy of this database's snapshot pin registry.
+    pub(crate) fn snapshot_pin_use(
+        &self,
+    ) -> Result<kasumi_kv::SnapshotPinUse, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.snapshot_pin_use(),
+            Accepted::Registered(opening) => opening.snapshot_pin_use(),
+        }
+    }
+
+    /// Keep `reserve` pin slots from ordinary credits.
+    pub(crate) fn reserve_snapshot_pins(
+        &self,
+        reserve: usize,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.reserve_snapshot_pins(reserve),
+            Accepted::Registered(opening) => opening.reserve_snapshot_pins(reserve),
+        }
+    }
+
+    /// Charge ordinary pin credits a client holder keeps.
+    pub(crate) fn admit_ordinary_pins(
+        &self,
+        credits: usize,
+    ) -> Result<kasumi_kv::OrdinaryPinCredits, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.admit_ordinary_pins(credits),
+            Accepted::Registered(opening) => opening.admit_ordinary_pins(credits),
+        }
     }
 
     #[cfg(test)]

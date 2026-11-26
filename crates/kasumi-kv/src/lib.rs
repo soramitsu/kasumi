@@ -24,6 +24,7 @@ pub(crate) mod reclaim;
 pub(crate) mod root;
 pub(crate) mod segment;
 pub(crate) mod snapshot_pins;
+pub use snapshot_pins::SnapshotPinUse;
 
 mod read_requests;
 pub use read_requests::{PointReadRequests, ProtectedReadRequests};

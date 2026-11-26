@@ -497,3 +497,47 @@ async fn prepared_pair_rejects_recovered_begin_before_application_publication() 
     current.close()?;
     fixture.finish().await
 }
+
+/// The successor capture of a commit begins its prepared view after the
+/// commit, so it must never be refused for pin capacity. Preparation
+/// reserves the view's pin slot: with every other slot then held, the begin
+/// still selects the published root. An unbegun preparation returns its slot.
+#[tokio::test]
+async fn prepared_pair_reserves_its_pin_before_the_publication() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.publish(b"app-old", b"custody-old")?;
+    let idle = fixture.node.snapshot_pin_use()?;
+    let prepared = fixture.stores.prepare_read_view()?;
+    assert_eq!(fixture.node.snapshot_pin_use()?.held, idle.held + 1);
+    fixture.publish(b"app-new", b"custody-new")?;
+    let mut held = Vec::new();
+    let refusal = loop {
+        match fixture.stores.read_view() {
+            Ok(view) => held.push(view),
+            Err(error) => break error,
+        }
+        assert!(held.len() <= kasumi_kv::DEFAULT_SNAPSHOT_PINS);
+    };
+    let failure = refusal
+        .downcast_ref::<crate::NodeScopedReadFailure>()
+        .expect("typed reader refusal");
+    assert_eq!(
+        failure.try_retire_routine(),
+        crate::StorageCensusDisposition::Retired,
+        "{refusal:#}"
+    );
+    drop(refusal);
+    let full = fixture.node.snapshot_pin_use()?;
+    assert_eq!(full.held, full.limit);
+    let selected = prepared.begin()?;
+    pair(&selected, b"app-new", b"custody-new")?;
+    selected.close()?;
+    for view in held {
+        view.close()?;
+    }
+    let unused = fixture.stores.prepare_read_view()?;
+    assert_eq!(fixture.node.snapshot_pin_use()?.held, idle.held + 1);
+    unused.cancel()?;
+    assert_eq!(fixture.node.snapshot_pin_use()?.held, idle.held);
+    fixture.finish().await
+}

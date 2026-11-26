@@ -1717,6 +1717,30 @@ impl NodeStore {
         self.body().db.maintenance_status()
     }
 
+    /// Live occupancy of this node database's snapshot pin registry: held
+    /// slots, its size, the reserve kept for critical work and the ordinary
+    /// credits charged.
+    pub fn snapshot_pin_use(&self) -> Result<kasumi_kv::SnapshotPinUse, kasumi_kv::StorageError> {
+        self.body().db.snapshot_pin_use()
+    }
+
+    /// Keep `reserve` pin slots of this node database for critical work:
+    /// writes, applies and their successor captures, the service audit,
+    /// Control and activation. Ordinary credits are refused within them.
+    pub fn reserve_snapshot_pins(&self, reserve: usize) -> Result<(), kasumi_kv::StorageError> {
+        self.body().db.reserve_snapshot_pins(reserve)
+    }
+
+    /// Charge `credits` ordinary pin credits for a client holder (a snapshot
+    /// lease or a cursor) that may keep a selection alive across publication.
+    /// Refused with a no-effect capacity denial within the reserve.
+    pub fn admit_ordinary_snapshot_pins(
+        &self,
+        credits: usize,
+    ) -> Result<kasumi_kv::OrdinaryPinCredits, kasumi_kv::StorageError> {
+        self.body().db.admit_ordinary_pins(credits)
+    }
+
     /// Select this exact node's maintenance scheduling policy. This changes no
     /// quota, on-disk format, or other node's policy; callers reapply it on open.
     pub fn configure_storage_maintenance(

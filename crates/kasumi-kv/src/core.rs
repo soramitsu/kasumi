@@ -1090,17 +1090,63 @@ impl Core {
         .map(|opened| opened.into_core())
     }
     pub fn snapshot(&self) -> Result<ReadSnapshot, CoreError> {
+        self.snapshot_as(crate::disk_state::PinRequest::Critical)
+    }
+    pub(crate) fn snapshot_as(
+        &self,
+        request: crate::disk_state::PinRequest,
+    ) -> Result<ReadSnapshot, CoreError> {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         self.shared.read(|state| {
             self.shared.check_open(state)?;
-            let pin = state.disk()?.snapshot()?;
+            let pin = state.disk()?.snapshot_as(request)?;
             self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
             Ok(ReadSnapshot {
                 shared: self.shared.clone(),
                 pin,
             })
+        })
+    }
+    /// Reserve a free pin slot and its backing for one later critical
+    /// snapshot; binding it never fails for capacity.
+    pub(crate) fn promise_snapshot(
+        &self,
+    ) -> Result<crate::snapshot_pins::SnapshotPinPromise, CoreError> {
+        if self.shared.stopped.load(Ordering::Acquire) {
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.pins().promise()
+        })
+    }
+    /// Charge ordinary pin credits a caller holds without a slot.
+    pub(crate) fn admit_ordinary_pins(
+        &self,
+        credits: usize,
+    ) -> Result<crate::snapshot_pins::OrdinaryPinCredits, CoreError> {
+        if self.shared.stopped.load(Ordering::Acquire) {
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.pins().admit_ordinary(credits)
+        })
+    }
+    /// Occupied slots, the registry size, its reserve and ordinary credits.
+    pub fn snapshot_pin_use(&self) -> Result<crate::snapshot_pins::SnapshotPinUse, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.pins().usage()
+        })
+    }
+    /// Keep `reserve` slots of the registry from ordinary credits.
+    pub(crate) fn set_snapshot_pin_reserve(&self, reserve: usize) -> Result<(), CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.pins().set_reserve(reserve)
         })
     }
     pub(crate) fn check_read_owner(&self) -> Result<(), CoreError> {

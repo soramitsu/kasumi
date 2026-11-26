@@ -200,6 +200,9 @@ pub(crate) struct StorageObservation {
     /// Snapshot pins held at the last publication and the registry size.
     pub snapshot_pins: u64,
     pub snapshot_pin_limit: u64,
+    /// Pins kept for critical work and the ordinary credits charged.
+    pub snapshot_pin_reserve: u64,
+    pub ordinary_snapshot_pins: u64,
     pub compaction_phase: &'static str,
     pub compaction_cycle: u64,
     pub compaction_requested: bool,
@@ -277,6 +280,8 @@ impl StorageObservation {
             garbage_files: status.garbage_files,
             snapshot_pins: status.snapshot_pins,
             snapshot_pin_limit: status.snapshot_pin_limit,
+            snapshot_pin_reserve: status.snapshot_pin_reserve,
+            ordinary_snapshot_pins: status.ordinary_snapshot_pins,
             compaction_phase: status.phase.as_str(),
             compaction_cycle: status.cycle,
             compaction_requested: status.requested,
@@ -1380,7 +1385,7 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 /// Storage families shared by the node's database and each group that has
 /// one of its own: (suffix, kind, value).
 type StorageFamily = (&'static str, &'static str, fn(&StorageObservation) -> Value);
-const STORAGE_FAMILIES: [StorageFamily; 38] = [
+const STORAGE_FAMILIES: [StorageFamily; 40] = [
     ("measured", "gauge", |s| s.measured.into()),
     ("segment_files", "gauge", |s| s.segment_files.into()),
     ("segment_bytes", "gauge", |s| s.segment_bytes.into()),
@@ -1396,6 +1401,12 @@ const STORAGE_FAMILIES: [StorageFamily; 38] = [
     ("snapshot_pins", "gauge", |s| s.snapshot_pins.into()),
     ("snapshot_pin_limit", "gauge", |s| {
         s.snapshot_pin_limit.into()
+    }),
+    ("snapshot_pin_reserve", "gauge", |s| {
+        s.snapshot_pin_reserve.into()
+    }),
+    ("ordinary_snapshot_pins", "gauge", |s| {
+        s.ordinary_snapshot_pins.into()
     }),
     ("compaction_cycle", "gauge", |s| s.compaction_cycle.into()),
     ("compaction_requested", "gauge", |s| {
@@ -1733,6 +1744,11 @@ impl Observation {
         gauge!("persistent_disk_pending_bytes", disk.pending_bytes);
         gauge!("persistent_disk_files", disk.persistent_files);
         gauge!("persistent_disk_open_files", disk.open_files);
+        gauge!("persistent_disk_open_directories", disk.open_directories);
+        gauge!(
+            "persistent_disk_directory_descriptors",
+            disk.directory_descriptors
+        );
         gauge!(
             "persistent_disk_filesystem_pending_bytes",
             disk.filesystem_pending_bytes
@@ -2117,6 +2133,7 @@ mod tests {
             open_files: 3,
             persistent_directories: 2,
             open_directories: 1,
+            directory_descriptors: 2,
             open_directory_cursors: 0,
             open_census_streams: 0,
             retained_file_attempts: 0,

@@ -2,8 +2,10 @@
 use super::*;
 
 /// Owns the exact registered read request before a paired publication. This
-/// reserves its report and census entry, not a native snapshot slot or pin.
-/// `begin` selects the root current at that later call and rechecks both domains.
+/// reserves its report and census entry, and its native snapshot pin slot and
+/// workspace: a pin capacity refusal happens here, before the publication.
+/// `begin` selects the root current at that later call, binds the reserved
+/// slot, and rechecks both domains.
 pub struct PreparedTenantStorageReadView {
     application: Arc<TenantStore>,
     custody: Arc<TenantStore>,
@@ -33,7 +35,14 @@ impl TenantStorageSet {
                 queued: Some(Queued::Fixture),
             });
         }
-        let queued = self.application.node.body().db.queue_registered_read()?;
+        // The successor capture of a commit begins this read after the commit:
+        // its pin slot is reserved now, so that begin cannot be refused.
+        let queued = self
+            .application
+            .node
+            .body()
+            .db
+            .queue_prepaid_registered_read()?;
         if let Err(error) = self.check_access() {
             return self
                 .application

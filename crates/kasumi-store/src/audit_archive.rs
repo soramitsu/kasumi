@@ -703,9 +703,81 @@ fn filesystem_identity(root: &Path) -> String {
 #[cfg(test)]
 type PublicationHook = Arc<dyn Fn(&Path) + Send + Sync>;
 
+/// The enrolled directory custody of one archive directory: its disk, its
+/// enrolled root and the relative binding below it.
+struct SharedDirectory {
+    disk: Arc<NodeDisk>,
+    binding: (String, PathBuf),
+    directory: crate::NodeDiskDirectory,
+}
+
+/// Archive directories some live archive holds open. Every archive of the
+/// same binding on the same disk shares its one directory owner: each local
+/// tenant's audit cache names the node's `tenant-audit-archives`, and with an
+/// owner each, an installation would keep that directory and its retained
+/// parent open once per tenant (2,000 descriptors and 1,000 open-directory
+/// slots for 1,000 tenants). Entries are weak: the last archive's drop
+/// closes the owner, and a later open enrolls the directory afresh.
+static OPEN_DIRECTORIES: std::sync::Mutex<Vec<std::sync::Weak<SharedDirectory>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Shared custody of an archive directory; it closes with its last archive.
+#[derive(Clone)]
+struct ArchiveDirectory(Arc<SharedDirectory>);
+impl std::ops::Deref for ArchiveDirectory {
+    type Target = crate::NodeDiskDirectory;
+    fn deref(&self) -> &crate::NodeDiskDirectory {
+        &self.0.directory
+    }
+}
+impl ArchiveDirectory {
+    /// Share the owner another live archive holds on the same binding of
+    /// `disk`, after verifying its complete ancestry, path and retained
+    /// directory and parent identities, or open (creating when absent) and
+    /// register a new one. Opens are serialized, so concurrent first opens
+    /// of one directory never enroll two owners.
+    fn open(root: &Path, disk: &Arc<NodeDisk>) -> Result<Self> {
+        let anchor = root.join("directory-accounting-anchor");
+        let (enrolled, relative) = disk.binding(&anchor)?;
+        let binding = (
+            enrolled.to_owned(),
+            relative.parent().context("directory binding")?.to_owned(),
+        );
+        let mut open = OPEN_DIRECTORIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        open.retain(|entry| entry.strong_count() > 0);
+        let shared = open
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .find(|shared| Arc::ptr_eq(&shared.disk, disk) && shared.binding == binding);
+        if let Some(shared) = shared {
+            shared.directory.verified_identity()?;
+            return Ok(Self(shared));
+        }
+        let directory =
+            crate::backup_sessions::filesystem::Directory::open_or_create(root, disk.clone())?
+                .into_managed_owner();
+        let shared = Arc::new(SharedDirectory {
+            disk: disk.clone(),
+            binding,
+            directory,
+        });
+        open.push(Arc::downgrade(&shared));
+        Ok(Self(shared))
+    }
+
+    /// The directory owner, only while no other archive shares it.
+    fn into_sole_owner(self) -> std::io::Result<crate::NodeDiskDirectory> {
+        Arc::try_unwrap(self.0)
+            .map(|shared| shared.directory)
+            .map_err(|_| std::io::ErrorKind::WouldBlock.into())
+    }
+}
+
 pub struct FilesystemAuditArchive {
     root: PathBuf,
-    directory: crate::NodeDiskDirectory,
+    directory: ArchiveDirectory,
     disk: Arc<NodeDisk>,
     observer: Option<Arc<dyn AuditArchivePublicationObserver>>,
     publication: Arc<std::sync::Mutex<()>>,
@@ -713,14 +785,16 @@ pub struct FilesystemAuditArchive {
     publication_hook: Option<PublicationHook>,
 }
 impl FilesystemAuditArchive {
+    /// Open the archive at `root`, sharing the directory owner of any other
+    /// live archive of the same root on `disk`. Each archive keeps its own
+    /// publication lock and observer.
     pub fn open(root: impl AsRef<Path>, disk: Arc<NodeDisk>) -> Result<Self> {
         let root = root.as_ref();
-        let directory =
-            crate::backup_sessions::filesystem::Directory::open_or_create(root, disk.clone())?;
+        let directory = ArchiveDirectory::open(root, &disk)?;
         directory.sync_all()?;
         Ok(Self {
             root: root.to_owned(),
-            directory: directory.into_managed_owner(),
+            directory,
             disk,
             observer: None,
             publication: Arc::new(std::sync::Mutex::new(())),
@@ -1977,6 +2051,58 @@ mod tests {
         .unwrap();
         cache.validate_external_destination(&external).unwrap();
         assert_eq!(cache.disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    }
+
+    #[test]
+    fn archives_of_one_directory_share_one_directory_owner() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let root = directory.path().join("cache");
+        let first = FilesystemAuditArchive::open_fixture(&root, memory).unwrap();
+        let disk = first.disk.clone();
+        let open = || disk.snapshot().open_directories;
+        let descriptors = || disk.snapshot().directory_descriptors;
+        let alone = open();
+        let alone_descriptors = descriptors();
+        // Every tenant cache of a node names the same directory: later
+        // archives share the first one's owner and its retained parent.
+        let tenants = (0..8)
+            .map(|_| FilesystemAuditArchive::open(&root, disk.clone()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(open(), alone);
+        assert_eq!(descriptors(), alone_descriptors);
+        for tenant in &tenants {
+            tenant.validate_cache_custody(&disk).unwrap();
+            assert!(!Arc::ptr_eq(&tenant.publication, &first.publication));
+        }
+        // Another directory on the same disk has its own owner.
+        let other =
+            FilesystemAuditArchive::open(directory.path().join("other"), disk.clone()).unwrap();
+        assert_eq!(open(), alone + 1);
+        // Its own descriptor and its retained parent.
+        assert_eq!(descriptors(), alone_descriptors + 2);
+        drop(other);
+        assert_eq!(open(), alone);
+        assert_eq!(descriptors(), alone_descriptors);
+        // The shared owner stays open until its last archive closes, and a
+        // directory still shared cannot be removed.
+        drop(first);
+        assert_eq!(open(), alone);
+        let mut tenants = tenants.into_iter();
+        let last = tenants.next().unwrap();
+        let removal = last.directory.clone().into_sole_owner();
+        assert_eq!(removal.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        drop(tenants);
+        assert_eq!(open(), alone);
+        drop(last);
+        assert_eq!(open(), alone - 1);
+        // A new archive enrolls the directory again.
+        let reopened = FilesystemAuditArchive::open(&root, disk.clone()).unwrap();
+        assert_eq!(open(), alone);
+        reopened.remove_empty().unwrap();
+        assert_eq!(open(), alone - 1);
+        assert!(!root.exists());
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
     }
 
     #[test]

@@ -55,6 +55,7 @@ pub mod serve_options;
 mod serving_owner;
 pub mod serving_runtime;
 pub mod standalone;
+pub mod standalone_capacity;
 pub mod standalone_cli;
 pub mod standalone_key_backup;
 mod startup_owner;

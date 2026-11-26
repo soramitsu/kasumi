@@ -113,6 +113,8 @@ mod allocation_tests;
 #[cfg(test)]
 mod local_writer_capacity_tests;
 #[cfg(test)]
+mod pin_reserve_tests;
+#[cfg(test)]
 mod test_fixture_failure;
 
 /// Conservative resident charge for retaining one immutable document across

@@ -167,6 +167,8 @@ struct Cursor {
     /// The first row of the next page.
     offset: usize,
     term: u64,
+    /// Ordinary pin credits for the selections the rows can strand.
+    pins: Option<Arc<kasumi_kv::OrdinaryPinCredits>>,
 }
 
 /// Remaining compact identities share one exact generation/resolver. Ordinary
@@ -3738,6 +3740,12 @@ impl Database {
                     "cursor memory budget exhausted",
                 ));
             }
+            // A continuation keeps its predecessor's credits; a new cursor
+            // takes its own or is refused before any cursor exists.
+            let pins = match replaced {
+                Some(cursor) => cursor.pins.clone(),
+                None => self.engine.admit_retained_selection()?.map(Arc::new),
+            };
             let reservation = full.cursor_reservation()?;
             let token = uuid::Uuid::new_v4().to_string();
             cursors.insert(
@@ -3754,6 +3762,7 @@ impl Database {
                     reservation,
                     offset,
                     term,
+                    pins,
                 },
             );
             page.cursor = Some(token);

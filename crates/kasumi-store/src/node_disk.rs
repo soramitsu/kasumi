@@ -369,7 +369,12 @@ pub struct NodeDiskSnapshot {
     pub persistent_files: u64,
     pub open_files: u32,
     pub persistent_directories: u64,
+    /// Directory owners, the budgeted `max_open_directories` units.
     pub open_directories: u32,
+    /// Physical directory descriptors those owners and file owners hold: an
+    /// owner's own descriptor and each parent it retains. Owners of one
+    /// directory share these (every local tenant audit cache shares one).
+    pub directory_descriptors: u64,
     pub open_directory_cursors: u32,
     pub open_census_streams: u32,
     pub retained_file_attempts: usize,
@@ -1310,8 +1315,8 @@ impl NodeDisk {
         }
         Ok(None)
     }
-    /// Explicit bounded generic fixture policy. Production installation policy
-    /// retains one million files, one million subdirectories and 4096 owners in the server generator.
+    /// Explicit bounded generic fixture policy. The server generator writes the
+    /// production installation policy (`persistent_disk::initial_config`).
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_config(path: impl AsRef<std::path::Path>) -> Result<NodeDiskConfig> {
         let root = path
@@ -1380,6 +1385,12 @@ impl NodeDisk {
             open_files: state.open_files,
             persistent_directories: state.directories,
             open_directories: state.open_directories,
+            directory_descriptors: state
+                .accounted
+                .values()
+                .filter_map(AccountedInode::directory)
+                .map(|directory| u64::from(directory.live_handles))
+                .sum(),
             open_directory_cursors: state.open_directory_cursors,
             open_census_streams: state.census_streams.outstanding(),
             retained_file_attempts: state.file_custody.retained_attempts(),
