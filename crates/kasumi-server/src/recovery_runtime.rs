@@ -396,6 +396,10 @@ pub(crate) struct ControlRecoveryCoordinator {
     authorities: BTreeMap<String, ServingAuthorityConfig>,
     trusts: BTreeMap<String, AuthorityTrust>,
     installed_digests: BTreeMap<String, String>,
+    /// Fixture probe after an outbound target call returned and before its
+    /// outcome is recorded, while its dispatch callback is still open.
+    #[cfg(test)]
+    pub(crate) after_target_call: std::sync::OnceLock<crate::rpc::TargetCallProbe>,
 }
 #[async_trait::async_trait]
 impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
@@ -526,6 +530,8 @@ impl ControlRecoveryCoordinator {
             phase_callbacks: Default::default(),
             deletion_observers: Default::default(),
             writer_callbacks: Default::default(),
+            #[cfg(test)]
+            after_target_call: Default::default(),
         }))
     }
     pub(crate) fn control_incarnation(&self) -> Uuid {
@@ -1177,6 +1183,10 @@ impl ControlRecoveryCoordinator {
                         let _sending = phase_callback.sending_target_command();
                         client.execute(&bearer, &verified, &envelope).await
                     };
+                    #[cfg(test)]
+                    if let Some(probe) = self.after_target_call.get() {
+                        probe(*node_id, request.as_ref().clone()).await;
+                    }
                     let acknowledgement = if first_membership {
                         acknowledgement.map_err(|_| unknown_recovery_effect())?
                     } else {

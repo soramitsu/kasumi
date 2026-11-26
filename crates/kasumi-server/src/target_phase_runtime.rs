@@ -556,6 +556,12 @@ impl RuntimeTargetPhase {
     pub(crate) fn scope(&self) -> &Arc<TargetOperationScope> {
         &self.scope
     }
+    #[cfg(test)]
+    pub(crate) fn test_pause_renewal_after_issuer(
+        &self,
+    ) -> Arc<crate::runtime_worker::WorkerPause> {
+        self.renewal.pause_next_after_issuer()
+    }
     pub(crate) fn original(&self) -> &VerifiedControlIntent {
         &self.original
     }
@@ -723,11 +729,24 @@ impl RuntimeTargetPhase {
             )
             .await?;
         drop(issuer);
-        if self.original.observation().intent.request.phase == LifecyclePhase::Initialize {
+        #[cfg(test)]
+        let held = self.renewal.after_issuer().await;
+        if matches!(
+            self.original.observation().intent.request.phase,
+            LifecyclePhase::Initialize | LifecyclePhase::Activate
+        ) {
             // A sibling dispatch can finish, abort or be superseded while the
             // issuer is answering. Only an independently current original
             // Control read may publish this renewal into the existing live gate.
-            self.check_current(&budget).await?;
+            let current = self.check_current(&budget).await;
+            #[cfg(test)]
+            if let Some(held) = &held {
+                let _ = held.resumed_read.set(current.is_ok());
+                if let Err(error) = &current {
+                    let _ = held.resumed_error.set(format!("{error:#}"));
+                }
+            }
+            current?;
         }
         self.scope.invocation().gate().renew(lease)?;
         Ok(())

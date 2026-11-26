@@ -12,6 +12,10 @@ use uuid::Uuid;
 pub(super) struct Fixture<'a> {
     pub directory: &'a std::path::Path,
     pub control: Arc<kasumi_engine::Database>,
+    /// Every Control member and their fixture transport, to elect another one.
+    pub controls: Vec<Arc<kasumi_engine::Database>>,
+    pub control_router: Arc<kasumi_raft::InProcessRouter>,
+    pub control_group: &'a str,
     pub signer: Arc<kasumi_engine::LifecycleSigner>,
     pub auth: Arc<Authenticator>,
     pub audit: Arc<kasumi_engine::SecurityAudit>,
@@ -418,7 +422,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     let coordinator = ControlRecoveryCoordinator::new(
         &runtime,
         f.control.clone(),
-        f.signer,
+        f.signer.clone(),
         BTreeMap::from([("issuer".into(), f.trust.clone())]),
     )
     .unwrap();
@@ -439,9 +443,15 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         &request.target_nodes[&1],
         &f.installation.root,
     );
+    // As installed: the same member's lifecycle service resolves a target's
+    // read-only observation through this coordinator's live dispatches.
+    let lifecycle = NativeLifecycleControl::new(f.control.clone(), f.signer, f.auth.clone())
+        .unwrap()
+        .with_writer_callbacks(coordinator.clone());
     let routes = tonic::service::Routes::new(
-        NativeRecoveryControl::new(coordinator, f.auth.clone()).service(),
+        NativeRecoveryControl::new(coordinator.clone(), f.auth.clone()).service(),
     )
+    .add_service(lifecycle.service())
     .add_service(NativeAuthority::new(f.issuer.clone(), f.auth).service())
     .into_axum_router();
     let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -702,6 +712,24 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             .await
             .is_err()
     );
+    let mut enrolled = request.target_nodes[&1].clone();
+    enrolled.principal = reader.principal.clone();
+    enrolled.certificate_sha256 = hex::encode(config.identity.certificate_pin());
+    exercise_original_dispatch_after_election(OriginalDispatch {
+        coordinator: &coordinator,
+        controls: &f.controls,
+        router: &f.control_router,
+        group: f.control_group,
+        admin: &admin,
+        control_admin: f.control_admin,
+        readonly: f.readonly,
+        enrolled: &enrolled,
+        pending: &phase,
+        config: &config,
+        root: &f.installation.root,
+    })
+    .await;
+    drop(coordinator);
     let stop_request = RecoveryStop {
         operation_id: operation,
         command_id: Uuid::new_v4(),
@@ -746,6 +774,195 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+struct OriginalDispatch<'a> {
+    coordinator: &'a crate::recovery_runtime::ControlRecoveryCoordinator,
+    controls: &'a [Arc<kasumi_engine::Database>],
+    router: &'a kasumi_raft::InProcessRouter,
+    group: &'a str,
+    admin: &'a RequestContext,
+    control_admin: &'a str,
+    readonly: &'a str,
+    enrolled: &'a LifecycleNode,
+    pending: &'a RecoveryPhaseRecord,
+    config: &'a kasumi_client::KasumiClientConfig,
+    root: &'a ControlSigningRoot,
+}
+
+/// A live dispatch stays with the Control member that opened it. After another
+/// member is elected, that original member still answers its enrolled target
+/// reader, through the elected member's read index, until the dispatch ends.
+/// Its own administrative reads are refused while it does not lead.
+async fn exercise_original_dispatch_after_election(f: OriginalDispatch<'_>) {
+    let RecoveryDispatch::Target { request, .. } = &f.pending.input else {
+        panic!("pending target dispatch required")
+    };
+    let command = request.command_id;
+    let query = RecoveryPhaseRequest {
+        operation_id: f.pending.operation_id,
+        phase_id: f.pending.phase_id,
+    };
+    let mut recovery = kasumi_client::KasumiRecoveryClient::connect(f.config)
+        .await
+        .unwrap();
+    let mut lifecycle = kasumi_client::KasumiLifecycleClient::connect(
+        f.config,
+        kasumi_serving::ControlTrust::install(f.root.clone()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let original = &f.coordinator.database;
+    let original_id = original.raft_group().metrics().id;
+
+    // Without a live dispatch this member reports its own absence.
+    let absent = recovery.read_phase(f.readonly, &query).await.unwrap_err();
+    assert!(absent.is_inactive_target_callback(), "{absent:?}");
+    let absent = lifecycle
+        .observe_intent(f.readonly, command)
+        .await
+        .unwrap_err();
+    assert!(absent.is_inactive_target_callback(), "{absent:?}");
+
+    let dispatch = f
+        .coordinator
+        .phase_callbacks
+        .open(
+            original,
+            f.admin,
+            f.enrolled,
+            request,
+            (f.pending.operation_id, f.pending.phase_id),
+            tokio::time::Instant::now() + Duration::from_secs(300),
+        )
+        .unwrap();
+    assert_eq!(
+        recovery.read_phase(f.readonly, &query).await.unwrap(),
+        *f.pending
+    );
+    let before = lifecycle.observe_intent(f.readonly, command).await.unwrap();
+    assert_eq!(before.observation().intent.request.command_id, command);
+
+    // Elect another member, then let the original one rejoin as its follower.
+    f.router.isolate(f.group, original_id, true);
+    let elected = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            for member in f.controls {
+                let metrics = member.raft_group().metrics();
+                if metrics.id != original_id
+                    && metrics.current_leader == Some(metrics.id)
+                    && matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(2),
+                            member.raft_group().linearizable_barrier()
+                        )
+                        .await,
+                        Ok(Ok(_))
+                    )
+                {
+                    return metrics.id;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("another Control member must be elected");
+    f.router.isolate(f.group, original_id, false);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while original.raft_group().metrics().current_leader != Some(elected) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the original Control member must follow the elected one");
+
+    // Administrative reads belong to the elected leader.
+    let refused = recovery
+        .read_phase(f.control_admin, &query)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.grpc_code(), tonic::Code::Unavailable, "{refused:?}");
+    assert!(!refused.is_inactive_target_callback(), "{refused:?}");
+
+    // The callback is still owned here. A read can race the first heartbeat of
+    // the new term, so only a quorum refusal is retried, within a fixed bound.
+    let retried = |error: &kasumi_client::ClientError| {
+        error.grpc_code() == tonic::Code::Unavailable && !error.is_inactive_target_callback()
+    };
+    let observed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match recovery.read_phase(f.readonly, &query).await {
+                Ok(record) => break record,
+                Err(error) if retried(&error) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("original dispatch refused its reader: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the original Control member must answer its live phase callback after an election");
+    assert_eq!(observed, *f.pending);
+    let after = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match lifecycle.observe_intent(f.readonly, command).await {
+                Ok(intent) => break intent,
+                Err(error) if retried(&error) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("original dispatch refused its reader: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the original Control member must answer its live intent callback after an election");
+    assert_eq!(after.observation().intent, before.observation().intent);
+    assert!(
+        after.observation().observed_term > before.observation().observed_term,
+        "the observation must be current in the elected member's term"
+    );
+    assert_eq!(
+        original.raft_group().metrics().current_leader,
+        Some(elected),
+        "the callback was answered while another member led"
+    );
+
+    // Ending the dispatch closes both reads on the member that owned it.
+    drop(dispatch);
+    let closed = recovery.read_phase(f.readonly, &query).await.unwrap_err();
+    assert!(closed.is_inactive_target_callback(), "{closed:?}");
+    let closed = lifecycle
+        .observe_intent(f.readonly, command)
+        .await
+        .unwrap_err();
+    assert!(closed.is_inactive_target_callback(), "{closed:?}");
+
+    // The rest of this fixture addresses the original member as the leader.
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let group = original.raft_group();
+            if group.metrics().current_leader != Some(original_id) {
+                let _ = group.raft().trigger().elect().await;
+            }
+            let leads = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if group.metrics().current_leader == Some(original_id)
+                        && group.linearizable_barrier().await.is_ok()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            if leads.is_ok() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the original Control member must lead again");
 }
 
 /// A returned journal challenge retains the original administrator at the

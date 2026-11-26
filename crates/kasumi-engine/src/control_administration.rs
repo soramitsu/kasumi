@@ -8,12 +8,15 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) enum ControlObservationAccess {
     Administration,
+    ActiveTargetCallback,
     TopologyRead,
 }
 impl ControlObservationAccess {
     pub(super) fn authorize(self, database: &Database, context: &RequestContext) -> Result<()> {
         match self {
-            Self::Administration => database.engine.authorize(context, None, Action::Admin),
+            Self::Administration | Self::ActiveTargetCallback => {
+                database.engine.authorize(context, None, Action::Admin)
+            }
             Self::TopologyRead => {
                 database
                     .engine
@@ -31,6 +34,7 @@ pub(super) struct ControlQuorumFence {
     policy_epoch: u64,
     term: u64,
     node_id: u64,
+    leader: u64,
     membership: Arc<kasumi_raft::StoredMembership<u64, kasumi_raft::BasicNode>>,
     cancellation: QueryCancellation,
     closed: AtomicBool,
@@ -110,7 +114,7 @@ impl ControlQuorumFence {
         drop(state);
         let metrics = self.database.group.metrics();
         if metrics.id != self.node_id
-            || metrics.current_leader != Some(self.node_id)
+            || metrics.current_leader != Some(self.leader)
             || metrics.current_term != self.term
             || metrics.membership_config != self.membership
         {
@@ -261,8 +265,12 @@ impl Database {
         let installation = control.installation.clone();
         let policy_epoch = state.state.policy_epoch;
         drop(state);
+        let leader = metrics
+            .current_leader
+            .ok_or_else(|| changed("current Control leader absent"))?;
         if metrics.current_term != term
-            || metrics.current_leader != Some(metrics.id)
+            || (!matches!(access, ControlObservationAccess::ActiveTargetCallback)
+                && leader != metrics.id)
             || metrics
                 .membership_config
                 .membership()
@@ -281,6 +289,7 @@ impl Database {
             policy_epoch,
             term,
             node_id: metrics.id,
+            leader,
             membership: metrics.membership_config,
             cancellation,
             closed: AtomicBool::new(false),

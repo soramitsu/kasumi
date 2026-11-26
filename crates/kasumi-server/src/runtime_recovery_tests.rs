@@ -123,6 +123,15 @@ fn recovery_database_progress(owner: &std::sync::Weak<kasumi_engine::Database>) 
         state
     )
 }
+/// Optional native-timing reproduction. Unset, the fixture is unchanged.
+fn native_timing(name: &str) -> Option<u64> {
+    let value = std::env::var(name).ok()?;
+    Some(
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} must be an unsigned integer")),
+    )
+}
 fn recovery_progress(record: &RecoveryRecord) -> String {
     format!(
         "phase={:?} revision={} next={} pending={:?} last={:?} initialized={} completion_intent={:?} predecessor={:?} prepared={:?} prepare_attempt={:?} complete_attempt={:?} resolve_attempt={:?} terminal={:?} completion={:?} activated={} routed={} voters={:?}",
@@ -192,6 +201,16 @@ impl Credentials {
         self.token_with_scope(principal, tenant, resource, "kasumi:admin kasumi:read kasumi:write kasumi:audit")
     }
     fn token_with_scope(&self, principal: &str, tenant: &str, resource: CredentialResource, scope: &str) -> String {
+        self.token_expiring(principal, tenant, resource, scope, 3600)
+    }
+    fn token_expiring(
+        &self,
+        principal: &str,
+        tenant: &str,
+        resource: CredentialResource,
+        scope: &str,
+        lifetime_secs: u64,
+    ) -> String {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
         header.kid = Some("runtime-recovery".into());
         header.typ = Some("at+jwt".into());
@@ -206,7 +225,7 @@ impl Credentials {
                 "sub":principal,"tenant":tenant,"kasumi_resource":resource,
                 "scope":scope,
                 "iss":"https://runtime-identity.example","aud":"https://runtime.example",
-                "exp":now+3600
+                "exp":now+lifetime_secs
             }),
             &jsonwebtoken::EncodingKey::from_ed_pem(self.key.serialize_pem().as_bytes()).unwrap(),
         )
@@ -237,6 +256,258 @@ impl Handles {
                 .test_original_recoveries()
                 .clone(),
         }
+    }
+}
+
+/// What the target-call probes observed while the original target RPCs and
+/// their Control dispatch callbacks were live.
+#[derive(Default)]
+struct TargetCallProbes {
+    /// Each opened target runtime by voter index, for its siblings' probes.
+    runtimes: [std::sync::Mutex<std::sync::Weak<TargetRecoveryRuntime>>; 3],
+    /// The Activate command a voter read during a sibling's Activate RPC.
+    activate: [std::sync::OnceLock<Uuid>; 3],
+    /// A started sibling's gate renewing past its expiry during a confirmation.
+    renewed: std::sync::OnceLock<std::result::Result<String, String>>,
+    /// A confirmation whose outer command differs from its proof's intent.
+    cross_intent: std::sync::OnceLock<(Uuid, Uuid)>,
+    /// A sibling renewal held after its issuer answered, during the final
+    /// confirmation RPC, until that call has closed.
+    paused: std::sync::Mutex<Option<PausedRenewal>>,
+    /// That held renewal's result once the confirmation call closed.
+    fenced: std::sync::OnceLock<std::result::Result<String, String>>,
+    /// A sibling read on the dispatching member after a confirmation call.
+    after_call: std::sync::OnceLock<std::result::Result<String, String>>,
+    /// Optional Control election during the last voter's StartActivation RPC.
+    election: std::sync::OnceLock<ElectionProbe>,
+    elected: std::sync::OnceLock<std::result::Result<String, String>>,
+}
+/// Elect another Control member while a Confirm RPC is outstanding and read
+/// the intent as a started sibling on both members.
+struct ElectionProbe {
+    controls: Vec<std::sync::Weak<kasumi_engine::Database>>,
+    networks: Vec<Arc<ClusterNetwork>>,
+    group: String,
+    root: ControlSigningRoot,
+    /// Each voter's phase bearer and its connection to each Control member.
+    readers: BTreeMap<
+        u64,
+        (
+            zeroize::Zeroizing<String>,
+            BTreeMap<u64, kasumi_client::KasumiClientConfig>,
+        ),
+    >,
+}
+impl ElectionProbe {
+    async fn read(
+        &self,
+        sibling: u64,
+        member: u64,
+        command: Uuid,
+    ) -> std::result::Result<kasumi_serving::VerifiedControlIntent, kasumi_client::ClientError>
+    {
+        let (bearer, connections) = &self.readers[&sibling];
+        let mut client = kasumi_client::KasumiLifecycleClient::connect(
+            &connections[&member],
+            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+        )
+        .await?;
+        client.observe_intent(bearer, command).await
+    }
+    async fn run(&self, sibling: u64, command: Uuid) -> std::result::Result<String, String> {
+        let controls = self
+            .controls
+            .iter()
+            .map(|weak| weak.upgrade().ok_or("Control owner absent"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let leader = quorum_ready_leader(&controls, "Control before Confirm election").await;
+        let original = controls[leader].raft_group().node_id();
+        // The dispatching member answers its started sibling.
+        let before = self
+            .read(sibling, original, command)
+            .await
+            .map_err(|error| format!("sibling {sibling} on dispatcher {original}: {error:?}"))?;
+        self.networks[leader]
+            .set_test_group_isolated(&self.group, true)
+            .unwrap();
+        let survivors = controls
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != leader)
+            .map(|(_, database)| Arc::clone(database))
+            .collect::<Vec<_>>();
+        let replacement = quorum_ready_leader(&survivors, "Control elected during Confirm").await;
+        let elected = survivors[replacement].raft_group().node_id();
+        self.networks[leader]
+            .set_test_group_isolated(&self.group, false)
+            .unwrap();
+        let rejoined = tokio::time::timeout(Duration::from_secs(60), async {
+            while controls[leader].raft_group().metrics().current_leader != Some(elected) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        if rejoined.is_err() {
+            return Err(format!(
+                "dispatcher {original} did not follow elected {elected}"
+            ));
+        }
+        // A read can race the first heartbeat of the new term: retry only a
+        // quorum refusal, never the inactive-callback marker.
+        let after = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match self.read(sibling, original, command).await {
+                    Ok(intent) => break Ok(intent),
+                    Err(error)
+                        if error.grpc_code() == tonic::Code::Unavailable
+                            && !error.is_inactive_target_callback() =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        })
+        .await
+        .map_err(|_| format!("sibling {sibling} read on dispatcher {original} elapsed"))?
+        .map_err(|error| {
+            format!("dispatcher {original} refused sibling {sibling} after election: {error:?}")
+        })?;
+        if after.observation().intent != before.observation().intent
+            || after.observation().observed_term <= before.observation().observed_term
+            || controls[leader].raft_group().metrics().current_leader != Some(elected)
+        {
+            return Err(format!(
+                "sibling {sibling} read on dispatcher {original} was not current under elected {elected}"
+            ));
+        }
+        match self.read(sibling, elected, command).await {
+            Err(error) if error.is_inactive_target_callback() => Ok(format!(
+                "sibling {sibling} read on dispatcher {original} after {elected} was elected; refused by {elected}"
+            )),
+            other => Err(format!(
+                "elected member {elected} without the callback answered sibling {sibling}: {other:?}"
+            )),
+        }
+    }
+}
+struct PausedRenewal {
+    sibling: u64,
+    gate: Arc<kasumi_serving::LifecycleGate>,
+    pause: Arc<crate::runtime_worker::WorkerPause>,
+    expiry: std::time::Instant,
+}
+impl TargetCallProbes {
+    /// The sibling's live phase for `outer`, from its own target runtime.
+    async fn sibling_phase(
+        &self,
+        sibling: usize,
+        target: Uuid,
+        outer: Uuid,
+    ) -> std::result::Result<
+        (
+            Arc<TargetRecoveryRuntime>,
+            Arc<crate::target_phase_runtime::RuntimeTargetPhase>,
+        ),
+        String,
+    > {
+        let node = sibling + 1;
+        let runtime = self.runtimes[sibling]
+            .lock()
+            .unwrap()
+            .upgrade()
+            .ok_or_else(|| format!("sibling {node} runtime absent"))?;
+        let phase = runtime
+            .test_owned_phase("acme", target)
+            .await
+            .ok_or_else(|| format!("sibling {node} owns no target phase"))?;
+        let intent = phase.original().observation().intent.request.command_id;
+        if intent != outer {
+            return Err(format!(
+                "sibling {node} phase intent {intent} differs from the confirmation intent {outer}"
+            ));
+        }
+        Ok((runtime, phase))
+    }
+    /// During one live confirmation RPC, a different started voter's own gate
+    /// must renew under the outer intent: past its initial expiry when the
+    /// lease is short, at least once otherwise.
+    async fn sibling_renews(
+        &self,
+        sibling: usize,
+        target: Uuid,
+        outer: Uuid,
+    ) -> std::result::Result<String, String> {
+        let node = sibling + 1;
+        let (runtime, phase) = self.sibling_phase(sibling, target, outer).await?;
+        let gate = phase.scope().invocation().gate().clone();
+        let start = std::time::Instant::now();
+        let first = start
+            + gate
+                .remaining()
+                .map_err(|error| format!("sibling {node}: {error:#}"))?;
+        let short = first - start <= Duration::from_secs(15);
+        let deadline = start + Duration::from_secs(35);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let now = std::time::Instant::now();
+            let expiry = now
+                + gate.remaining().map_err(|error| {
+                    format!("sibling {node} gate lapsed during the confirmation: {error:#}")
+                })?;
+            if expiry > first + Duration::from_millis(500) && (!short || now > first) {
+                let current = runtime.test_owned_phase("acme", target).await;
+                if !current.is_some_and(|current| Arc::ptr_eq(&current, &phase)) {
+                    return Err(format!("sibling {node} phase was replaced"));
+                }
+                return Ok(format!(
+                    "sibling {node} renewed intent {outer} {:?} into the call, initial expiry after {:?}",
+                    now - start,
+                    first - start
+                ));
+            }
+            if now > deadline {
+                return Err(format!("sibling {node} gate did not renew during the call"));
+            }
+        }
+    }
+    /// Hold the sibling's next renewal after its issuer answered. The
+    /// dispatching member releases it once the confirmation call has closed.
+    async fn pause_sibling(
+        &self,
+        sibling: usize,
+        target: Uuid,
+        outer: Uuid,
+    ) -> std::result::Result<PausedRenewal, String> {
+        let node = sibling + 1;
+        let (_, phase) = self.sibling_phase(sibling, target, outer).await?;
+        let pause = phase.test_pause_renewal_after_issuer();
+        if tokio::time::timeout(Duration::from_secs(30), pause.entered.notified())
+            .await
+            .is_err()
+        {
+            pause.release.notify_one();
+            return Err(format!(
+                "sibling {node} renewal did not reach its issuer answer"
+            ));
+        }
+        let gate = phase.scope().invocation().gate().clone();
+        let expiry = std::time::Instant::now()
+            + gate
+                .remaining()
+                .map_err(|error| format!("sibling {node}: {error:#}"))?;
+        // Never leave the renewal held if the dispatching member cannot run.
+        let watchdog = pause.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(90)).await;
+            watchdog.release.notify_one();
+        });
+        Ok(PausedRenewal {
+            sibling: node as u64,
+            gate,
+            pause,
+            expiry,
+        })
     }
 }
 
@@ -276,7 +547,7 @@ pub(super) struct Fixture {
     control_stops: Vec<watch::Sender<bool>>,
     control_tasks: Vec<tokio::task::JoinHandle<Result<()>>>,
     control_observers: Vec<std::sync::Weak<kasumi_engine::Database>>,
-    observed_sibling_activation: [Arc<std::sync::OnceLock<Uuid>>; 3],
+    probes: Arc<TargetCallProbes>,
     source_observer: std::sync::Weak<kasumi_engine::Database>,
     control_dispatch_node: u64,
     request: Option<RecoveryStart>,
@@ -326,7 +597,9 @@ impl Fixture {
                 // This fixture performs a full three-node backup and recovery
                 // over durable native storage. Give background renewal enough
                 // headroom while those synchronous writes occupy the runtime.
-                max_lease_ms: 60_000,
+                // Installations issue 10 s leases: the override below runs the
+                // same recovery at that renewal cadence on a quiet host.
+                max_lease_ms: native_timing("KASUMI_TEST_RECOVERY_MAX_LEASE_MS").unwrap_or(60_000),
                 clock_rate_error_ppm: 0,
             };
             let signing = signing_root.install(manifest.clone(), 0).unwrap();
@@ -729,7 +1002,7 @@ impl Fixture {
                 control_stops: Vec::new(),
                 control_tasks: Vec::new(),
                 control_observers: Vec::new(),
-                observed_sibling_activation: Default::default(),
+                probes: Default::default(),
                 source_observer: std::sync::Weak::new(),
                 control_dispatch_node: 0,
                 request: None,
@@ -1280,6 +1553,9 @@ impl Fixture {
         let coordinator =
             ControlRecoveryCoordinator::new(&config, control.clone(), signer, handles.trusts.clone())
                 .unwrap();
+        let _ = coordinator
+            .after_target_call
+            .set(self.after_target_call_probe(control.raft_group().node_id()));
         let writers:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
         control.install_target_writer_network(Arc::downgrade(&writers)).unwrap();
         let lifecycle = lifecycle.with_writer_callbacks(coordinator.clone());
@@ -1347,11 +1623,9 @@ impl Fixture {
             target.clone(),
             self.authenticator(handles[index].audit.clone()).await,
         );
+        *self.probes.runtimes[index].lock().unwrap() = Arc::downgrade(&target);
         let sibling = (index + 1) % self.target_configs.len();
-        service.activation_reader = Some((
-            self.phase_reader(sibling),
-            self.observed_sibling_activation[sibling].clone(),
-        ));
+        service.before_execute = Some(self.target_call_probe(sibling));
         let router = tonic::service::Routes::new(service.service()).into_axum_router();
         let (stop, stopped) = watch::channel(false);
         self.target_tasks.push(tokio::spawn(tls::serve_tls(
@@ -1370,6 +1644,205 @@ impl Fixture {
         )));
         self.target_stops.push(stop);
         target
+    }
+    /// Runs inside each target RPC to `sibling`'s predecessor, before the
+    /// target executes it, while the Control call is outstanding.
+    fn target_call_probe(&self, sibling: usize) -> crate::rpc::TargetCallProbe {
+        let probes = self.probes.clone();
+        let reader = self.phase_reader(sibling);
+        let target = self.target;
+        let last = self.target_configs.len() as u64;
+        Arc::new(
+            move |receiving: u64,
+                  request: kasumi_types::TargetRuntimeRequest|
+                  -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                let probes = probes.clone();
+                let mut reader = reader.clone();
+                Box::pin(async move {
+                    match &request.step {
+                        TargetRuntimeStep::Activate { .. } => {
+                            // A different, already-started voter must be able to
+                            // read its intent while this Activate RPC is in flight.
+                            if probes.activate[sibling].get().is_none()
+                                && let Ok(intent) = reader
+                                    .observe_intent(request.command_id, Duration::from_secs(5))
+                                    .await
+                            {
+                                let _ = probes.activate[sibling]
+                                    .set(intent.observation().intent.request.command_id);
+                            }
+                        }
+                        // The last voter's start: both other voters already started
+                        // under this intent and read it through this dispatch.
+                        TargetRuntimeStep::StartActivation { .. } if receiving == last => {
+                            if probes.elected.get().is_none()
+                                && let Some(election) = probes.election.get()
+                            {
+                                let elected =
+                                    election.run(sibling as u64 + 1, request.command_id).await;
+                                let _ = probes.elected.set(elected);
+                            }
+                        }
+                        TargetRuntimeStep::ConfirmActivation(signed) => {
+                            let outer = request.command_id;
+                            let embedded = signed.observation.activation.intent.request.command_id;
+                            if embedded != outer {
+                                let _ = probes.cross_intent.set((outer, embedded));
+                            }
+                            // A still-started sibling renews during this call;
+                            // its next renewal is then held after the issuer
+                            // answers and released once the call has closed.
+                            // A voter that already activated or confirmed has
+                            // handed over to ordinary serving and may own no
+                            // recovery phase, so the last confirmation, when
+                            // every sibling has, cannot carry this probe.
+                            if probes.renewed.get().is_none() {
+                                // Which voter activated depends on the fixture
+                                // mode, so take the sibling that still owns its
+                                // recovery phase: neither this call's receiver
+                                // nor one that already activated or confirmed.
+                                let mut still_started = sibling;
+                                for candidate in std::iter::once(sibling).chain(
+                                    (0..last as usize).filter(|candidate| {
+                                        *candidate != sibling
+                                            && *candidate as u64 + 1 != receiving
+                                    }),
+                                ) {
+                                    if probes.sibling_phase(candidate, target, outer).await.is_ok() {
+                                        still_started = candidate;
+                                        break;
+                                    }
+                                }
+                                let sibling = still_started;
+                                let renewed = probes.sibling_renews(sibling, target, outer).await;
+                                let live = renewed.is_ok();
+                                let _ = probes.renewed.set(renewed);
+                                if live && probes.fenced.get().is_none() {
+                                    match probes.pause_sibling(sibling, target, outer).await {
+                                        Ok(paused) => {
+                                            *probes.paused.lock().unwrap() = Some(paused)
+                                        }
+                                        Err(error) => {
+                                            let _ = probes.fenced.set(Err(error));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+            },
+        )
+    }
+    /// Runs on the dispatching Control member after a target call returned and
+    /// before its outcome is recorded. The ledger still names the pending
+    /// confirmation and its dispatch callback is open, but no call is live.
+    fn after_target_call_probe(&self, member: u64) -> crate::rpc::TargetCallProbe {
+        use kasumi_transport::credentials::{CredentialSource, FileCredentialSource};
+        let probes = self.probes.clone();
+        let root = self.root.clone();
+        let readers = Arc::new(
+            (0..self.target_configs.len())
+                .map(|voter| {
+                    let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
+                    let bearer = FileCredentialSource::new(
+                        target.phase_observation_bearer_file.as_ref().unwrap(),
+                    )
+                    .unwrap()
+                    .load()
+                    .unwrap();
+                    let connection = target.control_connections().unwrap()[&member].clone();
+                    (voter as u64 + 1, connection, bearer)
+                })
+                .collect::<Vec<_>>(),
+        );
+        Arc::new(
+            move |receiving: u64,
+                  request: kasumi_types::TargetRuntimeRequest|
+                  -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                let probes = probes.clone();
+                let root = root.clone();
+                let readers = readers.clone();
+                Box::pin(async move {
+                    if !matches!(request.step, TargetRuntimeStep::ConfirmActivation(_)) {
+                        return;
+                    }
+                    let paused = probes.paused.lock().unwrap().take();
+                    let sibling = paused.as_ref().map_or_else(
+                        || {
+                            readers
+                                .iter()
+                                .map(|(node, ..)| *node)
+                                .find(|node| *node != receiving)
+                                .unwrap()
+                        },
+                        |paused| paused.sibling,
+                    );
+                    if let Some(paused) = paused {
+                        // Its first read passed during the live call. Its second,
+                        // after the issuer answered, must not find one now.
+                        paused.pause.release.notify_one();
+                        let resumed = tokio::time::timeout(Duration::from_secs(10), async {
+                            loop {
+                                if let Some(current) = paused.pause.resumed_read.get() {
+                                    break *current;
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        })
+                        .await;
+                        let live = paused.gate.remaining().is_ok();
+                        let extended = paused.gate.remaining().is_ok_and(|remaining| {
+                            std::time::Instant::now() + remaining
+                                > paused.expiry + Duration::from_millis(500)
+                        });
+                        let refusal = paused.pause.resumed_error.get().cloned().unwrap_or_default();
+                        let inactive = refusal.contains(kasumi_types::INACTIVE_TARGET_CALLBACK_REASON);
+                        let verdict = match resumed {
+                            Ok(false) if inactive && live && !extended => Ok(format!(
+                                "sibling {} second read refused as an inactive callback after the call to {receiving} closed; its live gate kept the same lease",
+                                paused.sibling
+                            )),
+                            Ok(current) => Err(format!(
+                                "sibling {} second read current={current} inactive={inactive} live={live} extended={extended} after the call closed: {refusal}",
+                                paused.sibling
+                            )),
+                            Err(_) => Err(format!(
+                                "sibling {} held renewal ended before its second read",
+                                paused.sibling
+                            )),
+                        };
+                        let _ = probes.fenced.set(verdict);
+                    }
+                    if probes.after_call.get().is_none() {
+                        let (_, connection, bearer) =
+                            readers.iter().find(|(node, ..)| *node == sibling).unwrap();
+                        let read = tokio::time::timeout(Duration::from_secs(10), async {
+                            let mut client = kasumi_client::KasumiLifecycleClient::connect(
+                                connection,
+                                kasumi_serving::ControlTrust::install(root).unwrap(),
+                            )
+                            .await?;
+                            client.observe_intent(bearer, request.command_id).await
+                        })
+                        .await;
+                        let verdict = match read {
+                            Ok(Err(error)) if error.is_inactive_target_callback() => Ok(format!(
+                                "sibling {sibling} refused by member {member} after the call to {receiving}"
+                            )),
+                            Ok(Err(error)) => Err(format!("sibling {sibling}: {error:?}")),
+                            Ok(Ok(_)) => Err(format!(
+                                "sibling {sibling} read {} without a live call",
+                                request.command_id
+                            )),
+                            Err(_) => Err(format!("sibling {sibling} read elapsed")),
+                        };
+                        let _ = probes.after_call.set(verdict);
+                    }
+                })
+            },
+        )
     }
     fn phase_reader(&self, voter: usize) -> kasumi_client::KasumiLifecyclePool {
         let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
@@ -2434,6 +2907,45 @@ impl Fixture {
         let mut last_pending = None;
         let mut last_step = String::from("not dispatched");
         let mut steps = 0_u64;
+        let mut stalled = false;
+        let recovering = std::time::Instant::now();
+        // Optional renewed Confirm intent: commit each Confirm intent with a
+        // short operator credential until the local activation commits under
+        // one, then let that credential expire before any voter confirms.
+        let renew_confirm = native_timing("KASUMI_TEST_RECOVERY_RENEW_CONFIRM_INTENT_SECS");
+        let elect_during_confirm =
+            native_timing("KASUMI_TEST_RECOVERY_ELECT_DURING_CONFIRM").is_some_and(|on| on != 0);
+        if elect_during_confirm {
+            use kasumi_transport::credentials::{CredentialSource, FileCredentialSource};
+            let readers = self
+                .target_configs
+                .iter()
+                .enumerate()
+                .map(|(voter, config)| {
+                    let target = config.target_recovery.as_ref().unwrap();
+                    let bearer = FileCredentialSource::new(
+                        target.phase_observation_bearer_file.as_ref().unwrap(),
+                    )
+                    .unwrap()
+                    .load()
+                    .unwrap();
+                    (
+                        voter as u64 + 1,
+                        (bearer, target.control_connections().unwrap()),
+                    )
+                })
+                .collect();
+            let _ = self.probes.election.set(ElectionProbe {
+                controls: self.control_observers.clone(),
+                networks: networks.to_vec(),
+                group: format!("__kasumi_control/{}", self.root.control_incarnation),
+                root: self.root.clone(),
+                readers,
+            });
+        }
+        let mut confirm_client: Option<(kasumi_client::KasumiRecoveryPool, std::time::Instant)> =
+            None;
+        let mut confirm_renewed = false;
         // This fixture completes several bounded target phases, including a
         // real backup restore. Allow the native storage path to finish them
         // while retaining a finite success deadline.
@@ -2555,7 +3067,22 @@ impl Fixture {
                         isolated = true;
                     }
                 }
+                if before.phase == RecoveryPhase::Activate && !stalled {
+                    stalled = true;
+                    if let Some(seconds) =
+                        native_timing("KASUMI_TEST_RECOVERY_STALL_BEFORE_ACTIVATE_SECS")
+                    {
+                        // A slow issuer activation outlives every grant the
+                        // earlier target phases held. Confirm must restart them.
+                        tokio::time::sleep(Duration::from_secs(seconds)).await;
+                    }
+                }
                 if before.phase == RecoveryPhase::Finished {
+                    eprintln!(
+                        "recovery fixture reached Finished: revision={} steps={steps} elapsed_ms={}",
+                        before.updated_revision,
+                        recovering.elapsed().as_millis()
+                    );
                     assert!(before.retirement.is_some());
                     assert!(before.source_fence.is_some());
                     assert!(before.activation.is_some());
@@ -2564,9 +3091,43 @@ impl Fixture {
                     restored = true;
                     break;
                 }
+                if let Some(lifetime) = renew_confirm
+                    && before.phase == RecoveryPhase::Confirm
+                    && !confirm_renewed
+                {
+                    if before.voters.values().all(|voter| voter.confirmation.is_none()) {
+                        if confirm_client.as_ref().is_none_or(|(_, expires)| {
+                            *expires <= std::time::Instant::now() + Duration::from_secs(2)
+                        }) {
+                            let token = self.credentials.token_expiring(
+                                OPERATOR,
+                                CONTROL_TENANT,
+                                CredentialResource::Control {
+                                    incarnation: self.root.control_incarnation,
+                                },
+                                "kasumi:admin kasumi:read kasumi:write kasumi:audit",
+                                lifetime,
+                            );
+                            confirm_client = Some((
+                                self.client_with_credential(&token),
+                                std::time::Instant::now() + Duration::from_secs(lifetime),
+                            ));
+                        }
+                    } else if let Some((_, expires)) = confirm_client.take() {
+                        eprintln!(
+                            "recovery fixture: local activation committed; letting its Confirm intent expire"
+                        );
+                        tokio::time::sleep_until((expires + Duration::from_secs(1)).into()).await;
+                        confirm_renewed = true;
+                    }
+                }
                 steps = steps.saturating_add(1);
                 last_step = "dispatch pending".into();
-                last_step = match self.step(&mut client).await {
+                let stepping = match confirm_client.as_mut() {
+                    Some((short, _)) => short,
+                    None => &mut client,
+                };
+                last_step = match self.step(stepping).await {
                     Ok(record) => recovery_progress(&record),
                     Err(error) => recovery_step_error(&error),
                 };
@@ -2620,9 +3181,50 @@ impl Fixture {
                 self.control_failure_context()
             );
         }
-        let (voter, command) = self.observed_sibling_activation.iter().enumerate()
-            .find_map(|(voter, observation)| observation.get().map(|command| (voter, *command)))
-            .expect("the signed Activate intent must reach a read-only sibling during the original RPC");
+        let (voter, command) = self
+            .probes
+            .activate
+            .iter()
+            .enumerate()
+            .find_map(|(voter, observed)| observed.get().map(|command| (voter, *command)))
+            .expect(
+                "the signed Activate intent must reach a read-only sibling during the original RPC",
+            );
+        for (name, probe) in [
+            (
+                "sibling renewal during a confirmation RPC",
+                &self.probes.renewed,
+            ),
+            (
+                "sibling read after a confirmation call",
+                &self.probes.after_call,
+            ),
+            (
+                "held sibling renewal after its confirmation call closed",
+                &self.probes.fenced,
+            ),
+        ] {
+            match probe.get() {
+                Some(Ok(observed)) => eprintln!("recovery fixture {name}: {observed}"),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        if native_timing("KASUMI_TEST_RECOVERY_ELECT_DURING_CONFIRM").is_some_and(|on| on != 0) {
+            match self.probes.elected.get() {
+                Some(Ok(observed)) => {
+                    eprintln!("recovery fixture election during Confirm: {observed}")
+                }
+                other => panic!("sibling read across a Control election: {other:?}"),
+            }
+        }
+        if native_timing("KASUMI_TEST_RECOVERY_RENEW_CONFIRM_INTENT_SECS").is_some() {
+            let (outer, embedded) = self.probes.cross_intent.get().expect(
+                "a confirmation must carry the activation retained under an expired intent",
+            );
+            eprintln!(
+                "recovery fixture confirmed under intent {outer} with the activation of intent {embedded}"
+            );
+        }
         use kasumi_transport::credentials::{CredentialSource, FileCredentialSource};
         let target = self.target_configs[voter].target_recovery.as_ref().unwrap();
         let bearer = FileCredentialSource::new(target.phase_observation_bearer_file.as_ref().unwrap())

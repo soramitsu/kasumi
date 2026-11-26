@@ -124,9 +124,9 @@ impl PhaseCallbacks {
             replica_dispatch: match &request.step {
                 TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
                 | TargetRuntimeStep::Initialize(_) => Some(ReplicaDispatch::Initialize(phase)),
-                TargetRuntimeStep::StartActivation { .. } | TargetRuntimeStep::Activate { .. } => {
-                    Some(ReplicaDispatch::Activate(phase))
-                }
+                TargetRuntimeStep::StartActivation { .. }
+                | TargetRuntimeStep::Activate { .. }
+                | TargetRuntimeStep::ConfirmActivation(_) => Some(ReplicaDispatch::Activate(phase)),
                 _ => None,
             },
             phases,
@@ -228,7 +228,7 @@ impl PhaseCallback {
         else {
             return Ok(false);
         };
-        // Initialize has durable BeginEffect rows. StartActivation and Activate
+        // Initialize has durable BeginEffect rows. Activation and confirmation calls
         // are retryable and use the live outbound call plus the committed issuer
         // winner and the sibling's resolved StartActivation.
         if self.command != command || !self.replica_dispatch_open() {

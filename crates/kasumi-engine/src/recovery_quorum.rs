@@ -79,6 +79,7 @@ pub(crate) fn current_replica_intent_reader(
     else {
         return Ok(false);
     };
+    let confirmed_quorum;
     let (quorum, issuer_command, starting) = match (&operation.phase, &request.step) {
         (
             RecoveryPhase::Initialize,
@@ -103,6 +104,24 @@ pub(crate) fn current_replica_intent_reader(
                 issuer_command_id,
             },
         ) if operation.activation.is_some() => (quorum, Some(*issuer_command_id), false),
+        (RecoveryPhase::Confirm, TargetRuntimeStep::ConfirmActivation(proof))
+            if operation.activation.is_some() =>
+        {
+            // The local activation is already committed. Only the exact signed
+            // proof the planner selects for this operation, the first confirmed
+            // voter's observation, keeps started voters observing this
+            // confirmation. After the Confirm credential expires, the planner
+            // confirms the remaining voters under a fresh intent with that proof,
+            // which still names the earlier intent. So the proof's own intent is
+            // not compared with the intent being read: every reader below must
+            // have started under this intent.
+            if activation::local_proof(state, operation)? != Some(proof.as_ref()) {
+                return Ok(false);
+            }
+            confirmed_quorum = quorum_input(state, operation)?;
+            let winner = activation::winner(state, operation)?;
+            (&confirmed_quorum, Some(winner.command.command_id), false)
+        }
         _ => return Ok(false),
     };
     let current = intent(state, operation, command)?;

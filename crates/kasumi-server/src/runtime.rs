@@ -7326,7 +7326,12 @@ mod lifecycle_tests {
                 "target drain issues: {failure:?}"
             );
             let issue = &failure.issues()[0];
-            assert_eq!(issue.component(), "abandoned target call");
+            assert_eq!(
+                issue.component(),
+                "abandoned target call",
+                "target drain issue: {:#}",
+                issue.error()
+            );
             issue
                 .error()
                 .downcast_ref::<crate::target_runtime::TargetCallFailure>()

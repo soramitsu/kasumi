@@ -5,7 +5,8 @@ pub use service::lifecycle_service::{
     LifecycleSigner, VerifiedLifecycleChange, VerifiedLifecycleIntent,
 };
 pub use service::recovery_service::{
-    RecoveryEffectDispatchTicket, VerifiedRecoveryPhase, VerifiedRecoveryStatus,
+    RecoveryEffectDispatchTicket, RecoveryPhaseObservation, VerifiedRecoveryPhase,
+    VerifiedRecoveryStatus,
 };
 mod restore_lineage_proof;
 mod retirement_closure;

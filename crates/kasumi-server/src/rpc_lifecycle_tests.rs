@@ -974,6 +974,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     super::recovery_tests::exercise(super::recovery_tests::Fixture {
         directory: directory.path(),
         control: leader.clone(),
+        controls: nodes.clone(),
+        control_router: router.clone(),
+        control_group: &group,
         signer,
         auth: auth.clone(),
         audit: audit.clone(),

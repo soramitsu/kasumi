@@ -1,4 +1,5 @@
 //! Current-quorum recovery administration and exact journal dispatch admission.
+use super::control_administration::ControlObservationAccess;
 use super::*;
 use crate::state::recovery::{
     self, MAX_COMMAND_BYTES, RecoveryAuthorization, RecoveryCommand, RecoveryMutation,
@@ -31,7 +32,19 @@ pub struct VerifiedRecoveryPhase {
     record: RecoveryPhaseRecord,
     policy_epoch: u64,
     term: u64,
+    access: ControlObservationAccess,
     _reservation: Reservation,
+}
+
+/// An authenticated target callback can read and release the original marker.
+pub struct RecoveryPhaseObservation(VerifiedRecoveryPhase);
+impl RecoveryPhaseObservation {
+    pub fn record(&self) -> &RecoveryPhaseRecord {
+        self.0.record()
+    }
+    pub async fn release(&self) -> Result<()> {
+        self.0.release().await
+    }
 }
 
 /// Non-cloneable grant for one exact committed BeginEffect. Reading a retained
@@ -103,6 +116,9 @@ impl Database {
 }
 
 impl VerifiedRecoveryPhase {
+    pub fn into_observation(self) -> RecoveryPhaseObservation {
+        RecoveryPhaseObservation(self)
+    }
     pub fn record(&self) -> &RecoveryPhaseRecord {
         &self.record
     }
@@ -174,7 +190,7 @@ impl VerifiedRecoveryPhase {
     }
     pub async fn release(&self) -> Result<()> {
         self.database
-            .recovery_release(&self.context, self.policy_epoch, self.term)
+            .release_recovery_observation(&self.context, self.policy_epoch, self.term, self.access)
             .await
     }
     pub async fn dispatch_limit(&self) -> Result<u64> {
@@ -243,7 +259,22 @@ impl Database {
         epoch: u64,
         term: u64,
     ) -> Result<()> {
-        if self.lifecycle_barrier(context).await? != term {
+        self.release_recovery_observation(
+            context,
+            epoch,
+            term,
+            ControlObservationAccess::Administration,
+        )
+        .await
+    }
+    async fn release_recovery_observation(
+        &self,
+        context: &RequestContext,
+        epoch: u64,
+        term: u64,
+        access: ControlObservationAccess,
+    ) -> Result<()> {
+        if self.control_observation_barrier(context, access).await? != term {
             return Err(error(
                 ErrorCode::Unavailable,
                 "recovery response quorum term changed",
@@ -300,11 +331,41 @@ impl Database {
         operation_id: Uuid,
         phase_id: Uuid,
     ) -> Result<VerifiedRecoveryPhase> {
+        self.read_recovery_phase(
+            context,
+            operation_id,
+            phase_id,
+            ControlObservationAccess::Administration,
+        )
+        .await
+    }
+    pub async fn observe_callback_recovery_phase(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+    ) -> Result<RecoveryPhaseObservation> {
+        self.read_recovery_phase(
+            context,
+            operation_id,
+            phase_id,
+            ControlObservationAccess::ActiveTargetCallback,
+        )
+        .await
+        .map(RecoveryPhaseObservation)
+    }
+    async fn read_recovery_phase(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+        access: ControlObservationAccess,
+    ) -> Result<VerifiedRecoveryPhase> {
         let _work = self.work.begin(QueryCancellation::default())?;
         let mut reservation = self
             .admission()
             .reserve((MAX_RECOVERY_RECORD_BYTES * 2) as u64, None)?;
-        let term = self.lifecycle_barrier(&context).await?;
+        let term = self.control_observation_barrier(&context, access).await?;
         let state = self.engine.generation()?;
         let record = state
             .state
@@ -331,6 +392,7 @@ impl Database {
             record,
             policy_epoch,
             term,
+            access,
             _reservation: reservation,
         };
         result.release().await?;

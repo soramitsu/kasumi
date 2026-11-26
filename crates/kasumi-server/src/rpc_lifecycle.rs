@@ -162,10 +162,15 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .map(|active| active.original())
             .or_else(|| phase.as_ref().map(|active| active.original()))
             .unwrap_or(&actor);
-        let result = self
-            .signer
-            .observe_target_writer(&self.database, original, &challenge)
-            .await;
+        let result = if phase.is_some() {
+            self.signer
+                .observe_callback_target_writer(&self.database, original, &challenge)
+                .await
+        } else {
+            self.signer
+                .observe_target_writer(&self.database, original, &challenge)
+                .await
+        };
         let output = self
             .auth
             .audit_result(&actor, result)
@@ -285,9 +290,15 @@ impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycle
             .auth
             .audit_result(
                 &context,
-                self.database
-                    .observe_lifecycle_intent(original.clone(), id)
-                    .await,
+                if callback.is_some() {
+                    self.database
+                        .observe_callback_lifecycle_intent(original.clone(), id)
+                        .await
+                } else {
+                    self.database
+                        .observe_lifecycle_intent(original.clone(), id)
+                        .await
+                },
             )
             .await
             .map_err(status)?;

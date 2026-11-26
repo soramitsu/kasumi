@@ -1,15 +1,25 @@
 use super::*;
 use crate::target_runtime::TargetRecoveryRuntime;
 use zeroize::Zeroizing;
+/// Fixture probe of one target command by its receiving node ID. The target
+/// service runs it before executing the command, while the dispatching Control
+/// member's outbound call is outstanding; that member runs it after the call.
+#[cfg(test)]
+pub(crate) type TargetCallProbe = Arc<
+    dyn Fn(
+            u64,
+            kasumi_types::TargetRuntimeRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct NativeTargetRecovery {
     runtime: Arc<TargetRecoveryRuntime>,
     auth: Arc<Authenticator>,
     #[cfg(test)]
-    pub(crate) activation_reader: Option<(
-        kasumi_client::KasumiLifecyclePool,
-        Arc<std::sync::OnceLock<uuid::Uuid>>,
-    )>,
+    pub(crate) before_execute: Option<TargetCallProbe>,
 }
 impl NativeTargetRecovery {
     pub fn new(runtime: Arc<TargetRecoveryRuntime>, auth: Arc<Authenticator>) -> Self {
@@ -17,7 +27,7 @@ impl NativeTargetRecovery {
             runtime,
             auth,
             #[cfg(test)]
-            activation_reader: None,
+            before_execute: None,
         }
     }
     pub fn service(self) -> kasumi_target_recovery_server::KasumiTargetRecoveryServer<Self> {
@@ -325,21 +335,8 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
         // The wire identity is structural only. Runtime authority and journal
         // admission remain separate; never turn these claimed IDs into a ticket.
         #[cfg(test)]
-        if matches!(
-            input.request.step,
-            kasumi_types::TargetRuntimeStep::Activate { .. }
-        ) && let Some((reader, observed)) = &self.activation_reader
-            && observed.get().is_none()
-        {
-            // A different, already-started voter must be able to renew its own
-            // read-only grant while this enrollment's Activate RPC is in flight.
-            let mut reader = reader.clone();
-            if let Ok(intent) = reader
-                .observe_intent(input.request.command_id, std::time::Duration::from_secs(5))
-                .await
-            {
-                let _ = observed.set(intent.observation().intent.request.command_id);
-            }
+        if let Some(probe) = &self.before_execute {
+            probe(self.runtime.node_id(), input.request.clone()).await;
         }
         #[cfg(test)]
         let command_id = input.request.command_id;

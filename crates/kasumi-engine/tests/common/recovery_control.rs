@@ -2945,6 +2945,29 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
         .await
         .unwrap();
     let attempt = ticket.attempt_id();
+    let follower = f
+        .nodes
+        .values()
+        .find(|node| !Arc::ptr_eq(node, &db))
+        .unwrap();
+    assert_eq!(
+        follower
+            .recovery_phase(f.context("owner"), operation, phase)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unavailable,
+    );
+    let callback = follower
+        .observe_callback_recovery_phase(f.context("owner"), operation, phase)
+        .await
+        .unwrap();
+    let marker = &callback.record().effect_attempts[&RecoveryEffect::AuthorityCommand];
+    assert_eq!(marker.attempt_id, attempt);
+    assert_eq!(marker.input_sha256, callback.record().input_sha256);
+    callback.release().await.unwrap();
+    drop(callback);
     elapsed.advance(Duration::from_millis(750));
     assert_eq!(
         ticket.consume_remaining(&input).await.unwrap(),

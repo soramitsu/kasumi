@@ -6,6 +6,8 @@ pub(crate) struct RuntimeWorker {
     work: std::sync::Arc<kasumi_serving::BackgroundWork>,
     #[cfg(test)]
     pause: std::sync::Mutex<Option<std::sync::Arc<WorkerPause>>>,
+    #[cfg(test)]
+    issuer_pause: std::sync::Mutex<Option<std::sync::Arc<WorkerPause>>>,
 }
 
 #[cfg(test)]
@@ -13,6 +15,10 @@ pub(crate) struct RuntimeWorker {
 pub(crate) struct WorkerPause {
     pub(crate) entered: Notify,
     pub(crate) release: Notify,
+    /// Whether the held work's next current read succeeded after release.
+    pub(crate) resumed_read: std::sync::OnceLock<bool>,
+    /// That read's refusal, when it failed.
+    pub(crate) resumed_error: std::sync::OnceLock<String>,
 }
 #[cfg(test)]
 impl RuntimeWorker {
@@ -28,6 +34,19 @@ impl RuntimeWorker {
             pause.entered.notify_one();
             pause.release.notified().await;
         }
+    }
+    /// Pause the next renewal after its issuer answered and before it publishes.
+    pub(crate) fn pause_next_after_issuer(&self) -> std::sync::Arc<WorkerPause> {
+        let pause = std::sync::Arc::new(WorkerPause::default());
+        *self.issuer_pause.lock().unwrap() = Some(pause.clone());
+        self.work.wake().notify_one();
+        pause
+    }
+    pub(crate) async fn after_issuer(&self) -> Option<std::sync::Arc<WorkerPause>> {
+        let pause = self.issuer_pause.lock().unwrap().take()?;
+        pause.entered.notify_one();
+        pause.release.notified().await;
+        Some(pause)
     }
 }
 impl RuntimeWorker {

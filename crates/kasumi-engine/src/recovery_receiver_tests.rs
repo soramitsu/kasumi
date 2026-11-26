@@ -2772,6 +2772,1150 @@ fn original_start_readers_follow_the_current_marked_dispatch_until_release() {
     }
 }
 
+/// The Confirm ledger after the committed issuer winner: the completed target,
+/// the source fence, the winner and one current Activate intent. Target facts
+/// carry real fixture signatures. This reader rule reads issuer receipts and
+/// never verifies them, so their signatures are placeholders.
+struct ConfirmLedger {
+    state: TenantState,
+    operation: RecoveryRecord,
+    /// The intent that authorized the issuer activation; not current any more.
+    issuer_under: LifecycleIntent,
+    current: LifecycleIntent,
+    quorum: TargetQuorumInput,
+    winner: Uuid,
+    winner_sha256: String,
+    /// A competing issuer activation for the same target that is not the
+    /// committed winner, with its signed receipt.
+    rival: (AuthorityCommand, SignedAuthorityReceipt),
+    completion: TargetCompletionFact,
+    /// The trusted time of the sibling reads the helpers check.
+    now: u64,
+}
+
+fn confirm_row(
+    state: &mut TenantState,
+    operation: &RecoveryRecord,
+    id: Uuid,
+    input: RecoveryDispatch,
+    outcome: Option<RecoveryDispatchOutcome>,
+    revision: u64,
+    under: &LifecycleIntent,
+) -> RecoveryPhaseRecord {
+    let phase = match &input {
+        RecoveryDispatch::Authority(command) => match command.action {
+            AuthorityAction::Fence { .. } => RecoveryPhase::FenceSource,
+            _ => RecoveryPhase::Activate,
+        },
+        RecoveryDispatch::Target { request, .. }
+            if matches!(request.step, TargetRuntimeStep::Complete(_)) =>
+        {
+            RecoveryPhase::Complete
+        }
+        _ => RecoveryPhase::Confirm,
+    };
+    let value = RecoveryPhaseRecord {
+        operation_id: operation.request.operation_id,
+        phase_id: id,
+        sequence: revision,
+        phase,
+        completion_scope: None,
+        previous_phase: None,
+        input_sha256: staged_digest(&input).unwrap().0,
+        input,
+        principal: "operator".into(),
+        admitted_at_ms: under.accepted_at_ms,
+        original_credential_expires_at_ms: under.original_credential_expires_at_ms,
+        prepared_revision: revision,
+        effect_attempts: BTreeMap::new(),
+        activation_acceptance: None,
+        resolved_revision: outcome.as_ref().map(|_| revision + 1),
+        outcome,
+    };
+    state
+        .recovery_control
+        .phases
+        .insert(id.to_string(), value.clone());
+    value
+}
+
+fn confirm_intent(state: &mut TenantState, operation: &RecoveryRecord, intent: &LifecycleIntent) {
+    state
+        .lifecycle_control
+        .as_mut()
+        .map(std::sync::Arc::make_mut)
+        .unwrap()
+        .intents
+        .insert(intent.request.command_id, intent.clone());
+    confirm_row(
+        state,
+        operation,
+        intent.request.command_id,
+        RecoveryDispatch::ControlIntent(Box::new(intent.request.clone())),
+        Some(RecoveryDispatchOutcome::ControlIntent(Box::new(
+            intent.clone(),
+        ))),
+        intent.revision - 1,
+        intent,
+    );
+}
+
+fn confirm_ledger() -> ConfirmLedger {
+    let (mut state, mut operation, attempt) = fixture_state();
+    state.policy_epoch = state
+        .lifecycle_control
+        .as_ref()
+        .unwrap()
+        .installation_policy_epoch;
+    let tenant = operation.request.tenant.clone();
+    let completion = fixture::completion(&attempt);
+    let observation = TargetCompletionObservation {
+        observed_revision: completion.revision,
+        observed_term: completion.term,
+        observer_node_id: 1,
+        fact: completion.clone(),
+    };
+    let completed = confirm_row(
+        &mut state,
+        &operation,
+        Uuid::from_u128(8700),
+        RecoveryDispatch::Target {
+            node_id: 1,
+            request: Box::new(TargetRuntimeRequest {
+                tenant: tenant.clone(),
+                command_id: attempt.intent.request.command_id,
+                not_after_ms: attempt.dispatch_not_after_ms,
+                step: TargetRuntimeStep::Complete(attempt.input.clone()),
+            }),
+        },
+        Some(RecoveryDispatchOutcome::Target(Box::new(
+            TargetRuntimeResponse {
+                command_id: attempt.intent.request.command_id,
+                node_id: 1,
+                outcome: TargetRuntimeOutcome::Completed(Box::new(SignedTargetCompletion {
+                    signature: fixture::sign(
+                        &observation,
+                        "kasumi.completed-target-observation.v1",
+                        1,
+                    ),
+                    observation,
+                })),
+            },
+        ))),
+        20,
+        &attempt.intent,
+    );
+    operation.completion = Some(completed.phase_id);
+    let partition = state
+        .lifecycle_control
+        .as_ref()
+        .unwrap()
+        .installation
+        .partitions[&operation.request.authority_partition]
+        .clone();
+    let issued = |command: &AuthorityCommand, revision: u64, outcome: AuthorityOutcome| {
+        SignedAuthorityReceipt {
+            receipt: AuthorityReceipt {
+                authority_id: partition.authority_id,
+                manifest_digest: partition.manifest_sha256.clone(),
+                partition: partition.partition,
+                command: command.clone(),
+                command_digest: command.digest().unwrap(),
+                principal: "issuer-admin".into(),
+                term: 1,
+                revision,
+                admitted_at_ms: 250,
+                outcome,
+            },
+            signature: kasumi_types::GenerationSignature {
+                certificate: kasumi_types::SigningCertificate {
+                    identity: kasumi_types::SigningGeneration {
+                        domain: kasumi_types::SigningDomain {
+                            authority_id: partition.authority_id,
+                            partition: partition.partition,
+                            manifest_sha256: partition.manifest_sha256.clone(),
+                            root_public_key: partition.signing_public_key.clone(),
+                            retirement_drain_ms: partition.drain_ms,
+                        },
+                        generation: 1,
+                        public_key: "bb".repeat(32),
+                    },
+                    root_signature: "cc".repeat(64),
+                },
+                signature: "dd".repeat(64),
+            },
+        }
+    };
+    let fence = AuthorityCommand {
+        tenant: tenant.clone(),
+        command_id: Uuid::from_u128(8701),
+        expected_policy_epoch: operation.request.authority_policy_epoch,
+        not_after_ms: 500,
+        action: AuthorityAction::Fence {
+            incarnation: operation.request.source_incarnation,
+            authority_epoch: operation.request.source_authority_epoch,
+        },
+    };
+    let fenced = issued(
+        &fence,
+        11,
+        AuthorityOutcome::Fenced {
+            incarnation: operation.request.source_incarnation,
+            authority_epoch: operation.request.source_authority_epoch,
+        },
+    );
+    confirm_row(
+        &mut state,
+        &operation,
+        fence.command_id,
+        RecoveryDispatch::Authority(Box::new(fence.clone())),
+        Some(RecoveryDispatchOutcome::Authority(Box::new(fenced))),
+        22,
+        &attempt.intent,
+    );
+    operation.source_fence = Some(fence.command_id);
+    let input = activation::activation_input(&state, &operation)
+        .unwrap()
+        .digest()
+        .unwrap();
+    let issuer_under = fixture::intent(
+        &attempt.origin,
+        LifecyclePhase::Activate,
+        input.clone(),
+        30,
+        300,
+        1000,
+    );
+    confirm_intent(&mut state, &operation, &issuer_under);
+    let command = AuthorityCommand {
+        tenant,
+        command_id: Uuid::from_u128(8702),
+        expected_policy_epoch: operation.request.authority_policy_epoch,
+        not_after_ms: 900,
+        action: activation::action_for_intent(&state, &operation, &issuer_under).unwrap(),
+    };
+    let activated = issued(
+        &command,
+        12,
+        AuthorityOutcome::Activated {
+            target: crate::state::recovery::target(&operation.request),
+            authority_epoch: operation.request.source_authority_epoch + 1,
+        },
+    );
+    let winner_sha256 = activated.receipt.digest().unwrap();
+    let rival = AuthorityCommand {
+        command_id: Uuid::from_u128(8703),
+        ..command.clone()
+    };
+    let rival_receipt = issued(
+        &rival,
+        13,
+        AuthorityOutcome::Activated {
+            target: crate::state::recovery::target(&operation.request),
+            authority_epoch: operation.request.source_authority_epoch + 1,
+        },
+    );
+    confirm_row(
+        &mut state,
+        &operation,
+        command.command_id,
+        RecoveryDispatch::Authority(Box::new(command.clone())),
+        Some(RecoveryDispatchOutcome::Authority(Box::new(activated))),
+        32,
+        &issuer_under,
+    );
+    operation.activation_attempt = Some(command.command_id);
+    operation.activation = Some(command.command_id);
+    // The issuer winner clears its intent; Confirm commits a fresh one for the
+    // same completed target and source fence.
+    let current = fixture::intent(
+        &attempt.origin,
+        LifecyclePhase::Activate,
+        input,
+        40,
+        350,
+        1000,
+    );
+    confirm_intent(&mut state, &operation, &current);
+    operation.phase = RecoveryPhase::Confirm;
+    operation.pending_phase = None;
+    operation.current_intent = Some(current.request.command_id);
+    let quorum = quorum::quorum_input(&state, &operation).unwrap();
+    assert_eq!(
+        activation::winner(&state, &operation)
+            .unwrap()
+            .command
+            .command_id,
+        command.command_id
+    );
+    ConfirmLedger {
+        state,
+        operation,
+        issuer_under,
+        current,
+        quorum,
+        winner: command.command_id,
+        winner_sha256,
+        rival: (rival, rival_receipt),
+        completion,
+        now: 360,
+    }
+}
+
+impl ConfirmLedger {
+    fn start(&self) -> TargetRuntimeStep {
+        TargetRuntimeStep::StartActivation {
+            quorum: self.quorum.clone(),
+            issuer_command_id: self.winner,
+        }
+    }
+    fn activate(&self) -> TargetRuntimeStep {
+        TargetRuntimeStep::Activate {
+            quorum: self.quorum.clone(),
+            issuer_command_id: self.winner,
+        }
+    }
+    fn started(&self) -> TargetRuntimeOutcome {
+        TargetRuntimeOutcome::Started {
+            origin_sha256: self.quorum.origin_sha256.clone(),
+        }
+    }
+    /// One voter's signed observation of a local activation under `intent`.
+    fn proof(&self, observer: u64, intent: &LifecycleIntent) -> SignedTargetActivation {
+        self.proof_with(observer, intent, |_| {})
+    }
+    /// [`Self::proof`] with an altered observation, validly signed by `observer`.
+    fn proof_with(
+        &self,
+        observer: u64,
+        intent: &LifecycleIntent,
+        change: impl FnOnce(&mut TargetActivationObservation),
+    ) -> SignedTargetActivation {
+        let index = 3;
+        let revision = self
+            .completion
+            .origin
+            .materialization
+            .request
+            .checkpoint
+            .revision
+            + 1
+            + index;
+        let mut observation = TargetActivationObservation {
+            completion: self.completion.clone(),
+            activation: TargetActivationFact {
+                position: TargetCommitPosition {
+                    index,
+                    term: 1,
+                    leader_node_id: 1,
+                    command_sha256: "e2".repeat(32),
+                },
+                intent: intent.clone(),
+                issuer_receipt_sha256: self.winner_sha256.clone(),
+                completion_sha256: self.completion.digest().unwrap(),
+                admitted_at_ms: intent.accepted_at_ms + 1,
+                revision,
+            },
+            observer_node_id: observer,
+            observed_revision: revision,
+            observed_term: 1,
+        };
+        change(&mut observation);
+        SignedTargetActivation {
+            signature: fixture::sign(
+                &observation,
+                "kasumi.activated-target-observation.v1",
+                observer,
+            ),
+            observation,
+        }
+    }
+    /// Prepare the next exact Confirm dispatch under the current intent.
+    fn dispatch(
+        &mut self,
+        id: Uuid,
+        node: u64,
+        not_after_ms: u64,
+        step: TargetRuntimeStep,
+        revision: u64,
+    ) {
+        let command = self.operation.current_intent.unwrap();
+        let under = intent(&self.state, &self.operation, command)
+            .unwrap()
+            .clone();
+        confirm_row(
+            &mut self.state,
+            &self.operation,
+            id,
+            RecoveryDispatch::Target {
+                node_id: node,
+                request: Box::new(TargetRuntimeRequest {
+                    tenant: self.operation.request.tenant.clone(),
+                    command_id: command,
+                    not_after_ms,
+                    step,
+                }),
+            },
+            None,
+            revision,
+            &under,
+        );
+        self.operation.pending_phase = Some(id);
+    }
+    /// Commit the pending dispatch's reply the way the reducer records it.
+    fn resolve(&mut self, outcome: TargetRuntimeOutcome) {
+        let id = self.operation.pending_phase.unwrap();
+        let mut row = phase(&self.state, &self.operation, id).unwrap().clone();
+        let RecoveryDispatch::Target { node_id, request } = &row.input else {
+            unreachable!()
+        };
+        let (node, command) = (*node_id, request.command_id);
+        let voter = self.operation.voters.get_mut(&node).unwrap();
+        match &outcome {
+            TargetRuntimeOutcome::Started { .. } => voter.started = Some(id),
+            TargetRuntimeOutcome::Activated(_) => voter.confirmation = Some(id),
+            _ => unreachable!(),
+        }
+        row.outcome = Some(RecoveryDispatchOutcome::Target(Box::new(
+            TargetRuntimeResponse {
+                command_id: command,
+                node_id: node,
+                outcome,
+            },
+        )));
+        row.resolved_revision = Some(row.prepared_revision + 1);
+        self.state
+            .recovery_control
+            .phases
+            .insert(id.to_string(), row);
+    }
+    fn reads_in(
+        &self,
+        state: &TenantState,
+        operation: &RecoveryRecord,
+        reader: u64,
+        now: u64,
+    ) -> Result<bool> {
+        let node = &self.operation.request.target_nodes[&reader];
+        quorum::current_replica_intent_reader(
+            state,
+            operation,
+            self.operation.pending_phase.unwrap(),
+            self.current.request.command_id,
+            "operator",
+            (&node.principal, &node.certificate_sha256),
+            || Ok(now),
+        )
+    }
+    fn reads(&self, reader: u64, now: u64) -> bool {
+        self.reads_in(&self.state, &self.operation, reader, now)
+            .unwrap()
+    }
+    /// Replace the pending dispatch's step in a copy of the ledger.
+    fn with_pending_step(&self, step: TargetRuntimeStep) -> TenantState {
+        let mut state = self.state.clone();
+        let id = self.operation.pending_phase.unwrap();
+        let mut row = phase(&state, &self.operation, id).unwrap().clone();
+        let RecoveryDispatch::Target { request, .. } = &mut row.input else {
+            unreachable!()
+        };
+        request.step = step;
+        row.input_sha256 = staged_digest(&row.input).unwrap().0;
+        state.recovery_control.phases.insert(id.to_string(), row);
+        state
+    }
+    /// Rewrite one voter's own resolved start in a copy of the ledger.
+    fn with_start(
+        &self,
+        voter: u64,
+        change: impl FnOnce(&mut RecoveryPhaseRecord, &mut TargetRuntimeRequest),
+    ) -> TenantState {
+        let mut state = self.state.clone();
+        let id = self.operation.voters[&voter].started.unwrap();
+        let mut row = phase(&state, &self.operation, id).unwrap().clone();
+        let RecoveryDispatch::Target { request, .. } = &row.input else {
+            unreachable!()
+        };
+        let mut request = (**request).clone();
+        change(&mut row, &mut request);
+        let RecoveryDispatch::Target { request: slot, .. } = &mut row.input else {
+            unreachable!()
+        };
+        **slot = request;
+        state.recovery_control.phases.insert(id.to_string(), row);
+        state
+    }
+    /// A copy of the ledger in which Control retained `proof` as voter one's
+    /// local activation and the pending confirmation carries that proof.
+    fn retaining(&self, proof: &SignedTargetActivation) -> TenantState {
+        let mut state = self.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+            proof.clone(),
+        )));
+        let activated = self.operation.voters[&1].confirmation.unwrap();
+        let mut row = phase(&state, &self.operation, activated).unwrap().clone();
+        let Some(RecoveryDispatchOutcome::Target(reply)) = &mut row.outcome else {
+            unreachable!()
+        };
+        reply.outcome = TargetRuntimeOutcome::Activated(Box::new(proof.clone()));
+        state
+            .recovery_control
+            .phases
+            .insert(activated.to_string(), row);
+        assert_eq!(
+            activation::local_proof(&state, &self.operation).unwrap(),
+            Some(proof)
+        );
+        state
+    }
+    /// A copy of the ledger whose committed issuer winner is the rival
+    /// activation, after the local activation was retained for the original one.
+    fn with_rival_winner(&self) -> (TenantState, RecoveryRecord) {
+        let mut state = self.state.clone();
+        let mut operation = self.operation.clone();
+        let (command, receipt) = &self.rival;
+        confirm_row(
+            &mut state,
+            &operation,
+            command.command_id,
+            RecoveryDispatch::Authority(Box::new(command.clone())),
+            Some(RecoveryDispatchOutcome::Authority(Box::new(
+                receipt.clone(),
+            ))),
+            34,
+            &self.issuer_under,
+        );
+        operation.activation_attempt = Some(command.command_id);
+        operation.activation = Some(command.command_id);
+        (state, operation)
+    }
+    /// The ledger refuses `reader`, either by answering no or by rejecting the
+    /// pending dispatch outright.
+    fn refused(&self, state: &TenantState, operation: &RecoveryRecord, reader: u64) -> bool {
+        !matches!(self.reads_in(state, operation, reader, self.now), Ok(true))
+    }
+    /// Everything that must end a started sibling's read while the exact
+    /// dispatch is still pending. `cap` is its earliest applicable deadline.
+    fn assert_only_the_exact_current_sibling_reads(&self, sibling: u64, cap: u64) {
+        let now = self.now;
+        let state = &self.state;
+        let operation = &self.operation;
+        let pending = operation.pending_phase.unwrap();
+        let command = self.current.request.command_id;
+        let node = &operation.request.target_nodes[&sibling];
+        let other = operation
+            .request
+            .target_nodes
+            .values()
+            .find(|other| other.node_id != sibling)
+            .unwrap();
+        let eligible = |pending, command, principal: &str, pin: &str| {
+            quorum::current_replica_intent_reader(
+                state,
+                operation,
+                pending,
+                command,
+                principal,
+                (&node.principal, pin),
+                || Ok(now),
+            )
+            .unwrap()
+        };
+        let pin = node.certificate_sha256.as_str();
+        assert!(eligible(pending, command, "operator", pin));
+        assert!(self.reads(sibling, cap - 1));
+        assert!(!self.reads(sibling, cap));
+        assert!(!eligible(
+            pending,
+            command,
+            "operator",
+            &other.certificate_sha256
+        ));
+        assert!(!eligible(pending, Uuid::new_v4(), "operator", pin));
+        // The intent that authorized the issuer activation is not this phase.
+        assert!(!eligible(
+            pending,
+            self.issuer_under.request.command_id,
+            "operator",
+            pin
+        ));
+        assert!(!eligible(Uuid::new_v4(), command, "operator", pin));
+        assert!(!eligible(pending, command, "other-operator", pin));
+        // Another principal presenting this voter's pin is not this voter.
+        assert!(
+            !quorum::current_replica_intent_reader(
+                state,
+                operation,
+                pending,
+                command,
+                "operator",
+                ("runtime-intruder", pin),
+                || Ok(now),
+            )
+            .unwrap()
+        );
+        let read = |state: &TenantState, operation: &RecoveryRecord| {
+            self.reads_in(state, operation, sibling, now).unwrap()
+        };
+        let mut stale_policy = state.clone();
+        stale_policy.policy_epoch += 1;
+        assert!(!read(&stale_policy, operation));
+        let mut stale_generation = state.clone();
+        std::sync::Arc::make_mut(stale_generation.lifecycle_control.as_mut().unwrap())
+            .installation
+            .generation += 1;
+        assert!(!read(&stale_generation, operation));
+        let mut retired = state.clone();
+        std::sync::Arc::make_mut(retired.lifecycle_control.as_mut().unwrap()).retired = true;
+        assert!(!read(&retired, operation));
+        let mut replaced = operation.clone();
+        replaced.request.target_incarnation = Uuid::new_v4();
+        assert!(!read(state, &replaced));
+        let mut superseded = operation.clone();
+        superseded.current_intent = Some(self.issuer_under.request.command_id);
+        assert!(!read(state, &superseded));
+        let mut stopping = operation.clone();
+        stopping.stop_request = Some(Uuid::new_v4());
+        assert!(!read(state, &stopping));
+        let mut elsewhere = operation.clone();
+        for phase in [
+            RecoveryPhase::Initialize,
+            RecoveryPhase::Activate,
+            RecoveryPhase::StopActivation,
+            RecoveryPhase::Publish,
+            RecoveryPhase::Finished,
+        ] {
+            elsewhere.phase = phase;
+            assert!(!read(state, &elsewhere), "{phase:?}");
+        }
+        // The sibling's own start must be the exact one of this intent: the
+        // same issuer winner, resolved before this dispatch was prepared.
+        let forged = Uuid::new_v4();
+        let another_winner = self.with_start(sibling, |_, request| {
+            let TargetRuntimeStep::StartActivation {
+                issuer_command_id, ..
+            } = &mut request.step
+            else {
+                unreachable!()
+            };
+            *issuer_command_id = forged;
+        });
+        assert!(!read(&another_winner, operation));
+        let another_quorum = self.with_start(sibling, |_, request| {
+            let TargetRuntimeStep::StartActivation { quorum, .. } = &mut request.step else {
+                unreachable!()
+            };
+            quorum.origin_sha256 = "ef".repeat(32);
+        });
+        assert!(!read(&another_quorum, operation));
+        let another_intent = self.with_start(sibling, |_, request| {
+            request.command_id = self.issuer_under.request.command_id;
+        });
+        assert!(!read(&another_intent, operation));
+        let active = phase(state, operation, pending).unwrap().prepared_revision;
+        let later = self.with_start(sibling, |row, _| {
+            row.resolved_revision = Some(active + 1);
+        });
+        assert!(!read(&later, operation));
+        let unresolved = self.with_start(sibling, |row, _| {
+            row.outcome = None;
+            row.resolved_revision = None;
+        });
+        assert!(!read(&unresolved, operation));
+    }
+}
+
+/// A started Confirm voter keeps reading its intent through a sibling's
+/// StartActivation and through the Activate that commits through its replica.
+/// This is the ledger half of the rule; the server adds the live outbound call.
+#[test]
+fn started_confirm_voters_follow_each_live_start_and_activate_dispatch() {
+    let mut ledger = confirm_ledger();
+    let nodes = ledger.operation.request.target_nodes.clone();
+    // Voters start in order, then voter one activates through the live quorum.
+    for (sequence, node, activate) in [(1, 1, false), (2, 2, false), (3, 3, false), (4, 1, true)] {
+        let id = Uuid::from_u128(8710 + u128::from(sequence));
+        let step = if activate {
+            ledger.activate()
+        } else {
+            ledger.start()
+        };
+        ledger.dispatch(
+            id,
+            node,
+            if sequence == 1 { 450 } else { 500 },
+            step,
+            40 + 10 * sequence,
+        );
+        for reader in nodes.keys() {
+            assert_eq!(
+                ledger.reads(*reader, 360),
+                activate || *reader < node,
+                "reader {reader} during dispatch {sequence}"
+            );
+        }
+        if sequence > 1 {
+            // Voter one's own start expires first; voter two is bounded by its
+            // own start and by the live dispatch.
+            ledger.assert_only_the_exact_current_sibling_reads(1, 450);
+            if activate {
+                ledger.assert_only_the_exact_current_sibling_reads(2, 500);
+            }
+            // A dispatch for another issuer command or another quorum is not
+            // the committed activation. No voter may renew through it.
+            let rebuilt = |quorum: TargetQuorumInput, issuer_command_id: Uuid| {
+                if activate {
+                    TargetRuntimeStep::Activate {
+                        quorum,
+                        issuer_command_id,
+                    }
+                } else {
+                    TargetRuntimeStep::StartActivation {
+                        quorum,
+                        issuer_command_id,
+                    }
+                }
+            };
+            let mut quorum = ledger.quorum.clone();
+            quorum.origin_sha256 = "ef".repeat(32);
+            for forged in [
+                rebuilt(ledger.quorum.clone(), Uuid::new_v4()),
+                rebuilt(quorum, ledger.winner),
+            ] {
+                let state = ledger.with_pending_step(forged);
+                assert!(
+                    !ledger
+                        .reads_in(&state, &ledger.operation, 1, 360)
+                        .unwrap_or(false)
+                );
+            }
+            let mut unwon = ledger.operation.clone();
+            unwon.activation = None;
+            assert!(!ledger.reads_in(&ledger.state, &unwon, 1, 360).unwrap());
+        }
+        let outcome = if activate {
+            TargetRuntimeOutcome::Activated(Box::new(ledger.proof(node, &ledger.current)))
+        } else {
+            ledger.started()
+        };
+        ledger.resolve(outcome);
+        for reader in nodes.keys() {
+            assert!(!ledger.reads(*reader, 360), "reader {reader} after reply");
+        }
+    }
+}
+
+/// The local activation is committed before the remaining voters confirm it.
+/// Each of them is still a live replica until its own ConfirmActivation, so a
+/// started voter keeps reading the intent during a sibling's confirmation, but
+/// only for the exact signed activation Control retained.
+#[test]
+fn started_confirm_voters_follow_only_the_retained_signed_confirmation() {
+    let mut ledger = confirm_ledger();
+    let nodes = ledger.operation.request.target_nodes.clone();
+    for node in 1..=3 {
+        let step = ledger.start();
+        ledger.dispatch(
+            Uuid::from_u128(8720 + u128::from(node)),
+            node,
+            if node == 1 { 450 } else { 500 },
+            step,
+            40 + 10 * node,
+        );
+        ledger.resolve(ledger.started());
+    }
+    let step = ledger.activate();
+    ledger.dispatch(Uuid::from_u128(8724), 1, 500, step, 80);
+    let retained = ledger.proof(1, &ledger.current);
+    ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(retained.clone())));
+    assert_eq!(
+        activation::local_proof(&ledger.state, &ledger.operation).unwrap(),
+        Some(&retained)
+    );
+
+    for (sequence, node) in [(1, 2), (2, 3)] {
+        // The second confirmation ends before the third voter's own start
+        // does, so its own deadline is the binding one.
+        let active_cap = if sequence == 1 { 500 } else { 480 };
+        ledger.dispatch(
+            Uuid::from_u128(8724 + sequence),
+            node,
+            active_cap,
+            TargetRuntimeStep::ConfirmActivation(Box::new(retained.clone())),
+            80 + 10 * u64::try_from(sequence).unwrap(),
+        );
+        for reader in nodes.keys() {
+            assert!(
+                ledger.reads(*reader, 360),
+                "reader {reader} during confirmation by voter {node}"
+            );
+        }
+        ledger.assert_only_the_exact_current_sibling_reads(1, 450);
+        ledger.assert_only_the_exact_current_sibling_reads(3, active_cap);
+
+        // Another voter's equally valid signature over the same activation is
+        // not the proof Control retained.
+        let unretained = ledger.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+            ledger.proof(2, &ledger.current),
+        )));
+        // Another operation's activation: validly signed by a voter of this
+        // target, for a different activation input. Neither carrying it nor
+        // Control retaining it makes it this operation's activation.
+        let mut elsewhere = ledger.current.clone();
+        elsewhere.request.phase_input_sha256 = "a0".repeat(32);
+        let foreign = ledger.proof(1, &elsewhere);
+        let carried = ledger.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+            foreign.clone(),
+        )));
+        let foreign_retained = ledger.retaining(&foreign);
+        // An activation bound to a competing issuer activation that did not
+        // win, even when Control retained it.
+        let losing = ledger.proof_with(1, &ledger.current, |observation| {
+            observation.activation.issuer_receipt_sha256 = ledger.rival.1.receipt.digest().unwrap();
+        });
+        let losing_retained = ledger.retaining(&losing);
+        // The retained proof is stale once another issuer activation is the
+        // committed winner.
+        let (rival_state, rival_operation) = ledger.with_rival_winner();
+        assert_eq!(
+            activation::winner(&rival_state, &rival_operation)
+                .unwrap()
+                .command
+                .command_id,
+            ledger.rival.0.command_id
+        );
+        // Without a retained local activation, or without a committed issuer
+        // winner, a confirmation dispatch proves nothing.
+        let mut unproved = ledger.operation.clone();
+        for voter in unproved.voters.values_mut() {
+            voter.confirmation = None;
+        }
+        let mut unwon = ledger.operation.clone();
+        unwon.activation = None;
+        for reader in nodes.keys() {
+            for (state, operation, case) in [
+                (&unretained, &ledger.operation, "another signer"),
+                (
+                    &carried,
+                    &ledger.operation,
+                    "another operation's activation",
+                ),
+                (
+                    &foreign_retained,
+                    &ledger.operation,
+                    "another operation's activation retained",
+                ),
+                (
+                    &losing_retained,
+                    &ledger.operation,
+                    "losing issuer activation",
+                ),
+                (
+                    &rival_state,
+                    &rival_operation,
+                    "winner changed after retention",
+                ),
+                (&ledger.state, &unproved, "no retained activation"),
+                (&ledger.state, &unwon, "no issuer winner"),
+            ] {
+                assert!(
+                    ledger.refused(state, operation, *reader),
+                    "reader {reader}: {case}"
+                );
+            }
+        }
+
+        ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(
+            ledger.proof(node, &ledger.current),
+        )));
+        // Voter one's activation stays the retained proof for the next voter.
+        assert_eq!(
+            activation::local_proof(&ledger.state, &ledger.operation).unwrap(),
+            Some(&retained)
+        );
+        for reader in nodes.keys() {
+            assert!(!ledger.reads(*reader, 360), "reader {reader} after reply");
+        }
+    }
+    assert!(
+        ledger
+            .operation
+            .voters
+            .values()
+            .all(|voter| voter.confirmation.is_some())
+    );
+}
+
+/// A Confirm intent's credential can expire after the local activation
+/// committed. The planner then commits a fresh intent for the same activation
+/// input, starts every voter again under it and confirms the remaining voters
+/// with the activation proof it selects from the confirmed voters, which still
+/// names the earlier intent. Voters started under the fresh intent keep reading
+/// it through those confirmations, but only for that exact selected proof. The
+/// earlier intent and a start resolved only under it admit no sibling.
+#[test]
+fn a_renewed_confirm_intent_keeps_started_voters_reading_through_the_selected_activation() {
+    let mut ledger = confirm_ledger();
+    let nodes = ledger.operation.request.target_nodes.clone();
+    for node in 1..=3 {
+        let step = ledger.start();
+        ledger.dispatch(
+            Uuid::from_u128(8730 + u128::from(node)),
+            node,
+            500,
+            step,
+            40 + 10 * node,
+        );
+        ledger.resolve(ledger.started());
+    }
+    let step = ledger.activate();
+    ledger.dispatch(Uuid::from_u128(8734), 1, 500, step, 80);
+    let expired = ledger.current.clone();
+    let retained = ledger.proof(1, &expired);
+    ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(retained.clone())));
+    let earlier_starts: BTreeMap<u64, Uuid> = ledger
+        .operation
+        .voters
+        .iter()
+        .map(|(node, voter)| (*node, voter.started.unwrap()))
+        .collect();
+    let next = |ledger: &ConfirmLedger, now| {
+        activation::next_dispatch(&ledger.state, &ledger.operation, Uuid::new_v4(), now, 5000)
+            .unwrap()
+    };
+    // Before expiry the planner confirms under the original intent.
+    let RecoveryDispatch::Target { node_id, request } = next(&ledger, 999) else {
+        panic!("confirmation under the original intent expected")
+    };
+    assert_eq!(node_id, 2);
+    assert_eq!(request.command_id, expired.request.command_id);
+    assert_eq!(
+        request.step,
+        TargetRuntimeStep::ConfirmActivation(Box::new(retained.clone()))
+    );
+    // At its credential expiry the planner asks for a fresh intent instead.
+    let RecoveryDispatch::ControlIntent(renewal) = next(&ledger, 1000) else {
+        panic!("an expired Confirm intent must be renewed before confirmation")
+    };
+    assert_eq!(renewal.phase, LifecyclePhase::Activate);
+    assert_eq!(
+        renewal.phase_input_sha256,
+        expired.request.phase_input_sha256
+    );
+
+    let renewed = fixture::intent(
+        &ledger.completion.origin,
+        LifecyclePhase::Activate,
+        expired.request.phase_input_sha256.clone(),
+        100,
+        1000,
+        2000,
+    );
+    confirm_intent(&mut ledger.state, &ledger.operation, &renewed);
+    ledger.operation.current_intent = Some(renewed.request.command_id);
+    ledger.current = renewed.clone();
+    ledger.now = 1100;
+    for node in 1..=3 {
+        // Every voter, the activated one included, starts again first.
+        let RecoveryDispatch::Target { node_id, request } = next(&ledger, 1000 + 10 * node) else {
+            panic!("a fresh start under the renewed intent expected")
+        };
+        assert_eq!(
+            (node_id, request.command_id),
+            (node, renewed.request.command_id)
+        );
+        assert_eq!(request.step, ledger.start());
+        ledger.dispatch(
+            Uuid::from_u128(8740 + u128::from(node)),
+            node,
+            if node == 1 { 1450 } else { 1500 },
+            request.step,
+            100 + 10 * node,
+        );
+        ledger.resolve(ledger.started());
+    }
+
+    for (sequence, node) in [(1_u64, 2_u64), (2, 3)] {
+        // The planner's own confirmation: outer command of the renewed
+        // intent, the selected activation proof naming the expired one.
+        let RecoveryDispatch::Target { node_id, request } = next(&ledger, 1100) else {
+            panic!("a confirmation under the renewed intent expected")
+        };
+        assert_eq!(node_id, node);
+        assert_eq!(request.command_id, renewed.request.command_id);
+        let TargetRuntimeStep::ConfirmActivation(selected) = &request.step else {
+            panic!("confirmation expected, got {:?}", request.step)
+        };
+        assert_eq!(**selected, retained);
+        assert_eq!(
+            selected.observation.activation.intent.request.command_id,
+            expired.request.command_id
+        );
+        let active_cap = if sequence == 1 { 1500 } else { 1480 };
+        ledger.dispatch(
+            Uuid::from_u128(8744 + u128::from(sequence)),
+            node,
+            active_cap,
+            request.step.clone(),
+            130 + 10 * sequence,
+        );
+        for reader in nodes.keys() {
+            assert!(
+                ledger.reads(*reader, ledger.now),
+                "reader {reader} during the renewed confirmation by voter {node}"
+            );
+        }
+        ledger.assert_only_the_exact_current_sibling_reads(1, 1450);
+        ledger.assert_only_the_exact_current_sibling_reads(3, active_cap);
+        let pending = ledger.operation.pending_phase.unwrap();
+        // The same facts signed again under the renewed intent, and another
+        // voter's signature over the selected facts, are not the selected proof.
+        let resigned = ledger.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+            ledger.proof(1, &renewed),
+        )));
+        let cosigned = ledger.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+            ledger.proof(3, &expired),
+        )));
+        for (reader, member) in &nodes {
+            // The earlier intent is not current, even for the voters it started.
+            assert!(
+                !quorum::current_replica_intent_reader(
+                    &ledger.state,
+                    &ledger.operation,
+                    pending,
+                    expired.request.command_id,
+                    "operator",
+                    (&member.principal, &member.certificate_sha256),
+                    || Ok(ledger.now),
+                )
+                .unwrap(),
+                "reader {reader} of the expired intent"
+            );
+            // A voter whose own start resolved only under the earlier intent
+            // has not started under this one.
+            let mut unstarted = ledger.operation.clone();
+            unstarted.voters.get_mut(reader).unwrap().started = Some(earlier_starts[reader]);
+            assert!(
+                ledger.refused(&ledger.state, &unstarted, *reader),
+                "reader {reader} started only under the expired intent"
+            );
+            for (state, case) in [(&resigned, "re-signed"), (&cosigned, "co-signed")] {
+                assert!(
+                    ledger.refused(state, &ledger.operation, *reader),
+                    "reader {reader} through a {case} activation"
+                );
+            }
+        }
+        // The voter reports the activation fact it replayed, which still names
+        // the earlier intent.
+        ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(
+            ledger.proof(node, &expired),
+        )));
+        assert_eq!(
+            activation::local_proof(&ledger.state, &ledger.operation).unwrap(),
+            Some(&retained)
+        );
+        for reader in nodes.keys() {
+            assert!(
+                !ledger.reads(*reader, ledger.now),
+                "reader {reader} after reply"
+            );
+        }
+    }
+    assert!(
+        ledger
+            .operation
+            .voters
+            .values()
+            .all(|voter| voter.confirmation.is_some())
+    );
+}
+
+/// The planner and the reader rule select the same proof: the signed
+/// observation of the first confirmed voter in node order, not necessarily the
+/// voter that executed Activate. Once voter one confirms an activation that
+/// voter two executed, voter one's own signed observation is the only proof a
+/// later confirmation may carry.
+#[test]
+fn confirmation_readers_follow_the_proof_the_planner_selects() {
+    let mut ledger = confirm_ledger();
+    let nodes = ledger.operation.request.target_nodes.clone();
+    for node in 1..=3 {
+        let step = ledger.start();
+        ledger.dispatch(
+            Uuid::from_u128(8750 + u128::from(node)),
+            node,
+            500,
+            step,
+            40 + 10 * node,
+        );
+        ledger.resolve(ledger.started());
+    }
+    // Activate was rerouted to voter two, which committed and signed it.
+    let step = ledger.activate();
+    ledger.dispatch(Uuid::from_u128(8754), 2, 500, step, 80);
+    let executed = ledger.proof(2, &ledger.current);
+    ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(executed.clone())));
+    let next = |ledger: &ConfirmLedger| {
+        let RecoveryDispatch::Target { node_id, request } = activation::next_dispatch(
+            &ledger.state,
+            &ledger.operation,
+            Uuid::new_v4(),
+            ledger.now,
+            5000,
+        )
+        .unwrap() else {
+            panic!("target confirmation expected")
+        };
+        (node_id, request.step)
+    };
+    assert_eq!(
+        next(&ledger),
+        (
+            1,
+            TargetRuntimeStep::ConfirmActivation(Box::new(executed.clone()))
+        )
+    );
+    ledger.dispatch(
+        Uuid::from_u128(8755),
+        1,
+        500,
+        TargetRuntimeStep::ConfirmActivation(Box::new(executed.clone())),
+        90,
+    );
+    for reader in nodes.keys() {
+        assert!(ledger.reads(*reader, 360), "reader {reader}");
+    }
+    let observed = ledger.proof(1, &ledger.current);
+    ledger.resolve(TargetRuntimeOutcome::Activated(Box::new(observed.clone())));
+    // Voter one now precedes voter two: its own observation is selected.
+    assert_eq!(
+        activation::local_proof(&ledger.state, &ledger.operation).unwrap(),
+        Some(&observed)
+    );
+    let (node, step) = next(&ledger);
+    assert_eq!(
+        (node, &step),
+        (
+            3,
+            &TargetRuntimeStep::ConfirmActivation(Box::new(observed.clone()))
+        )
+    );
+    ledger.dispatch(Uuid::from_u128(8756), 3, 500, step, 100);
+    for reader in nodes.keys() {
+        assert!(ledger.reads(*reader, 360), "reader {reader}");
+    }
+    // The proof the executing voter signed is no longer the selected one.
+    let superseded = ledger.with_pending_step(TargetRuntimeStep::ConfirmActivation(Box::new(
+        executed.clone(),
+    )));
+    for reader in nodes.keys() {
+        assert!(
+            ledger.refused(&superseded, &ledger.operation, *reader),
+            "reader {reader} through the superseded proof"
+        );
+    }
+}
+
 #[test]
 fn first_membership_dispatch_requires_the_intent_principal_after_acceptance() {
     let (mut state, mut operation, _) = fixture_state();

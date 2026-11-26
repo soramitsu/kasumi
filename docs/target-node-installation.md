@@ -31,6 +31,29 @@ target uses its own certificate and credential. A target with both observation
 grants can use the same read-scoped credential for journal retirement and
 phase observation.
 
+The same callback keeps a started voter live through local activation. While
+Control's StartActivation, Activate or ConfirmActivation request to one voter is
+outstanding, each voter that already started under that exact intent can read
+the intent and renew its grant. On every read, and again at response release,
+Control checks the committed issuer winner, the reader's own resolved
+StartActivation and both request deadlines. During ConfirmActivation the request
+must also carry exactly the signed activation proof Control selects for that
+operation: the observation of the first confirmed voter in node order. That
+proof can name an earlier intent. When the Confirm credential expires after the
+local activation, Control commits a fresh intent, starts every voter again under
+it and confirms the remaining voters with the same proof. Only voters started
+under the fresh intent can then read it. A requested stop ends these sibling
+reads.
+
+A dispatch stays with the Control member that sent it. If another member is
+elected while the target request is outstanding, the original member still
+answers that dispatch's intent, phase and registered-writer reads: it obtains
+the elected leader's read index and applies it first. Every other member
+reports that it holds no such dispatch, and registering a new journal writer
+still requires the leader. The original member's own administrative requests
+are refused until it leads again, so a later resume on the current leader
+records the outcome.
+
 An operator can inspect a stopped physical target using
 `kasumid control-recovery target-deletion-via-control CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS`.
 Control reads the original marked StopLocal effect, selects the enrolled target

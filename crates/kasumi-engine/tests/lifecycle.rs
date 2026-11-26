@@ -773,6 +773,32 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
     let signed = f.signer.sign_intent(&proof).await.unwrap();
     let trust = ControlTrust::install(f.installation.root.clone()).unwrap();
     trust.verify_intent(&signed).unwrap();
+    let follower = f
+        .nodes
+        .values()
+        .find(|node| !Arc::ptr_eq(node, &db))
+        .unwrap();
+    assert_eq!(
+        follower
+            .observe_lifecycle_intent(original.clone(), request.command_id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unavailable,
+    );
+    let callback = follower
+        .observe_callback_lifecycle_intent(original.clone(), request.command_id)
+        .await
+        .unwrap();
+    let observed = f.signer.sign_intent(&callback).await.unwrap();
+    trust.verify_intent(&observed).unwrap();
+    assert_eq!(observed.observation.intent, signed.observation.intent);
+    assert_eq!(
+        observed.observation.observed_term,
+        signed.observation.observed_term
+    );
+
     assert_eq!(
         signed.observation.intent.original_credential_expires_at_ms,
         original_expiry
@@ -807,6 +833,12 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
     original.authorization.check_live().unwrap();
     f.signer.sign_intent(&proof).await.unwrap();
     elapsed.advance(Duration::from_millis(1));
+    assert_eq!(
+        f.signer.sign_intent(&callback).await.unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    drop(callback);
+
     assert_eq!(epoch.now_ms().unwrap(), original_expiry);
     assert_eq!(
         original.authorization.check_live().unwrap_err().code,

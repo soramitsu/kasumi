@@ -1,3 +1,4 @@
+use super::control_administration::ControlObservationAccess;
 use super::*;
 use kasumi_types::{
     CommittedControlChange, CommittedControlIntent, SignedControlChange, SignedControlIntent,
@@ -20,9 +21,38 @@ impl LifecycleSigner {
         context: &RequestContext,
         signed_challenge: &kasumi_types::SignedTargetWriterChallenge,
     ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
-        use super::control_administration::ControlObservationAccess;
+        self.observe_writer(
+            control,
+            context,
+            signed_challenge,
+            ControlObservationAccess::Administration,
+        )
+        .await
+    }
+    /// The protected callback stays on its original dispatcher during an election.
+    pub async fn observe_callback_target_writer(
+        &self,
+        control: &Arc<Database>,
+        context: &RequestContext,
+        challenge: &kasumi_types::SignedTargetWriterChallenge,
+    ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
+        self.observe_writer(
+            control,
+            context,
+            challenge,
+            ControlObservationAccess::ActiveTargetCallback,
+        )
+        .await
+    }
+    async fn observe_writer(
+        &self,
+        control: &Arc<Database>,
+        context: &RequestContext,
+        signed_challenge: &kasumi_types::SignedTargetWriterChallenge,
+        access: ControlObservationAccess,
+    ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
         let quorum = control
-            .authorize_control_quorum(context.clone(), ControlObservationAccess::Administration)
+            .authorize_control_quorum(context.clone(), access)
             .await?;
         let challenge = &signed_challenge.challenge;
         if let Some(command) = challenge.lifecycle_command {
@@ -77,6 +107,14 @@ impl LifecycleSigner {
             .binary_search(&participant)
             .is_err()
         {
+            if matches!(access, ControlObservationAccess::ActiveTargetCallback)
+                && control.group.metrics().current_leader != Some(control.group.node_id())
+            {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "target writer registration requires the current Control leader",
+                ));
+            }
             control
                 .submit(
                     context.clone(),
@@ -332,6 +370,7 @@ pub struct VerifiedLifecycleIntent {
     database: Arc<Database>,
     context: RequestContext,
     observation: CommittedControlIntent,
+    access: ControlObservationAccess,
     _reservation: Reservation,
 }
 impl VerifiedLifecycleIntent {
@@ -340,7 +379,7 @@ impl VerifiedLifecycleIntent {
     }
     pub async fn release(&self) -> Result<()> {
         self.database
-            .check_lifecycle_intent(&self.context, &self.observation)
+            .check_lifecycle_intent(&self.context, &self.observation, self.access)
             .await
     }
 }
@@ -386,7 +425,7 @@ impl Database {
     pub(super) async fn control_observation_barrier(
         &self,
         context: &RequestContext,
-        access: super::control_administration::ControlObservationAccess,
+        access: ControlObservationAccess,
     ) -> Result<u64> {
         context.authorization.check_live()?;
         self.access()?;
@@ -402,8 +441,44 @@ impl Database {
             .authorization
             .require_control(&state.state.incarnation)?;
         drop(state);
-        self.barrier().await?;
-        let metrics = self.group.metrics();
+        let metrics = if matches!(access, ControlObservationAccess::ActiveTargetCallback) {
+            // Only the node holding the live callback may serve it. After a leadership
+            // change, that node must apply the elected member's current quorum index.
+            let before = self.group.metrics();
+            let observed = self.group.observation_barrier().await.map_err(|cause| {
+                Error::new(ErrorCode::Unavailable, "target callback quorum unavailable")
+                    .with_physical_source(cause)
+            })?;
+            let after = self.group.metrics();
+            let membership = after.membership_config.membership();
+            if before.current_term != after.current_term
+                || before.current_leader != after.current_leader
+                || !membership
+                    .voter_ids()
+                    .any(|id| Some(id) == after.current_leader)
+                || !membership.voter_ids().any(|id| id == after.id)
+                || before.membership_config != after.membership_config
+                || observed.is_none_or(|index| {
+                    after
+                        .last_applied
+                        .is_none_or(|applied| applied.index < index.index)
+                        || after
+                            .membership_config
+                            .log_id()
+                            .is_none_or(|entry| index.index < entry.index)
+                })
+            {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "target callback quorum changed",
+                ));
+            }
+            self.access()?;
+            after
+        } else {
+            self.barrier().await?;
+            self.group.metrics()
+        };
         if metrics.membership_config.membership().voter_ids().count() < 3
             || metrics.current_term == 0
         {
@@ -471,6 +546,23 @@ impl Database {
         context: RequestContext,
         id: Uuid,
     ) -> Result<VerifiedLifecycleIntent> {
+        self.observe_intent_for(context, id, ControlObservationAccess::Administration)
+            .await
+    }
+    pub async fn observe_callback_lifecycle_intent(
+        self: &Arc<Self>,
+        context: RequestContext,
+        id: Uuid,
+    ) -> Result<VerifiedLifecycleIntent> {
+        self.observe_intent_for(context, id, ControlObservationAccess::ActiveTargetCallback)
+            .await
+    }
+    async fn observe_intent_for(
+        self: &Arc<Self>,
+        context: RequestContext,
+        id: Uuid,
+        access: ControlObservationAccess,
+    ) -> Result<VerifiedLifecycleIntent> {
         let cancellation = QueryCancellation::default();
         let _work = self.work.begin(cancellation.clone())?;
         let _slot = self.query_slots.clone().try_acquire_owned().map_err(|_| {
@@ -482,7 +574,7 @@ impl Database {
         let mut reservation = self
             .admission()
             .reserve((MAX_LIFECYCLE_STATE_BYTES * 2) as u64, None)?;
-        let term = self.lifecycle_barrier(&context).await?;
+        let term = self.control_observation_barrier(&context, access).await?;
         let state = self.engine.generation()?;
         let control = state
             .state
@@ -501,7 +593,8 @@ impl Database {
         };
         drop(intent);
         drop(state);
-        self.check_lifecycle_intent(&context, &observation).await?;
+        self.check_lifecycle_intent(&context, &observation, access)
+            .await?;
         self.control_observation_audit(
             &context,
             id,
@@ -510,13 +603,15 @@ impl Database {
             observation.observed_policy_epoch,
         )
         .await?;
-        self.check_lifecycle_intent(&context, &observation).await?;
+        self.check_lifecycle_intent(&context, &observation, access)
+            .await?;
         cancellation.check()?;
         reservation.retain_workspace();
         Ok(VerifiedLifecycleIntent {
             database: self.clone(),
             context,
             observation,
+            access,
             _reservation: reservation,
         })
     }
@@ -524,8 +619,9 @@ impl Database {
         &self,
         context: &RequestContext,
         observation: &CommittedControlIntent,
+        access: ControlObservationAccess,
     ) -> Result<()> {
-        if self.lifecycle_barrier(context).await? != observation.observed_term {
+        if self.control_observation_barrier(context, access).await? != observation.observed_term {
             return Err(Error::new(
                 ErrorCode::Unavailable,
                 "control observation quorum term changed",

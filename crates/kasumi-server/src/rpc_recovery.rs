@@ -266,10 +266,22 @@ impl kasumi_recovery_control_server::KasumiRecoveryControl for NativeRecoveryCon
             .auth
             .audit_result(
                 &context,
-                self.runtime
-                    .database
-                    .recovery_phase(original.clone(), input.operation_id, input.phase_id)
-                    .await,
+                if callback.is_some() {
+                    self.runtime
+                        .database
+                        .observe_callback_recovery_phase(
+                            original.clone(),
+                            input.operation_id,
+                            input.phase_id,
+                        )
+                        .await
+                } else {
+                    self.runtime
+                        .database
+                        .recovery_phase(original.clone(), input.operation_id, input.phase_id)
+                        .await
+                        .map(|phase| phase.into_observation())
+                },
             )
             .await
             .map_err(status)?;

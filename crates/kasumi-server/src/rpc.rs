@@ -96,6 +96,8 @@ pub use recovery::NativeRecoveryControl;
 mod target;
 pub use lifecycle::NativeLifecycleControl;
 pub use target::NativeTargetRecovery;
+#[cfg(test)]
+pub(crate) use target::TargetCallProbe;
 #[path = "rpc_authority.rs"]
 mod authority;
 #[path = "rpc_backup_sessions.rs"]
