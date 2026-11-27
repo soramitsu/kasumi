@@ -28,6 +28,8 @@ use std::{
     },
 };
 
+#[path = "storage/original_snapshot.rs"]
+mod original_snapshot;
 #[path = "storage/retained_logs.rs"]
 pub(crate) mod retained_logs;
 use retained_logs::{EntryBatches, RetainedSpan, read_header, retained_span};
@@ -1252,7 +1254,7 @@ pub fn received_application_snapshot_for_test(
     Ok(SnapshotBuffer::from_image(envelope.encode(limit)?, owner)?)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotManifest {
     pub(crate) version: u32,
@@ -1379,9 +1381,7 @@ pub fn recovery_snapshot_backend(
     domains: &TenantStorageSet,
 ) -> Result<SnapshotImage, ScratchOperationFailure> {
     let limit = RaftLimits::default().max_snapshot_bytes;
-    let snapshot =
-        load_snapshot(domains.application(), limit)?.context("recovery snapshot absent")?;
-    validate_snapshot_coverage(domains, &snapshot, limit)?;
+    let snapshot = original_snapshot::load(domains, limit)?.context("recovery snapshot absent")?;
     Ok(snapshot.backend)
 }
 
@@ -1392,6 +1392,14 @@ fn validate_snapshot_coverage(
 ) -> Result<()> {
     let manifest = load_manifest(domains.application(), b"current", limit)?
         .context("snapshot manifest absent")?;
+    validate_selected_snapshot_coverage(domains, snapshot, &manifest)
+}
+
+fn validate_selected_snapshot_coverage(
+    domains: &TenantStorageSet,
+    snapshot: &SnapshotEnvelope,
+    manifest: &SnapshotManifest,
+) -> Result<()> {
     let coverage = load_snapshot_coverage(domains.custody().store())?
         .context("snapshot lacks independently readable control coverage")?;
     ensure!(
@@ -1759,9 +1767,8 @@ impl StateMachine {
                         )?;
                     }
                     cleanup_snapshots(&captured, limit, &BackgroundCommits::Direct)?;
-                    let snapshot = load_snapshot(&captured, limit)?;
+                    let snapshot = original_snapshot::load(&captured_domains, limit)?;
                     if let Some(snapshot) = &snapshot {
-                        validate_snapshot_coverage(&captured_domains, snapshot, limit)?;
                         ensure!(snapshot.version == 2, "unsupported raft snapshot version");
                     }
                     target

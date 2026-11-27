@@ -915,3 +915,106 @@ async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
     validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
     Ok(())
 }
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "Keep native scratch failure custody in the regression."
+)]
+async fn original_snapshot_recovers_with_one_envelope_of_scratch_and_authenticates_every_chunk()
+-> FixtureResult<()> {
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let writer_dir = kasumi_store::test_utils::private_tempdir()?;
+    let writer = kasumi_store::ScratchDisk::fixture(writer_dir.path(), memory.clone());
+    let scratch_dir = kasumi_store::test_utils::private_tempdir()?;
+    let config = kasumi_store::ScratchDiskConfig {
+        directory: scratch_dir.path().to_path_buf(),
+        max_bytes: 8 << 20,
+        min_free_bytes: 0,
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0)?,
+        native_cache_bytes: 0,
+    };
+    let scratch = kasumi_store::ScratchDisk::open_fixture(&config, memory)?;
+    let (domains, _, _, _) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+    let body: Vec<u8> = (0..(5 << 20)).map(|n| (n % 251) as u8).collect();
+    let original = envelope(body.clone(), writer);
+    let encoded = original.encode(16 << 20)?.read_bounded(16 << 20)?;
+    persist_snapshot(&domains, &encoded, 16 << 20, &original)?;
+    assert_eq!(scratch.snapshot().live_files, 0);
+
+    // The generic stored-envelope path needs the already verified whole image
+    // and its decoded backend at once; the original sizing pass needs only one.
+    assert!(load_snapshot(domains.application(), 16 << 20).is_err());
+    assert_eq!(scratch.snapshot().live_files, 0);
+    {
+        let recovered = recovery_snapshot_backend(&domains)?;
+        assert_eq!(recovered.sha256(), original.backend.sha256());
+        assert_eq!(recovered.read_bounded(16 << 20)?, body);
+        assert_eq!(scratch.snapshot().live_files, 1);
+        assert!(scratch.snapshot().charged_bytes <= config.max_bytes);
+    }
+    assert_eq!(scratch.snapshot().live_files, 0);
+
+    let restored = Arc::new(BytesBackend::default());
+    StateMachine::open(
+        domains.clone(),
+        restored.clone(),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    assert_eq!(*restored.0.lock().unwrap(), body);
+    assert_eq!(scratch.snapshot().live_files, 0);
+
+    let store = domains.application();
+    let manifest = load_manifest(store, b"current", 16 << 20)?.context("manifest missing")?;
+    assert_eq!(manifest.chunks, 2);
+    let key = chunk_key(&manifest, 1);
+    let last = store.get(SNAPSHOT, &key)?.context("last chunk missing")?;
+    let mut damaged = last.to_vec();
+    damaged[0] ^= 1;
+    store.write_batch(&[put(SNAPSHOT, &key, damaged)])?;
+    assert!(recovery_snapshot_backend(&domains).is_err());
+    assert_eq!(scratch.snapshot().live_files, 0);
+    store.write_batch(&[delete(SNAPSHOT, key.clone())])?;
+    assert!(recovery_snapshot_backend(&domains).is_err());
+    assert_eq!(scratch.snapshot().live_files, 0);
+
+    // A matching outer digest must still reach and reject the tampered
+    // terminal frame after the backend has been fully written to scratch.
+    let mut damaged_tail = last.to_vec();
+    *damaged_tail.last_mut().context("empty last chunk")? ^= 1;
+    let mut damaged_encoded = encoded.clone();
+    *damaged_encoded.last_mut().context("empty envelope")? ^= 1;
+    let mut rewritten = manifest.clone();
+    rewritten.sha256 = sha256(&damaged_encoded);
+    store.write_batch(&[
+        put(SNAPSHOT, &key, damaged_tail),
+        put(SNAPSHOT, b"current", serde_json::to_vec(&rewritten)?),
+    ])?;
+    let inner_error = recovery_snapshot_backend(&domains)
+        .err()
+        .context("damaged terminal digest accepted")?;
+    assert!(
+        inner_error
+            .to_string()
+            .contains("snapshot terminal authentication differs")
+    );
+    assert_eq!(scratch.snapshot().live_files, 0);
+
+    store.write_batch(&[
+        put(SNAPSHOT, &key, last.to_vec()),
+        put(SNAPSHOT, b"current", serde_json::to_vec(&manifest)?),
+    ])?;
+    drop(recovery_snapshot_backend(&domains)?);
+    let custody = domains.custody().store();
+    let mut coverage = load_snapshot_coverage(custody)?.context("control coverage missing")?;
+    coverage.backend_sha256 = "0".repeat(64);
+    custody.write_batch(&[put(
+        META,
+        b"snapshot_coverage",
+        encode_snapshot_coverage(&coverage)?,
+    )])?;
+    assert!(recovery_snapshot_backend(&domains).is_err());
+    assert_eq!(scratch.snapshot().live_files, 0);
+    Ok(())
+}

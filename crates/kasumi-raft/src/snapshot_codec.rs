@@ -141,7 +141,7 @@ impl SnapshotEnvelope {
     ) -> Result<Self, ScratchOperationFailure> {
         Self::decode_bounded(disk, reader, limit, None)
     }
-    fn decode_bounded(
+    pub(super) fn decode_bounded(
         disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn Read,
         limit: u64,
