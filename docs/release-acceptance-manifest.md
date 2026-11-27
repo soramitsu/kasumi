@@ -368,7 +368,9 @@ Each filename follows the pattern `local-1.json`. A local plan has this shape.
   "documents": 1000000,
   "operations": 1000,
   "nodes": [{"path": "/release/local-1/kasumi.json", "sha256": "<SHA-256 of those bytes>"}],
-  "tenants": {"bench-0000": {"administrator": "bench-admin", "application": "bench-app"}}
+  "tenants": {"bench-0000": {"administrator": "bench-admin", "application": "bench-app"}},
+  "load": {"attempts": 6, "budget_milliseconds": 300000, "initial_backoff_milliseconds": 250,
+           "maximum_backoff_milliseconds": 8000, "maximum_affected_batches": 8}
 }
 ```
 
@@ -389,6 +391,72 @@ a matching credential for every installed tenant. In sorted tenant order use
 document IDs `"0"`, `"1"` and so on. Keep secret values in their private
 credential files. The driver checks the tenant claim and uses normal TLS and
 server authorization for every wire operation.
+
+#### Corpus load and uncertain batches
+
+The plan's `load` object fixes, before the run, how the driver resolves an
+uncertain corpus batch. `attempts` counts sends per batch, including the first
+(2 to 8). `budget_milliseconds` is one budget per batch, from its first
+dispatch, for its sends, lookups and backoff sleeps (20,000 to 900,000). The
+backoff starts at `initial_backoff_milliseconds`, doubles, and is capped at
+`maximum_backoff_milliseconds` (10 to 60,000, below the budget).
+`maximum_affected_batches` bounds the batches whose first attempt ends
+uncertain (at most 40, about 1% of a case's batches). The verifier rejects
+release evidence outside these ceilings.
+
+Each tenant loads its tenant-strided ordinals in batches of 256 with `absent`
+preconditions. Before the first dispatch the driver retains the exact batch,
+its request digest, the idempotency key `<attempt>-load-<sequence>` and the
+receipt scope. The scope is the tenant, the installed incarnation from the node
+configuration (checked against the serving generation) and the application
+principal. On `UNKNOWN_OUTCOME` or `UNAVAILABLE` the driver first looks up the
+retained receipt. While the outcome stays unknown it resends the identical
+batch under the same identity until the attempt limit or the budget runs out.
+Only a retained receipt that matches the scope, digest and every target version
+settles a disputed batch. A refusal on resend never settles the earlier
+attempt. A definitive rejection, a mismatched receipt or an exhausted limit
+fails the case after the batch's record is synced. The 10 s native write
+deadline is unchanged. After a disputed batch settles, the driver reads every
+target and records its committed version and canonical body SHA-256.
+
+`load-batches.jsonl` holds one ordered row per logical batch. Each row has the
+batch identity, every send, lookup and backoff with its outcome and elapsed
+time, and the resolution. A disputed row also has the retained receipt and
+the per-target effects. The resolution is `acknowledged on first attempt`,
+`receipt found before resend` or `commit confirmed after resend`. These labels
+claim no more than the evidence shows. An empty lookup can race the original
+proposal, and an identical resend returns the stored outcome whichever attempt
+applied.
+
+`case.json` uses schema `kasumi-installed-embedded-v2` and reports a `load`
+summary. The adapter and the final verifier recompute it from the records and
+require exact equality, with explicit zeros on a clean run. The summary covers
+batches, documents and canonical bytes, first-attempt deadline misses and their
+rate, and affected batches. It also covers both resolutions, resends, lookups,
+the unresolved count, first-attempt and end-to-end batch p50/p99/max, load wall
+time and committed documents per second. The verifiers require one terminal
+success per logical batch and exact tenant-strided coverage of 1,000,000
+documents and 1,024,000,000 canonical bytes. They enforce every declared
+bound: the send limit, the budget, the affected-batch limit, and each backoff
+sleeping at least its doubled and capped delay. For each
+disputed batch they rebuild the request digest from the batch identity. They
+match its scope, digest, revision and full target-version map, and check one
+effect per target at that revision with the original body. A duplicate counter
+cannot replace that evidence: a replay can advance the audit revision without
+applying the documents twice. The timed workloads keep their first-attempt
+rule, with 1,000 successful samples and no failed or unattempted operation
+each. A run on a shared development host is labelled as such; release
+qualification still needs the reserved native reference host.
+
+The driver runs kasumi-server's `NodeRuntime` in-process, so no `kasumid`
+process appears in this domain. The final verifier instead requires every
+matrix process to be the exact `kasumi-bench-network` executable from the
+candidate's primary functional evidence. That evidence's `network-driver` gate
+must have compiled every package of its `production` gate, which emitted the
+qualified `kasumid`, with identical features. Its only additional package is
+the driver's own. The adapter also rebuilds each command and requires the
+executable hash the driver reports for itself. The domains that run `kasumid`
+qualify the daemon's own bytes.
 
 ## Process and failed-attempt evidence
 

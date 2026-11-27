@@ -104,6 +104,31 @@ BASE_WORKLOADS = {
 NETWORK_WORKLOADS = {"authenticated_point_get", "durable_single_document_write",
                      "read_heavy_90_read_10_write", "balanced_50_read_50_write",
                      "authenticated_query_complete_pages"}
+# An installed case loads its corpus under the client contract for an uncertain
+# write: look up the receipt, then resend the identical batch under the same
+# identity within bounds the plan declares before the run. Release evidence must
+# declare bounds inside these ceilings. A recovered batch counts once toward the
+# corpus; its first attempt still counts as a missed acknowledgement.
+LOAD_LIMITS = {"attempts": (2, 8), "budget_milliseconds": (20_000, 900_000),
+               "initial_backoff_milliseconds": (10, 60_000), "maximum_backoff_milliseconds": (10, 60_000),
+               # About 1% of the roughly 4,000 batches of each million-document case.
+               "maximum_affected_batches": (0, 40)}
+LOAD_BATCH_DOCUMENTS = 256
+LOAD_FIRST_ATTEMPT = "acknowledged on first attempt"
+LOAD_FOUND_BEFORE_RESEND = "receipt found before resend"
+LOAD_CONFIRMED_AFTER_RESEND = "commit confirmed after resend"
+LOAD_DEADLINE_MISS = "write deadline exceeded"
+LOAD_RECORD_FIELDS = {"sequence", "tenant", "first", "documents", "canonical_bytes", "idempotency_key",
+                      "request_digest", "scope", "started_ns", "elapsed_ns", "steps", "resolution", "failure",
+                      "revision", "receipt", "effects", "effects_elapsed_ns"}
+LOAD_SUMMARY_FIELDS = {"bounds", "batches", "documents", "canonical_bytes", "first_attempt_deadline_misses",
+                       "first_attempt_deadline_miss_rate", "affected_batches", "receipt_found_before_resend",
+                       "commit_confirmed_after_resend", "resends", "lookups", "unresolved", "first_attempt_ns",
+                       "end_to_end_ns", "wall_ns", "documents_per_second"}
+ERROR_CODES = {"INVALID_ARGUMENT", "UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND", "ALREADY_EXISTS", "CONFLICT",
+               "SCHEMA_VIOLATION", "QUOTA_EXCEEDED", "RESOURCE_EXHAUSTED", "INDEX_REQUIRED", "CURSOR_EXPIRED",
+               "UNAVAILABLE", "UNKNOWN_OUTCOME", "CORRUPTION", "SEALED", "AUDIT_UNAVAILABLE"}
+UNCERTAIN_CODES = {"UNKNOWN_OUTCOME", "UNAVAILABLE"}
 CAPACITY_OPERATIONS = {"snapshot", "compaction", "restart", "filesystem-backup",
                        "filesystem-restore", "s3-backup", "s3-restore", "retained-read-pressure"}
 RECOVERY_PHASES = {"preparation", "materialization", "initialization", "source-fencing",
@@ -340,18 +365,239 @@ def check_samples(root, measurement, minimum=1):
     require(seen == count, "shortened workload sample stream")
 
 
+def strict_equal(left, right):
+    """JSON equality that also distinguishes 0, 0.0, False and None."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(strict_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(strict_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def canonical_json(value):
+    """Sorted-key compact JSON, as kasumi_types::CanonicalJsonValue encodes literal bodies."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def corpus_body(ordinal, tenants):
+    """kasumi_bench::raw::document_body(ordinal, 0, tenants): one 1,024-byte corpus document."""
+    local = ordinal // tenants
+    token = local % 1000
+    body = {"ordinal": ordinal, "version": 0, "padding": "",
+            "text": f"searchable document token{token:04d} feature{token:04d} "
+                    f"{'図書館' if local % 1000 == 0 else '動物'} revision0 "}
+    body["padding"] = "x" * max(0, 1024 - len(canonical_json(body)))
+    return body
+
+
+def corpus_batch_digest(key, ordinals, tenants):
+    """MutationBatch::digest of one corpus load batch, rebuilt from its identity."""
+    digest = hashlib.sha256(b'{"idempotency_key":' + json.dumps(key).encode() + b',"operations":[')
+    for n, ordinal in enumerate(ordinals):
+        digest.update((b"," if n else b"") + b'{"op":"put","collection":"docs","id":'
+                      + json.dumps(str(ordinal)).encode() + b',"body":'
+                      + canonical_json(corpus_body(ordinal, tenants)) + b',"expected":"absent"}')
+    digest.update(b"]}")
+    return digest.hexdigest()
+
+
+def load_bounds(bounds):
+    exact(bounds, set(LOAD_LIMITS), "declared corpus load bounds")
+    for key, (low, high) in LOAD_LIMITS.items():
+        require(type(bounds[key]) is int and low <= bounds[key] <= high,
+                "corpus load bound outside release limits: " + key)
+    require(bounds["initial_backoff_milliseconds"] <= bounds["maximum_backoff_milliseconds"]
+            < bounds["budget_milliseconds"], "corpus load backoff does not fit its budget")
+    return bounds
+
+
+def load_steps(steps, label, bounds):
+    """Check one batch's recorded resolution protocol; return its sends, lookups and end.
+
+    Each backoff must have slept at least its declared delay: the initial delay,
+    doubled after every backoff and capped at the declared maximum.
+    """
+    require(isinstance(steps, list) and steps, "corpus load batch has no recorded attempt")
+    sends = lookups = finish = backoffs = 0
+    expect, acknowledged = "send", False
+    for n, step in enumerate(steps):
+        exact(step, {"action", "offset_ns", "elapsed_ns", "outcome", "code", "message"}, "corpus load attempt")
+        start = uint(step["offset_ns"], "corpus load attempt offset")
+        require(start >= finish, "corpus load attempts overlap or are unordered")
+        finish = start + uint(step["elapsed_ns"], "corpus load attempt duration")
+        action, outcome, last = step["action"], step["outcome"], n == len(steps) - 1
+        require(action == expect, "corpus load steps do not follow the resolution protocol")
+        if outcome in ("uncertain", "refused"):
+            require(step["code"] in ERROR_CODES and (step["code"] in UNCERTAIN_CODES) == (outcome == "uncertain")
+                    and isinstance(step["message"], str), "corpus load attempt lacks its typed error")
+        else:
+            require(step["code"] is None and step["message"] is None, "settled corpus load attempt carries an error")
+        if action == "send":
+            sends += 1
+            allowed = (("committed",) if last else ("uncertain",)) if n == 0 else \
+                (() if last else ("committed", "uncertain", "refused"))
+            require(outcome in allowed, "corpus load send outcome breaks the resolution protocol")
+            acknowledged = outcome == "committed"
+            expect = "lookup"
+        elif action == "lookup":
+            lookups += 1
+            allowed = ("found",) if last else (
+                ("uncertain", "refused") if acknowledged else ("absent", "uncertain", "refused"))
+            require(outcome in allowed, "corpus load lookup outcome breaks the resolution protocol")
+            expect = "backoff"
+        else:
+            require(outcome == "slept" and not last, "corpus load backoff breaks the resolution protocol")
+            delay = min(bounds["initial_backoff_milliseconds"] << backoffs, bounds["maximum_backoff_milliseconds"])
+            require(step["elapsed_ns"] >= delay * 1_000_000, "corpus load backoff is shorter than its declared delay")
+            backoffs += 1
+            expect = "lookup" if acknowledged else "send"
+    first = steps[0]["outcome"] == "committed"
+    require((label == LOAD_FIRST_ATTEMPT) == first
+            and (label == LOAD_FOUND_BEFORE_RESEND) == (not first and sends == 1)
+            and (label == LOAD_CONFIRMED_AFTER_RESEND) == (sends > 1),
+            "corpus load label claims more than its attempts show")
+    return sends, lookups, finish
+
+
+def check_load(root, records, bounds, tenants, documents):
+    """Recompute one installed case's corpus and recovery cost from its ordered batch records.
+
+    Returns the summary, the tenants in load order, each tenant's receipt scope and
+    the idempotency-key prefix, for the adapter to bind to its plan and attempt.
+    """
+    load_bounds(bounds)
+    budget = bounds["budget_milliseconds"] * 1_000_000
+    order, scopes, cursor, revisions = [], {}, {}, {}
+    prefix, end, sequence = None, 0, 0
+    counts = dict.fromkeys(("documents", "canonical_bytes", "misses", "affected", "found", "confirmed",
+                            "resends", "lookups"), 0)
+    first, total = [], []
+    for row in rows(root, records):
+        exact(row, LOAD_RECORD_FIELDS, "corpus load record")
+        require(type(row["sequence"]) is int and row["sequence"] == sequence,
+                "corpus load record gap, duplicate or reordering")
+        tenant = row["tenant"]
+        if not order or order[-1] != tenant:
+            require(isinstance(tenant, str) and tenant and len(order) < tenants
+                    and (not order or (order[-1] < tenant and cursor[order[-1]] >= documents)),
+                    "tenant loads are not complete, contiguous and in sorted order")
+            scope = row["scope"]
+            exact(scope, {"tenant", "incarnation", "principal"}, "corpus load receipt scope")
+            require(scope["tenant"] == tenant and all(isinstance(scope[k], str) and scope[k]
+                                                      for k in ("incarnation", "principal")),
+                    "corpus load receipt scope is incomplete")
+            cursor[tenant], revisions[tenant], scopes[tenant] = len(order), 0, scope
+            order.append(tenant)
+        require(strict_equal(row["scope"], scopes[tenant]), "corpus load receipt scope changed within a tenant")
+        key, suffix = row["idempotency_key"], "-load-" + str(sequence)
+        require(isinstance(key, str) and key.endswith(suffix) and len(key) > len(suffix)
+                and (prefix is None or key == prefix + suffix),
+                "corpus load idempotency key is not the attempt's sequence key")
+        prefix = key[:-len(suffix)]
+        ordinal = cursor[tenant]
+        count = min(LOAD_BATCH_DOCUMENTS, len(range(ordinal, documents, tenants)))
+        require(count > 0 and type(row["first"]) is int and row["first"] == ordinal
+                and type(row["documents"]) is int and row["documents"] == count
+                and type(row["canonical_bytes"]) is int and row["canonical_bytes"] == count * 1024,
+                "corpus load ordinal gap, duplicate or batch size differs")
+        ordinals = range(ordinal, ordinal + count * tenants, tenants)
+        cursor[tenant] = ordinal + count * tenants
+        checksum(row["request_digest"])
+        label = row["resolution"]
+        require(row["failure"] is None and label in (LOAD_FIRST_ATTEMPT, LOAD_FOUND_BEFORE_RESEND,
+                                                     LOAD_CONFIRMED_AFTER_RESEND),
+                "unresolved, rejected or mismatched corpus load batch")
+        sends, lookups, finish = load_steps(row["steps"], label, bounds)
+        require(sends <= bounds["attempts"], "corpus load batch exceeded its declared attempt limit")
+        require(type(row["elapsed_ns"]) is int and row["elapsed_ns"] == finish <= budget,
+                "corpus load batch exceeded its declared budget")
+        revision = uint(row["revision"], "corpus load revision", 1)
+        require(revision > revisions[tenant], "corpus load revisions do not advance")
+        revisions[tenant] = revision
+        step = row["steps"][0]
+        if label == LOAD_FIRST_ATTEMPT:
+            require(row["receipt"] is None and row["effects"] is None and type(row["effects_elapsed_ns"]) is int
+                    and row["effects_elapsed_ns"] == 0, "first-attempt batch carries dispute evidence")
+        else:
+            # A disputed batch settles only by its own retained receipt, rebuilt
+            # here from the batch identity, and by durable per-target state.
+            receipt = row["receipt"]
+            exact(receipt, {"scope", "request_digest", "revision", "versions"}, "disputed batch receipt")
+            require(strict_equal(receipt["scope"], row["scope"])
+                    and receipt["request_digest"] == row["request_digest"] == corpus_batch_digest(key, ordinals, tenants)
+                    and type(receipt["revision"]) is int and receipt["revision"] == revision
+                    and strict_equal(receipt["versions"], {f"/docs/{o}": revision for o in ordinals}),
+                    "disputed batch receipt differs from its scope, digest, revision or targets")
+            effects = row["effects"]
+            require(isinstance(effects, list) and len(effects) == count, "disputed batch lacks one effect per target")
+            for effect, target in zip(effects, ordinals):
+                exact(effect, {"id", "version", "body_sha256"}, "disputed batch effect")
+                require(effect["id"] == str(target) and type(effect["version"]) is int and effect["version"] == revision
+                        and effect["body_sha256"] == hashlib.sha256(canonical_json(corpus_body(target, tenants))).hexdigest(),
+                        "durable document state does not show one effect per target")
+            uint(row["effects_elapsed_ns"], "disputed batch effect evidence duration")
+            counts["affected"] += 1
+            counts["found" if label == LOAD_FOUND_BEFORE_RESEND else "confirmed"] += 1
+            counts["misses"] += step["code"] == "UNKNOWN_OUTCOME" and step["message"].startswith(LOAD_DEADLINE_MISS)
+        started = uint(row["started_ns"], "corpus load batch start")
+        require(started >= end, "corpus load batches overlap")
+        end = started + row["elapsed_ns"] + row["effects_elapsed_ns"]
+        counts["documents"] += count
+        counts["canonical_bytes"] += row["canonical_bytes"]
+        counts["resends"] += sends - 1
+        counts["lookups"] += lookups
+        first.append(step["elapsed_ns"])
+        total.append(row["elapsed_ns"])
+        sequence += 1
+    require(len(order) == tenants and all(cursor[t] >= documents for t in order) and end > 0
+            and counts["documents"] == documents and counts["canonical_bytes"] == documents * 1024,
+            "corpus load does not cover every tenant-strided ordinal exactly once")
+    require(counts["affected"] <= bounds["maximum_affected_batches"],
+            "uncertain first attempts exceed the declared bound")
+
+    def spread(values):
+        values = sorted(values)
+        return {"p50": values[(len(values) * 50 + 99) // 100 - 1],
+                "p99": values[(len(values) * 99 + 99) // 100 - 1], "max": values[-1]}
+
+    summary = {"bounds": bounds, "batches": sequence, "documents": counts["documents"],
+               "canonical_bytes": counts["canonical_bytes"],
+               "first_attempt_deadline_misses": counts["misses"],
+               "first_attempt_deadline_miss_rate": counts["misses"] / sequence,
+               "affected_batches": counts["affected"], "receipt_found_before_resend": counts["found"],
+               "commit_confirmed_after_resend": counts["confirmed"], "resends": counts["resends"],
+               "lookups": counts["lookups"], "unresolved": 0, "first_attempt_ns": spread(first),
+               "end_to_end_ns": spread(total), "wall_ns": end,
+               "documents_per_second": counts["documents"] * 1e9 / end}
+    return summary, order, scopes, prefix
+
+
+def check_load_summary(root, load, tenants, documents):
+    """The reported corpus load and recovery cost must equal its recomputation."""
+    exact(load, LOAD_SUMMARY_FIELDS | {"records"}, "installed corpus load")
+    summary = check_load(root, load["records"], load["bounds"], tenants, documents)[0]
+    require(strict_equal({key: value for key, value in load.items() if key != "records"}, summary),
+            "corpus load summary differs from its ordered records")
+    return summary
+
+
 def check_benchmarks(root, details):
     exact(details, {"cases"}, "benchmark details")
     cases = unique(details["cases"], "id", "benchmark cases")
     require(set(cases) == SCENARIOS["benchmark-matrix"], "all fifteen benchmark cases are required")
     for name, case in cases.items():
-        exact(case, {"id", "mode", "tenants", "documents", "provider", "workloads"}, "benchmark case")
         mode, tenants = name.rsplit("-", 1)
+        exact(case, {"id", "mode", "tenants", "documents", "provider", "workloads"}
+              | (set() if mode == "raw" else {"load"}), "benchmark case")
         require(case["mode"] == mode and case["tenants"] == int(tenants)
                 and type(case["tenants"]) is int and case["documents"] == 1_000_000
                 and type(case["documents"]) is int, "benchmark case is shortened or mislabeled")
         require(case["provider"] == ("none" if mode == "raw" else "production"),
                 "fixture providers cannot qualify production benchmarks")
+        if mode != "raw":
+            check_load_summary(root, case["load"], case["tenants"], case["documents"])
         workloads = unique(case["workloads"], "name", "benchmark workloads")
         expected = {"raw_hashmap_borrowed_lookup"} if mode == "raw" else BASE_WORKLOADS
         if mode == "text":
@@ -1333,6 +1579,42 @@ DOMAIN_ADAPTERS = {
 }
 
 
+def embedded_runtime_driver(root, candidate, binaries):
+    """The production benchmark driver that embeds the qualified daemon's server.
+
+    The matrix driver opens kasumi-server's NodeRuntime in-process, so no
+    kasumid process runs. The candidate's primary functional evidence built the
+    qualified kasumid in its production gate and the driver in its
+    network-driver gate. Require that the driver compiled every production
+    package with identical features and adds only its own package; return the
+    driver's exact executable digest.
+    """
+    functional = json_reference(root, candidate["primary"]["functional"])
+    gates = unique(functional["gates"], "name", "functional gates")
+    production, network = gates["production"], gates["network-driver"]
+    daemons = [record for record in production["executables"].values()
+               if record["target"] == "kasumid" and record["test"] is False]
+    drivers = [record for record in network["executables"].values()
+               if record["target"] == "kasumi-bench-network" and record["test"] is False]
+    require(len(daemons) == 1 and daemons[0]["sha256"] == binaries["kasumid"] and len(drivers) == 1,
+            "qualified daemon or benchmark driver is missing or ambiguous")
+    built, embedded = production["compiled_packages"], network["compiled_packages"]
+    require(isinstance(built, dict) and built and isinstance(embedded, dict) and set(built) <= set(embedded)
+            and set(embedded) - set(built) == {drivers[0]["package_id"]}
+            and all(embedded[package]["features"] == built[package]["features"] for package in built),
+            "benchmark driver does not embed the qualified daemon's compiled packages")
+    return checksum(drivers[0]["sha256"])
+
+
+def check_benchmark_processes(root, processes, candidate, binaries):
+    """Every matrix process is that driver; no other executable stands in for it."""
+    driver = embedded_runtime_driver(root, candidate, binaries)
+    require(isinstance(processes, list) and processes
+            and all(isinstance(process, dict) and isinstance(process.get("executable"), dict)
+                    and process["executable"].get("sha256") == driver for process in processes),
+            "benchmark matrix processes are not exactly the qualified embedded-runtime driver")
+
+
 def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates):
     exact(gate, {"id", "evidence"}, "acceptance gate")
     kind, target = gate["id"].split(":", 1)
@@ -1365,7 +1647,10 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
                    "permitted" if kind in TOPOLOGY_PERMITTED else "forbidden")
     # OCI identifies the daemon in its image layer. The systemd adapter
     # verifies PID 1's actual child via /proc/PID/exe, cgroup and InvocationID.
-    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke", "systemd-smoke"}:
+    # The benchmark matrix runs the daemon's server in-process in its driver.
+    if kind == "benchmark-matrix":
+        check_benchmark_processes(root, record["processes"], candidates[target], binaries[target])
+    elif kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke", "systemd-smoke"}:
         require(binaries[target]["kasumid"] in {process["executable"]["sha256"] for process in record["processes"]},
                 "domain process inventory does not contain the qualified daemon")
     scenarios = unique(record["scenarios"], "id", "domain scenarios")

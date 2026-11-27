@@ -32,7 +32,9 @@ CASES = [(mode, tenants) for tenants in acceptance.TENANTS for mode in acceptanc
 
 
 def plan_inputs(plan, mode, tenants, config, prefix):
-    owned.exact(plan, {"mode", "documents", "operations", "nodes", "tenants"} | ({"network"} if mode == "network" else set()), "installed matrix plan")
+    owned.exact(plan, {"mode", "documents", "operations", "nodes", "tenants", "load"} | ({"network"} if mode == "network" else set()), "installed matrix plan")
+    # Uncertain-batch resolution bounds are fixed here, before the driver runs.
+    acceptance.load_bounds(plan["load"])
     require(plan["mode"] == mode and type(plan["documents"]) is int and plan["documents"] == probes.DOCUMENTS
             and type(plan["operations"]) is int and plan["operations"] == probes.OPERATIONS
             and len(plan["nodes"]) == (3 if mode == "replicated" else 1)
@@ -69,19 +71,20 @@ def original_outputs(root, directory, native, expected):
 def installed_case(root, directory, name, digest, raw, plan, node_inputs, network, replay):
     mode, count = name.rsplit("-", 1)
     count = int(count)
-    expected = {"case.json", "load-receipts.jsonl"} | ({"network.json"} if network is not None else set())
+    expected = {"case.json", "load-batches.jsonl"} | ({"network.json"} if network is not None else set())
     original_outputs(root, directory, raw, expected)
     case = owned.read(directory / "case.json")
     owned.exact(case, {"schema", "executable_sha256", "plan_sha256", "mode", "attempt", "nodes", "tenants", "voters",
-                       "documents", "canonical_bytes", "receipts", "measurements", "complete"}, "native installed benchmark")
+                       "documents", "canonical_bytes", "load", "measurements", "complete"}, "native installed benchmark")
     names = sorted(plan["tenants"])
-    require(case["schema"] == "kasumi-installed-embedded-v1" and case["executable_sha256"] == digest
+    require(case["schema"] == "kasumi-installed-embedded-v2" and case["executable_sha256"] == digest
             and case["mode"] == mode and case["complete"] is True and case["tenants"] == names
             and set(case["voters"]) == set(names) and len(case["nodes"]) == len(node_inputs)
             and type(case["documents"]) is int and case["documents"] == probes.DOCUMENTS
             and type(case["canonical_bytes"]) is int and case["canonical_bytes"] == probes.DOCUMENTS * 1024,
             "native mode, tenants, corpus or driver differs")
     voters = set()
+    incarnations = {}
     for i, (facts, config) in enumerate(zip(case["nodes"], node_inputs)):
         owned.exact(facts, {"configuration_sha256", "database_id", "voter", "providers"}, "installed node facts")
         require(facts["configuration_sha256"] == plan["nodes"][i]["sha256"] and facts["database_id"] == config["database_id"]
@@ -89,6 +92,9 @@ def installed_case(root, directory, name, digest, raw, plan, node_inputs, networ
         stores = {t["tenant"]: [t["keys"]["kind"], t["custody_keys"]["kind"]] for t in config["tenants"]}
         require(sorted(stores) == names and facts["providers"] == stores
                 and all(k in ("file", "transit") for ks in stores.values() for k in ks), "fixture or substitute storage provider")
+        for tenant in config["tenants"]:
+            require(incarnations.setdefault(tenant["tenant"], tenant.get("incarnation")) == tenant.get("incarnation"),
+                    "installed tenant incarnation differs between nodes")
         if mode == "replicated":
             voter = config["replication"]["node_id"]
             require(type(voter) is int and facts["voter"] == voter and voter not in voters, "duplicate or invalid committed voter")
@@ -99,26 +105,17 @@ def installed_case(root, directory, name, digest, raw, plan, node_inputs, networ
         require(isinstance(observed, list) and all(type(v) is int for v in observed)
                 and (set(observed) == voters and len(observed) == 3 if mode == "replicated" else len(observed) == 1),
                 "effective tenant membership differs")
-    next_ordinal = {tenant: n for n, tenant in enumerate(names)}
-    revisions = dict.fromkeys(names, 0)
-    receipts = documents = canonical_bytes = 0
-    for row in acceptance.rows(root, owned.ref(root, directory / "load-receipts.jsonl")):
-        owned.exact(row, {"tenant", "first", "documents", "canonical_bytes", "revision"}, "applied corpus receipt")
-        tenant = row["tenant"]
-        length = acceptance.uint(row["documents"], "applied corpus documents", 1)
-        require(tenant in next_ordinal and type(row["first"]) is int and row["first"] == next_ordinal[tenant]
-                and length <= 256 and row["first"] + (length - 1) * count < probes.DOCUMENTS
-                and type(row["canonical_bytes"]) is int and row["canonical_bytes"] == length * 1024
-                and acceptance.uint(row["revision"], "applied revision", 1) > revisions[tenant],
-                "load receipt gap, duplicate, oversized batch or incorrect revision")
-        next_ordinal[tenant] += length * count
-        revisions[tenant] = row["revision"]
-        receipts += 1
-        documents += length
-        canonical_bytes += row["canonical_bytes"]
-    require(type(case["receipts"]) is int and receipts == case["receipts"] and documents == case["documents"]
-            and canonical_bytes == case["canonical_bytes"] and all(n >= probes.DOCUMENTS for n in next_ordinal.values()),
-            "native commits do not cover the full distinct corpus")
+    # Recompute the corpus and its recovery cost from the ordered, hash-bound
+    # batch records, then bind every receipt scope and key to this plan and run.
+    records = owned.ref(root, directory / "load-batches.jsonl")
+    summary, order, scopes, prefix = acceptance.check_load(root, records, plan["load"], count, probes.DOCUMENTS)
+    require(order == names and prefix == case["attempt"]
+            and all(scopes[t] == {"tenant": t, "incarnation": incarnations[t], "principal": plan["tenants"][t]["application"]}
+                    for t in names),
+            "corpus load tenants, receipt scopes or idempotency keys differ from this plan and attempt")
+    require(acceptance.strict_equal(case["load"], summary) and summary["documents"] == case["documents"]
+            and summary["canonical_bytes"] == case["canonical_bytes"],
+            "native corpus load summary differs from its ordered records")
     if network is not None:
         require(case["measurements"] == [], "network case substituted embedded workload")
         workloads = probes.network_samples(root, owned.read(directory / "network.json"), network, digest, count, replay)
@@ -129,7 +126,8 @@ def installed_case(root, directory, name, digest, raw, plan, node_inputs, networ
         require(set(by_name) == expected_names, "missing installed benchmark workload")
         workloads = [probes.project(root, target, by_name[target], probes.OPERATIONS,
                                     root / (name + "-" + target + ".jsonl"), replay) for target in sorted(by_name)]
-    return {"id": name, "mode": mode, "tenants": count, "documents": documents, "provider": "production", "workloads": workloads}
+    return {"id": name, "mode": mode, "tenants": count, "documents": summary["documents"], "provider": "production",
+            "load": {**summary, "records": records}, "workloads": workloads}
 
 
 def matrix(custody, original_output, plans_path, binary, digest, config, command, replay=False):
@@ -181,6 +179,8 @@ def gate_details(root, report_path):
     for c in cases:
         for m in c["workloads"]:
             m["samples"] = owned.ref(root, owned.check_ref(custody, m["samples"]))
+        if "load" in c:
+            c["load"]["records"] = owned.ref(root, owned.check_ref(custody, c["load"]["records"]))
     return {"report": owned.ref(root, report_path), "cases": cases}
 
 

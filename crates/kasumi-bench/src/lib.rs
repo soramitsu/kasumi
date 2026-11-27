@@ -1,3 +1,4 @@
+pub mod corpus_load;
 #[cfg(any(feature = "installed-embedded", feature = "embedded-fixture"))]
 pub mod embedded;
 pub mod raw;

@@ -101,6 +101,15 @@ is saved before reopening. An incomplete load, failed shutdown or failed recover
 retains earlier progress and measurements. Any failure produces a nonzero exit;
 no success is inferred for unattempted work.
 
+The installed matrix driver (`kasumi-bench-network --installed-matrix`) differs
+only in its corpus load. It follows the client contract for an uncertain write.
+It looks up the retained receipt, then resends the identical batch under the
+same idempotency key, principal and incarnation within bounds its plan declares.
+`load-batches.jsonl` records every send, lookup and backoff, so the report keeps
+first-attempt deadline misses, resends and end-to-end batch latency. Its timed
+workloads keep the first-attempt rule above. See
+[release acceptance](../docs/release-acceptance-manifest.md#corpus-load-and-uncertain-batches).
+
 Latencies are sequential closed-loop samples measured with a monotonic clock.
 Success percentiles exclude failed attempts, whose durations are reported
 separately. Success throughput divides completed successes by the whole elapsed

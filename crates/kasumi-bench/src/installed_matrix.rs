@@ -2,8 +2,10 @@
 use anyhow::{Context, Result, ensure};
 use kasumi_bench::{
     Measurement,
+    corpus_load::{
+        self, BATCH_DOCUMENTS, LoadBatch, LoadBounds, LoadSummary, LoadTally, LoadTarget,
+    },
     embedded::{self, Dimensions, EmbeddedDatabases},
-    raw::document_body,
 };
 use kasumi_engine::Database;
 use kasumi_server::{
@@ -11,12 +13,14 @@ use kasumi_server::{
     runtime::{DeploymentMode, KeyProviderSettings, NodeRuntime, RuntimeConfig},
 };
 use kasumi_types::{
-    Action, Mutation, MutationBatch, Operation, Precondition, RequestAuthorization, RequestContext,
-    TextMode, TextSearch,
+    Action, CanonicalJsonValue, ErrorCode, MutationBatch, MutationReceipt, MutationReceiptScope,
+    Operation, RequestAuthorization, RequestContext, TextMode, TextSearch, WriteReceipt,
+    staged_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Write},
@@ -36,6 +40,8 @@ struct Plan {
     nodes: Vec<NodeFile>,
     network: Option<NodeFile>,
     tenants: BTreeMap<String, Principals>,
+    /// Uncertain-batch resolution bounds, declared before the run.
+    load: LoadBounds,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,7 +75,8 @@ struct Report {
     voters: BTreeMap<String, Vec<u64>>,
     documents: usize,
     canonical_bytes: u64,
-    receipts: usize,
+    /// Recomputed by the release verifier from `load-batches.jsonl`.
+    load: LoadSummary,
     measurements: Vec<Measurement>,
     complete: bool,
 }
@@ -161,6 +168,54 @@ impl EmbeddedDatabases for Cluster<'_> {
         }
     }
 }
+
+/// One tenant's corpus load. The first send uses the leader selected before the
+/// batch's timer started; every later step selects the current serving leader.
+struct TenantTarget<'a, 'p> {
+    cluster: &'a Cluster<'p>,
+    index: usize,
+    selected: RefCell<Option<Arc<Database>>>,
+}
+impl TenantTarget<'_, '_> {
+    async fn database(&self) -> kasumi_types::Result<Arc<Database>> {
+        let selected = self.selected.borrow_mut().take();
+        match selected {
+            Some(database) => Ok(database),
+            None => self.cluster.leader(self.index).await.map_err(|error| {
+                kasumi_types::Error::new(
+                    ErrorCode::Unavailable,
+                    format!("no serving leader: {error:#}"),
+                )
+            }),
+        }
+    }
+}
+impl LoadTarget for TenantTarget<'_, '_> {
+    async fn send(&self, batch: MutationBatch) -> kasumi_types::Result<WriteReceipt> {
+        let database = self.database().await?;
+        database
+            .mutate(self.cluster.context(self.index), batch)
+            .await
+    }
+    async fn lookup(&self, key: &str) -> kasumi_types::Result<Option<MutationReceipt>> {
+        let database = self.database().await?;
+        database
+            .operation_receipt(&self.cluster.context(self.index), key)
+            .await
+    }
+    async fn observe(&self, id: &str) -> kasumi_types::Result<Option<(u64, String)>> {
+        let database = self.database().await?;
+        let Some(document) = database
+            .get(&self.cluster.context(self.index), "docs", id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let (body_sha256, _) = staged_digest(&CanonicalJsonValue(&document.body))?;
+        Ok(Some((document.version, body_sha256)))
+    }
+}
+
 fn checkpoint(output: &Path, report: &Report) -> Result<()> {
     let tmp = output.join("progress.tmp");
     let mut file = File::create(&tmp)?;
@@ -261,6 +316,7 @@ async fn run_case(
     tasks: &mut JoinSet<Result<()>>,
 ) -> Result<()> {
     let replicated = plan.mode == "replicated";
+    plan.load.validate()?;
     ensure!(
         matches!(
             plan.mode.as_str(),
@@ -332,6 +388,23 @@ async fn run_case(
             .is_none_or(|r| r.initial_voters == cluster.voters)),
         "enrolled voters disagree"
     );
+    // Receipts are scoped to the installed incarnation; every node must agree.
+    let mut incarnations = BTreeMap::new();
+    for cfg in &configured {
+        for tenant in &cfg.tenants {
+            let incarnation = tenant
+                .incarnation
+                .clone()
+                .context("installed tenant has no incarnation")?;
+            ensure!(
+                *incarnations
+                    .entry(tenant.tenant.clone())
+                    .or_insert_with(|| incarnation.clone())
+                    == incarnation,
+                "installed tenant incarnation differs between nodes"
+            );
+        }
+    }
     checkpoint(output, report)?;
     let wire = plan
         .network
@@ -344,7 +417,8 @@ async fn run_case(
         tasks.spawn(runtime.serve(stop.subscribe()));
     }
     // Enrollment can return while the initial serving route is still being published.
-    // Only wait for startup here. Every measured operation retains its first outcome.
+    // Only wait for startup here. Every timed workload operation retains its first
+    // outcome; only the corpus load resolves an uncertain batch (corpus_load).
     let startup = Instant::now();
     for (i, name) in names.iter().enumerate() {
         let context = cluster.context(i);
@@ -362,7 +436,11 @@ async fn run_case(
             }
         }
     }
-    let mut receipts = File::create_new(output.join("load-receipts.jsonl"))?;
+    let mut records = File::create_new(output.join("load-batches.jsonl"))?;
+    let mut tally = LoadTally::default();
+    // Load wall time runs from here to the last batch's settlement, including
+    // leader selection and collection creation between tenants.
+    let load_started = tokio::time::Instant::now();
     for (i, name) in names.iter().enumerate() {
         let db = cluster
             .leader(i)
@@ -388,77 +466,84 @@ async fn run_case(
             name.clone(),
             metrics.membership_config.membership().voter_ids().collect(),
         );
+        // Retained before any dispatch: a disputed batch is resolved under
+        // exactly this tenant, incarnation and principal.
+        let scope = MutationReceiptScope {
+            tenant: name.clone(),
+            incarnation: incarnations[name].clone(),
+            principal: plan.tenants[name].application.clone(),
+        };
+        ensure!(
+            db.engine().generation()?.incarnation() == scope.incarnation,
+            "serving tenant incarnation differs from its installed identity"
+        );
         let mut ordinals = (i..plan.documents).step_by(names.len());
         loop {
-            let mut keys = Vec::with_capacity(256);
-            let mut operations = Vec::with_capacity(256);
-            let mut bytes = 0;
-            for ordinal in ordinals.by_ref().take(256) {
-                let body = document_body(ordinal, 0, names.len());
-                bytes += serde_json::to_vec(&body)?.len() as u64;
-                keys.push(ordinal);
-                operations.push(Mutation::Put {
-                    collection: "docs".into(),
-                    id: ordinal.to_string(),
-                    body,
-                    expected: Precondition::Absent,
-                });
-            }
-            if keys.is_empty() {
+            let chunk: Vec<usize> = ordinals.by_ref().take(BATCH_DOCUMENTS).collect();
+            if chunk.is_empty() {
                 break;
             }
-            let key = format!("{}-load-{}", cluster.attempt, report.receipts);
-            let submitted = db
-                .mutate(
-                    cluster.context(i),
-                    MutationBatch {
-                        read_set: vec![],
-                        idempotency_key: key.clone(),
-                        operations,
-                    },
-                )
-                .await;
-            let receipt = match submitted {
-                Ok(receipt) => receipt,
-                Err(original) => {
-                    let failure = anyhow::Error::new(original).context(format!(
-                        "installed load failed for tenant {name}, first ordinal {}, {} documents, idempotency key {key}",
-                        keys[0], keys.len(),
-                    ));
-                    // Retain only acknowledged batches. The attempted key and the
-                    // original cause identify the write a cold client can resolve.
-                    if let Err(error) = receipts.sync_all() {
-                        return Err(failure.context(format!(
-                            "syncing acknowledged load receipts failed: {error}"
-                        )));
-                    }
-                    return Err(failure);
-                }
-            };
-            ensure!(
-                receipt.revision > 0
-                    && receipt.versions.len() == keys.len()
-                    && keys
-                        .iter()
-                        .all(|k| receipt.versions.get(&format!("/docs/{k}"))
-                            == Some(&receipt.revision)),
-                "load receipt differs from submitted batch"
-            );
-            serde_json::to_writer(
-                &mut receipts,
-                &serde_json::json!({"tenant":name,"first":keys[0],"documents":keys.len(),"canonical_bytes":bytes,"revision":receipt.revision}),
+            let sequence = tally.batches();
+            let batch = LoadBatch::new(
+                sequence,
+                &chunk,
+                names.len(),
+                format!("{}-load-{sequence}", cluster.attempt),
+                scope.clone(),
             )?;
-            receipts.write_all(b"\n")?;
-            report.documents += keys.len();
-            report.canonical_bytes += bytes;
-            report.receipts += 1;
+            let target = TenantTarget {
+                cluster: &cluster,
+                index: i,
+                selected: RefCell::new(Some(
+                    cluster
+                        .leader(i)
+                        .await
+                        .with_context(|| format!("selecting the leader for {name}"))?,
+                )),
+            };
+            let record = corpus_load::load_batch(&target, &batch, &plan.load, load_started).await;
+            // One write per row, not one per serializer token, inside the load wall time.
+            let mut row = serde_json::to_vec(&record)?;
+            row.push(b'\n');
+            records.write_all(&row)?;
+            tally.add(&record);
+            let failure = match &record.failure {
+                Some(failure) => Some(anyhow::anyhow!(
+                    "installed load failed for tenant {name}, first ordinal {}, {} documents, idempotency key {}, request digest {}: {failure}; resolve it with the same principal, idempotency key and identical batch",
+                    batch.first,
+                    batch.documents(),
+                    batch.batch.idempotency_key,
+                    batch.digest,
+                )),
+                None if tally.affected() > plan.load.maximum_affected_batches => {
+                    Some(anyhow::anyhow!(
+                        "{} uncertain first attempts exceed the declared bound of {}",
+                        tally.affected(),
+                        plan.load.maximum_affected_batches,
+                    ))
+                }
+                None => None,
+            };
+            if let Some(failure) = failure {
+                // Keep every recorded batch, including this one, for a cold client.
+                report.load = tally.summary(plan.load);
+                if let Err(error) = records.sync_all() {
+                    return Err(failure.context(format!("syncing load records failed: {error}")));
+                }
+                return Err(failure);
+            }
+            report.documents += batch.documents();
+            report.canonical_bytes += batch.canonical_bytes;
         }
-        receipts.sync_all()?;
+        records.sync_all()?;
+        report.load = tally.summary(plan.load);
         checkpoint(output, report)?;
     }
     ensure!(
         report.documents == plan.documents
-            && report.canonical_bytes == plan.documents as u64 * 1024,
+            && report.canonical_bytes == plan.documents as u64 * 1024
+            && report.load.documents == plan.documents as u64
+            && report.load.unresolved == 0,
         "installed corpus differs"
     );
     if let Some(wire) = wire {
@@ -524,7 +609,7 @@ pub(super) async fn run(plan_file: &Path, output: &Path) -> Result<()> {
     let plan: Plan = serde_json::from_slice(&bytes)?;
     std::fs::create_dir(output)?;
     let mut report = Report {
-        schema: "kasumi-installed-embedded-v1",
+        schema: "kasumi-installed-embedded-v2",
         executable_sha256: hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),
         plan_sha256: hex::encode(Sha256::digest(&bytes)),
         mode: plan.mode.clone(),
@@ -534,7 +619,7 @@ pub(super) async fn run(plan_file: &Path, output: &Path) -> Result<()> {
         voters: BTreeMap::new(),
         documents: 0,
         canonical_bytes: 0,
-        receipts: 0,
+        load: LoadTally::default().summary(plan.load),
         measurements: vec![],
         complete: false,
     };
@@ -563,11 +648,11 @@ pub(super) async fn run(plan_file: &Path, output: &Path) -> Result<()> {
     report.complete = true;
     checkpoint(output, &report)?;
     let case = output.join("case.json");
-    let loads = output.join("load-receipts.jsonl");
+    let loads = output.join("load-batches.jsonl");
     let network = output.join("network.json");
     let mut files = vec![
         ("case.json", case.as_path()),
-        ("load-receipts.jsonl", loads.as_path()),
+        ("load-batches.jsonl", loads.as_path()),
     ];
     if plan.mode == "network" {
         files.push(("network.json", network.as_path()));

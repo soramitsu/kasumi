@@ -17,7 +17,23 @@ import unittest
 from unittest.mock import patch
 
 import attempt_index
+from test_benchmark_matrix_owned import BOUNDS, CONFIRMED, DEADLINE, FOUND, PAUSE, load_records, step
 import verify_release_acceptance as acceptance
+
+
+def end(steps):
+    return steps[-1]["offset_ns"] + steps[-1]["elapsed_ns"]
+
+
+def resends(first, pauses):
+    """An uncertain first attempt, then one absent lookup, backoff and uncertain
+    resend per pause (milliseconds), settled by a found receipt."""
+    steps, at = [first], end([first])
+    for pause in pauses:
+        steps += [step("lookup", at, 20, "absent"), step("backoff", at + 20, pause * 1_000_000, "slept"),
+                  step("send", at + 20 + pause * 1_000_000, 30, "uncertain", "UNAVAILABLE", "leader lost")]
+        at = end(steps)
+    return steps + [step("lookup", at, 20, "found")]
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -332,13 +348,17 @@ class AcceptanceTests(unittest.TestCase):
             for tenants in acceptance.TENANTS:
                 cases.append({"id": f"{mode}-{tenants}", "mode": mode, "tenants": tenants, "documents": 1_000_000,
                               "provider": "none" if mode == "raw" else "production",
-                              "workloads": [{"name": name} for name in sorted(expected)]})
-        # This test isolates roster validation. Raw sample validation is exercised
-        # separately with retained JSONL bytes, including truncation/duplicates.
-        with patch.object(acceptance, "check_samples") as samples:
+                              "workloads": [{"name": name} for name in sorted(expected)]}
+                             | ({} if mode == "raw" else {"load": {}}))
+        # This test isolates roster validation. Raw sample and corpus load
+        # validation are exercised separately with retained JSONL bytes.
+        with patch.object(acceptance, "check_samples") as samples, \
+                patch.object(acceptance, "check_load_summary") as loads:
             acceptance.check_benchmarks(self.root, {"cases": cases})
             self.assertEqual(samples.call_count, 99)
-            for change in ("missing-case", "duplicate-case", "short", "fixture", "missing-workload", "wrong-tenants"):
+            self.assertEqual(loads.call_count, 12)
+            for change in ("missing-case", "duplicate-case", "short", "fixture", "missing-workload", "wrong-tenants",
+                           "missing-load", "raw-load"):
                 value = copy.deepcopy(cases)
                 if change == "missing-case":
                     value.pop()
@@ -350,10 +370,210 @@ class AcceptanceTests(unittest.TestCase):
                     value[-1]["provider"] = "fixture"
                 elif change == "missing-workload":
                     value[-1]["workloads"].pop()
+                elif change == "missing-load":
+                    del value[-1]["load"]
+                elif change == "raw-load":
+                    value[0]["load"] = {}
                 else:
                     value[-1]["tenants"] = 100
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     acceptance.check_benchmarks(self.root, {"cases": value})
+
+    def corpus_load(self, records, bounds=BOUNDS, tenants=2, documents=5):
+        ref = self.lines("load-batches.jsonl", records)
+        return acceptance.check_load(self.root, ref, bounds, tenants, documents)
+
+    def test_corpus_load_recomputes_coverage_resolution_and_recovery_cost(self):
+        clean = load_records(["a", "b"], 5, "run")
+        summary, order, scopes, prefix = self.corpus_load(clean)
+        self.assertEqual((order, prefix), (["a", "b"], "run"))
+        self.assertEqual(scopes["b"], {"tenant": "b", "incarnation": "incarnation-b", "principal": "bench-app"})
+        self.assertEqual({k: summary[k] for k in ("batches", "documents", "canonical_bytes", "affected_batches",
+                                                  "first_attempt_deadline_misses", "resends", "lookups", "unresolved")},
+                         {"batches": 2, "documents": 5, "canonical_bytes": 5120, "affected_batches": 0,
+                          "first_attempt_deadline_misses": 0, "resends": 0, "lookups": 0, "unresolved": 0})
+        self.assertEqual(summary["first_attempt_deadline_miss_rate"], 0.0)
+        # Several batches per tenant, one found before resend and one confirmed after.
+        with patch.object(acceptance, "LOAD_BATCH_DOCUMENTS", 2):
+            records = load_records(["a", "b"], 9, "run", {1: FOUND, 3: CONFIRMED}, size=2)
+            summary = self.corpus_load(records, {**BOUNDS, "maximum_affected_batches": 2}, documents=9)[0]
+            self.assertEqual({k: summary[k] for k in ("batches", "documents", "affected_batches",
+                                                      "receipt_found_before_resend", "commit_confirmed_after_resend",
+                                                      "first_attempt_deadline_misses", "resends", "lookups")},
+                             {"batches": 5, "documents": 9, "affected_batches": 2, "receipt_found_before_resend": 1,
+                              "commit_confirmed_after_resend": 1, "first_attempt_deadline_misses": 2,
+                              "resends": 1, "lookups": 3})
+            self.assertEqual(summary["first_attempt_deadline_miss_rate"], 2 / 5)
+            self.assertEqual(summary["first_attempt_ns"], {"p50": 54, "p99": 10_000, "max": 10_000})
+            self.assertEqual(summary["end_to_end_ns"], {"p50": 54, "p99": 10_070 + PAUSE, "max": 10_070 + PAUSE})
+            last = records[-1]
+            self.assertEqual(summary["wall_ns"], last["started_ns"] + last["elapsed_ns"] + last["effects_elapsed_ns"])
+            self.assertEqual(summary["documents_per_second"], 9 * 1e9 / summary["wall_ns"])
+            with self.assertRaisesRegex(ValueError, "exceed the declared bound"):
+                self.corpus_load(records, documents=9)
+
+    def test_corpus_load_rejects_incomplete_unsettled_or_overclaimed_batches(self):
+        base = load_records(["a", "b"], 5, "run", {1: CONFIRMED})
+        self.corpus_load(base)
+
+        def label(rows):
+            rows[1]["resolution"] = acceptance.LOAD_FOUND_BEFORE_RESEND
+
+        def bare_counter(rows):
+            rows[1]["effects"] = [{"duplicate_commits": 0}] * 2
+
+        def other_version(rows):
+            rows[1]["effects"][0]["version"] += 1
+
+        def other_digest(rows):
+            rows[1]["receipt"]["request_digest"] = rows[1]["request_digest"] = "0" * 64
+
+        def other_scope(rows):
+            rows[1]["receipt"]["scope"] = {**rows[1]["scope"], "incarnation": "restored"}
+
+        def partial_versions(rows):
+            rows[1]["receipt"]["versions"].pop("/docs/1")
+
+        def unresolved(rows):
+            rows[1].update(resolution="unresolved", failure="outcome unresolved after 4 sends")
+
+        def resend_without_lookup(rows):
+            rows[1]["steps"] = [rows[1]["steps"][0], step("backoff", 10_000, PAUSE, "slept"),
+                                step("send", 10_000 + PAUSE, 30, "committed"), step("lookup", 10_030 + PAUSE, 40, "found")]
+            rows[1]["elapsed_ns"] = 10_070 + PAUSE
+
+        def settled_by_refusal(rows):
+            # A refused resend is not a terminal success; only a retained receipt is.
+            rows[1]["steps"][3:] = [step("send", 10_020 + PAUSE, 30, "refused", "CONFLICT", "exists")]
+            rows[1]["elapsed_ns"] = 10_050 + PAUSE
+
+        def too_many_sends(rows):
+            # Four resends honour the declared backoff but exceed four sends.
+            rows[1]["steps"] = resends(rows[1]["steps"][0], [100, 200, 400, 800])
+            rows[1]["elapsed_ns"] = end(rows[1]["steps"])
+
+        def short_backoff(rows):
+            rows[1]["steps"][2]["elapsed_ns"] = PAUSE - 1
+
+        def over_budget(rows):
+            rows[1]["steps"][-1]["elapsed_ns"] = 60_000 * 1_000_000
+            rows[1]["elapsed_ns"] = end(rows[1]["steps"])
+
+        def untyped_uncertain(rows):
+            rows[1]["steps"][0]["code"] = None
+
+        def overlap(rows):
+            rows[1]["started_ns"] = rows[0]["started_ns"]
+
+        changes = {
+            "missing record": lambda rows: rows.pop(),
+            "duplicate record": lambda rows: rows.append(dict(rows[-1])),
+            "reordered tenants": lambda rows: rows.reverse(),
+            "label claims no resend": label,
+            "bare duplicate counter": bare_counter,
+            "effect at another version": other_version,
+            "receipt for other input": other_digest,
+            "receipt in another scope": other_scope,
+            "partial target-version map": partial_versions,
+            "unresolved batch": unresolved,
+            "resend before lookup": resend_without_lookup,
+            "refusal settles": settled_by_refusal,
+            "attempt limit": too_many_sends,
+            "backoff shorter than declared": short_backoff,
+            "budget": over_budget,
+            "untyped uncertain outcome": untyped_uncertain,
+            "overlapping batches": overlap,
+        }
+        for name, change in changes.items():
+            rows = copy.deepcopy(base)
+            change(rows)
+            with self.subTest(change=name), self.assertRaises(ValueError):
+                self.corpus_load(rows)
+        for bounds in ({**BOUNDS, "attempts": 9}, {**BOUNDS, "maximum_affected_batches": 41},
+                       {**BOUNDS, "budget_milliseconds": 900}, {**BOUNDS, "maximum_backoff_milliseconds": 50},
+                       {k: v for k, v in BOUNDS.items() if k != "attempts"}, {**BOUNDS, "attempts": True}):
+            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
+                self.corpus_load(base, bounds)
+        load = {**self.corpus_load(base)[0], "records": self.lines("load-batches.jsonl", base)}
+        self.assertEqual(acceptance.check_load_summary(self.root, load, 2, 5)["affected_batches"], 1)
+        for field, value in (("resends", 0), ("first_attempt_deadline_misses", False), ("unresolved", None)):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "summary differs"):
+                acceptance.check_load_summary(self.root, {**load, field: value}, 2, 5)
+
+    def test_corpus_load_enforces_declared_attempts_backoff_and_budget(self):
+        base = load_records(["a", "b"], 5, "run", {1: CONFIRMED})
+
+        def resent(pauses, bounds):
+            rows = copy.deepcopy(base)
+            rows[1]["steps"] = resends(rows[1]["steps"][0], pauses)
+            rows[1]["elapsed_ns"] = end(rows[1]["steps"])
+            return rows, bounds
+
+        # Backoff doubles from the declared initial delay and is capped at the maximum.
+        rows, bounds = resent([100, 200, 400, 800, 1_000], {**BOUNDS, "attempts": 6})
+        summary = self.corpus_load(rows, bounds)[0]
+        self.assertEqual((summary["resends"], summary["lookups"], summary["commit_confirmed_after_resend"]), (5, 6, 1))
+        pauses = [n for n, s in enumerate(rows[1]["steps"]) if s["action"] == "backoff"]
+        for index, short in ((pauses[0], PAUSE - 1), (pauses[3], 800_000_000 - 1), (pauses[4], 1_000_000_000 - 1)):
+            changed = copy.deepcopy(rows)
+            changed[1]["steps"][index]["elapsed_ns"] = short
+            with self.subTest(backoff=index), self.assertRaisesRegex(ValueError, "shorter than its declared delay"):
+                self.corpus_load(changed, bounds)
+        self.corpus_load(*resent([100, 200, 400], BOUNDS))
+        with self.assertRaisesRegex(ValueError, "declared attempt limit"):
+            self.corpus_load(*resent([100, 200, 400, 800], BOUNDS))
+        rows = copy.deepcopy(base)
+        rows[1]["steps"][-1]["elapsed_ns"] = BOUNDS["budget_milliseconds"] * 1_000_000
+        rows[1]["elapsed_ns"] = end(rows[1]["steps"])
+        with self.assertRaisesRegex(ValueError, "declared budget"):
+            self.corpus_load(rows)
+
+    def test_corpus_batch_digest_matches_the_driver(self):
+        # crates/kasumi-bench/src/corpus_load_tests.rs pins the same vectors.
+        self.assertEqual(acceptance.corpus_batch_digest("unit-load-0", [0, 3], 3),
+                         "dd19f062d74cb61fa8d6b56be2619c0c78325842c317d6c25abea052618997da")
+        self.assertEqual([hashlib.sha256(acceptance.canonical_json(acceptance.corpus_body(n, 3))).hexdigest()
+                          for n in (0, 3)],
+                         ["224169d68453ee4cc5a0461aa6d44ee016a711e5bfab723f74785e25aaa9a560",
+                          "25af119de508f39cf6e36570ed791d713f2856c46a3e308b1d6f41a08ab36f8b"])
+        self.assertEqual(len(acceptance.canonical_json(acceptance.corpus_body(999_999, 1))), 1024)
+
+    def test_benchmark_processes_bind_the_driver_embedding_the_qualified_daemon(self):
+        daemon, driver = "d" * 64, "e" * 64
+        bench = "path+file:///build/source/crates/kasumi-bench#0.1.0"
+        packages = {"path+file:///build/source/crates/kasumi-server#0.1.0": {"features": [], "targets": []},
+                    "registry+https://github.com/rust-lang/crates.io-index#tokio@1.48.0": {
+                        "features": ["full"], "targets": []}}
+
+        def candidate(change=None):
+            production = {"name": "production", "compiled_packages": copy.deepcopy(packages), "executables": {
+                "release/kasumid": {"target": "kasumid", "test": False, "sha256": daemon, "package_id": "server"}}}
+            network = {"name": "network-driver",
+                       "compiled_packages": {**copy.deepcopy(packages), bench: {"features": ["installed-embedded"],
+                                                                                "targets": []}},
+                       "executables": {"release/kasumi-bench-network": {
+                           "target": "kasumi-bench-network", "test": False, "sha256": driver, "package_id": bench}}}
+            if change:
+                change(production, network)
+            return {"primary": {"functional": self.value("functional/evidence.json",
+                                                         {"gates": [production, network]})}}
+
+        processes = [{"id": "local-1", "executable": {"sha256": driver}},
+                     {"id": "raw-1", "executable": {"sha256": driver}}]
+        acceptance.check_benchmark_processes(self.root, processes, candidate(), {"kasumid": daemon})
+        refusals = {
+            "kasumid process": (processes + [{"id": "daemon", "executable": {"sha256": daemon}}], None),
+            "no processes": ([], None),
+            "other daemon": (processes, lambda p, n: p["executables"]["release/kasumid"].update(sha256="f" * 64)),
+            "feature differs": (processes, lambda p, n: n["compiled_packages"][next(iter(packages))].update(
+                features=["test-utils"])),
+            "extra package": (processes, lambda p, n: n["compiled_packages"].update({"fixture": {"features": []}})),
+            "missing package": (processes, lambda p, n: n["compiled_packages"].pop(next(iter(packages)))),
+            "test driver": (processes, lambda p, n: n["executables"]["release/kasumi-bench-network"].update(test=True)),
+        }
+        for name, (inventory, change) in refusals.items():
+            with self.subTest(change=name), self.assertRaises(ValueError):
+                acceptance.check_benchmark_processes(self.root, inventory, candidate(change), {"kasumid": daemon})
 
     def test_capacity_replays_original_measurement_before_accepting_reported_counts(self):
         for change in ("extra-event", "short", "different-output", "different-seed", "missing-digest"):
