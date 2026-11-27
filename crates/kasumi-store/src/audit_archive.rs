@@ -752,6 +752,12 @@ impl ArchiveDirectory {
             .filter_map(std::sync::Weak::upgrade)
             .find(|shared| Arc::ptr_eq(&shared.disk, disk) && shared.binding == binding);
         if let Some(shared) = shared {
+            // A new holder needs the disk open, as a fresh open would: an
+            // existing owner on a paused disk admits no further archive, so it
+            // cannot prolong that disk's drain.
+            if disk.snapshot().phase != crate::NodeDiskPhase::Open {
+                return Err(std::io::Error::from(std::io::ErrorKind::Other).into());
+            }
             shared.directory.verified_identity()?;
             return Ok(Self(shared));
         }
@@ -2103,6 +2109,15 @@ mod tests {
         assert_eq!(open(), alone - 1);
         assert!(!root.exists());
         assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+        // Once the disk pauses for its drain, a live shared owner admits no
+        // new archive, as a fresh open would refuse it.
+        let held = FilesystemAuditArchive::open(&root, disk.clone()).unwrap();
+        assert!(disk.pause().is_err(), "the held owner is still live");
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Paused);
+        assert!(FilesystemAuditArchive::open(&root, disk.clone()).is_err());
+        assert_eq!(open(), alone);
+        drop(held);
+        assert_eq!(open(), alone - 1);
     }
 
     #[test]

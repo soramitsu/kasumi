@@ -1623,11 +1623,17 @@ impl NodeRuntime {
             )).map_err(|observed| observed.foreign_error())?
         };
         pending.owned_nodes.push(node.clone());
-        if let Some(policy) = maintenance { node.configure_storage_maintenance(policy)?; }
         // Before any client can hold a selection: snapshot leases and cursors
         // never take the pins writes, applies, the audit, Control and
-        // activation need.
-        node.reserve_snapshot_pins(crate::standalone_capacity::configured_pin_reserve(&config))?;
+        // activation need. Set before the maintenance policy, whose status
+        // publication then reports it.
+        let reserve = crate::standalone_capacity::configured_pin_reserve(&config);
+        let ruled = crate::standalone_capacity::ruled_pin_reserve(&config);
+        if ruled > reserve {
+            crate::logging::snapshot_pin_reserve_capped(config.tenants.len(), ruled, reserve);
+        }
+        node.reserve_snapshot_pins(reserve)?;
+        if let Some(policy) = maintenance { node.configure_storage_maintenance(policy)?; }
         node.prepare_cache_warming().await?;
         let security_store = TenantStore::open_existing(
             node.clone(),

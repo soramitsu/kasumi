@@ -298,12 +298,16 @@ impl ReaderRequest {
         let owner = self.database.owner();
         if owner.stopped.load(Ordering::Acquire) {
             state.phase = NodeReadPhase::Cancelled;
+            // An unbegun read returns its prepaid pin slot and workspace now:
+            // a cancelled report is never finished.
+            drop(state.prepared.take());
             return;
         }
         state.phase = NodeReadPhase::Begin;
         state.begin = Observation::Entered;
         let opening = owner.state.lock();
         let Some(database) = opening.engine.database() else {
+            drop(state.prepared.take());
             state.begin = Observation::Returned(Err(ReadBeginFailure::Local(
                 kasumi_kv::StorageError::DatabaseClosed.into(),
             )));
@@ -715,7 +719,11 @@ impl RegisteredNodeOpening {
         if owner.stopped.load(Ordering::Acquire)
             || owner.state.lock().phase != NodeOpeningPhase::Open
         {
-            registration.owner().state.lock().phase = NodeReadPhase::Cancelled;
+            let mut state = registration.owner().state.lock();
+            state.phase = NodeReadPhase::Cancelled;
+            // A read cancelled before it was queued returns its prepaid pin
+            // slot and snapshot workspace now, as the other cancellations do.
+            drop(state.prepared.take());
         }
         let lease = ReadFacadeLease {
             registration: Some(registration.clone()),

@@ -1146,7 +1146,7 @@ impl Core {
     pub(crate) fn set_snapshot_pin_reserve(&self, reserve: usize) -> Result<(), CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            state.disk()?.pins().set_reserve(reserve)
+            state.disk()?.set_snapshot_pin_reserve(reserve)
         })
     }
     pub(crate) fn check_read_owner(&self) -> Result<(), CoreError> {

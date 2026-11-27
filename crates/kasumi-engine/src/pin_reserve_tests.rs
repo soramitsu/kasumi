@@ -198,6 +198,40 @@ async fn client_holders_never_take_the_pins_writes_audit_and_activation_need() {
             write(database, tenant, id, 0).await;
         }
     }
+    // A strict collection on tenant-b: each read records an authorized
+    // release in the tenant's audit before its page is returned.
+    tenants[1]
+        .administer(
+            context(names[1], "strict-schema"),
+            Operation::CreateCollection(CollectionDefinition {
+                retention_class: CollectionRetentionClass::Operational,
+                write_mode: CollectionWriteMode::Mutable,
+                name: "strict".into(),
+                schema: json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: true,
+            }),
+        )
+        .await
+        .unwrap();
+    for id in ["s1", "s2"] {
+        tenants[1]
+            .mutate(
+                context(names[1], &format!("strict-{id}")),
+                MutationBatch {
+                    read_set: Vec::new(),
+                    idempotency_key: format!("strict-{id}"),
+                    operations: vec![Mutation::Put {
+                        collection: "strict".into(),
+                        id: id.into(),
+                        body: json!({"id": id}),
+                        expected: Precondition::Any,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+    }
     // A cursor keeps its query's rows, and so their selection.
     let query: QueryRequest =
         serde_json::from_value(json!({"collection": "docs", "limit": 1})).unwrap();
@@ -245,9 +279,30 @@ async fn client_holders_never_take_the_pins_writes_audit_and_activation_need() {
     let refused = tenants[1]
         .query(&context(names[1], "query"), query.clone())
         .await
-        .err()
-        .expect("cursor refused at the ordinary limit");
+        .expect_err("cursor refused at the ordinary limit");
     assert_eq!(refused.code, ErrorCode::ResourceExhausted, "{refused:?}");
+    // A strict read that would leave a cursor is refused before its release
+    // audit: no release is recorded, so the tenant's revision stays put.
+    let all: QueryRequest =
+        serde_json::from_value(json!({"collection": "docs", "limit": 100})).unwrap();
+    let before = tenants[1]
+        .query(&context(names[1], "revision-before"), all.clone())
+        .await
+        .unwrap();
+    assert!(before.cursor.is_none());
+    let strict: QueryRequest =
+        serde_json::from_value(json!({"collection": "strict", "limit": 1})).unwrap();
+    let refused = tenants[1]
+        .query(&context(names[1], "strict"), strict)
+        .await
+        .expect_err("a strict cursor refused at the ordinary limit");
+    assert_eq!(refused.code, ErrorCode::ResourceExhausted, "{refused:?}");
+    let after = tenants[1]
+        .query(&context(names[1], "revision-after"), all)
+        .await
+        .unwrap();
+    assert_eq!(after.revision, before.revision);
+    drop((before, after));
     // Every holder stays alive while critical work proceeds.
     for round in 1..=4 {
         for (database, tenant) in tenants.iter().zip(names) {

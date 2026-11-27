@@ -216,9 +216,16 @@ writes, applies and their successor captures, the service audit, Control and
 activation or reopen. Ordinary holders, which a client can keep across
 publications, take ordinary credits instead: each snapshot lease and each
 cursor takes two (its selection and the older one its located rows may still
-read through) before it exists. Ordinary credits stop at the registry less
-the reserve, so the next lease or cursor is refused with `ResourceExhausted`
-and no effect, while critical work still finds the reserved pins. The reserve
+read through) before it exists, and keeps them until the last page or
+continuation still reading its selection finishes, even after the lease or
+cursor closes or expires. A strict read that would leave a cursor takes its
+credits and checks the cursor budget before it records its release, and a
+cursor whose page is never returned gives them back at once. Ordinary credits
+stop at the registry less the reserve, so the next lease or cursor is refused
+with `ResourceExhausted` and no effect, while critical work still finds the
+reserved pins. Other in-flight reads (queries, forks, internal read views) are
+not charged; operation admission bounds them, and the reserve's eight pins per
+critical job are a sizing assumption, not an enforced limit. The reserve
 for T tenants sharing the database (Control counts once more) and C admitted
 operations (`max_inflight_operations`) is R = 2(T + 1) + 8(min(T, C) + 4):
 two standing pins per application and eight per critical job, four of them
@@ -226,7 +233,11 @@ node jobs. With 1,000 tenants and the default 64 operations that is 2,546
 pins, which leaves 1,550 ordinary credits (775 leases or cursors across the
 node); a generated installation's 63 tenants leave 3,432. Readiness `storage`
 and the metrics endpoint report `snapshot_pin_reserve` and
-`ordinary_snapshot_pins` beside `snapshot_pins` and `snapshot_pin_limit`.
+`ordinary_snapshot_pins` beside `snapshot_pins` and `snapshot_pin_limit`, as of
+the storage status the node last published: the reserve
+is published when it is set at open, while ordinary credits change with every
+lease and cursor and are republished only by maintenance steps, policy changes
+and compaction requests. Admission itself always checks the live counts.
 Databases without a reserve (every other database) count ordinary credits but
 never refuse them. A committed apply captures its successor selection after
 the commit, so its read reserves a pin slot and the snapshot workspace when it

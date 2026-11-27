@@ -113,7 +113,7 @@ fn large_staged_roster_round_trips_within_the_configuration_limit() -> Result<()
         );
 
         let template = config.tenants[0].clone();
-        for number in 1..2_000 {
+        let add = |config: &mut RuntimeConfig, number: u128| {
             let mut tenant = template.clone();
             let name = format!("tenant-{number:04}");
             let keys = PathBuf::from("/var/lib/kasumi/operator").join(&name);
@@ -129,6 +129,34 @@ fn large_staged_roster_round_trips_within_the_configuration_limit() -> Result<()
             config
                 .tenant_audit_placements
                 .insert(name, TenantAuditPlacementConfig::LocalReplicaOnly);
+        };
+
+        // Every configuration load refuses a roster its limits cannot host:
+        // the generated limits hold Control and 63 tenants.
+        let mut over = config.clone();
+        for number in 1..64 {
+            add(&mut over, number);
+        }
+        std::fs::write(
+            &installed.configuration,
+            encode_staged_configuration(&over)?,
+        )?;
+        let refused = RuntimeConfig::load(&installed.configuration).unwrap_err();
+        let refused = refused
+            .downcast_ref::<crate::standalone_capacity::RosterExceedsCapacity>()
+            .unwrap_or_else(|| panic!("untyped refusal: {refused:#}"));
+        assert_eq!(
+            (refused.tenants, refused.setting, refused.holds),
+            (64, "admission.max_snapshot_startups", Some(63))
+        );
+
+        // The documented 1,000-tenant profile (docs/standalone.md).
+        config.admission.max_snapshot_startups = 1_001;
+        config.admission.max_reservations = 16_384;
+        config.admission.max_inflight_bytes = Some(6 << 30);
+        config.persistent_disk.max_open_directories = 1_536;
+        for number in 1..2_000 {
+            add(&mut config, number);
 
             if config.tenants.len() == 1_000 {
                 assert!(serde_json::to_string_pretty(&config)?.len() > MAX_CONFIG_BYTES);
@@ -670,4 +698,63 @@ fn stage_request_requires_canonical_explicit_audit_placement() -> Result<()> {
         assert!(serde_json::from_value::<StageTenantRequest>(invalid).is_err());
     }
     Ok(())
+}
+
+/// A roster the configuration cannot host is refused at staging with the
+/// typed error naming the limit, before any key, configuration change or
+/// staging record exists, instead of at the tenant's later preparation.
+#[test]
+fn staging_refuses_a_roster_the_configuration_cannot_host() -> Result<()> {
+    run_large_staging_fixture("standalone roster capacity fixture", || async {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let (installed, storage) =
+            crate::runtime_storage_fixtures::initialize_standalone_with_policy(
+                &directory.path().join("installed"),
+                "tenant-a",
+                kasumi_engine::admission::AdmissionConfig {
+                    // Control and tenant-a.
+                    max_snapshot_startups: 2,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let config = RuntimeConfig::load(&installed.configuration)?;
+        let before = private_files::read(&installed.configuration, MAX_CONFIG_BYTES)?;
+        let request = request(&config);
+        let refused =
+            stage_tenant_with_storage(&installed.configuration, request.clone(), storage.clone())
+                .await
+                .unwrap_err();
+        let typed = refused
+            .chain()
+            .find_map(|cause| {
+                cause.downcast_ref::<crate::standalone_capacity::RosterExceedsCapacity>()
+            })
+            .expect("typed roster refusal");
+        assert_eq!(typed.setting, "admission.max_snapshot_startups");
+        assert_eq!(
+            (typed.tenants, typed.required, typed.holds),
+            (2, 3, Some(1))
+        );
+        assert_eq!(
+            private_files::read(&installed.configuration, MAX_CONFIG_BYTES)?,
+            before
+        );
+        assert!(
+            !installation_root(&config)?
+                .join("operator")
+                .join(format!("tenant-stage-{}", request.operation_id))
+                .exists()
+        );
+        assert!(
+            tenant_stage_status_with_storage(
+                &installed.configuration,
+                request.operation_id,
+                storage
+            )
+            .await
+            .is_err()
+        );
+        Ok(())
+    })
 }

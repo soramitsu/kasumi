@@ -88,6 +88,7 @@ fn pagination_fresh_owner(
         )),
         reservation: None,
         page_charge: None,
+        pins: None,
         _registration: Arc::new(fence.begin(cancellation.clone()).unwrap()),
     };
     owner.memory.as_mut().unwrap().reserve(initial).unwrap();
@@ -128,6 +129,7 @@ fn pagination_continuation_owner(
         )),
         reservation: Some(cursor.reservation.clone()),
         page_charge: None,
+        pins: None,
         _registration: Arc::new(fence.begin(cancellation.clone()).unwrap()),
     };
     owner.memory.as_mut().unwrap().reserve(initial).unwrap();

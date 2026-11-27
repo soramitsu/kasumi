@@ -362,7 +362,20 @@ pub fn roster_exceeds_capacity(refusal: &crate::standalone_capacity::RosterExcee
         configured = refusal.configured,
         required = refusal.required,
         holds = refusal.holds,
-        "the configured roster exceeds what its configuration can host; raise the named setting with the installation stopped or stage fewer tenants"
+        "the configured roster exceeds what its configuration can host; raise the named setting (for the shared pins, lower admission.max_inflight_operations) with the installation stopped or stage fewer tenants"
+    );
+}
+
+/// The shared node database keeps less than the ruled critical pin reserve,
+/// so that ordinary credits keep their 256 pins. Only rosters `check` does
+/// not size (replicated and data-only nodes) reach this.
+pub fn snapshot_pin_reserve_capped(tenants: usize, ruled: usize, effective: usize) {
+    tracing::warn!(
+        event = "snapshot_pin_reserve_capped",
+        tenants,
+        ruled,
+        effective,
+        "the shared node database keeps a smaller critical snapshot pin reserve than its roster needs; lower admission.max_inflight_operations or host fewer tenants per node"
     );
 }
 

@@ -488,6 +488,11 @@ async fn stage_owned(
             digest(&current) == record.before_sha256,
             "configuration changed after staging dispatch"
         );
+        // A record dispatched by an earlier release was never sized: refuse a
+        // roster its configuration cannot host before it replaces a working
+        // configuration, rather than leave one `kasumid serve` refuses.
+        let after: RuntimeConfig = serde_json::from_str(&record.after_json)?;
+        crate::standalone_capacity::check(&after)?;
         deadline.check()?;
         private_files::replace(configuration, record.after_json.as_bytes())?;
     }

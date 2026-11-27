@@ -908,6 +908,12 @@ struct QueryResultOwner {
     // A continuation's page and request keep their independent charge through
     // every final release check, even if the outgoing page is dropped first.
     page_charge: Option<Arc<Reservation>>,
+    /// The ordinary pin credits of the selection these rows keep alive: a
+    /// continuation shares its cursor's, a fresh page that leaves a cursor
+    /// takes its own before the release audit. Whoever holds the rows holds
+    /// the credits, so closing or expiring a cursor never returns them while
+    /// a worker still reads its selection.
+    pins: Option<Arc<kasumi_kv::OrdinaryPinCredits>>,
     _registration: Arc<WorkRegistration>,
 }
 
@@ -3616,6 +3622,7 @@ impl Database {
                     memory: Some(input.memory),
                     reservation: Some(cursor.reservation.clone()),
                     page_charge: None,
+                    pins: cursor.pins.clone(),
                     _registration: registration.clone(),
                 };
                 (full, offset, revision, created)
@@ -3686,6 +3693,7 @@ impl Database {
                     memory: Some(memory),
                     reservation: None,
                     page_charge: None,
+                    pins: None,
                     _registration,
                 },
                 page,
@@ -3693,6 +3701,51 @@ impl Database {
                 self.clock.now(),
             )
         };
+        // A page that will leave a cursor is checked against the cursor
+        // budget, and a fresh page takes the new cursor's ordinary pin credits
+        // (a continuation already holds its cursor's), before a strict read
+        // submits its release audit: a refusal after the audit would record a
+        // release whose page the caller never receives. The check prunes
+        // nothing: this request's policy epoch and term may be stale.
+        if !seek && offset < full.rows.rows.len() {
+            let cursors = self
+                .cursors
+                .lock()
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "cursor storage unavailable"))?;
+            let now = self.clock.now();
+            let live = |c: &&Cursor| {
+                now.saturating_sub(c.created) < c.ttl
+                    && c.policy_epoch == policy_epoch
+                    && c.term == term
+            };
+            let replaced = full
+                .request
+                .cursor
+                .as_ref()
+                .and_then(|token| cursors.get(token))
+                .filter(live);
+            let (held, retained_bytes) = cursors
+                .values()
+                .filter(live)
+                .fold((0usize, 0usize), |(n, b), c| {
+                    (n + 1, b.saturating_add(c.rows.bytes))
+                });
+            if held.saturating_sub(usize::from(replaced.is_some())) >= max_cursors
+                || retained_bytes
+                    .saturating_sub(replaced.map_or(0, |c| c.rows.bytes))
+                    .saturating_add(full.rows.bytes)
+                    > max_cursor_bytes
+            {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "cursor memory budget exhausted",
+                ));
+            }
+            drop(cursors);
+            if full.request.cursor.is_none() {
+                full.pins = self.engine.admit_retained_selection()?.map(Arc::new);
+            }
+        }
         // Each completed page releases its operation slot before a strict
         // read needs to submit its audit, while retaining every admitted byte.
         // Continuations retain a page charge independent of the full cursor.
@@ -3740,12 +3793,9 @@ impl Database {
                     "cursor memory budget exhausted",
                 ));
             }
-            // A continuation keeps its predecessor's credits; a new cursor
-            // takes its own or is refused before any cursor exists.
-            let pins = match replaced {
-                Some(cursor) => cursor.pins.clone(),
-                None => self.engine.admit_retained_selection()?.map(Arc::new),
-            };
+            // A continuation keeps its predecessor's credits and a fresh
+            // page the credits it took before the release.
+            let pins = full.pins.clone();
             let reservation = full.cursor_reservation()?;
             let token = uuid::Uuid::new_v4().to_string();
             cursors.insert(
@@ -3772,14 +3822,37 @@ impl Database {
             cursors.remove(token);
         }
         drop(cursors);
+        let issued = page.cursor.clone();
         let output = RegisteredOutput {
             response: AdmittedOutput::new(page, full.take_page_charge()),
             _registration: full._registration.clone(),
         };
         let request = &full.request;
-        self.access()?;
-        self.admission().check_release(&cancellation)?;
-        self.work.release(&cancellation, || {
+        let released = (|| {
+            self.access()?;
+            self.admission().check_release(&cancellation)?;
+            self.release_query_output(context, request, policy_epoch, &cancellation, output)
+        })();
+        // A cursor whose page is never returned gives back its budget and
+        // pin credits now rather than at its expiry.
+        if released.is_err()
+            && let Some(token) = issued
+            && let Ok(mut cursors) = self.cursors.lock()
+        {
+            cursors.remove(&token);
+        }
+        released
+    }
+
+    fn release_query_output(
+        &self,
+        context: &RequestContext,
+        request: &QueryRequest,
+        policy_epoch: u64,
+        cancellation: &QueryCancellation,
+        output: RegisteredOutput<QueryResponse>,
+    ) -> Result<RegisteredOutput<QueryResponse>> {
+        self.work.release(cancellation, || {
             self.store.check_access().map_err(|_| {
                 Error::new(
                     ErrorCode::Sealed,

@@ -46,6 +46,10 @@ pub(crate) struct SelectedSnapshot {
     // reservation floor, which also provides headroom for that evaluation.
     pub selected_input_bytes: u64,
     pub reservation: Reservation,
+    /// The lease's ordinary pin credits, held while this page reads its
+    /// selection, so closing or expiring the lease never returns them while
+    /// a worker still pins the leased history.
+    pub _pins: Option<Arc<kasumi_kv::OrdinaryPinCredits>>,
 }
 
 #[derive(Default)]
@@ -65,8 +69,9 @@ struct Roots {
     metadata_bytes: usize,
     bytes: usize,
     reservation: Reservation,
-    /// Ordinary pin credits for the selections this lease can strand.
-    _pins: Option<kasumi_kv::OrdinaryPinCredits>,
+    /// Ordinary pin credits for the selections this lease can strand, shared
+    /// with every page still reading them.
+    pins: Option<Arc<kasumi_kv::OrdinaryPinCredits>>,
 }
 impl Drop for Roots {
     fn drop(&mut self) {
@@ -574,7 +579,7 @@ impl LeaseManager {
                 metadata_bytes: bytes,
                 bytes,
                 reservation,
-                _pins: pins,
+                pins: pins.map(Arc::new),
             },
         );
         Ok(handle)
@@ -900,6 +905,7 @@ impl LeaseManager {
                         scan_has_more: false,
                         selected_input_bytes: root.metadata_bytes as u64,
                         reservation,
+                        _pins: root.pins.clone(),
                     });
                 }
                 (keys, ids)
@@ -1009,6 +1015,7 @@ impl LeaseManager {
             scan_has_more,
             selected_input_bytes: retained_bytes as u64,
             reservation,
+            _pins: root.pins.clone(),
         })
     }
 }

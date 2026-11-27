@@ -85,7 +85,7 @@ configuration, with `RosterExceedsCapacity` naming the setting (startup slots,
 admission reservations, directory owners or the shared node database's pins)
 and the value the roster needs; so does every load of a configuration whose
 roster was edited past them. [Roster capacity](standalone.md#roster-capacity-and-the-1000-tenant-profile)
-lists the checks and a validated 1,000-tenant profile. When the inventory is
+lists the checks and a 1,000-tenant profile. When the inventory is
 still full at run time, preparing a new tenant returns `ResourceExhausted`
 before it records creation or opens either catalog. After capacity is
 available, retry the same approved preparation.

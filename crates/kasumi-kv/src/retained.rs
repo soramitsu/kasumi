@@ -1552,6 +1552,11 @@ mod tests {
             .create_with_backend(InMemoryGroup::new())
             .unwrap();
         database.reserve_snapshot_pins(4).unwrap();
+        // The reserve is published as it is set, before any maintenance step.
+        assert_eq!(
+            database.maintenance_status().unwrap().snapshot_pin_reserve,
+            4
+        );
         let held: Vec<_> = (0..12)
             .map(|_| database.begin_ordinary_read().unwrap())
             .collect();

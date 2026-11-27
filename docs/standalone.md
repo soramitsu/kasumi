@@ -92,58 +92,15 @@ to that when the hard limit allows and otherwise refuses to start, naming both
 limits. The packaged units set `LimitNOFILE=65536`. A daemon started through
 `runuser`, `su` or a login session often has a soft limit of 1,024. The
 generated configuration needs 3,584 descriptors. Every local tenant audit cache
-shares the node's one `tenant-audit-archives` directory owner, so tenants add
-no directory descriptors of their own; readiness reports `open_directories`
-(owners) and `directory_descriptors` (physical descriptors) apart.
-
-### Roster capacity and the 1,000-tenant profile
-
-Control and every standalone tenant run as groups on one memory core and in
-the shared node database, and each open group holds a startup-inventory slot,
-about 12 admission ledger charges and snapshot pins for as long as it is open.
-The generated configuration is sized for small installations: its 64
-`admission.max_snapshot_startups` slots hold Control and **63 tenants**, the
-first limit a growing roster reaches. Staging refuses a tenant the
-configuration cannot host, and so does every configuration load (`kasumid
-serve`, `kasumid check-config` and operator commands), with
-`RosterExceedsCapacity`, which names the setting, the value the roster needs
-and how many tenants the configured value holds; the daemon logs it as
-`roster_exceeds_capacity`. The check covers, in this order:
-
-| Setting | A roster of T tenants needs |
-|---|---|
-| `admission.max_snapshot_startups` | T + 1 (Control) |
-| `admission.max_reservations` | 12(T + 1) + 64 + 1,024 + the cache work reserve slots |
-| `persistent_disk.max_open_directories` | 32 + one per distinct external filesystem audit destination |
-| Shared node database pins (4,096) | the critical reserve 2(T + 1) + 8(min(T, C) + 4), plus 256 |
-
-C is `admission.max_inflight_operations`. Memory is not part of the check:
-idle tenants' reservations come out of the payload, and a request that does
-not fit is refused with `ResourceExhausted`.
-
-For up to 1,000 tenants on a 2-CPU, 16-GiB node, stop the installation and set
-this profile before staging past 63 tenants:
-
-| Setting | Generated | 1,000-tenant profile |
-|---|---:|---:|
-| `persistent_disk.max_open_files` | 1,024 | 1,024 |
-| `persistent_disk.max_open_directories` | 256 | 1,536 |
-| `persistent_disk.max_persistent_files` | 100,000 | 100,000 |
-| `persistent_disk.max_persistent_subdirectories` | 10,000 | 10,000 |
-| `admission.max_reservations` | 4,096 | 16,384 |
-| `admission.max_inflight_bytes` | derived from the disks (about 2.6 GB) | 6,442,450,944 (6 GiB) |
-| `admission.high_water_bytes` | `null` (half of memory) | `null` (half of memory) |
-| `admission.max_snapshot_startups` | 64 | 1,001 |
-| Required open-file limit | 3,584 | 6,144 |
-
-`kasumid serve` raises its soft open-file limit to the required value when the
-hard limit allows. The 6-GiB budget fits below the default high-water mark of
-a 16-GiB node (8 GiB); a budget above half of memory needs an explicit
-`high_water_bytes` and refuses to start otherwise. At 1,000 idle tenants an
-installed run on the previous profile held 12,052 reservations and 3.27 GB
-reserved, leaving about 3.0 GB of the 6-GiB budget and 4,332 ledger slots for
-work. The roster check refuses more than about 1,270 tenants at 16,384
-reservations; the 2-MiB configuration itself holds about 1,164.
+in the shared node database shares the node's one `tenant-audit-archives`
+directory owner, so such a tenant adds no directory descriptors of its own.
+Two kinds of tenant do: one whose audit placement is an external filesystem
+directory, which has its own owner, and one with its own database (for example
+a recovered tenant), whose cache is the `tenant-audit-archives` directory beside
+its own node file, with its own owner and up to two descriptors. The roster
+check below counts external destinations; tenants with their own database draw
+on the node's 32-owner margin. Readiness reports `open_directories` (owners)
+and `directory_descriptors` (physical descriptors) apart.
 
 `persistent_disk.native_storage` is also required. The generated profile sets
 `byte_limit: 1073741824` (1 GiB) and `cached_files: 64`. These are per-group
@@ -248,6 +205,59 @@ kasumid credential revoke /var/lib/kasumi/profiles/control.json FAMILY_UUID
 The certificate and key name the client certificate the new profile presents. A native credential is bound to it: the CLI sets `client_certificate_sha256` to its SHA-256, or checks that the request already names it. On a binding installation a native credential without a binding is refused, so the administrator names the recipient's certificate and never binds the credential to its own connection. Enroll a new certificate in the client pin allowlist first. An MCP request (`"audience": "mcp"`) takes no certificate.
 
 The specification contains `family_id`, `principal`, `tenant`, `resource`, `scopes`, and `lifetime_seconds` (1–3600, default 3600). Use a new UUID for `family_id`. Read the exact resource from the generated tenant profile. Scopes are `read`, `write`, `admin`, and `audit`; current database RBAC still determines effective access. Reusing a family UUID with different specifications is rejected. Revocation is permanent and fences already-running requests at their subsequent authorization or response-release checks. Revoking the credential used for the operation can suppress its own acknowledgement; another Control credential can inspect the durable result.
+
+## Roster capacity and the 1,000-tenant profile
+
+Control and every standalone tenant run as groups on one memory core and in
+the shared node database, and each open group holds a startup-inventory slot,
+about 12 admission ledger charges and snapshot pins for as long as it is open.
+The generated configuration is sized for small installations: its 64
+`admission.max_snapshot_startups` slots hold Control and **63 tenants**, the
+first limit a growing roster reaches. Staging refuses a tenant the
+configuration cannot host, and so does every configuration load (`kasumid
+serve`, `kasumid check-config` and operator commands), with
+`RosterExceedsCapacity`, which names the setting, the value the roster needs
+and, for the per-tenant limits, how many tenants the configured value holds
+(directory owners depend on external destinations, not on the tenant count, so
+that refusal omits it); the daemon logs it as
+`roster_exceeds_capacity`. The check covers, in this order:
+
+| Setting | A roster of T tenants needs |
+|---|---|
+| `admission.max_snapshot_startups` | T + 1 (Control) |
+| `admission.max_reservations` | 12(T + 1) + 64 + 1,024 + the cache work reserve slots |
+| `persistent_disk.max_open_directories` | 32 + one per distinct external filesystem audit destination |
+| Shared node database pins (4,096) | the critical reserve 2(T + 1) + 8(min(T, C) + 4), plus 256 |
+
+C is `admission.max_inflight_operations`. The pin count is fixed, so a refusal
+at the pins asks for a lower C or fewer tenants. Memory is not part of the check:
+idle tenants' reservations come out of the payload, and a request that does
+not fit is refused with `ResourceExhausted`.
+
+For up to 1,000 tenants on a 2-CPU, 16-GiB node, stop the installation and set
+this profile before staging past 63 tenants:
+
+| Setting | Generated | 1,000-tenant profile |
+|---|---:|---:|
+| `persistent_disk.max_open_files` | 1,024 | 1,024 |
+| `persistent_disk.max_open_directories` | 256 | 1,536 |
+| `persistent_disk.max_persistent_files` | 100,000 | 100,000 |
+| `persistent_disk.max_persistent_subdirectories` | 10,000 | 10,000 |
+| `admission.max_reservations` | 4,096 | 16,384 |
+| `admission.max_inflight_bytes` | derived from the disks (about 2.6 GB) | 6,442,450,944 (6 GiB) |
+| `admission.high_water_bytes` | `null` (half of memory) | `null` (half of memory) |
+| `admission.max_snapshot_startups` | 64 | 1,001 |
+| Required open-file limit | 3,584 | 6,144 |
+
+`kasumid serve` raises its soft open-file limit to the required value when the
+hard limit allows. The 6-GiB budget fits below the default high-water mark of
+a 16-GiB node (8 GiB); a budget above half of memory needs an explicit
+`high_water_bytes` and refuses to start otherwise. At 1,000 idle tenants an
+installed run on the previous profile held 12,052 reservations and 3.27 GB
+reserved, which leaves 3.17 GB (2.95 GiB) of the 6-GiB budget and 4,332 ledger
+slots for work. At 16,384 reservations the roster check refuses rosters above
+1,268 tenants (the generated 4,096 hold 244); the 2-MiB configuration itself
+holds about 1,164.
 
 # Snapshot archive form
 

@@ -470,6 +470,22 @@ impl DiskState {
         self.publish_maintenance();
     }
 
+    /// Keep `reserve` snapshot pins from ordinary credits and publish it, so
+    /// the status reports the reserve from the moment it is set rather than
+    /// from the next maintenance step.
+    pub(crate) fn set_snapshot_pin_reserve(&self, reserve: usize) -> Result<(), CoreError> {
+        self.pins.set_reserve(reserve)?;
+        // Unlike a maintenance step, the caller learns if the status could
+        // not be sampled, rather than keeping a copy without the reserve.
+        let status = self.maintenance_status()?;
+        if let Some(cell) = &self.published {
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
+        }
+        Ok(())
+    }
+
     /// Copy the current status into the published cell. An owner that can
     /// no longer report keeps its last copy; readers check the owner first.
     fn publish_maintenance(&self) {

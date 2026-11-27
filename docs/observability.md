@@ -466,10 +466,12 @@ number of snapshot pins the database held when the status was published and
 the service audit and tenants without their own database share, 256 elsewhere).
 Each open tenant keeps one; a full registry refuses new reads and writes for
 capacity. `snapshot_pin_reserve` is the number of pins kept for critical work
-(zero except on the shared node database) and `ordinary_snapshot_pins` the
-ordinary credits snapshot leases and cursors hold; a new lease or cursor is
-refused with `ResourceExhausted` once these would reach into the reserve (see
-[admission](admission.md)). `compaction_phase` is
+(zero except on the shared node database; published when the node sets it at
+open) and `ordinary_snapshot_pins` the ordinary credits snapshot leases and
+cursors held when the status was published; leases and cursors do not publish,
+so between maintenance steps it can lag behind the live count. A new
+lease or cursor is refused with `ResourceExhausted` once the live credits would
+reach into the reserve (see [admission](admission.md)). `compaction_phase` is
 `idle`, `evacuating`, `reclaiming` or `packing`, with `compaction_cycle`,
 `compaction_requested`, the baseline measured when the last cycle finished
 reclaiming (`compaction_baseline_bytes`/`_files`) and the thresholds that begin
