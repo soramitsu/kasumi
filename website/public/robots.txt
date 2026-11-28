@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /api/
+Disallow: /thanks
+
+Sitemap: https://kasumi.soramitsu.co.jp/sitemap.xml

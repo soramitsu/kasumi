@@ -1,0 +1,16 @@
+{
+  "name": "kasumi-website",
+  "private": true,
+  "description": "kasumi.soramitsu.co.jp: Kasumi landing page and production-support checkout",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs --fake-stripe",
+    "test": "node --test test/website.test.mjs",
+    "sync-chrome": "node scripts/sync-chrome.mjs",
+    "launch-check": "node scripts/launch-check.mjs",
+    "stripe:setup": "node scripts/stripe-setup.mjs"
+  }
+}

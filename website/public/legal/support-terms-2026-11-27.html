@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support Terms (version 2026-11-27) — Kasumi</title>
+<meta name="description" content="Terms for Kasumi production support subscriptions from Soramitsu Co., Ltd.: coverage, severity levels, response targets, billing, cancellation and privacy.">
+<meta name="theme-color" content="#E3232C">
+<link rel="canonical" href="https://kasumi.soramitsu.co.jp/legal/support-terms-2026-11-27">
+<link rel="icon" href="/assets/brand/kasumi-favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&amp;family=Sora:wght@400;500;600;700&amp;display=swap">
+<link rel="stylesheet" href="/assets/site.css">
+<script defer src="/assets/i18n.js"></script>
+<script defer src="/assets/site.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main" data-i18n="a11y.skip">Skip to content</a>
+<!--SITE-HEADER-->
+<header class="site-header">
+  <div class="site-header__inner">
+    <a class="brand" href="/" data-i18n-attr="aria-label:a11y.home" aria-label="Kasumi home">
+      <img class="brand__mark" src="/assets/brand/kasumi-symbol.svg" alt="" width="62" height="26">
+      <img class="brand__word" src="/assets/brand/kasumi-wordmark.svg" alt="Kasumi" width="115" height="13">
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+      <span class="nav-toggle__bars" aria-hidden="true"></span>
+      <span class="sr-only" data-i18n="nav.menu">Menu</span>
+    </button>
+    <nav class="site-nav" id="site-nav" data-i18n-attr="aria-label:a11y.primary" aria-label="Primary">
+      <ul class="site-nav__list">
+        <li><a href="/#why" data-i18n="nav.why">Why Kasumi</a></li>
+        <li><a href="/#queries" data-i18n="nav.queries">Queries</a></li>
+        <li><a href="/#deployment" data-i18n="nav.deployment">Deployment</a></li>
+        <li><a href="/#security" data-i18n="nav.security">Security</a></li>
+        <li><a href="/#agents" data-i18n="nav.agents">Agents</a></li>
+        <li><a href="/#support" data-i18n="nav.support">Support</a></li>
+        <li class="site-nav__ext"><a href="https://github.com/soramitsu/kasumi" rel="noopener">GitHub</a></li>
+      </ul>
+    </nav>
+    <div class="lang" role="group" data-i18n-attr="aria-label:a11y.language" aria-label="Language">
+      <a class="lang__opt" href="?lang=en" data-lang="en" lang="en" hreflang="en">EN</a>
+      <span class="lang__sep" aria-hidden="true">|</span>
+      <a class="lang__opt" href="?lang=ja" data-lang="ja" lang="ja" hreflang="ja">日本語</a>
+    </div>
+  </div>
+</header>
+<!--/SITE-HEADER-->
+
+<main id="main" class="page" tabindex="-1">
+  <article class="prose">
+    <p class="kicker"><span class="only-en">Legal</span><span class="only-ja">規約</span></p>
+    <h1><span class="only-en">Kasumi Support Terms</span><span class="only-ja">Kasumi サポート利用規約</span></h1>
+    <p class="prose__meta">
+      <span class="only-en">Version 2026-11-27. Provided by Soramitsu Co., Ltd. If the English and Japanese versions differ, the Japanese version governs.</span>
+      <span class="only-ja">版：2026-11-27。提供：ソラミツ株式会社。英語版と日本語版に相違がある場合は日本語版が優先します。</span>
+    </p>
+
+    <h2 id="scope"><span class="only-en">1. What these terms cover</span><span class="only-ja">1. 適用範囲</span></h2>
+    <p class="only-en">These terms apply to Kasumi support subscriptions bought from Soramitsu Co., Ltd. ("Soramitsu", "we") online or under a signed order ("you" is the business that subscribes). A signed order prevails over these terms where they conflict. Kasumi itself is open-source software licensed under Apache-2.0; these terms add a support service and do not change that license.</p>
+    <p class="only-ja">本規約は、ソラミツ株式会社（以下「当社」）がオンラインまたは個別の注文書に基づき提供する Kasumi サポート契約に適用されます（契約する事業者を「お客様」といいます）。注文書と本規約が矛盾する場合は注文書が優先します。Kasumi 本体は Apache-2.0 ライセンスのオープンソースソフトウェアであり、本規約はそのライセンスを変更するものではなく、サポートサービスを追加するものです。</p>
+
+    <h2 id="status"><span class="only-en">2. Release status</span><span class="only-ja">2. リリース状況</span></h2>
+    <p class="only-en">Kasumi's first production release is still in development and no revision is release-qualified yet. Support covers the current development line and published releases as they become available. Response targets describe how quickly an engineer engages; they are not a warranty that the software is free of defects or fit for a particular purpose.</p>
+    <p class="only-ja">Kasumi の最初の本番リリースは現在開発中で、リリース認定済みのリビジョンはまだありません。サポートは現行の開発ラインと、今後公開されるリリースを対象とします。応答目標はエンジニアが対応を開始するまでの時間の目標であり、ソフトウェアに不具合がないことや特定目的への適合性を保証するものではありません。</p>
+
+    <h2 id="installations"><span class="only-en">3. Installations and contacts</span><span class="only-ja">3. 対象環境と連絡担当者</span></h2>
+    <p class="only-en">An installation is one registered, deployed Kasumi database: an embedded application instance, a standalone installation, or, on plans that cover replicated clusters, one replicated cluster (a three-voter cluster with its tenant and Control groups counts once). Your plan sets how many production and non-production installations, and how many named contacts, are covered. Register them when support starts and keep the list current. Paid support for Kasumi installations embedded in a product you distribute to many sites needs a separate agreement; this does not limit your rights under the Apache-2.0 license.</p>
+    <p class="only-ja">対象環境とは、登録された稼働中の Kasumi データベース1件を指します（組み込みアプリケーションのインスタンス、スタンドアロン環境、または、レプリケーション構成を対象とするプランではレプリケーションクラスタ1件。投票権を持つ3ノードで構成されるクラスタは、テナントグループと Control グループを含めて1件と数えます）。対象となる本番・検証環境の数と指定連絡担当者の人数はプランごとに定めます。サポート開始時にご登録いただき、変更があれば更新してください。多数の拠点に配布する製品へ組み込んだ Kasumi の有償サポートには、別途の契約が必要です。これは Apache-2.0 ライセンスに基づくお客様の権利を制限するものではありません。</p>
+
+    <h2 id="severity"><span class="only-en">4. Severity levels and response targets</span><span class="only-ja">4. 重大度と応答目標</span></h2>
+    <div class="table-scroll">
+    <table class="terms-table">
+      <thead>
+        <tr>
+          <th scope="col"><span class="only-en">Severity</span><span class="only-ja">重大度</span></th>
+          <th scope="col"><span class="only-en">Definition</span><span class="only-ja">定義</span></th>
+          <th scope="col">Standard</th>
+          <th scope="col">Business</th>
+          <th scope="col">Enterprise</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Sev 1</th>
+          <td><span class="only-en">A covered production installation cannot serve a critical workload, has lost write quorum, or shows credible ongoing data loss or corruption needing immediate containment.</span><span class="only-ja">対象の本番環境が重要な処理を提供できない、書き込みクォーラムを失っている、またはデータの消失・破損が進行している可能性が高く、直ちに封じ込めが必要な状態。</span></td>
+          <td><span class="only-en">4 business hours</span><span class="only-ja">営業時間内で通算4時間</span></td>
+          <td><span class="only-en">2 business hours</span><span class="only-ja">営業時間内で通算2時間</span></td>
+          <td><span class="only-en">1 hour, 24×7</span><span class="only-ja">1時間（24時間365日）</span></td>
+        </tr>
+        <tr>
+          <th scope="row">Sev 2</th>
+          <td><span class="only-en">Serious production degradation, loss of redundancy while quorum remains, or a failed recovery capability with material operational risk.</span><span class="only-ja">本番環境の深刻な性能・機能低下、クォーラムは維持しているが冗長性を失った状態、または重大な運用リスクを伴う復旧手段の障害。</span></td>
+          <td><span class="only-en">8 business hours</span><span class="only-ja">営業時間内で通算8時間</span></td>
+          <td><span class="only-en">4 business hours</span><span class="only-ja">営業時間内で通算4時間</span></td>
+          <td><span class="only-en">2 business hours</span><span class="only-ja">営業時間内で通算2時間</span></td>
+        </tr>
+        <tr>
+          <th scope="row">Sev 3</th>
+          <td><span class="only-en">A non-critical defect, a problem with a usable workaround, or a blocked staging upgrade.</span><span class="only-ja">重大ではない不具合、回避策がある問題、または検証環境でのアップグレードの停止。</span></td>
+          <td><span class="only-en">2 business days</span><span class="only-ja">2営業日</span></td>
+          <td><span class="only-en">1 business day</span><span class="only-ja">1営業日</span></td>
+          <td><span class="only-en">8 business hours</span><span class="only-ja">営業時間内で通算8時間</span></td>
+        </tr>
+        <tr>
+          <th scope="row">Sev 4</th>
+          <td><span class="only-en">Usage, documentation or configuration questions and planned changes.</span><span class="only-ja">使い方・ドキュメント・設定に関する質問、計画的な変更。</span></td>
+          <td><span class="only-en">3 business days</span><span class="only-ja">3営業日</span></td>
+          <td><span class="only-en">2 business days</span><span class="only-ja">2営業日</span></td>
+          <td><span class="only-en">1 business day</span><span class="only-ja">1営業日</span></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="only-en">Business hours are Monday to Friday, 09:00–18:00 Japan Standard Time (UTC+9), excluding Japanese public holidays and closures we publish in advance. Business-hour targets count only business hours: a ticket from a registered contact that arrives outside them starts counting at the next business day's opening (for example, a Friday-night ticket starts counting at 09:00 JST on Monday, or the next business day). An Enterprise after-hours Sev 1 starts counting when the emergency route creates a timestamped case. A qualifying response comes from an engineer and contains an assessment, containment advice or a concrete diagnostic request; automated receipts do not count. During an active incident we tell you when to expect the next update. Response targets are not resolution, uptime or time-to-patch commitments. We may reclassify a case's severity with you as facts emerge.</p>
+    <p class="only-ja">営業時間は、日本時間（UTC+9）の月曜日〜金曜日 9:00〜18:00 です（日本の祝日および事前に告知する休業日を除く）。営業時間ベースの応答目標は営業時間のみを数えます。登録された連絡担当者からのチケットが営業時間外に届いた場合は、翌営業日の始業時から数えます（例：金曜日の夜に届いたチケットは、月曜日または翌営業日の9:00から数えます）。Enterprise プランの時間外 Sev 1 は、緊急連絡手段によりタイムスタンプ付きのケースが作成された時点から数えます。応答とは、エンジニアによる状況評価、封じ込めの助言、または具体的な診断情報の依頼を含むものをいい、自動受付通知は含みません。障害対応中は、次回の連絡予定時刻をお知らせします。応答目標は、解決時間・稼働率・修正提供時間を約束するものではありません。事実関係の判明に応じ、お客様と協議のうえ重大度を変更することがあります。</p>
+
+    <h2 id="services"><span class="only-en">5. Channels, reviews, advisories and fixes</span><span class="only-ja">5. 窓口・レビュー・セキュリティ情報・修正</span></h2>
+    <p class="only-en">Support is provided in Japanese and English through email and the support portal, plus the channels, reviews and named Soramitsu staff listed for your plan on the <a href="/#support">pricing page</a>. Security advisories are published for all users; Business adds direct notice at publication, and Enterprise adds advance mitigation notice to an enrolled security contact when disclosure conditions permit, without a fixed notice period. Fixes ship in published maintenance releases. For confirmed Sev 1–2 defects, Business includes handover to the development team and consideration of a backport to a supported branch, and Enterprise includes priority hotfix assessment on the covered build with rollback instructions. Bespoke branches and extended maintenance need a separate order.</p>
+    <p class="only-ja">サポートは、日本語および英語により、メールとサポートポータルで提供します。プランごとの窓口、レビュー、当社担当者は<a href="/#support">料金表</a>に記載のとおりです。セキュリティアドバイザリはすべての利用者に公開します。Business プランでは公開時に直接通知し、Enterprise プランでは開示条件が許す場合に、登録されたセキュリティ担当者へ事前の緩和策を通知します（事前通知の期間は保証しません）。修正は公開メンテナンスリリースで提供します。確認済みの Sev 1–2 不具合について、Business プランでは開発チームへの引き継ぎとサポート対象ブランチへのバックポートの検討を、Enterprise プランではご利用ビルドへの優先ホットフィックスの検討（ロールバック手順を含む）を行います。個別ブランチや延長保守は別途の注文が必要です。</p>
+
+    <h2 id="responsibilities"><span class="only-en">6. Your responsibilities</span><span class="only-ja">6. お客様の責任</span></h2>
+    <p class="only-en">You operate the hosts, networks, encryption keys, credentials, backups, monitoring and restore procedures for your installations, and keep tested backups. Send diagnostics through the route we give you; do not send production customer data or secrets unless we agree a secure route for a specific case. Support excludes modified Kasumi source, platforms outside the published support matrix, and third-party software, though we will help identify where a problem lies.</p>
+    <p class="only-ja">お客様は、対象環境のサーバー、ネットワーク、暗号鍵、認証情報、バックアップ、監視、復旧手順を運用し、検証済みのバックアップを保持してください。診断情報は当社が指定する手段でお送りください。個別のケースで安全な手段を合意した場合を除き、本番の顧客データや秘密情報は送らないでください。改変された Kasumi ソースコード、公開されたサポート対象外のプラットフォーム、第三者ソフトウェアはサポート対象外です（ただし、問題の切り分けにはご協力します）。</p>
+
+    <h2 id="billing"><span class="only-en">7. Fees, renewal and cancellation</span><span class="only-ja">7. 料金・更新・解約</span></h2>
+    <p class="only-en">Fees are shown on the pricing page excluding tax; Japanese consumption tax and any other applicable tax are added at checkout. Monthly plans are charged monthly and annual plans are charged for the full year upfront. Subscriptions renew automatically until cancelled. You can cancel at any time in the billing portal or by email to service@soramitsu.co.jp from your billing contact; cancellation takes effect at the end of the paid period and support continues until then. An emailed cancellation applies to the current period if we receive it by 23:59 JST on the day before the renewal date; otherwise it applies from the end of the following period. Fees already paid are not refunded pro rata, except that we refund duplicate or incorrect charges, and the fees for any period in which we failed to provide support for reasons attributable to us, in proportion to that period. We may change prices for future periods with at least 30 days' notice to your billing contact. See the <a href="/legal/tokushoho">legal notice</a> for payment details.</p>
+    <p class="only-ja">料金は料金表に税別で表示し、消費税その他適用される税は決済時に加算します。月額プランは毎月、年額プランは1年分を前払いで決済します。契約は解約されるまで自動更新します。請求ポータル、または請求担当者から service@soramitsu.co.jp へのメールでいつでも解約でき、解約は支払済み期間の末日に効力を生じ、それまでサポートをご利用いただけます。メールによる解約は、更新日の前日23:59（日本時間）までに当社に到達した場合は当期末に、それ以降に到達した場合は翌期末に効力を生じます。支払済み料金の日割り返金は行いませんが、二重請求・誤請求の場合、および当社の責めに帰すべき事由によりサポートを提供できなかった場合は、該当する期間に応じた料金を返金します。当社は、請求担当者へ30日以上前に通知することにより、次回以降の契約期間の料金を変更することがあります。支払いの詳細は<a href="/legal/tokushoho">特定商取引法に基づく表記</a>をご覧ください。</p>
+
+    <h2 id="liability"><span class="only-en">8. Liability</span><span class="only-ja">8. 責任の制限</span></h2>
+    <p class="only-en">To the extent permitted by law, Soramitsu's total liability arising from a support subscription is limited to the support fees you paid in the twelve months before the event giving rise to the claim, and Soramitsu is not liable for indirect or consequential loss, lost profits or lost data. This does not limit liability for wilful misconduct or gross negligence.</p>
+    <p class="only-ja">法令で認められる範囲において、サポート契約に関する当社の責任の総額は、請求の原因となった事由の発生前12か月間にお客様が支払ったサポート料金を上限とし、当社は間接損害、逸失利益、データの消失について責任を負いません。ただし、当社の故意または重過失による場合はこの限りではありません。</p>
+
+    <h2 id="privacy"><span class="only-en">9. Privacy</span><span class="only-ja">9. 個人情報の取扱い</span></h2>
+    <p class="only-en">To sell and provide support we process the business name, billing contact, address, tax ID and payment details you give at checkout, the names and contact details of registered contacts, and diagnostics you send. Card payments, tax calculation and invoices are handled by Stripe, and this site is hosted by Vercel; we do not see or store full card numbers. Billing notices to our team's Slack workspace contain the plan, amount, billing country and links to the Stripe records, but no names, emails or tax IDs. We use this information only to bill, provide and improve support and to meet legal and tax obligations, keep billing records for the period the law requires, and delete diagnostics when a case no longer needs them. To ask about, correct or delete your information, contact <a href="mailto:service@soramitsu.co.jp">service@soramitsu.co.jp</a>. Soramitsu's <a href="https://soramitsu.co.jp/privacy" rel="noopener">privacy policy</a> also applies.</p>
+    <p class="only-ja">サポートの販売・提供のため、当社は、決済時にご入力いただく事業者名、請求担当者、住所、税務登録番号、支払情報、登録連絡担当者の氏名・連絡先、お客様から送付される診断情報を取り扱います。カード決済、税額計算、請求書の発行は Stripe が、本サイトのホスティングは Vercel が行い、当社はカード番号の全桁を閲覧・保存しません。当社チームの Slack に送る請求通知には、プラン、金額、請求先の国、Stripe 上の記録へのリンクのみを含め、氏名・メールアドレス・税務登録番号は含めません。これらの情報は、請求、サポートの提供・改善、法令・税務上の義務の履行のためにのみ利用し、請求記録は法令が定める期間保存し、診断情報はケースで不要になった時点で削除します。開示・訂正・削除のご依頼は <a href="mailto:service@soramitsu.co.jp">service@soramitsu.co.jp</a> までご連絡ください。当社の<a href="https://soramitsu.co.jp/privacy" rel="noopener">プライバシーポリシー</a>もあわせて適用されます。</p>
+
+    <h2 id="law"><span class="only-en">10. Governing law</span><span class="only-ja">10. 準拠法・管轄</span></h2>
+    <p class="only-en">These terms are governed by the laws of Japan. The Tokyo District Court has exclusive jurisdiction in the first instance. We may update these terms. Each version is kept at its own fixed address (this one: <a href="/legal/support-terms-2026-11-27">/legal/support-terms-2026-11-27</a>), and the version you accepted at checkout is recorded with your subscription and applies until your next renewal after we notify you of a change.</p>
+    <p class="only-ja">本規約は日本法に準拠し、東京地方裁判所を第一審の専属的合意管轄裁判所とします。当社は本規約を改定することがあります。各版は固定のアドレスで公開し（本版：<a href="/legal/support-terms-2026-11-27">/legal/support-terms-2026-11-27</a>）、決済時に同意された版はご契約に記録され、改定を通知した後の次回更新時まで適用されます。</p>
+  </article>
+</main>
+
+<!--SITE-FOOTER-->
+<footer class="site-footer">
+  <div class="wrap site-footer__inner">
+    <div class="site-footer__brand">
+      <img src="/assets/brand/kasumi-logo-with-katakana.svg" alt="Kasumi カスミ" width="180" height="120" loading="lazy">
+      <p class="site-footer__license" data-i18n="foot.license">Open source under the Apache-2.0 license.</p>
+    </div>
+    <nav class="site-footer__nav" data-i18n-attr="aria-label:a11y.footer" aria-label="Footer">
+      <ul role="list">
+        <li><a href="https://github.com/soramitsu/kasumi" rel="noopener">GitHub</a></li>
+        <li><a href="https://github.com/soramitsu/kasumi/tree/master/docs" rel="noopener" data-i18n="foot.docs">Documentation</a></li>
+        <li><a href="https://github.com/soramitsu/kasumi/blob/master/SECURITY.md" rel="noopener" data-i18n="foot.security">Security</a></li>
+        <li><a href="https://github.com/soramitsu/kasumi/blob/master/LICENSE" rel="noopener">Apache-2.0</a></li>
+      </ul>
+      <ul role="list">
+        <li><a href="/legal/tokushoho" data-i18n="foot.tokushoho">Legal notice (特定商取引法に基づく表記)</a></li>
+        <li><a href="/legal/support-terms" data-i18n="foot.terms">Support terms</a></li>
+        <li><a href="https://soramitsu.co.jp/privacy" rel="noopener" data-i18n="foot.privacy">Privacy</a></li>
+      </ul>
+    </nav>
+    <address class="site-footer__addr">
+      <span class="site-footer__org">Soramitsu Co., Ltd. / ソラミツ株式会社</span>
+      <span data-i18n="foot.addr1">Link Square Shinjuku 16F, 5-27-5 Sendagaya,</span>
+      <span data-i18n="foot.addr2">Shibuya-ku, Tokyo 151-0051</span>
+    </address>
+  </div>
+</footer>
+<!--/SITE-FOOTER-->
+</body>
+</html>
