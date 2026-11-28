@@ -34,8 +34,10 @@ impl Block {
 struct Decoded {
     id: usize,
     bytes: Vec<u8>,
-    offsets: Vec<u32>,
+    // Larger blocks have exactly one row, at offset zero.
+    offsets: Box<[u16]>,
 }
+const _: () = assert!(BLOCK_TARGET <= u16::MAX as usize);
 
 #[cfg(test)]
 std::thread_local! {
@@ -43,7 +45,7 @@ std::thread_local! {
 }
 
 impl Decoded {
-    fn row(&self, offset: u32) -> (&[u8], &[u8]) {
+    fn row(&self, offset: u16) -> (&[u8], &[u8]) {
         #[cfg(test)]
         ROW_PROBES.with(|count| count.set(count.get() + 1));
         let record = &self.bytes[offset as usize..];
@@ -73,7 +75,7 @@ impl Decoded {
         } else {
             raw
         };
-        let mut bytes = if block.zstd {
+        let bytes = if block.zstd {
             codec::zstd_expand(&packed, stored_len)?
         } else {
             let mut bytes = vec![0; stored_len];
@@ -84,19 +86,36 @@ impl Decoded {
             }
             bytes
         };
-        if prefixed {
-            bytes = prefix::decode(&bytes, raw)?;
-        }
-        let mut input = bytes.as_slice();
+        drop(packed);
         let max_rows = if raw > BLOCK_TARGET {
             1
         } else {
             raw / ROW_HEADER
         };
         let mut offsets = Vec::with_capacity(max_rows);
+        let bytes = if prefixed {
+            prefix::decode(&bytes, raw, first, last, &mut offsets)?
+        } else {
+            Self::index_plain(&bytes, first, last, &mut offsets)?;
+            bytes
+        };
+        Ok(Self {
+            id,
+            bytes,
+            offsets: offsets.into_boxed_slice(),
+        })
+    }
+
+    fn index_plain(
+        bytes: &[u8],
+        first: &[u8],
+        last: &[u8],
+        offsets: &mut Vec<u16>,
+    ) -> io::Result<()> {
+        let mut input = bytes;
         let mut previous = None;
         while !input.is_empty() {
-            offsets.push((bytes.len() - input.len()) as u32);
+            offsets.push((bytes.len() - input.len()) as u16);
             let key_len = u16_from(&mut input)?;
             let value_len = u32_from(&mut input)?;
             if key_len > MAX_KEY || value_len > MAX_VALUE {
@@ -108,17 +127,14 @@ impl Decoded {
                 return Err(invalid("sorted-run keys or first boundary differ"));
             }
             previous = Some(key);
-            if raw > BLOCK_TARGET && !input.is_empty() {
+            if bytes.len() > BLOCK_TARGET && !input.is_empty() {
                 return Err(invalid("oversized sorted-run block must contain one row"));
             }
         }
         if previous != Some(last) {
             return Err(invalid("sorted-run last boundary differs"));
         }
-        // The worst-case row count sized the buffer; a cached block keeps only
-        // the offsets of the rows it actually holds.
-        offsets.shrink_to_fit();
-        Ok(Self { id, bytes, offsets })
+        Ok(())
     }
 }
 
@@ -222,6 +238,9 @@ impl FrozenRun {
             let packed_bound = if zstd {
                 codec::zstd_bound(stored_len)
             } else {
+                if !codec::lz4_lengths_possible(packed, stored_len) {
+                    return Err(invalid("impossible sorted-run LZ4 length"));
+                }
                 lz4_flex::block::get_maximum_output_size(stored_len)
             };
             if packed == 0 || packed > packed_bound || first_len > MAX_KEY || last_len > MAX_KEY {

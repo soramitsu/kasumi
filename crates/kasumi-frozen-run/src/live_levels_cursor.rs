@@ -52,7 +52,7 @@ impl RunCursor {
         run: &mut FrozenRun,
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
-    ) -> io::Result<Option<(usize, u32)>> {
+    ) -> io::Result<Option<(usize, u16)>> {
         loop {
             let row = if self.reverse {
                 self.rows.next_back()
@@ -92,7 +92,7 @@ impl RunCursor {
 }
 
 impl FrozenRun {
-    pub(crate) fn cursor_row(&mut self, at: (usize, u32)) -> io::Result<(&[u8], &[u8])> {
+    pub(crate) fn cursor_row(&mut self, at: (usize, u16)) -> io::Result<(&[u8], &[u8])> {
         Ok(self.block(at.0)?.row(at.1))
     }
 

@@ -194,6 +194,24 @@ fn authenticated_malformed_lengths_order_and_boundaries_are_rejected() {
 }
 
 #[test]
+fn lz4_expansion_bound_accepts_dense_blocks_and_checks_directory_lengths_at_open() {
+    let raw = vec![0; 1 << 20];
+    let dense = lz4_flex::block::compress(&raw);
+    assert!(raw.len() > 250 * dense.len());
+    assert!(codec::lz4_lengths_possible(dense.len(), raw.len()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("run");
+    let raw = [1, 0, 0, 0, 0, 0, 1];
+    let packed = lz4_flex::block::compress(&raw).len() as u32;
+    let root = malformed(&path, &raw, (packed, packed * 255 + 1), 1, 1, 1);
+    assert_eq!(
+        FrozenRun::open(path, root).err().unwrap().to_string(),
+        "impossible sorted-run LZ4 length"
+    );
+}
+
+#[test]
 fn mid_block_seek_is_logarithmic_and_interior_blocks_only_probe_returned_rows() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("run");
@@ -306,6 +324,46 @@ fn authenticated_invalid_prefixes_cannot_reach_the_row_visitor() {
             })
         });
         assert!(result.is_err());
+    }
+}
+
+#[test]
+fn prefix_order_and_row_offsets_match_full_keys_for_every_legal_shared_length() {
+    let keys: &[&[u8]] = &[b"", b"a", b"aa", b"ab", b"abc", b"a\xff", b"\xff"];
+    for &first in keys {
+        for &last in keys {
+            let common = first.iter().zip(last).take_while(|(a, b)| a == b).count();
+            for shared in 0..=common {
+                let mut input = Vec::new();
+                let mut plain = Vec::new();
+                for (key, copied) in [(first, 0), (last, shared)] {
+                    let suffix = &key[copied..];
+                    input.extend((copied as u16).to_le_bytes());
+                    input.extend((suffix.len() as u16).to_le_bytes());
+                    input.extend(1u32.to_le_bytes());
+                    input.extend(suffix);
+                    input.push(42);
+                    plain.extend((key.len() as u16).to_le_bytes());
+                    plain.extend(1u32.to_le_bytes());
+                    plain.extend(key);
+                    plain.push(42);
+                }
+                let mut offsets = Vec::new();
+                let decoded = prefix::decode(&input, plain.len(), first, last, &mut offsets);
+                if first < last {
+                    assert_eq!(decoded.unwrap(), plain);
+                    assert_eq!(offsets, [0, (ROW_HEADER + first.len() + 1) as u16]);
+                    for (start, end) in [(last, last), (first, first)] {
+                        assert!(
+                            prefix::decode(&input, plain.len(), start, end, &mut Vec::new())
+                                .is_err()
+                        );
+                    }
+                } else {
+                    assert!(decoded.is_err());
+                }
+            }
+        }
     }
 }
 
@@ -484,6 +542,15 @@ fn authenticated_invalid_zstandard_blocks_cannot_reach_the_row_visitor() {
     // their one difference from it.
     assert_eq!(image(&frame, ZSTD_FLAG, len, true).unwrap(), 2);
     assert_eq!(image(&lz4, 0, len, true).unwrap(), 2);
+    let mut compressor = zstd::bulk::Compressor::new(1).unwrap();
+    compressor.include_contentsize(false).unwrap();
+    let implicit = compressor.compress(&raw).unwrap();
+    assert_eq!(
+        zstd::zstd_safe::get_frame_content_size(&implicit).unwrap(),
+        None
+    );
+    assert_eq!(image(&implicit, ZSTD_FLAG, len, true).unwrap(), 2);
+    assert!(image(&implicit, ZSTD_FLAG, len + 1, true).is_err());
     for (packed, flags, raw_len, version_3) in [
         (b"not a Zstandard frame".as_slice(), ZSTD_FLAG, len, true),
         (lz4.as_slice(), ZSTD_FLAG, len, true), // an LZ4 block marked as Zstandard

@@ -937,6 +937,35 @@ struct PageInfo {
 }
 
 impl PageInfo {
+    /// Start at the nearest validated sample at or below the requested rank.
+    /// At most ceil(count / 4) records need decoding, even with uneven sizes.
+    fn entry_offset(self, bytes: &[u8], index: usize) -> Result<usize, CoreError> {
+        if index >= self.count {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory child index exceeds page",
+            )));
+        }
+        if index == 0 {
+            return Ok(HEADER_BYTES);
+        }
+        if index == self.count - 1 {
+            return Ok(usize::from(self.last));
+        }
+        let (rank, mut at) = if index >= 3 * self.count / 4 {
+            (3 * self.count / 4, usize::from(self.quartiles[2]))
+        } else if index >= self.count / 2 {
+            (self.count / 2, usize::from(self.quartiles[1]))
+        } else if index >= self.count / 4 {
+            (self.count / 4, usize::from(self.quartiles[0]))
+        } else {
+            (0, HEADER_BYTES)
+        };
+        for _ in rank..index {
+            at = page_entry(bytes, at, self.used)?.1;
+        }
+        Ok(at)
+    }
+
     /// The last entry below the bound (or equal for inclusive seeks) lies in
     /// this quarter if it exists. Table markers commonly occur at the start.
     fn floor_window(
@@ -1203,20 +1232,8 @@ impl std::ops::Deref for PageBytes<'_> {
 }
 
 fn nth_entry(bytes: &[u8], info: PageInfo, index: usize) -> Result<Entry<'_>, CoreError> {
-    if index >= info.count {
-        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-            "directory child index exceeds page",
-        )));
-    }
-    let mut at = HEADER_BYTES;
-    for i in 0..info.count {
-        let (entry, end) = page_entry(bytes, at, info.used)?;
-        if i == index {
-            return Ok(entry);
-        }
-        at = end;
-    }
-    unreachable!("validated page entry count")
+    let at = info.entry_offset(bytes, index)?;
+    Ok(page_entry(bytes, at, info.used)?.0)
 }
 
 pub(crate) const fn point_bounds_request_bytes() -> u64 {
@@ -1255,15 +1272,7 @@ impl Bounds {
         info: PageInfo,
         index: usize,
     ) -> Result<DirectoryPageRef, CoreError> {
-        if index >= info.count {
-            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                "directory child index exceeds page",
-            )));
-        }
-        let mut at = HEADER_BYTES;
-        for _ in 0..index {
-            at = page_entry(bytes, at, info.used)?.1;
-        }
+        let at = info.entry_offset(bytes, index)?;
         self.child_at(bytes, info, index, at)
     }
 
@@ -2457,7 +2466,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_point_and_predecessor_reads_scan_one_quarter_of_a_variable_width_page() {
+    fn warm_point_predecessor_and_ordinal_reads_scan_one_quarter_of_a_variable_width_page() {
         use crate::cache::CacheConfig;
         use crate::page_cache::CachedDirectoryBackend;
 
@@ -2496,6 +2505,23 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
+            PARSED_ENTRIES.with(|count| count.set(Some(0)));
+            let selected = reader.at_ordinal(root, i.into()).unwrap().unwrap();
+            let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
+            assert_eq!(selected.key(), DirectoryKey::row("t", &key(i)));
+            assert!(parsed <= 48, "rank {i} parsed {parsed} entries");
+            if i == 191 {
+                assert_eq!(parsed, 1);
+            }
+            for probe in [key(i), (2 * i + 1).to_be_bytes().to_vec()] {
+                PARSED_ENTRIES.with(|count| count.set(Some(0)));
+                let rank = reader
+                    .ordinal_after(root, DirectoryKey::row("t", &probe))
+                    .unwrap();
+                let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
+                assert_eq!(rank, u64::from(i) + 1);
+                assert!(parsed <= 50, "rank after {i} parsed {parsed} entries");
+            }
         }
         PARSED_ENTRIES.with(|count| count.set(Some(0)));
         let last = reader.get(root, DirectoryKey::row("t", &key(191))).unwrap();

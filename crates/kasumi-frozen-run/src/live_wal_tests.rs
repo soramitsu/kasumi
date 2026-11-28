@@ -199,6 +199,17 @@ fn authenticated_invalid_encoding_is_rejected_before_callback_or_large_allocatio
 }
 
 #[test]
+fn compressed_frame_header_rejects_impossible_expansion_lengths() {
+    let previous = generation_digest(&wal_header(BASE, ROOT));
+    let packed = 16;
+    let header = |raw| frame_header(&previous, BASE + 1, 1, raw, packed, true);
+    // The ratio is only a necessary condition. Payload validation follows
+    // for any header whose lengths remain possible.
+    assert!(parse_header(&header(packed * 255), &previous, BASE + 1).is_ok());
+    assert!(parse_header(&header(packed * 255 + 1), &previous, BASE + 1).is_err());
+}
+
+#[test]
 fn transplanted_valid_frames_fail_for_a_different_generation_or_predecessor() {
     let (source, mut left) = create();
     left.append(&[WalOp::Delete(b"left")]).unwrap();

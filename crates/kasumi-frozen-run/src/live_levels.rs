@@ -347,7 +347,7 @@ pub(super) fn get<'a>(
 struct Cursor {
     later: Vec<Link>,
     scan: Option<RunCursor>,
-    pos: Option<(usize, u32)>,
+    pos: Option<(usize, u16)>,
     key: Vec<u8>,
     verify_membership: bool,
 }

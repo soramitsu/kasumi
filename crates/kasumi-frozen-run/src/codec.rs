@@ -21,6 +21,13 @@ pub enum BlockCodec {
 /// at about half of level 9's time.
 const ZSTD_LEVEL: i32 = 7;
 
+/// Each literal consumes an input byte. A sequence token covers at most 19
+/// initial match bytes and each length extension adds at most 255. Thus a
+/// block can never expand past 255 times its packed size.
+pub(crate) fn lz4_lengths_possible(packed: usize, expanded: usize) -> bool {
+    packed >= expanded.div_ceil(255)
+}
+
 std::thread_local! {
     static COMPRESSOR: RefCell<Option<zstd::bulk::Compressor<'static>>> =
         const { RefCell::new(None) };
@@ -60,6 +67,14 @@ pub(crate) fn zstd_expand(packed: &[u8], len: usize) -> io::Result<Vec<u8>> {
         || zstd::zstd_safe::find_frame_compressed_size(packed).ok() != Some(packed.len())
     {
         return Err(invalid("invalid Zstandard block"));
+    }
+    // A frame may omit its content size. If present it must agree before
+    // reserving the output buffer; the decoder still checks the actual size.
+    if zstd::zstd_safe::get_frame_content_size(packed)
+        .map_err(|_| invalid("invalid Zstandard block"))?
+        .is_some_and(|size| size != len as u64)
+    {
+        return Err(invalid("sorted-run decoded length differs"));
     }
     EXPANDER.with(|slot| {
         let mut slot = slot.borrow_mut();

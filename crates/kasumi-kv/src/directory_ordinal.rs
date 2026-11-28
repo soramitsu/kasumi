@@ -51,18 +51,18 @@ impl DirectoryReader<'_> {
             let mut at = HEADER_BYTES;
             for index in 0..info.count {
                 let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
-                at = end;
                 let count = le_u64(&entry.value[PAGE_REF_BYTES..]);
                 if ordinal < count {
-                    selected = Some(index);
+                    selected = Some((index, at));
                     break;
                 }
                 ordinal -= count;
+                at = end;
             }
-            let index = selected.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+            let (index, at) = selected.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory ordinal exceeds authenticated child counts",
             )))?;
-            reference = bounds.child(&buffer.bytes, info, index)?;
+            reference = bounds.child_at(&buffer.bytes, info, index, at)?;
         }
     }
 
@@ -87,31 +87,42 @@ impl DirectoryReader<'_> {
         let mut ordinal = 0u64;
         loop {
             let info = self.load(&mut buffer, root, reference, &bounds)?;
+            if info.level == 0 {
+                // Each leaf record contributes one ordinal. The validated
+                // quarter's starting rank counts every key skipped before it.
+                let (indices, mut at) = info.floor_window(&buffer.bytes, key, false)?;
+                let mut rank = indices.start as u64;
+                for _ in indices {
+                    let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
+                    if entry.key > key {
+                        break;
+                    }
+                    rank += 1;
+                    at = end;
+                }
+                return ordinal.checked_add(rank).ok_or(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("directory ordinal overflows"),
+                ));
+            }
             let mut selected = None;
             let mut at = HEADER_BYTES;
             for index in 0..info.count {
                 let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
-                at = end;
                 if entry.key > key {
                     break;
                 }
-                if info.level == 0 {
-                    ordinal = ordinal.checked_add(1).ok_or(CoreError::new(
+                if let Some((_, _, count)) = selected {
+                    ordinal = ordinal.checked_add(count).ok_or(CoreError::new(
                         crate::CoreErrorCause::Corrupt("directory ordinal overflows"),
                     ))?;
-                } else {
-                    if let Some((_, count)) = selected {
-                        ordinal = ordinal.checked_add(count).ok_or(CoreError::new(
-                            crate::CoreErrorCause::Corrupt("directory ordinal overflows"),
-                        ))?;
-                    }
-                    selected = Some((index, le_u64(&entry.value[PAGE_REF_BYTES..])));
                 }
+                selected = Some((index, at, le_u64(&entry.value[PAGE_REF_BYTES..])));
+                at = end;
             }
-            if info.level == 0 || selected.is_none() {
+            let Some((index, at, _)) = selected else {
                 return Ok(ordinal);
-            }
-            reference = bounds.child(&buffer.bytes, info, selected.expect("selected child").0)?;
+            };
+            reference = bounds.child_at(&buffer.bytes, info, index, at)?;
         }
     }
 }

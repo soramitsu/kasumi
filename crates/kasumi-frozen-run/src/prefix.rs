@@ -26,9 +26,15 @@ pub(super) fn encode(mut rows: &[u8]) -> io::Result<Vec<u8>> {
     Ok(encoded)
 }
 
-/// Expand only local backreferences to the preceding reconstructed key.
-/// Reject every length before extending the bounded destination buffer.
-pub(super) fn decode(mut input: &[u8], raw_len: usize) -> io::Result<Vec<u8>> {
+/// Expand, verify and index a prefix-coded block in one pass.
+pub(super) fn decode(
+    mut input: &[u8],
+    raw_len: usize,
+    first: &[u8],
+    last: &[u8],
+    offsets: &mut Vec<u16>,
+) -> io::Result<Vec<u8>> {
+    debug_assert!(raw_len <= BLOCK_TARGET);
     let mut rows = Vec::with_capacity(raw_len);
     let mut previous_key = 0..0;
     while !input.is_empty() {
@@ -46,6 +52,17 @@ pub(super) fn decode(mut input: &[u8], raw_len: usize) -> io::Result<Vec<u8>> {
                 "sorted-run prefix expands past the authenticated length",
             ));
         }
+        // Both keys share the copied prefix, even if the writer could have
+        // copied more. Their remaining suffixes determine strict byte order.
+        let ordered = if rows.is_empty() {
+            suffix == first
+        } else {
+            suffix > &rows[previous_key.start + shared..previous_key.end]
+        };
+        if !ordered {
+            return Err(invalid("sorted-run keys or first boundary differ"));
+        }
+        offsets.push(rows.len() as u16);
         rows.extend_from_slice(&(key_len as u16).to_le_bytes());
         rows.extend_from_slice(&(value_len as u32).to_le_bytes());
         let key_start = rows.len();
@@ -56,6 +73,9 @@ pub(super) fn decode(mut input: &[u8], raw_len: usize) -> io::Result<Vec<u8>> {
     }
     if rows.len() != raw_len {
         return Err(invalid("sorted-run prefix expanded length differs"));
+    }
+    if offsets.is_empty() || &rows[previous_key] != last {
+        return Err(invalid("sorted-run last boundary differs"));
     }
     Ok(rows)
 }

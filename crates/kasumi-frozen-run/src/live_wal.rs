@@ -223,7 +223,7 @@ fn parse_header(bytes: &[u8; HEADER], previous: &[u8; DIGEST], sequence: u64) ->
         || count > MAX_WAL_BATCH_OPS
         || count > raw
         || (count == 0 && raw != 0)
-        || (compressed && (stored == 0 || stored >= raw))
+        || (compressed && (stored >= raw || !crate::codec::lz4_lengths_possible(stored, raw)))
         || (!compressed && stored != raw)
     {
         return Err(invalid("invalid WAL frame bounds"));

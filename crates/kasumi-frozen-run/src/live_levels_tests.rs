@@ -237,6 +237,36 @@ fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
 }
 
 #[test]
+fn shortened_separators_route_binary_prefixes_and_unstored_bounds() {
+    let keys: &[&[u8]] = &[
+        b"",
+        b"a",
+        b"a\0z",
+        b"a\xff",
+        b"b\x80",
+        b"b\xff",
+        b"\xff\xff",
+    ];
+    let data: Delta = keys
+        .iter()
+        .map(|&key| (key.to_vec(), Some(key.to_vec())))
+        .collect();
+    let mut run = level(&data, &mut [], true, 1); // Seven pieces, including a final incomplete carry.
+    for &key in keys {
+        assert_eq!(run.lookup(key).unwrap(), Some(Some(key)));
+    }
+    let mut splits: Vec<_> = run.memo.branches.iter().map(|b| b.split.as_ref()).collect();
+    splits.sort_unstable();
+    assert_eq!(
+        splits,
+        [b"a".as_slice(), b"a\0", b"a\xff", b"b", b"b\xff", b"\xff"]
+    );
+    for &gap in &[b"a\0".as_slice(), b"a\0y", b"a\x80", b"b", b"b\0", b"\xff"] {
+        assert_eq!(run.lookup(gap).unwrap(), None);
+    }
+}
+
+#[test]
 fn repeated_descents_follow_kept_branches_and_read_only_the_leaf() {
     let key = |i: u16| i.to_be_bytes().to_vec();
     let data: Delta = (0..300)
@@ -305,13 +335,13 @@ fn kept_branches_stay_within_their_count_and_key_bounds() {
             );
         }
         assert_eq!(run.memo.branches.len(), MEMO_BRANCHES);
-        assert_eq!(run.memo.key_bytes, 2 * MEMO_BRANCHES);
+        assert!((MEMO_BRANCHES..=2 * MEMO_BRANCHES).contains(&run.memo.key_bytes));
     }
     assert_eq!(run.lookup(&[5, 120, 0]).unwrap(), None);
 
     // Long split keys reach the byte bound first.
     let long = |i: u8| {
-        let mut key = vec![i; 4000];
+        let mut key = vec![0; 4000];
         key.push(i);
         key
     };
@@ -337,7 +367,8 @@ fn kept_branches_stay_within_their_count_and_key_bounds() {
 #[test]
 fn a_warm_memo_serves_every_scan_and_still_authenticates_what_it_reads() {
     use std::os::unix::fs::FileExt;
-    let key = |i: u16| i.to_be_bytes().to_vec();
+    // The two-byte split is in the gap before the actual three-byte key.
+    let key = |i: u16| [i.to_be_bytes().as_slice(), &[0x80]].concat();
     let data: Delta = (0..64).map(|i| (key(i), Some(vec![i as u8; 12]))).collect();
     let mut file = tempfile::tempfile().unwrap();
     let hash = write_pieces(&mut file, &data, &mut [], true, 80, codec()).unwrap();
@@ -364,6 +395,8 @@ fn a_warm_memo_serves_every_scan_and_still_authenticates_what_it_reads() {
         Excluded(&[0, 9][..]),
         Included(&[0, 40][..]),
         Excluded(&[0, 40][..]),
+        Included(&[0, 40, 0x80][..]),
+        Excluded(&[0, 40, 0x80][..]),
     ];
     for _ in 0..2 {
         for &lo in &bounds {

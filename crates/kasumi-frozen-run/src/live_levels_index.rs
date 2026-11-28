@@ -171,7 +171,8 @@ pub(super) fn open(file: &File, expected: [u8; 32]) -> io::Result<Option<Link>> 
 }
 
 struct Subtree {
-    first: Vec<u8>,
+    // Lower separator shared with the immediately preceding piece, if any.
+    lower: Vec<u8>,
     link: Link,
 }
 fn append(file: &mut File, bytes: &[u8]) -> io::Result<Link> {
@@ -185,11 +186,11 @@ fn append(file: &mut File, bytes: &[u8]) -> io::Result<Link> {
 }
 fn join(file: &mut File, left: Subtree, right: Subtree) -> io::Result<Subtree> {
     let mut bytes = vec![1];
-    put_key(&mut bytes, &right.first);
+    put_key(&mut bytes, &right.lower);
     left.link.encode(&mut bytes);
     right.link.encode(&mut bytes);
     Ok(Subtree {
-        first: left.first,
+        lower: left.lower,
         link: append(file, &bytes)?,
     })
 }
@@ -197,9 +198,23 @@ fn join(file: &mut File, left: Subtree, right: Subtree) -> io::Result<Subtree> {
 #[derive(Default)]
 pub(super) struct Builder {
     heights: Vec<Option<Subtree>>,
+    previous_last: Option<Vec<u8>>,
 }
 impl Builder {
     pub fn push(&mut self, file: &mut File, leaf: Leaf) -> io::Result<()> {
+        // Every join on the binary carry stack is between adjacent subtrees.
+        // The shortest prefix greater than the preceding maximum therefore
+        // separates the entire right subtree, at whichever height it is joined.
+        let lower = if let Some(left) = &self.previous_last {
+            let right = &leaf.first;
+            let common = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+            if left[common..] >= right[common..] {
+                return Err(invalid("unordered live level pieces"));
+            }
+            right[..=common].to_vec()
+        } else {
+            Vec::new()
+        };
         let mut bytes = vec![0];
         put_key(&mut bytes, &leaf.first);
         put_key(&mut bytes, &leaf.last);
@@ -208,9 +223,10 @@ impl Builder {
             deleted.encode(&mut bytes);
         }
         let mut tree = Subtree {
-            first: leaf.first,
+            lower,
             link: append(file, &bytes)?,
         };
+        self.previous_last = Some(leaf.last);
         for slot in &mut self.heights {
             let Some(left) = slot.take() else {
                 *slot = Some(tree);
