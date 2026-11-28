@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="meta.title">Kasumi（カスミ）— 耐久性の高い JSON データベース</title>
-<meta name="description" data-i18n-attr="content:meta.desc" content="Kasumi は、次の書き込みを大切にするアプリケーションのための、オープンソースのセルフホスト型 JSON データベースです。Rust ネイティブ、マルチテナント、暗号化対応で、gRPC と MCP から利用できます。">
+<title data-i18n="meta.title">Kasumi（カスミ）— セルフホスト型のドキュメント指向データベース</title>
+<meta name="description" data-i18n-attr="content:meta.desc" content="Kasumi は、アトミックな書き込み、安全な再試行、テナントごとの暗号化ストレージに対応したオープンソースのドキュメント指向データベースです。Rust、gRPC、MCP から利用できます。">
 <meta name="theme-color" content="#E3232C">
 <link rel="canonical" href="https://kasumi.soramitsu.co.jp/ja">
 <link rel="alternate" hreflang="en" href="https://kasumi.soramitsu.co.jp/en">
@@ -12,8 +12,8 @@
 <link rel="alternate" hreflang="x-default" href="https://kasumi.soramitsu.co.jp/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Kasumi">
-<meta property="og:title" data-i18n-attr="content:meta.title" content="Kasumi（カスミ）— 耐久性の高い JSON データベース">
-<meta property="og:description" data-i18n-attr="content:meta.ogDesc" content="次の書き込みを大切にするアプリケーションのための、耐久性の高い JSON データベース。Rust ネイティブ、マルチテナント、暗号化対応。サービス、gRPC クライアント、MCP エージェントからすぐに利用できます。">
+<meta property="og:title" data-i18n-attr="content:meta.title" content="Kasumi（カスミ）— セルフホスト型のドキュメント指向データベース">
+<meta property="og:description" data-i18n-attr="content:meta.ogDesc" content="関連する変更をまとめてコミットし、書き込みは同じキーで再試行できます。Rust アプリケーションに組み込むことも、自社のサーバーで運用することもできます。">
 <meta property="og:locale" data-i18n-attr="content:meta.locale" content="ja_JP">
 <meta property="og:url" content="https://kasumi.soramitsu.co.jp/ja">
 <meta property="og:image" content="https://kasumi.soramitsu.co.jp/assets/brand/kasumi-logo-with-katakana.png">
@@ -114,16 +114,15 @@
 
     <div class="hero__content wrap">
       <p class="eyebrow hero__eyebrow" data-i18n="hero.eyebrow">オープンソース · Apache-2.0 · セルフホスト</p>
-      <h1 class="hero__title" id="hero-title" data-i18n="hero.title"><span class="ph">次の書き込みを</span><span class="ph">大切にする</span><span class="ph">アプリケーションの</span><span class="ph">ための、</span><span class="ph">耐久性の高い</span> <span class="ph">JSON データベース。</span></h1>
-      <p class="hero__sub" data-i18n="hero.sub">Rust ネイティブ、マルチテナント、暗号化対応。サービス、gRPC クライアント、MCP エージェントからすぐに利用できます。</p>
+      <h1 class="hero__title" id="hero-title" data-i18n="hero.title"><span class="ph">書き込みをまとめて</span><span class="ph">コミットし、</span><span class="ph">安全に再試行できる</span><span class="ph">ドキュメント指向</span><span class="ph">データベース</span></h1>
+      <p class="hero__sub" data-i18n="hero.sub">Kasumi は Rust アプリケーションに組み込めるほか、単一のサーバーでもクラスタでも運用できます。認証情報と暗号化ストレージはテナントごとに分かれています。</p>
       <div class="hero__cta">
         <a class="btn btn--primary" href="https://github.com/soramitsu/kasumi#quickstart-run-a-local-standalone-database" rel="noopener">
           <span data-i18n="hero.cta.start">はじめる</span>
           <svg class="btn__icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M4 10h11M10.5 5.5 15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </a>
-        <a class="btn btn--ghost" href="#support" data-i18n="hero.cta.support">本番サポート</a>
+        <a class="btn btn--ghost" href="#support" data-i18n="hero.cta.support">サポートプランを比較</a>
       </div>
-      <p class="status" id="release-status" data-i18n="status.note">Kasumi の最初の本番リリースは開発中で、リリース認定済みのリビジョンはまだありません。サポートプランは現行ビルドを対象とし、1.0 以降も継続します。</p>
     </div>
   </div>
 </section>
@@ -138,8 +137,8 @@
   <div class="wrap">
     <header class="section__head reveal">
       <p class="kicker" data-i18n="why.kicker">Kasumi の特長</p>
-      <h2 id="why-title" data-i18n="why.title"><span class="ph">再試行、再起動、</span><span class="ph">レプリカ障害を、</span><span class="ph">重複やあいまいな状態に</span><span class="ph">しないために。</span></h2>
-      <p class="lede" data-i18n="why.lede">JSON ドキュメントを保存し、スキーマで検証し、型付きインデックスや日本語・英語の全文検索で問い合わせ、関連する変更をひとつの永続的な操作としてコミットできます。</p>
+      <h2 id="why-title" data-i18n="why.title"><span class="ph">注文処理を</span><span class="ph">ひとつのバッチで</span></h2>
+      <p class="lede" data-i18n="why.lede">注文の作成、在庫の引き当て、カートの更新。別々のコレクションにまたがる変更も、Kasumi はまとめてコミットし、バッチの処理結果をレシートに記録します。</p>
     </header>
 
     <ul class="cards" role="list">
@@ -147,8 +146,8 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">01</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M6 16a10 10 0 0 1 17.2-6.9M26 16a10 10 0 0 1-17.2 6.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M23.5 4.5v5h-5M8.5 27.5v-5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.1.title">再試行を、設計の前提に</h3>
-        <p data-i18n="why.1.body">すべての更新には冪等キーが付き、永続的なレシートが残ります。通信の結果が不確かなときは、同じバッチを再送するだけ。Kasumi は元の操作を解決し、二重に適用することはありません。</p>
+        <h3 class="pop" data-i18n="why.1.title">キーで書き込み結果を確認</h3>
+        <p data-i18n="why.1.body">注文処理の途中で接続が切れても、冪等キーでレシートを照会できます。同じキーで同じバッチを再送しても、注文は重複しません。</p>
         <ul class="chips" role="list">
           <li data-i18n="why.1.chip1">冪等キー</li>
           <li data-i18n="why.1.chip2">永続的なレシート</li>
@@ -158,8 +157,8 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">02</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M12 5c-3 0-4 1.500-4 4v3.500c0 2-1 3.500-3 3.500 2 0 3 1.500 3 3.500V23c0 2.500 1 4 4 4M20 5c3 0 4 1.500 4 4v3.500c0 2 1 3.500 3 3.500-2 0-3 1.500-3 3.500V23c0 2.500-1 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.2.title">あいまいさのない JSON</h3>
-        <p data-i18n="why.2.body">JSON Schema、厳密な数値、JSON Pointer によるフィールドパス、条件付き書き込み、集計、カーソルページング、宣言型インデックス。データが増えても、アプリケーションの挙動は予測可能なままです。</p>
+        <h3 class="pop" data-i18n="why.2.title">ドキュメントの形式を定義</h3>
+        <p data-i18n="why.2.body">JSON Schema でドキュメントを検証し、検索に使うフィールドにインデックスを設定できます。価格や数量を比較するときも、JSON の数値の精度を保ちます。</p>
         <ul class="chips" role="list">
           <li data-i18n="why.2.chip1">JSON Schema</li>
           <li data-i18n="why.2.chip2">厳密な数値</li>
@@ -170,22 +169,22 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">03</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><rect x="5" y="5" width="22" height="22" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 12h12M10 16h12M10 20h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <h3 class="pop" data-i18n="why.3.title">ワークフローを、ひとつのアトミックな単位で</h3>
-        <p data-i18n="why.3.body">注文の更新、在庫の引き当て、カートのクリアを 1 つのバッチでコミット。事前条件と読み取りアサーションにより、確認した状態がすでに変わっていれば、バッチ全体が拒否されます。</p>
+        <h3 class="pop" data-i18n="why.3.title">コミット前に在庫を確認</h3>
+        <p data-i18n="why.3.body">読み取った在庫ドキュメントのバージョンを条件に指定します。その後に別の注文で在庫が更新されていれば、Kasumi はバッチ全体を拒否します。</p>
       </li>
       <li class="card tilt reveal" data-tilt>
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">04</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><rect x="4" y="6" width="10" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="18" y="6" width="10" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 12v8M23 12v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <h3 class="pop" data-i18n="why.4.title">運用できる分離</h3>
-        <p data-i18n="why.4.body">テナントごとにポリシー、認証情報、暗号化ストレージ、監査記録を分離。レプリケーション構成では Raft グループもテナント単位です。ネットワークアクセスには TLS 1.3、mTLS、サーバー証明書のピン留め、ベアラー認証情報を使用します。</p>
+        <h3 class="pop" data-i18n="why.4.title">テナントごとにデータを分離</h3>
+        <p data-i18n="why.4.body">テナントごとにアクセスポリシー、暗号化ストレージ、監査記録を分けて管理します。レプリケーション構成では Raft グループもテナントごとに分かれます。</p>
       </li>
       <li class="card tilt reveal" data-tilt>
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">05</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M6 9.500 12 15l-6 5.500M15 22h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.5.title">人にもエージェントにも使いやすいインターフェース</h3>
-        <p data-i18n="why.5.body">サービスには Rust SDK、スクリプトやデバッグには <code>kasumictl</code>、他の言語にはネイティブ Protobuf、認可されたエージェントのワークフローには MCP を。</p>
+        <h3 class="pop" data-i18n="why.5.title">アプリケーションから接続</h3>
+        <p data-i18n="why.5.body">Rust からは SDK、シェルからは <code>kasumictl</code>、他の言語からは gRPC で接続できます。エージェントは MCP 経由でドキュメントを検索・更新できます。</p>
       </li>
     </ul>
   </div>
@@ -195,9 +194,9 @@
 <section class="section sheet sheet--night retries" id="retries" aria-labelledby="retries-title">
   <div class="wrap split">
     <div class="split__text reveal">
-      <p class="kicker" data-i18n="retry.kicker">再試行モデル</p>
-      <h2 id="retries-title" data-i18n="retry.title"><span class="ph">もう一度送っても、</span><span class="ph">適用は一度だけ。</span></h2>
-      <p class="lede" data-i18n="retry.lede">ディスパッチ後に接続が切れても、同じバッチを再送するか、<code>Kasumi::mutate</code> に解決を任せるだけ。安定したキーが二重適用を防ぎます。</p>
+      <p class="kicker" data-i18n="retry.kicker">書き込みの再試行</p>
+      <h2 id="retries-title" data-i18n="retry.title"><span class="ph">注文を送ったあと、</span><span class="ph">応答が届かなかったら？</span></h2>
+      <p class="lede" data-i18n="retry.lede">元のキーを使って同じバッチを再送します。注文がすでに確定していれば、Kasumi はその書き込みのレシートを返します。Rust SDK では <code>Kasumi::mutate</code> が再試行を処理します。</p>
 
       <figure class="code code--night">
         <figcaption class="code__bar"><span class="code__dots" aria-hidden="true"></span><span class="code__name">checkout.rs</span></figcaption>
@@ -209,7 +208,7 @@
 <span class="t-k">let</span> receipt = db.<span class="t-f">mutate</span>(&amp;checkout).<span class="t-k">await</span>?;
 <span class="t-m">println!</span>(<span class="t-s">"committed revision {}"</span>, receipt.revision);</code></pre>
       </figure>
-      <p class="fineprint" data-i18n="retry.note">すべての事前条件は、ひとつの書き込み状態に対して検査されます。バージョン検査、スキーマ検証、一意制約、クォータ、認可のいずれかに失敗すると、バッチ全体が拒否されます。</p>
+      <p class="fineprint" data-i18n="retry.note">Kasumi は、同じデータベースの状態を基準にバッチ全体を検証します。バージョン、スキーマ、一意制約、クォータ、権限のいずれかの条件を満たさなければ、変更は一件も反映されません。</p>
     </div>
 
     <div class="retry reveal" data-step="1" data-retry>
@@ -247,10 +246,10 @@
       </div>
 
       <ol class="retry__steps">
-        <li><button type="button" class="retry__step" data-step-to="1"><span class="retry__n" aria-hidden="true">1</span><span class="retry__t"><b data-i18n="retry.s1.t">冪等キーを付けてバッチを送信</b><span data-i18n="retry.s1.d">キーが操作を特定します：<code>checkout:order-1001</code></span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="2"><span class="retry__n" aria-hidden="true">2</span><span class="retry__t"><b data-i18n="retry.s2.t">ディスパッチ後に接続が切断</b><span data-i18n="retry.s2.d">書き込みはコミットされましたが、応答は届きませんでした。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="3"><span class="retry__n" aria-hidden="true">3</span><span class="retry__t"><b data-i18n="retry.s3.t">同じバッチを再送</b><span data-i18n="retry.s3.d">同じプリンシパル、同じキー、同一のバッチで。新しいキーは発行しません。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="4"><span class="retry__n" aria-hidden="true">4</span><span class="retry__t"><b data-i18n="retry.s4.t">Kasumi が元のレシートを返す</b><span data-i18n="retry.s4.d">操作は繰り返されず、解決されます。適用は一度だけです。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="1"><span class="retry__n" aria-hidden="true">1</span><span class="retry__t"><b data-i18n="retry.s1.t">冪等キーを付けてバッチを送信</b><span data-i18n="retry.s1.d">この注文には <code>checkout:order-1001</code> を使います。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="2"><span class="retry__n" aria-hidden="true">2</span><span class="retry__t"><b data-i18n="retry.s2.t">接続が切れる</b><span data-i18n="retry.s2.d">注文は確定しましたが、クライアントに応答が届きませんでした。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="3"><span class="retry__n" aria-hidden="true">3</span><span class="retry__t"><b data-i18n="retry.s3.t">同じバッチを再送</b><span data-i18n="retry.s3.d">最初の送信と同じクライアントの認証主体と冪等キーを使います。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="4"><span class="retry__n" aria-hidden="true">4</span><span class="retry__t"><b data-i18n="retry.s4.t">Kasumi が元のレシートを返す</b><span data-i18n="retry.s4.d">レシートで注文が確定したリビジョンを確認できます。</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
       </ol>
       <button type="button" class="retry__toggle" data-retry-toggle data-paused="false">
         <span class="retry__toggle-icon" aria-hidden="true"></span>
@@ -265,8 +264,8 @@
   <div class="wrap">
     <header class="section__head reveal">
       <p class="kicker" data-i18n="q.kicker">クエリ</p>
-      <h2 id="queries-title" data-i18n="q.title"><span class="ph">Rust、gRPC、MCP で共通の、</span><span class="ph">型付きクエリ。</span></h2>
-      <p class="lede" data-i18n="q.lede">フィールドパスは JSON Pointer。フィルター、ソート、フィールド選択、ページング、集計、検索を、どのインターフェースからも同じ JSON で記述できます。</p>
+      <h2 id="queries-title" data-i18n="q.title"><span class="ph">Rust、gRPC、MCP で</span><span class="ph">同じクエリを使う</span></h2>
+      <p class="lede" data-i18n="q.lede">フィールドは JSON Pointer で指定します。この例では未決済の請求書を金額の高い順に並べ、金額と顧客名だけを取得します。</p>
     </header>
 
     <div class="queries__grid">
@@ -299,20 +298,20 @@
 
       <ul class="facts" role="list">
         <li class="fact reveal">
-          <h3 data-i18n="q.1.title">宣言型インデックス</h3>
-          <p data-i18n="q.1.body">ホットパスでのフィルター、ソート、グループ化には、宣言したインデックスを使います。インデックスのフィールドは型を保持し、数値は厳密な JSON 数値として比較され、暗黙の型変換は行われません。</p>
+          <h3 data-i18n="q.1.title">インデックスの定義</h3>
+          <p data-i18n="q.1.body">絞り込み、並べ替え、グループ化に使うフィールドにはインデックスを定義します。Kasumi はフィールドの型を保ち、JSON の数値を丸めずに比較します。</p>
         </li>
         <li class="fact reveal">
           <h3><code>INDEX_REQUIRED</code></h3>
-          <p data-i18n="q.2.body">宣言していないフィールドへのクエリは、範囲を限定したスキャンをリクエストで明示的に許可しないかぎり、<code>INDEX_REQUIRED</code> を返します。遅い経路は、偶然ではなく選択の結果になります。</p>
+          <p data-i18n="q.2.body">インデックスのないフィールドで絞り込むと、<code>INDEX_REQUIRED</code> が返ります。<code>allow_scan</code> を true にすると、テナントに設定した上限内でスキャンできます。</p>
         </li>
         <li class="fact reveal">
           <h3 data-i18n="q.3.title">シークページング</h3>
-          <p data-i18n="q.3.body">大規模な順序付きの走査では、シークページングが各ページを一意インデックスから直接読み取ります。サーバー側にカーソルは保持しません。</p>
+          <p data-i18n="q.3.body">一意インデックスを順にたどり、前のページの最終行に続く行から読み取ります。サーバーにカーソルを保持する必要はありません。</p>
         </li>
         <li class="fact reveal">
           <h3 data-i18n="q.4.title">日本語・英語の全文検索</h3>
-          <p data-i18n="q.4.body">テキストインデックスを宣言し、英語のステミングや日本語の形態素解析などのアナライザーを選べます。検索は、フィルター、ソート、ページング、名前付き集計と組み合わせて使えます。</p>
+          <p data-i18n="q.4.body">テキストインデックスごとに、英語のステミングや日本語の形態素解析などの解析方式を選べます。全文検索は絞り込み、並べ替え、ページング、名前付き集計と組み合わせられます。</p>
         </li>
       </ul>
     </div>
@@ -329,8 +328,8 @@
   <div class="wrap">
     <header class="section__head reveal">
       <p class="kicker" data-i18n="dep.kicker">デプロイ構成</p>
-      <h2 id="deployment-title" data-i18n="dep.title"><span class="ph">1 プロセスから 3 ボーターまで、</span><span class="ph">同じポリシーとデータモデル。</span></h2>
-      <p class="lede" data-i18n="dep.lede">組み込みとスタンドアロンは、Raft を使わずローカルでコミットします。レプリケーション構成では、設定したボーター間で Raft を使用します。</p>
+      <h2 id="deployment-title" data-i18n="dep.title"><span class="ph">アプリへの組み込み、</span><span class="ph">単一サーバー、</span><span class="ph">クラスタから選ぶ</span></h2>
+      <p class="lede" data-i18n="dep.lede">どの構成でもデータモデルとポリシーの仕組みは共通です。組み込みとスタンドアロンではローカルでコミットし、レプリケーションには Raft を使います。</p>
     </header>
 
     <ul class="deck" role="list" data-deck>
@@ -341,11 +340,11 @@
             <span class="plate plate--2 plate--glass"></span>
           </div>
         </div>
-        <p class="mode__tag" data-i18n="dep.1.tag">アプリケーションに内蔵</p>
-        <h3 data-i18n="dep.1.title">組み込み Rust</h3>
-        <p data-i18n="dep.1.body">エンジンに直接アクセス。認証とライフサイクルはアプリケーションが管理します。</p>
+        <p class="mode__tag" data-i18n="dep.1.tag">アプリケーション内</p>
+        <h3 data-i18n="dep.1.title">Rust への組み込み</h3>
+        <p data-i18n="dep.1.body">Rust からエンジンを直接呼び出します。認証とデータベースの起動・終了はアプリケーションが管理します。</p>
         <ul class="legend" role="list">
-          <li class="legend__item legend__item--glass" data-i18n="dep.1.l1">あなたの Rust アプリケーション</li>
+          <li class="legend__item legend__item--glass" data-i18n="dep.1.l1">Rust アプリケーション</li>
           <li class="legend__item legend__item--red" data-i18n="dep.1.l2">Kasumi エンジン（ローカルコミット）</li>
         </ul>
       </li>
@@ -360,11 +359,11 @@
         </div>
         <p class="mode__tag" data-i18n="dep.2.tag">サーバー 1 台</p>
         <h3 data-i18n="dep.2.title">スタンドアロン</h3>
-        <p data-i18n="dep.2.body">1 ボーターのローカルインストール。生成された TLS アイデンティティとプロファイル、暗号化ストレージ、監査、バックアップ、リカバリーツールを備えます。</p>
+        <p data-i18n="dep.2.body">1 台のサーバーで暗号化ストレージを使います。インストール時に TLS 認証情報とクライアントプロファイルを生成し、監査・バックアップ・復旧用のツールも利用できます。</p>
         <ul class="legend" role="list">
-          <li class="legend__item legend__item--glass" data-i18n="dep.2.l1">TLS アイデンティティとクライアントプロファイル</li>
+          <li class="legend__item legend__item--glass" data-i18n="dep.2.l1">TLS 認証情報とクライアントプロファイル</li>
           <li class="legend__item legend__item--rose" data-i18n="dep.2.l2">監査・バックアップ・リカバリーツール</li>
-          <li class="legend__item legend__item--red" data-i18n="dep.2.l3">エンジン（1 ボーター、ローカルコミット）</li>
+          <li class="legend__item legend__item--red" data-i18n="dep.2.l3">エンジン（1 ノード、ローカルコミット）</li>
           <li class="legend__item legend__item--ink" data-i18n="dep.2.l4">暗号化ストレージ</li>
         </ul>
       </li>
@@ -377,13 +376,13 @@
             <span class="plate plate--4 plate--glass plate--control"></span>
           </div>
         </div>
-        <p class="mode__tag" data-i18n="dep.3.tag">3 ボーター</p>
+        <p class="mode__tag" data-i18n="dep.3.tag">投票ノード 3 台</p>
         <h3 data-i18n="dep.3.title">レプリケーション</h3>
-        <p data-i18n="dep.3.body">独立した障害ドメインに置かれた 3 つの初期ボーター、テナントごとの Raft グループ、クォーラムで永続化される書き込み、そしてルーティングと運用メタデータを担う独立した Control グループ。</p>
+        <p data-i18n="dep.3.body">投票ノード 3 台を別々の障害ドメインに配置します。書き込みはテナントごとの Raft グループ内で過半数のノードに永続化します。ルーティングと運用メタデータは別の Control グループが管理します。</p>
         <ul class="legend" role="list">
           <li class="legend__item legend__item--glass" data-i18n="dep.3.l1">独立した Control グループ</li>
           <li class="legend__item legend__item--red" data-i18n="dep.3.l2">テナントごとに 1 つの Raft グループ</li>
-          <li class="legend__item legend__item--ink" data-i18n="dep.3.l3">3 ボーター、独立した障害ドメイン</li>
+          <li class="legend__item legend__item--ink" data-i18n="dep.3.l3">独立した障害ドメインに投票ノードを 1 台ずつ配置</li>
         </ul>
       </li>
     </ul>
@@ -396,14 +395,14 @@
   <div class="wrap split split--flip">
     <div class="shield reveal" aria-hidden="true" data-tilt data-tilt-max="12">
       <div class="shield__layer shield__layer--1"><span data-i18n="sec.v1">TLS 1.3・mTLS・証明書のピン留め</span></div>
-      <div class="shield__layer shield__layer--2"><span data-i18n="sec.v2">ベアラー認証情報・1 時間ごとに更新</span></div>
+      <div class="shield__layer shield__layer--2"><span data-i18n="sec.v2">ベアラー認証情報・有効期間 1 時間</span></div>
       <div class="shield__layer shield__layer--3"><span data-i18n="sec.v3">テナントポリシー</span></div>
       <div class="shield__layer shield__layer--4"><span data-i18n="sec.v4"><span class="ph">暗号化</span><span class="ph">ストレージ</span><span class="ph">・監査</span></span></div>
     </div>
     <div class="split__text">
       <header class="reveal">
         <p class="kicker" data-i18n="sec.kicker">セキュリティと運用</p>
-        <h2 id="security-title" data-i18n="sec.title"><span class="ph">テナント単位の分離。</span><span class="ph">すべての層を明示的に。</span></h2>
+        <h2 id="security-title" data-i18n="sec.title"><span class="ph">Kasumi はどうやって</span><span class="ph">テナントを分離するのか</span></h2>
       </header>
       <ul class="oplist" role="list">
         <li class="reveal">
@@ -412,23 +411,23 @@
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.2.title">監査記録</h3>
-          <p data-i18n="sec.2.body">監査記録はテナントごとに保持され、運用担当者はテナントの監査ストリームを確認できます。</p>
+          <p data-i18n="sec.2.body">運用担当者はテナントごとに監査履歴を確認できます。</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.3.title">TLS 1.3、mTLS、証明書のピン留め</h3>
           <p data-i18n="sec.3.body">ネットワークアクセスには、TLS 1.3 と相互 TLS、サーバー証明書のピン留めを使用します。インストール時に、TLS アイデンティティと所有者専用のクライアントプロファイルが生成されます。</p>
         </li>
         <li class="reveal">
-          <h3 data-i18n="sec.4.title">有効期限つきの認証情報</h3>
-          <p data-i18n="sec.4.body">ベアラー認証情報は 1 時間で失効します。サーバーの稼働中は、<code>kasumid credential watch</code> が各プロファイルを更新し続けます。</p>
+          <h3 data-i18n="sec.4.title">認証情報の更新</h3>
+          <p data-i18n="sec.4.body">ベアラー認証情報の有効期間は 1 時間です。各プロファイルで <code>kasumid credential watch</code> を実行すると自動で更新されます。</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.5.title">役割とエンドポイントの分離</h3>
-          <p data-i18n="sec.5.body">アプリケーション用のプロファイルはドキュメントを読み書きでき、データベースの管理はできません。管理操作は、専用のプロファイルと別のエンドポイントで行います。</p>
+          <p data-i18n="sec.5.body">アプリケーションはデータ用のプロファイルでドキュメントを読み書きします。運用担当者は専用のプロファイルとエンドポイントを使ってデータベースを管理します。</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.6.title">バックアップとリカバリーツール</h3>
-          <p data-i18n="sec.6.body">バックアップとリカバリーツールを備え、レプリカの再起動、メンバーの交換、バックアップからのリストアの手順を文書化しています。</p>
+          <p data-i18n="sec.6.body">レプリカの再起動、メンバーの交換、バックアップからの復元手順は運用ガイドで確認できます。</p>
         </li>
       </ul>
       <p class="section__more reveal"><a class="link-arrow" href="https://github.com/soramitsu/kasumi/blob/master/docs/operations.md" rel="noopener" data-i18n="sec.more">運用ガイドを読む</a></p>
@@ -441,18 +440,18 @@
   <div class="wrap split">
     <div class="split__text reveal">
       <p class="kicker" data-i18n="mcp.kicker">エージェント向け</p>
-      <h2 id="agents-title" data-i18n="mcp.title"><span class="ph">エージェントには、</span><span class="ph">必要最小限の</span><span class="ph">データ操作だけを。</span></h2>
-      <p class="lede" data-i18n="mcp.lede">Kasumi の MCP エンドポイントは、SDK と同じ認可済みのコアデータ操作を公開します。ツールは 5 つ。それ以外はありません。</p>
-      <p data-i18n="mcp.body">呼び出しには、インストール済みのベアラー認証情報と現行の MCP プロトコルヘッダーを使用します。ツール一覧はトークンのスコープで絞り込まれ、各呼び出しではテナントの現在のポリシーがあらためて確認されます。</p>
-      <p class="callout" data-i18n="mcp.admin">管理操作は、独立したネイティブ管理エンドポイントでのみ行います。MCP には含まれません。</p>
+      <h2 id="agents-title" data-i18n="mcp.title"><span class="ph">MCP エージェントが使える</span><span class="ph">5 つのデータベースツール</span></h2>
+      <p class="lede" data-i18n="mcp.lede">MCP エージェントからも、Rust アプリケーションと同じクエリや書き込みバッチを使えます。</p>
+      <p data-i18n="mcp.body">表示されるツールは、エージェントのベアラートークンに設定された権限で決まります。Kasumi は呼び出しごとにテナントのアクセスポリシーを確認します。</p>
+      <p class="callout" data-i18n="mcp.admin">データベースの管理には専用のネイティブエンドポイントを使います。</p>
     </div>
     <div class="tools reveal" data-tilt data-tilt-max="6">
       <p class="tools__head"><span class="tools__dot" aria-hidden="true"></span><span>tools/list</span></p>
       <ul class="tools__list" role="list">
         <li class="tool"><code>kasumi_collections</code><span data-i18n="mcp.t1">コレクションの一覧を取得</span></li>
         <li class="tool"><code>kasumi_get</code><span data-i18n="mcp.t2">コレクションと ID を指定してドキュメントを 1 件取得</span></li>
-        <li class="tool"><code>kasumi_query</code><span data-i18n="mcp.t3">共通の型付きクエリ言語で問い合わせ</span></li>
-        <li class="tool"><code>kasumi_mutate</code><span data-i18n="mcp.t4">SDK と同じ更新バッチをコミット</span></li>
+        <li class="tool"><code>kasumi_query</code><span data-i18n="mcp.t3">型付きクエリを実行</span></li>
+        <li class="tool"><code>kasumi_mutate</code><span data-i18n="mcp.t4">複数の書き込みを一括でコミット</span></li>
         <li class="tool"><code>kasumi_receipt</code><span data-i18n="mcp.t5">冪等キーからレシートを照会</span></li>
       </ul>
     </div>
@@ -464,9 +463,9 @@
   <div class="wrap split">
     <div class="split__text reveal">
       <p class="kicker" data-i18n="qs.kicker">クイックスタート</p>
-      <h2 id="quickstart-title" data-i18n="qs.title"><span class="ph">コマンドひとつで、</span><span class="ph">開発用データベース。</span></h2>
-      <p class="lede" data-i18n="qs.lede"><code>scripts/dev_standalone.py</code> は、使い捨てのローカルインストールを初期化し、プロファイルごとの認証情報ウォッチャーとともにサーバーを監視し、指定したコレクションを作成します。</p>
-      <p class="fineprint" data-i18n="qs.note">Rust 1.97.1 と Python 3.11 以降が必要です。これは開発用のインストールであり、リリース向けのデプロイではありません。</p>
+      <h2 id="quickstart-title" data-i18n="qs.title">ローカルで Kasumi を動かす</h2>
+      <p class="lede" data-i18n="qs.lede">サーバーをビルドしたら、コレクションの定義ファイルを指定して <code>scripts/dev_standalone.py</code> を実行します。スクリプトが開発用データベースを起動し、コレクションを作成します。クライアントの認証情報も自動で更新します。</p>
+      <p class="fineprint" data-i18n="qs.note">Rust 1.97.1 と Python 3.11 以降が必要です。</p>
       <div class="btn-row">
         <a class="btn btn--primary" href="https://github.com/soramitsu/kasumi#quickstart-run-a-local-standalone-database" rel="noopener" data-i18n="qs.cta1">クイックスタートを開く</a>
         <a class="btn btn--ghost" href="https://github.com/soramitsu/kasumi/blob/master/docs/standalone.md" rel="noopener" data-i18n="qs.cta2">スタンドアロン導入ガイド</a>
@@ -503,7 +502,7 @@ target/debug/kasumictl \
     <header class="section__head section__head--center reveal">
       <p class="kicker" data-i18n="sup.kicker">本番サポート</p>
       <h2 id="support-title" data-i18n="sup.title"><span class="ph">Kasumi を開発するチームが、</span><span class="ph">直接サポートします。</span></h2>
-      <p class="lede" data-i18n="sup.lede">Kasumi はオープンソースで、無償でご利用いただけます。サポートプランでは、お客様が運用するインストールを、ソラミツのエンジニアが直接支援します。</p>
+      <p class="lede" data-i18n="sup.lede">Kasumi は無料で利用できます。ソラミツのサポートプランは、対象となる環境の数、受付時間、初回応答までの目標時間が異なります。</p>
     </header>
 
     <div class="plans" id="plans" data-plans>
@@ -522,27 +521,23 @@ target/debug/kasumictl \
     <div class="faq__list">
       <details class="qa reveal">
         <summary><span data-i18n="faq.1.q">サポートプランには何が含まれますか？</span></summary>
-        <div class="qa__a"><p data-i18n="faq.1.a">お客様の環境で Kasumi を運用するための支援です。インストールや設定に関するご質問、アップグレードのご案内、ご報告いただいた問題の調査に、上記の重大度の定義に沿った優先度で対応します。各プランの内容は、比較表とサポート規約をご確認ください。</p></div>
+        <div class="qa__a"><p data-i18n="faq.1.a">エンジニアが Kasumi の導入や設定、アップグレード計画の相談に応じます。不具合の報告は、重大度に応じて優先順位を決めて調査します。</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.2.q">Kasumi はホスティングサービスですか？</span></summary>
-        <div class="qa__a"><p data-i18n="faq.2.a">いいえ。Kasumi は Apache-2.0 ライセンスのセルフホスト型ソフトウェアで、お客様が管理するインフラ上で運用していただきます。サポートプランはお客様のインストールに対する支援であり、ホスティングや運用代行は含まれません。</p></div>
+        <summary><span data-i18n="faq.2.q">データベースの運用は誰が担当しますか？</span></summary>
+        <div class="qa__a"><p data-i18n="faq.2.a">Kasumi はお客様のインフラ上で稼働します。サーバーの管理、バックアップ、日々の運用はお客様が担当します。</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.3.q">プレリリースビルドもサポートの対象ですか？</span></summary>
-        <div class="qa__a"><p data-i18n="faq.3.a">はい。Kasumi の最初の本番リリースは開発中で、リリース認定済みのリビジョンはまだありません。サポートプランは現在の開発ビルドを対象とし、1.0 以降も継続します。残りの作業はリポジトリのリリース台帳に記録しています。評価段階のチームは、デザインパートナー・パイロットから始めることもできます。</p></div>
-      </details>
-      <details class="qa reveal">
-        <summary><span data-i18n="faq.4.q">プランの変更や解約はどうすればよいですか？</span></summary>
-        <div class="qa__a"><p data-i18n="faq.4.a">オンラインでお申し込みいただいたサブスクリプションは、カスタマーポータルで管理できます。お支払い情報の更新、請求書の確認、解約のお手続きが可能です。解約の効力が生じる時期は、サポート規約に記載しています。</p></div>
+        <summary><span data-i18n="faq.4.q">支払い情報の変更や解約はどこでできますか？</span></summary>
+        <div class="qa__a"><p data-i18n="faq.4.a">オンラインでお申し込みの場合は、カスタマーポータルで手続きできます。解約後も、お支払い済みの期間が終わるまでサポートを利用できます。</p></div>
       </details>
       <details class="qa reveal">
         <summary><span data-i18n="faq.5.q">請求書と消費税の扱いを教えてください。</span></summary>
-        <div class="qa__a"><p data-i18n="faq.5.a">価格は税別で表示しています。国内のお客様には消費税（10%）を加算し、決済画面で Stripe が計算します。お支払いごとにソラミツ株式会社の請求書が発行され、カスタマーポータルからダウンロードできます。Enterprise プランは注文書に基づき請求します。</p></div>
+        <div class="qa__a"><p data-i18n="faq.5.a">表示価格は税別です。国内のお客様には決済時に消費税（10%）を加算します。オンライン決済の請求書はソラミツ株式会社が発行し、カスタマーポータルからダウンロードできます。Enterprise プランは注文書に基づいて請求します。</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.6.q">日本語でサポートを受けられますか？</span></summary>
-        <div class="qa__a"><p data-i18n="faq.6.a">はい。日本語または英語でお問い合わせいただけます。お使いの言語でご返信します。</p></div>
+        <summary><span data-i18n="faq.6.q">何語で問い合わせできますか？</span></summary>
+        <div class="qa__a"><p data-i18n="faq.6.a">日本語と英語に対応しています。お問い合わせと同じ言語で返信します。</p></div>
       </details>
     </div>
     <p class="faq__more reveal"><span data-i18n="faq.more">その他のご質問は</span> <a href="mailto:service@soramitsu.co.jp" data-contact-email>service@soramitsu.co.jp</a></p>

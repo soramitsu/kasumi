@@ -226,33 +226,63 @@ async fn native_message_is_charged_from_its_prefix_before_its_body_arrives() {
     let admission = fixture.physical.admission.clone();
     let router = admitted_native(&fixture, std::time::Duration::from_secs(60));
     let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
-    let baseline = admission.snapshot().reserved_bytes;
     // Only the prefix of a 1 MiB message arrives.
     let declared = 1 << 20;
     let charge = crate::request_admission::wire_quote(declared + 5);
-    let (body, _) = StalledBody::body(Some(grpc_prefix(declared)));
-    let pending = tokio::spawn(
-        router
-            .clone()
-            .oneshot(grpc_request("Mutate", Some(&token), body)),
+    let (body, polled) = StalledBody::body(Some(grpc_prefix(declared)));
+    // Observe this request's own reservation: the node ledger is shared with
+    // the fixture's audit writer, whose reservations come and go meanwhile.
+    let (observed, mut growth) = tokio::sync::mpsc::unbounded_channel();
+    let probe = Box::new(move |workspace: &kasumi_engine::admission::Reservation| {
+        let _ = observed.send(workspace.observe_fixture_charge());
+    });
+    let mut pending = Box::pin(
+        crate::request_admission::WIRE_GROWTH.scope(
+            probe,
+            router
+                .clone()
+                .oneshot(grpc_request("Mutate", Some(&token), body)),
+        ),
     );
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while admission.snapshot().reserved_bytes < baseline + charge {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(10));
+    tokio::pin!(deadline);
+    let workspace = loop {
+        tokio::select! {
+            biased;
+            observe = growth.recv() => {
+                let observe = observe.expect("the request keeps its probe");
+                match observe() {
+                    Some((bytes, _)) if bytes >= charge => {
+                        assert_eq!(bytes, charge, "charged from the prefix alone");
+                        break observe;
+                    }
+                    _ => continue,
+                }
+            }
+            result = &mut pending => {
+                let response = result.unwrap();
+                panic!(
+                    "request ended before its prefix was charged: HTTP {} gRPC {:?} {:?}",
+                    response.status(),
+                    grpc_code(&response),
+                    response.headers().get("grpc-message"),
+                );
+            }
+            () = &mut deadline => panic!(
+                "encoded storage was not charged from the prefix within 10 s \
+                 (body polled: {}; node {:?})",
+                polled.load(std::sync::atomic::Ordering::SeqCst),
+                admission.snapshot(),
+            ),
         }
-    })
-    .await
-    .expect("encoded storage is charged from the prefix before collecting the mutation");
-    // A cancelled request releases its charge.
-    pending.abort();
-    assert!(pending.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while admission.snapshot().reserved_bytes >= baseline + charge {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the cancelled request's charge is released");
+    };
+    // A cancelled request releases its own charge at once.
+    drop(pending);
+    assert_eq!(
+        workspace(),
+        None,
+        "the cancelled request's charge is released"
+    );
     fixture.close().await;
 }
 

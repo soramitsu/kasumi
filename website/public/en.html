@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="meta.title">Kasumi — A durable JSON database</title>
-<meta name="description" data-i18n-attr="content:meta.desc" content="Kasumi is an open-source, self-hosted JSON database for applications that care about the next write. Rust-native, multi-tenant, encrypted, with gRPC and MCP interfaces.">
+<title data-i18n="meta.title">Kasumi — A self-hosted document database</title>
+<meta name="description" data-i18n-attr="content:meta.desc" content="Kasumi is an open-source document database with atomic writes, safe retries, and encrypted storage per tenant. Use it from Rust, gRPC, or MCP.">
 <meta name="theme-color" content="#E3232C">
 <link rel="canonical" href="https://kasumi.soramitsu.co.jp/en">
 <link rel="alternate" hreflang="en" href="https://kasumi.soramitsu.co.jp/en">
@@ -12,8 +12,8 @@
 <link rel="alternate" hreflang="x-default" href="https://kasumi.soramitsu.co.jp/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Kasumi">
-<meta property="og:title" data-i18n-attr="content:meta.title" content="Kasumi — A durable JSON database">
-<meta property="og:description" data-i18n-attr="content:meta.ogDesc" content="A durable JSON database for applications that care about the next write. Rust-native, multi-tenant, encrypted, and ready for services, gRPC clients, and MCP agents.">
+<meta property="og:title" data-i18n-attr="content:meta.title" content="Kasumi — A self-hosted document database">
+<meta property="og:description" data-i18n-attr="content:meta.ogDesc" content="Commit related changes together and retry a write with the same key. Embed Kasumi in Rust or run it on your own servers.">
 <meta property="og:locale" data-i18n-attr="content:meta.locale" content="en_US">
 <meta property="og:url" content="https://kasumi.soramitsu.co.jp/en">
 <meta property="og:image" content="https://kasumi.soramitsu.co.jp/assets/brand/kasumi-logo-with-katakana.png">
@@ -114,16 +114,15 @@
 
     <div class="hero__content wrap">
       <p class="eyebrow hero__eyebrow" data-i18n="hero.eyebrow">Open source · Apache-2.0 · Self-hosted</p>
-      <h1 class="hero__title" id="hero-title" data-i18n="hero.title">A durable JSON database for applications that care about the next write.</h1>
-      <p class="hero__sub" data-i18n="hero.sub">Rust-native, multi-tenant, encrypted, and ready for services, gRPC clients, and MCP agents.</p>
+      <h1 class="hero__title" id="hero-title" data-i18n="hero.title">A document database with atomic writes and safe retries.</h1>
+      <p class="hero__sub" data-i18n="hero.sub">Run Kasumi inside your Rust application, on a single server, or across a cluster. Each tenant gets its own credentials and encrypted storage.</p>
       <div class="hero__cta">
         <a class="btn btn--primary" href="https://github.com/soramitsu/kasumi#quickstart-run-a-local-standalone-database" rel="noopener">
           <span data-i18n="hero.cta.start">Get started</span>
           <svg class="btn__icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M4 10h11M10.5 5.5 15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </a>
-        <a class="btn btn--ghost" href="#support" data-i18n="hero.cta.support">Production support</a>
+        <a class="btn btn--ghost" href="#support" data-i18n="hero.cta.support">Compare support plans</a>
       </div>
-      <p class="status" id="release-status" data-i18n="status.note">Kasumi's first production release is in development; no revision is release-qualified yet. Support plans cover current builds and continue through 1.0.</p>
     </div>
   </div>
 </section>
@@ -137,9 +136,9 @@
   </div>
   <div class="wrap">
     <header class="section__head reveal">
-      <p class="kicker" data-i18n="why.kicker">Why teams use Kasumi</p>
-      <h2 id="why-title" data-i18n="why.title">For systems where a retry, a restart, or a replica failure must not become duplicate or ambiguous state.</h2>
-      <p class="lede" data-i18n="why.lede">Store JSON documents, validate them with schemas, query them through typed indexes or English and Japanese full-text search, and commit related changes as one durable operation.</p>
+      <p class="kicker" data-i18n="why.kicker">Why Kasumi</p>
+      <h2 id="why-title" data-i18n="why.title">Commit a checkout in one batch</h2>
+      <p class="lede" data-i18n="why.lede">Create an order, reserve the stock, and clear the cart. Even if the changes span three collections, Kasumi commits them together and saves one receipt.</p>
     </header>
 
     <ul class="cards" role="list">
@@ -147,8 +146,8 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">01</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M6 16a10 10 0 0 1 17.2-6.9M26 16a10 10 0 0 1-17.2 6.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M23.5 4.5v5h-5M8.5 27.5v-5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.1.title">Retries are part of the model</h3>
-        <p data-i18n="why.1.body">Every mutation has an idempotency key and a durable receipt. Resend the same batch after an uncertain network outcome and Kasumi resolves the original operation instead of applying it twice.</p>
+        <h3 class="pop" data-i18n="why.1.title">Look up a write by key</h3>
+        <p data-i18n="why.1.body">If the connection drops before you get a reply, use the idempotency key to look up the receipt. Retrying the same batch with that key won’t create a second order.</p>
         <ul class="chips" role="list">
           <li data-i18n="why.1.chip1">Idempotency keys</li>
           <li data-i18n="why.1.chip2">Durable receipts</li>
@@ -158,8 +157,8 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">02</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M12 5c-3 0-4 1.500-4 4v3.500c0 2-1 3.500-3 3.500 2 0 3 1.500 3 3.500V23c0 2.500 1 4 4 4M20 5c3 0 4 1.500 4 4v3.500c0 2 1 3.500 3 3.500-2 0-3 1.500-3 3.500V23c0 2.500-1 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.2.title">JSON without fuzzy semantics</h3>
-        <p data-i18n="why.2.body">JSON Schema, exact numeric values, JSON Pointer field paths, conditional writes, aggregates, cursor paging, and declared indexes keep application behavior predictable as data grows.</p>
+        <h3 class="pop" data-i18n="why.2.title">Set the shape of your documents</h3>
+        <p data-i18n="why.2.body">Validate documents with JSON Schema and index the fields you query. Kasumi preserves the precision of JSON numbers when it compares prices and quantities.</p>
         <ul class="chips" role="list">
           <li data-i18n="why.2.chip1">JSON Schema</li>
           <li data-i18n="why.2.chip2">Exact numbers</li>
@@ -170,22 +169,22 @@
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">03</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><rect x="5" y="5" width="22" height="22" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 12h12M10 16h12M10 20h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <h3 class="pop" data-i18n="why.3.title">One atomic boundary for a workflow</h3>
-        <p data-i18n="why.3.body">Update an order, reserve inventory, and clear a cart in one batch. Preconditions and read assertions reject the whole batch when the state you observed is no longer true.</p>
+        <h3 class="pop" data-i18n="why.3.title">Check stock before committing</h3>
+        <p data-i18n="why.3.body">Include the version of the inventory document you read. If another checkout has since updated it, Kasumi rejects the whole batch.</p>
       </li>
       <li class="card tilt reveal" data-tilt>
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">04</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><rect x="4" y="6" width="10" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="18" y="6" width="10" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 12v8M23 12v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <h3 class="pop" data-i18n="why.4.title">Isolation you can operate</h3>
-        <p data-i18n="why.4.body">Tenants have separate policy, credentials, encrypted storage, audit records, and, in replicated mode, Raft groups. Network access uses TLS 1.3, mTLS, pinned server certificates, and bearer credentials.</p>
+        <h3 class="pop" data-i18n="why.4.title">Keep tenant data separate</h3>
+        <p data-i18n="why.4.body">Each tenant has its own access policy, encrypted storage, and audit records. In a replicated deployment, each tenant also has its own Raft group.</p>
       </li>
       <li class="card tilt reveal" data-tilt>
         <div class="card__clip" aria-hidden="true"><span class="card__glare"></span></div>
         <span class="card__num pop" aria-hidden="true">05</span>
         <svg class="card__icon pop" viewBox="0 0 32 32" width="36" height="36" aria-hidden="true" focusable="false"><path d="M6 9.500 12 15l-6 5.500M15 22h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h3 class="pop" data-i18n="why.5.title">A useful interface for people and agents</h3>
-        <p data-i18n="why.5.body">Use the Rust SDK for services, <code>kasumictl</code> for scripts and debugging, native Protobuf for other languages, or MCP for an authorized agent workflow.</p>
+        <h3 class="pop" data-i18n="why.5.title">Connect from your application</h3>
+        <p data-i18n="why.5.body">Use the Rust SDK in a service, run <code>kasumictl</code> from a shell, or connect a client over gRPC. Agents can query and write documents through MCP.</p>
       </li>
     </ul>
   </div>
@@ -195,9 +194,9 @@
 <section class="section sheet sheet--night retries" id="retries" aria-labelledby="retries-title">
   <div class="wrap split">
     <div class="split__text reveal">
-      <p class="kicker" data-i18n="retry.kicker">The retry model</p>
-      <h2 id="retries-title" data-i18n="retry.title">Send it again. It still applies once.</h2>
-      <p class="lede" data-i18n="retry.lede">If the connection drops after dispatch, resend the same batch or let <code>Kasumi::mutate</code> resolve it. The stable key prevents a second application.</p>
+      <p class="kicker" data-i18n="retry.kicker">Write retries</p>
+      <h2 id="retries-title" data-i18n="retry.title">What if the checkout response never arrives?</h2>
+      <p class="lede" data-i18n="retry.lede">Resend the batch with its original key. If the order already committed, Kasumi returns the receipt for that write. The Rust SDK handles this retry in <code>Kasumi::mutate</code>.</p>
 
       <figure class="code code--night">
         <figcaption class="code__bar"><span class="code__dots" aria-hidden="true"></span><span class="code__name">checkout.rs</span></figcaption>
@@ -209,7 +208,7 @@
 <span class="t-k">let</span> receipt = db.<span class="t-f">mutate</span>(&amp;checkout).<span class="t-k">await</span>?;
 <span class="t-m">println!</span>(<span class="t-s">"committed revision {}"</span>, receipt.revision);</code></pre>
       </figure>
-      <p class="fineprint" data-i18n="retry.note">Every precondition is checked against one write state. A failed version check, schema validation, uniqueness constraint, quota, or authorization check rejects the entire batch.</p>
+      <p class="fineprint" data-i18n="retry.note">Kasumi checks the whole batch against the same database state. If any version, schema, uniqueness, quota, or permission check fails, none of the changes take effect.</p>
     </div>
 
     <div class="retry reveal" data-step="1" data-retry>
@@ -247,10 +246,10 @@
       </div>
 
       <ol class="retry__steps">
-        <li><button type="button" class="retry__step" data-step-to="1"><span class="retry__n" aria-hidden="true">1</span><span class="retry__t"><b data-i18n="retry.s1.t">Send a batch with an idempotency key</b><span data-i18n="retry.s1.d">The key names the operation: <code>checkout:order-1001</code>.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="2"><span class="retry__n" aria-hidden="true">2</span><span class="retry__t"><b data-i18n="retry.s2.t">The connection drops after dispatch</b><span data-i18n="retry.s2.d">The write committed, but the response never arrived.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="3"><span class="retry__n" aria-hidden="true">3</span><span class="retry__t"><b data-i18n="retry.s3.t">Resend the same batch</b><span data-i18n="retry.s3.d">Same principal, same key, identical batch. Never a new key.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
-        <li><button type="button" class="retry__step" data-step-to="4"><span class="retry__n" aria-hidden="true">4</span><span class="retry__t"><b data-i18n="retry.s4.t">Kasumi returns the original receipt</b><span data-i18n="retry.s4.d">The operation is resolved, not repeated. Applied once.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="1"><span class="retry__n" aria-hidden="true">1</span><span class="retry__t"><b data-i18n="retry.s1.t">Send a batch with an idempotency key</b><span data-i18n="retry.s1.d">This order uses <code>checkout:order-1001</code>.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="2"><span class="retry__n" aria-hidden="true">2</span><span class="retry__t"><b data-i18n="retry.s2.t">The connection drops</b><span data-i18n="retry.s2.d">Kasumi committed the order, but the client missed the response.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="3"><span class="retry__n" aria-hidden="true">3</span><span class="retry__t"><b data-i18n="retry.s3.t">Resend the same batch</b><span data-i18n="retry.s3.d">Use the original key and the same client identity.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
+        <li><button type="button" class="retry__step" data-step-to="4"><span class="retry__n" aria-hidden="true">4</span><span class="retry__t"><b data-i18n="retry.s4.t">Kasumi returns the original receipt</b><span data-i18n="retry.s4.d">The receipt shows the revision where the order committed.</span></span><span class="retry__bar" aria-hidden="true"></span></button></li>
       </ol>
       <button type="button" class="retry__toggle" data-retry-toggle data-paused="false">
         <span class="retry__toggle-icon" aria-hidden="true"></span>
@@ -265,8 +264,8 @@
   <div class="wrap">
     <header class="section__head reveal">
       <p class="kicker" data-i18n="q.kicker">Querying</p>
-      <h2 id="queries-title" data-i18n="q.title">One typed query shape for Rust, gRPC, and MCP.</h2>
-      <p class="lede" data-i18n="q.lede">Field paths are JSON Pointers. Filter, sort, select, page, aggregate, and search with the same JSON from every interface.</p>
+      <h2 id="queries-title" data-i18n="q.title">Use the same queries from Rust, gRPC, and MCP</h2>
+      <p class="lede" data-i18n="q.lede">Use JSON Pointer paths to name fields. This query finds open invoices, sorts them by amount, and returns just the amount and customer name.</p>
     </header>
 
     <div class="queries__grid">
@@ -300,19 +299,19 @@
       <ul class="facts" role="list">
         <li class="fact reveal">
           <h3 data-i18n="q.1.title">Declared indexes</h3>
-          <p data-i18n="q.1.body">Filtering, sorting, or grouping on a hot path uses an index you declared. Index fields keep their type: numbers compare as exact JSON numbers and nothing is coerced.</p>
+          <p data-i18n="q.1.body">Declare indexes on the fields you filter, sort, or group by. Kasumi preserves field types and compares JSON numbers exactly.</p>
         </li>
         <li class="fact reveal">
           <h3><code>INDEX_REQUIRED</code></h3>
-          <p data-i18n="q.2.body">A query on an undeclared field returns <code>INDEX_REQUIRED</code> unless the request explicitly opts into a bounded scan. Slow paths are a decision, not a surprise.</p>
+          <p data-i18n="q.2.body">A filter on an unindexed field returns <code>INDEX_REQUIRED</code>. To scan that field, set <code>allow_scan</code> to true. The tenant’s scan limits still apply.</p>
         </li>
         <li class="fact reveal">
           <h3 data-i18n="q.3.title">Seek paging</h3>
-          <p data-i18n="q.3.body">For large ordered walks, seek paging reads each page straight from a unique index and keeps no server-side cursor.</p>
+          <p data-i18n="q.3.body">Page through a unique index in order. Each page starts after the last row you read, so the server has no cursor to store.</p>
         </li>
         <li class="fact reveal">
           <h3 data-i18n="q.4.title">English and Japanese full-text search</h3>
-          <p data-i18n="q.4.body">Declare a text index and choose its analyzer, including English stemming and Japanese morphological analysis. Search combines with filters, sorting, paging, and named aggregates.</p>
+          <p data-i18n="q.4.body">Choose an analyzer for each text index, including English stemming or Japanese morphological analysis. Combine full-text search with filters, sorting, paging, and named aggregates.</p>
         </li>
       </ul>
     </div>
@@ -329,8 +328,8 @@
   <div class="wrap">
     <header class="section__head reveal">
       <p class="kicker" data-i18n="dep.kicker">Deployment modes</p>
-      <h2 id="deployment-title" data-i18n="dep.title">The same policy and data model, from one process to three voters.</h2>
-      <p class="lede" data-i18n="dep.lede">Embedded and standalone databases commit locally without running Raft. Replicated deployments use Raft across their configured voters.</p>
+      <h2 id="deployment-title" data-i18n="dep.title">Embed Kasumi, run a server, or deploy a cluster</h2>
+      <p class="lede" data-i18n="dep.lede">All three modes share a data model and policy rules. Embedded and standalone databases commit locally. Replicated databases use Raft.</p>
     </header>
 
     <ul class="deck" role="list" data-deck>
@@ -343,7 +342,7 @@
         </div>
         <p class="mode__tag" data-i18n="dep.1.tag">In your process</p>
         <h3 data-i18n="dep.1.title">Embedded Rust</h3>
-        <p data-i18n="dep.1.body">Direct access to the engine with application-owned authentication and lifecycle.</p>
+        <p data-i18n="dep.1.body">Call the engine directly from Rust. Your application handles authentication and controls when the database opens and closes.</p>
         <ul class="legend" role="list">
           <li class="legend__item legend__item--glass" data-i18n="dep.1.l1">Your Rust application</li>
           <li class="legend__item legend__item--red" data-i18n="dep.1.l2">Kasumi engine, local commits</li>
@@ -360,7 +359,7 @@
         </div>
         <p class="mode__tag" data-i18n="dep.2.tag">One server</p>
         <h3 data-i18n="dep.2.title">Standalone</h3>
-        <p data-i18n="dep.2.body">One-voter local installation with generated TLS identities, profiles, encrypted storage, audit, backups, and recovery tools.</p>
+        <p data-i18n="dep.2.body">Run Kasumi on one server with encrypted storage. The installer generates TLS identities and client profiles and includes tools for audits, backups, and recovery.</p>
         <ul class="legend" role="list">
           <li class="legend__item legend__item--glass" data-i18n="dep.2.l1">TLS identities and client profiles</li>
           <li class="legend__item legend__item--rose" data-i18n="dep.2.l2">Audit, backups, and recovery tools</li>
@@ -379,7 +378,7 @@
         </div>
         <p class="mode__tag" data-i18n="dep.3.tag">Three voters</p>
         <h3 data-i18n="dep.3.title">Replicated</h3>
-        <p data-i18n="dep.3.body">Three initial voters in independent failure domains, one Raft group per tenant, quorum-persisted writes, and a separate Control group for routing and operator metadata.</p>
+        <p data-i18n="dep.3.body">Start with three voting nodes in separate failure domains. Each tenant’s Raft group commits writes to a quorum. A separate Control group handles routing and operator metadata.</p>
         <ul class="legend" role="list">
           <li class="legend__item legend__item--glass" data-i18n="dep.3.l1">Separate Control group</li>
           <li class="legend__item legend__item--red" data-i18n="dep.3.l2">One Raft group per tenant</li>
@@ -396,14 +395,14 @@
   <div class="wrap split split--flip">
     <div class="shield reveal" aria-hidden="true" data-tilt data-tilt-max="12">
       <div class="shield__layer shield__layer--1"><span data-i18n="sec.v1">TLS 1.3 · mTLS · pinned certificates</span></div>
-      <div class="shield__layer shield__layer--2"><span data-i18n="sec.v2">Bearer credential · renewed hourly</span></div>
+      <div class="shield__layer shield__layer--2"><span data-i18n="sec.v2">Bearer credentials · one-hour lifetime</span></div>
       <div class="shield__layer shield__layer--3"><span data-i18n="sec.v3">Tenant policy</span></div>
       <div class="shield__layer shield__layer--4"><span data-i18n="sec.v4">Encrypted storage · audit</span></div>
     </div>
     <div class="split__text">
       <header class="reveal">
         <p class="kicker" data-i18n="sec.kicker">Security and operations</p>
-        <h2 id="security-title" data-i18n="sec.title">Isolation by tenant. Every layer explicit.</h2>
+        <h2 id="security-title" data-i18n="sec.title">How Kasumi keeps tenants separate</h2>
       </header>
       <ul class="oplist" role="list">
         <li class="reveal">
@@ -412,23 +411,23 @@
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.2.title">Audit records</h3>
-          <p data-i18n="sec.2.body">Tenants keep separate audit records, and operators can inspect a tenant's audit stream.</p>
+          <p data-i18n="sec.2.body">Operators can review the audit history for an individual tenant.</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.3.title">TLS 1.3, mTLS, and pinned certificates</h3>
           <p data-i18n="sec.3.body">Network access uses TLS 1.3 with mutual TLS and pinned server certificates. Installation generates the TLS identities and owner-only client profiles.</p>
         </li>
         <li class="reveal">
-          <h3 data-i18n="sec.4.title">Credentials that expire</h3>
-          <p data-i18n="sec.4.body">Bearer credentials expire after one hour. <code>kasumid credential watch</code> keeps each profile renewed while the server is running.</p>
+          <h3 data-i18n="sec.4.title">Credential renewal</h3>
+          <p data-i18n="sec.4.body">Bearer credentials expire after one hour. Run <code>kasumid credential watch</code> for each profile to renew them.</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.5.title">Separate roles and endpoints</h3>
-          <p data-i18n="sec.5.body">The application profile reads and writes documents and cannot administer the database. Administration uses its own profiles on a separate endpoint.</p>
+          <p data-i18n="sec.5.body">Applications use a data profile to read and write documents. Operators use dedicated profiles and a separate endpoint to administer the database.</p>
         </li>
         <li class="reveal">
           <h3 data-i18n="sec.6.title">Backups and recovery tools</h3>
-          <p data-i18n="sec.6.body">Installations include backups and recovery tools, with documented procedures for replica restart, member replacement, and restore from backup.</p>
+          <p data-i18n="sec.6.body">The operations guide shows how to restart a replica, replace a member, and restore from a backup.</p>
         </li>
       </ul>
       <p class="section__more reveal"><a class="link-arrow" href="https://github.com/soramitsu/kasumi/blob/master/docs/operations.md" rel="noopener" data-i18n="sec.more">Read the operations guide</a></p>
@@ -441,18 +440,18 @@
   <div class="wrap split">
     <div class="split__text reveal">
       <p class="kicker" data-i18n="mcp.kicker">For agents</p>
-      <h2 id="agents-title" data-i18n="mcp.title">Give an agent a narrow data surface.</h2>
-      <p class="lede" data-i18n="mcp.lede">Kasumi's MCP endpoint exposes the same authorized core data operations as the SDK: five tools, and nothing else.</p>
-      <p data-i18n="mcp.body">Calls use the installed bearer credential and current MCP protocol headers. The tool list is filtered by token scopes, and each call still checks the tenant's current policy.</p>
-      <p class="callout" data-i18n="mcp.admin">Administrative operations stay on the separate native administrative endpoint. They are absent from MCP.</p>
+      <h2 id="agents-title" data-i18n="mcp.title">Five database tools for MCP agents</h2>
+      <p class="lede" data-i18n="mcp.lede">An MCP agent can use the same document queries and write batches as your Rust application.</p>
+      <p data-i18n="mcp.body">The agent’s bearer token determines which tools it sees. Kasumi checks the tenant’s access policy on every call.</p>
+      <p class="callout" data-i18n="mcp.admin">Database administration uses a separate native endpoint.</p>
     </div>
     <div class="tools reveal" data-tilt data-tilt-max="6">
       <p class="tools__head"><span class="tools__dot" aria-hidden="true"></span><span>tools/list</span></p>
       <ul class="tools__list" role="list">
         <li class="tool"><code>kasumi_collections</code><span data-i18n="mcp.t1">List collections</span></li>
         <li class="tool"><code>kasumi_get</code><span data-i18n="mcp.t2">Read one document by collection and ID</span></li>
-        <li class="tool"><code>kasumi_query</code><span data-i18n="mcp.t3">Run the same typed query language</span></li>
-        <li class="tool"><code>kasumi_mutate</code><span data-i18n="mcp.t4">Commit the same mutation batch as the SDK</span></li>
+        <li class="tool"><code>kasumi_query</code><span data-i18n="mcp.t3">Run a typed query</span></li>
+        <li class="tool"><code>kasumi_mutate</code><span data-i18n="mcp.t4">Commit a batch of writes</span></li>
         <li class="tool"><code>kasumi_receipt</code><span data-i18n="mcp.t5">Look up a receipt by idempotency key</span></li>
       </ul>
     </div>
@@ -464,9 +463,9 @@
   <div class="wrap split">
     <div class="split__text reveal">
       <p class="kicker" data-i18n="qs.kicker">Quickstart</p>
-      <h2 id="quickstart-title" data-i18n="qs.title">A development database in one command.</h2>
-      <p class="lede" data-i18n="qs.lede"><code>scripts/dev_standalone.py</code> initializes a disposable local installation, supervises the server with a credential watcher for each profile, and creates the collections you name.</p>
-      <p class="fineprint" data-i18n="qs.note">Needs Rust 1.97.1 and Python 3.11 or newer. This is a development installation, not a release deployment.</p>
+      <h2 id="quickstart-title" data-i18n="qs.title">Run Kasumi locally</h2>
+      <p class="lede" data-i18n="qs.lede">Build the server, then run <code>scripts/dev_standalone.py</code> with your collection definition. The script starts a local development database, creates the collection, and keeps the client credentials renewed.</p>
+      <p class="fineprint" data-i18n="qs.note">Requires Rust 1.97.1 and Python 3.11 or later.</p>
       <div class="btn-row">
         <a class="btn btn--primary" href="https://github.com/soramitsu/kasumi#quickstart-run-a-local-standalone-database" rel="noopener" data-i18n="qs.cta1">Open the quickstart</a>
         <a class="btn btn--ghost" href="https://github.com/soramitsu/kasumi/blob/master/docs/standalone.md" rel="noopener" data-i18n="qs.cta2">Standalone installation guide</a>
@@ -503,7 +502,7 @@ target/debug/kasumictl \
     <header class="section__head section__head--center reveal">
       <p class="kicker" data-i18n="sup.kicker">Production support</p>
       <h2 id="support-title" data-i18n="sup.title">Support from the team that builds Kasumi.</h2>
-      <p class="lede" data-i18n="sup.lede">Kasumi is open source and free to run. A support plan adds direct help from Soramitsu engineers for the installations you operate.</p>
+      <p class="lede" data-i18n="sup.lede">Kasumi is free to run. Compare Soramitsu’s support plans by the number of installations they cover, support hours, and response targets.</p>
     </header>
 
     <div class="plans" id="plans" data-plans>
@@ -522,27 +521,23 @@ target/debug/kasumictl \
     <div class="faq__list">
       <details class="qa reveal">
         <summary><span data-i18n="faq.1.q">What does a support plan cover?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.1.a">Help with running Kasumi in your own environment: installation and configuration questions, upgrade guidance, and investigation of problems you report, prioritized by the severity definitions above. The comparison table and the support terms list what each plan includes.</p></div>
+        <div class="qa__a"><p data-i18n="faq.1.a">Our engineers help you install and configure Kasumi, plan upgrades, and troubleshoot problems. We prioritize incidents by severity.</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.2.q">Is Kasumi a hosted service?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.2.a">No. Kasumi is self-hosted software under the Apache-2.0 license, and you run it on infrastructure you control. A support plan covers help with your installations; it does not include hosting or operating them for you.</p></div>
+        <summary><span data-i18n="faq.2.q">Who hosts and operates the database?</span></summary>
+        <div class="qa__a"><p data-i18n="faq.2.a">You run Kasumi on infrastructure you control. Your team manages the hosts, backups, and day-to-day operations.</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.3.q">Do plans cover pre-release builds?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.3.a">Yes. Kasumi's first production release is still in development and no revision is release-qualified yet, so plans cover current development builds today and continue through 1.0. The release ledger in the repository records what remains. Teams still evaluating can start with a design-partner pilot.</p></div>
+        <summary><span data-i18n="faq.4.q">How do I manage my subscription?</span></summary>
+        <div class="qa__a"><p data-i18n="faq.4.a">If you subscribed online, use the customer portal to update payment details or cancel. Support continues through the end of the period you paid for.</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.4.q">How do I change or cancel a subscription?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.4.a">Self-serve subscriptions are managed in the customer portal, where you can update payment details, view invoices, and cancel. The support terms describe when a cancellation takes effect.</p></div>
+        <summary><span data-i18n="faq.5.q">How do invoices and tax work?</span></summary>
+        <div class="qa__a"><p data-i18n="faq.5.a">Prices exclude tax. For customers in Japan, Stripe adds 10% consumption tax at checkout. You can download an invoice from Soramitsu Co., Ltd. for each online payment in the customer portal. We bill Enterprise customers under their signed orders.</p></div>
       </details>
       <details class="qa reveal">
-        <summary><span data-i18n="faq.5.q">How are invoices and Japanese consumption tax handled?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.5.a">Prices are shown excluding tax. Customers in Japan pay 10% consumption tax, calculated by Stripe at checkout, and every payment produces an invoice from Soramitsu Co., Ltd. that you can download from the customer portal. Enterprise contracts are invoiced under the signed order.</p></div>
-      </details>
-      <details class="qa reveal">
-        <summary><span data-i18n="faq.6.q">Is support available in Japanese?</span></summary>
-        <div class="qa__a"><p data-i18n="faq.6.a">Yes. You can write to us in Japanese or English, and we reply in the language you use.</p></div>
+        <summary><span data-i18n="faq.6.q">Which languages can I use for support?</span></summary>
+        <div class="qa__a"><p data-i18n="faq.6.a">Write to us in English or Japanese. We’ll reply in the same language.</p></div>
       </details>
     </div>
     <p class="faq__more reveal"><span data-i18n="faq.more">Something else?</span> <a href="mailto:service@soramitsu.co.jp" data-contact-email>service@soramitsu.co.jp</a></p>

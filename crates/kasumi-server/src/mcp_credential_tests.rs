@@ -1207,6 +1207,20 @@ async fn sdk_terminal_transport_failure_preserves_dispatched_mutation_uncertaint
     fixture.close().await;
 }
 
+/// One query deadline, reported by an async wait or by the worker's own
+/// check inside a selected document read. Either withholds every row.
+const QUERY_DEADLINES: [&str; 2] = ["query deadline exceeded", "document read deadline exceeded"];
+
+/// An expired caller gives up only its claim on the query worker. The node
+/// keeps joining that worker, which holds its workspace until it returns, so
+/// join it before the next attempt measures admission.
+async fn settle_expired_query(admission: &kasumi_engine::admission::NodeAdmission) {
+    tokio::time::timeout(Duration::from_secs(60), admission.drain_blocking_children())
+        .await
+        .expect("an expired query worker did not return")
+        .expect("an expired query worker failed");
+}
+
 #[tokio::test]
 async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budget() {
     let fixture = Fixture::new().await;
@@ -1243,10 +1257,11 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
         {
             Err(error)
                 if error.code == kasumi_types::ErrorCode::ResourceExhausted
-                    && error.message == "query deadline exceeded"
+                    && QUERY_DEADLINES.contains(&error.message.as_str())
                     && tokio::time::Instant::now() < until =>
             {
                 eprintln!("MCP tree fixture baseline read withheld: {error}");
+                settle_expired_query(&fixture.admission).await;
             }
             result => break (before, result.unwrap()),
         }
@@ -1291,9 +1306,40 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
             json!({"name":"kasumi_query", "arguments":query}),
         )
     };
-    let mut refused_call = call();
-    refused_call.extensions_mut().insert(hook);
-    let (status, body) = decoded(fixture.router().oneshot(refused_call).await.unwrap()).await;
+    // Both MCP calls run the same thousand-document query under its own
+    // deadline. A deadline withholds every row before the result tree exists,
+    // so the tree hook cannot have run; retry it like the direct read above.
+    // Any other result, including the tree refusal itself, is asserted below.
+    let invoke = |hook: Option<TreeChargeHook>| {
+        let (fixture, filler, call) = (&fixture, &filler, &call);
+        async move {
+            let until = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                let mut request = call();
+                if let Some(hook) = &hook {
+                    request.extensions_mut().insert(hook.clone());
+                }
+                let (status, body) =
+                    decoded(fixture.router().oneshot(request).await.unwrap()).await;
+                let error = &body["result"]["structuredContent"]["error"];
+                let expired = status == StatusCode::OK
+                    && body["result"]["isError"] == json!(true)
+                    && QUERY_DEADLINES.iter().any(|message| {
+                        *error == json!({"code":"RESOURCE_EXHAUSTED", "message":message})
+                    });
+                if !expired || tokio::time::Instant::now() >= until {
+                    break (status, body);
+                }
+                assert!(
+                    filler.lock().unwrap().is_none(),
+                    "a query deadline after the tree hook ran"
+                );
+                eprintln!("MCP tree fixture call withheld: {error}");
+                settle_expired_query(&fixture.admission).await;
+            }
+        }
+    };
+    let (status, body) = invoke(Some(hook)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"]["isError"], json!(true));
     assert_eq!(
@@ -1315,7 +1361,7 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
     // The refusal is the tree charge alone: with the headroom back, the same
     // call releases the whole result and then returns every charge.
     drop(filler.lock().unwrap().take());
-    let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
+    let (status, body) = invoke(None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["result"]["isError"],

@@ -718,19 +718,26 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
             .await
             .unwrap();
         // Mutation audit work may populate the native cache. Quiesce it before
-        // taking the exact ownership census. The local topology load performs
-        // no audit or maintenance admission, but may update native cache stats.
+        // the load. The local topology load performs no audit or maintenance
+        // admission, but may update native cache stats. Node-wide totals do
+        // not isolate its grant: its own native read first retires readers
+        // that earlier operations released, and the database monitor can
+        // retire replaced roots meanwhile. So observe the failure's grant by
+        // slot and generation.
         let quiescent = audit.quiescent_jobs_for_test().await;
         let baseline = physical.admission.snapshot();
         assert_eq!(baseline.inflight_operations, 0);
         let revision = database.engine().generation().unwrap().revision();
         let error = ControlPlane::local_topology(&database).unwrap_err();
         let owner = error.downcast_ref::<LocalTopologyFailure>().unwrap();
+        let grant = owner.observe_fixture_charge();
         let original = error.to_string();
         let held = physical.admission.snapshot();
         assert_eq!(held.inflight_operations, 0);
-        assert_eq!(held.live_reservations, baseline.live_reservations + 1);
-        assert!(held.reserved_bytes > baseline.reserved_bytes);
+        // The failure retains one genuine grant, now resident, not an operation.
+        let (charge, resident) = grant().expect("the failure retains its grant");
+        assert!(charge > 0 && resident, "retained grant {charge} resident {resident}");
+        assert!(held.reserved_bytes >= charge);
         assert_eq!(database.engine().generation().unwrap().revision(), revision);
         // The stored topology document has been loaded. Neither pure error
         // adapter below may perform additional I/O.
@@ -752,8 +759,7 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
             );
         }
         // The borrowed administrative classification cannot release its owner.
-        assert_eq!(physical.admission.snapshot().reserved_bytes, held.reserved_bytes);
-        assert_eq!(physical.admission.snapshot().live_reservations, held.live_reservations);
+        assert_eq!(grant(), Some((charge, true)));
         assert_eq!(node.cache_stats().unwrap(), cache);
         let mapped = api_error(error);
         if validation {
@@ -766,10 +772,9 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
             assert_eq!(mapped.code, ErrorCode::Unavailable);
             assert_eq!(mapped.message, original);
         }
-        let released = physical.admission.snapshot();
-        assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
-        assert_eq!(released.live_reservations, baseline.live_reservations);
-        assert_eq!(released.inflight_operations, 0);
+        // Mapping consumes the owner and with it exactly that grant.
+        assert_eq!(grant(), None);
+        assert_eq!(physical.admission.snapshot().inflight_operations, 0);
         assert_eq!(node.cache_stats().unwrap(), cache);
         drop(mapped);
         drop(quiescent);

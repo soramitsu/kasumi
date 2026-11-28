@@ -122,7 +122,7 @@ h1, h2, h3, h4, p, ul, ol, dl, dd, figure { margin: 0; }
 ul[role="list"], ol.retry__steps { list-style: none; padding: 0; }
 h1, h2, h3, h4 { line-height: 1.15; letter-spacing: -.018em; font-weight: 600; text-wrap: balance; }
 html:lang(ja) :is(h1, h2, h3, h4) { line-height: 1.4; letter-spacing: .01em; font-weight: 700; word-break: auto-phrase; }
-html:lang(ja) :is(.lede, .hero__sub, .status) { word-break: auto-phrase; }
+html:lang(ja) :is(.lede, .hero__sub) { word-break: auto-phrase; }
 p { text-wrap: pretty; overflow-wrap: break-word; }
 a { color: var(--red-ink); text-underline-offset: .2em; text-decoration-thickness: .08em; }
 a:hover { color: var(--red-deep); }
@@ -261,7 +261,7 @@ html:lang(ja) :is(.kicker, .eyebrow) { letter-spacing: .12em; }
 .shide--4 { left: 51.071%; top: 43.722%; width: 3.050%; height: 16.107%; transform-origin: 48.0% 8.1%; animation-duration: 5.2s; animation-delay: -2.3s; }
 .shide--5 { left: 46.836%; top: 36.457%; width: 3.089%; height: 16.080%; transform-origin: 48.2% 9.6%; animation-duration: 6.4s; animation-delay: -4.2s; }
 @keyframes sway { from { transform: rotate(-3.2deg); } to { transform: rotate(3.6deg); } }
-.hero.is-idle .shide, .hero.is-idle .status::after { animation-play-state: paused; }
+.hero.is-idle .shide { animation-play-state: paused; }
 
 .sun-glow { left: 14%; top: -47%; width: 88%; height: 200.2%; border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 246, 240, .78), rgba(255, 240, 232, .42) 38%, rgba(255, 240, 232, 0) 100%); }
 .sun { left: 44.99%; top: 23.44%; width: 26.1%; height: 59.375%; }
@@ -315,10 +315,6 @@ html:lang(ja) :is(.kicker, .eyebrow) { letter-spacing: .12em; }
 html:lang(ja) .hero__title { font-size: clamp(1.6rem, 6.6vw, 2.75rem); max-width: 17em; line-height: 1.32; letter-spacing: 0; }
 .hero__sub { margin-top: clamp(14px, 2.6vh, 26px); max-width: 31em; font-size: clamp(1.02rem, 1.5vw, 1.2rem); color: var(--ink-2); animation: rise 1s var(--ease) .22s both; }
 .hero__cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: clamp(20px, 3.4vh, 34px); animation: rise 1s var(--ease) .32s both; }
-.status { position: relative; margin-top: clamp(18px, 3vh, 30px); padding-left: 22px; max-width: 36em; font-size: .86rem; line-height: 1.55; color: var(--ink-2); animation: rise 1s var(--ease) .42s both; }
-.status::before, .status::after { content: ""; position: absolute; left: 2px; top: .5em; width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
-.status::after { animation: ping 2.4s ease-out infinite; }
-@keyframes ping { from { transform: scale(1); opacity: .7; } to { transform: scale(3.2); opacity: 0; } }
 @keyframes rise { from { opacity: 0; transform: translate3d(0, 18px, 0); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 520px) {
@@ -328,7 +324,6 @@ html:lang(ja) .hero__title { font-size: clamp(1.6rem, 6.6vw, 2.75rem); max-width
   .hero__cta { gap: 10px; }
   .hero__cta .btn { min-height: 48px; padding: 10px 18px; font-size: .95rem; }
   .hero__cta .btn__icon { display: none; }
-  .status { font-size: .8rem; }
 }
 @media (min-width: 1000px) and (min-height: 640px) {
   .hero { --stage-w: min(80vw, 118vh, 1240px); }
@@ -337,7 +332,6 @@ html:lang(ja) .hero__title { font-size: clamp(1.6rem, 6.6vw, 2.75rem); max-width
   .hero__title { font-size: clamp(2.6rem, min(4.5vw, 7.4vh), 4.1rem); }
   html:lang(ja) .hero__title { font-size: clamp(2.1rem, min(3.6vw, 6vh), 3.2rem); }
   .hero__sub { max-width: 27em; }
-  .status { max-width: 30em; }
 }
 @media (min-width: 1000px) and (min-height: 640px) and (prefers-reduced-motion: no-preference) {
   .js .hero { height: calc(100vh + 80vh); height: calc(100svh + 80vh); }
@@ -740,8 +734,7 @@ h3 { font-size: 1.16rem; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: .001ms !important; transition-delay: 0s !important; }
-  .shide, .sun__disc, .hero__veil, .hero__eyebrow, .hero__title, .hero__sub, .hero__cta, .status, .status::after, .btn.is-loading::before { animation: none !important; }
-  .status::after { display: none; }
+  .shide, .sun__disc, .hero__veil, .hero__eyebrow, .hero__title, .hero__sub, .hero__cta, .btn.is-loading::before { animation: none !important; }
   .layer { will-change: auto; }
   .js .reveal:not(.is-in) { opacity: 1; transform: none; }
   .js .deck:not(.is-in) .mode { opacity: 1; }

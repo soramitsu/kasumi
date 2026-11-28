@@ -371,6 +371,13 @@ fn refused(grpc: bool, error: Error) -> Response {
     (status, Json(serde_json::json!({"error":error.code}))).into_response()
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// Observes a request's own reservation each time a body frame raises its
+    /// charge, inside the task that polls that request.
+    pub(crate) static WIRE_GROWTH: Box<dyn Fn(&Reservation) + Send + Sync>;
+}
+
 /// Charges each body frame before passing it on, and fails the body at its
 /// read deadline. The decoder sees the failure as the request's status.
 struct AdmittedBody {
@@ -411,12 +418,14 @@ impl AdmittedBody {
             quote(bytes)
         };
         if quote > self.charged {
-            self.workspace
+            let mut workspace = self
+                .workspace
                 .lock()
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "request admission unavailable"))?
-                .ensure_peak(quote)
-                .map_err(exhausted)?;
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "request admission unavailable"))?;
+            workspace.ensure_peak(quote).map_err(exhausted)?;
             self.charged = quote;
+            #[cfg(test)]
+            let _ = WIRE_GROWTH.try_with(|probe| probe(&workspace));
         }
         Ok(())
     }

@@ -7329,7 +7329,8 @@ mod lifecycle_tests {
             assert_eq!(
                 issue.component(),
                 "abandoned target call",
-                "target drain issue: {:#}",
+                "target {index} drain issue instance {}: {:#}",
+                issue.instance(),
                 issue.error()
             );
             issue

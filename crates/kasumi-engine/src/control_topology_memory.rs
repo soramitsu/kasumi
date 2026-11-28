@@ -71,6 +71,14 @@ pub struct LocalTopologyFailure {
     _reservation: Reservation,
 }
 impl LocalTopologyFailure {
+    /// Observe the retained grant by slot and generation, including after this
+    /// owner is dropped. Node-wide totals cannot isolate it: other owners'
+    /// reservations retire concurrently on the same ledger.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
+        self._reservation.observe_fixture_charge()
+    }
+
     /// Preserve canonical validation/pressure classification without extraction.
     pub fn validation_error(&self) -> Option<&Error> {
         match &self.failure {
